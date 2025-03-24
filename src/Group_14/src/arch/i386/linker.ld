@@ -5,7 +5,6 @@ SECTIONS {
 
     .boot :
     {
-        /* Ensure that the multiboot header is at the beginning! */
         *(.multiboot_header)
     }
 
@@ -33,5 +32,5 @@ SECTIONS {
         *(.bss .bss.*)
     }
 
-	end = .; _end = .; __end = .;
+    end = .; 
 }
