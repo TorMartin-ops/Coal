@@ -1,17 +1,18 @@
 ; isr_stubs.asm
-
 global isr0
 global isr1
 global isr2
 
-; Tell the assembler “int_handler” is defined elsewhere (in C):
+; We’ll call a C function named int_handler(int num).
 extern int_handler
 
 section .text
 
+; Each ISR pushes the CPU state + “which interrupt” number, calls int_handler, then iret
+
 isr0:
-    pusha
-    push dword 0
+    pusha                 ; push general registers
+    push dword 0         ; “interrupt #0”
     call int_handler
     add esp, 4
     popa
@@ -19,7 +20,7 @@ isr0:
 
 isr1:
     pusha
-    push dword 1
+    push dword 1         ; “interrupt #1”
     call int_handler
     add esp, 4
     popa
@@ -27,7 +28,7 @@ isr1:
 
 isr2:
     pusha
-    push dword 2
+    push dword 2         ; “interrupt #2”
     call int_handler
     add esp, 4
     popa

@@ -19,6 +19,6 @@ struct gdt_ptr {
     uint32_t base;  // Address of the first GDT entry
 } __attribute__((packed));
 
-void gdt_init();
+void gdt_init(void);
 
 #endif // GDT_H
