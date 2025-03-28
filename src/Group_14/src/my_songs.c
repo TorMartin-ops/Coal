@@ -1,9 +1,7 @@
-// my_songs.c
 #include "song.h"  // for Note, Song
 
-// "Ode to Joy" (a simple transcription)
+// Ode to Joy melody transcription
 static Note odeToJoy[] = {
-    // First phrase
     {329, 300}, // E4
     {329, 300}, // E4
     {349, 300}, // F4
@@ -19,8 +17,6 @@ static Note odeToJoy[] = {
     {329, 300}, // E4
     {293, 300}, // D4
     {293, 300}, // D4
-
-    // Second phrase
     {329, 300}, // E4
     {329, 300}, // E4
     {349, 300}, // F4
