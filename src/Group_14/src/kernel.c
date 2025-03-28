@@ -1,20 +1,6 @@
 /**
  * kernel.c
- *
- * The primary kernel entry point for a 32-bit x86 OS (pure C).
- * Integrates Assignment 4 tasks:
- *   1) Validate Multiboot2 magic
- *   2) Initialize terminal
- *   3) GDT & IDT (and PIC remap)
- *   4) init_kernel_memory(&end) for memory manager
- *   5) init_paging() (placeholder)
- *   6) print_memory_layout() (placeholder)
- *   7) init_timer() (PIT)
- *   8) init_keyboard() (IRQ1)
- *   9) Enable interrupts
- *   10) Test software ISRs (0..2)
- *   11) Demonstrate memory usage (malloc)
- *   12) Main loop (hlt)
+ * Primary kernel entry point for a 32-bit x86 OS.
  */
 
  #include <libc/stdint.h>
@@ -24,123 +10,116 @@
  #include "terminal.h"
  #include "gdt.h"
  #include "idt.h"
- #include "pit.h"       // for init_timer(), sleep functions
- #include "keyboard.h"  // for init_keyboard()
- #include "mem.h"       // for init_kernel_memory, malloc, free
+ #include "pit.h"
+ #include "keyboard.h"
+ #include "mem.h"
+ #include "pc_speaker.h"
+ #include "song.h"
+ #include "song_player.h"
+ #include "my_songs.h"
  
- // The magic number set by a Multiboot2-compliant bootloader
  #define MULTIBOOT2_BOOTLOADER_MAGIC 0x36d76289
  
- // Extern symbol from linker.ld, marking end of kernel image
+ // Defined in linker.ld, marks the end of the kernel image.
  extern uint32_t end;
  
- /*
-    Minimal structure for multiboot info. 
-    Expand if you want to parse memory maps, modules, etc.
- */
  struct multiboot_info {
      uint32_t size;
      uint32_t reserved;
      struct multiboot_tag* first;
  };
  
- // Placeholder for paging init
- static void init_paging(void)
- {
-     // For Assignment 4, this can be a stub or real paging code
-     // e.g., set up page directories, enable CR0.PG, etc.
- }
+ // Simple identity-mapped paging for the first 4 MB.
+ static void init_paging(void) {
+     static uint32_t page_directory[1024] __attribute__((aligned(4096)));
+     static uint32_t first_page_table[1024] __attribute__((aligned(4096)));
  
- // Placeholder for printing memory layout
- static void print_memory_layout(void)
- {
-     terminal_write("Memory Layout (placeholder):\n");
-     terminal_write("  The 'end' symbol is at &end.\n");
-     // Optionally print address of &end or total memory from multiboot info
- }
- 
- /**
-  * main
-  *
-  * Kernel entry point, called by the bootloader with:
-  *   - 'magic': indicates if the loader is Multiboot2
-  *   - 'mb_info_addr': pointer to the multiboot info (if needed)
-  */
- void main(uint32_t magic, struct multiboot_info* mb_info_addr)
- {
-     // 1) Validate Multiboot2 magic
-     if (magic != MULTIBOOT2_BOOTLOADER_MAGIC) {
-         // If invalid, init terminal and show error
-         terminal_init();
-         terminal_write("Error: Invalid multiboot2 magic!\n");
-         while (1) {
-             __asm__ volatile("hlt");
-         }
+     for (int i = 0; i < 1024; i++) {
+         first_page_table[i] = (i * 0x1000) | 3;  // Present, RW
+     }
+     page_directory[0] = ((uint32_t)first_page_table) | 3;
+     for (int i = 1; i < 1024; i++) {
+         page_directory[i] = 0;
      }
  
-     // 2) Initialize VGA terminal
-     terminal_init();
-     terminal_write("=== UiAOS Booting (Pure C) ===\n\n");
+     __asm__ volatile("mov %0, %%cr3" : : "r"(page_directory));
+     uint32_t cr0;
+     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+     cr0 |= 0x80000000; // Set PG bit
+     __asm__ volatile("mov %0, %%cr0" : : "r"(cr0));
+ }
  
-     // 3a) Initialize GDT
+ static void print_hex(uint32_t value) {
+     char hex[9];
+     for (int i = 0; i < 8; i++) {
+         uint8_t nibble = (value >> ((7 - i) * 4)) & 0xF;
+         hex[i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+     }
+     hex[8] = '\0';
+     terminal_write(hex);
+ }
+ 
+ static void print_memory_layout(void) {
+     terminal_write("Memory Layout:\nKernel end address: ");
+     print_hex((uint32_t)&end);
+     terminal_write("\n");
+ }
+ 
+ // Kernel entry point.
+ void main(uint32_t magic, struct multiboot_info* mb_info_addr)
+ {
+     if (magic != MULTIBOOT2_BOOTLOADER_MAGIC) {
+         terminal_init();
+         terminal_write("Error: Invalid multiboot2 magic!\n");
+         while (1) { __asm__ volatile("hlt"); }
+     }
+ 
+     terminal_init();
+     terminal_write("=== UiAOS Booting ===\n\n");
+ 
      terminal_write("Initializing GDT... ");
      gdt_init();
      terminal_write("Done.\n");
  
-     // 3b) Initialize IDT & Remap PIC
      terminal_write("Initializing IDT & PIC... ");
      idt_init();
      terminal_write("Done.\n");
  
-     // 4) Initialize kernel memory
      terminal_write("Initializing Kernel Memory...\n");
-     init_kernel_memory(&end);  // naive bump allocator or other approach
+     init_kernel_memory(&end);
  
-     // 5) Initialize paging
      terminal_write("Initializing Paging...\n");
      init_paging();
  
-     // 6) Print memory layout
      print_memory_layout();
  
-     // 7) Initialize PIT (IRQ0)
      terminal_write("Initializing PIT...\n");
-     init_pit();  // from pit.c
+     init_pit();
  
-     // 8) Initialize keyboard (IRQ1)
      terminal_write("Initializing Keyboard...\n");
      init_keyboard();
  
-     // 9) Enable interrupts
      terminal_write("Enabling interrupts (STI)...\n");
      __asm__ volatile("sti");
  
-     // 10) Test software ISRs 0..2
      terminal_write("Testing software interrupts (ISRs 0..2)...\n");
-     asm volatile("int $0x0");  // triggers isr0
-     asm volatile("int $0x1");  // triggers isr1
-     asm volatile("int $0x2");  // triggers isr2
+     asm volatile("int $0x0");
+     asm volatile("int $0x1");
+     asm volatile("int $0x2");
  
      terminal_write("\nSystem is up. Demonstrating memory usage...\n");
+     void* block1 = malloc(1024);
+     if (block1) terminal_write("Allocated 1 KB with malloc.\n");
+     void* block2 = malloc(4096);
+     if (block2) terminal_write("Allocated 4 KB with malloc.\n");
  
-     // 11) Demonstrate memory usage with malloc
-     void* block1 = malloc(1024);  // allocate 1 KB
-     if (block1) {
-         terminal_write("Allocated 1 KB with malloc.\n");
-     }
-     void* block2 = malloc(4096);  // allocate 4 KB
-     if (block2) {
-         terminal_write("Allocated 4 KB with malloc.\n");
-     }
- 
-     // If you want, free them (though naive bump won't reclaim)
-     // free(block1);
-     // free(block2);
- 
-     // 12) Main loop: continuously halt
-     terminal_write("Entering main loop. OS dev is fun!\n");
+     terminal_write("\nPlaying test song via PC speaker...\n");
+     play_song(&testSong);
+     sleep_interrupt(2000);
+
+    terminal_write("Entering main loop.");
      while (1) {
-         __asm__ volatile("hlt");
-     }
+        __asm__ volatile("hlt");
+    }
  }
  
