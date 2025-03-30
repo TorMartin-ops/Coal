@@ -5,8 +5,8 @@
 extern "C" {
 #endif
 
-#include <stdint.h>
-#include <stdbool.h>
+#include <libc/stdint.h>
+#include <libc/stdbool.h>
 
 /**
  * @brief Enumeration of supported key codes.

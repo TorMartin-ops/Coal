@@ -1,6 +1,7 @@
 #include "scheduler.h"
-#include <libc/stddef.h>
-#include "mem.h"
+#include "kmalloc.h"    // Use the unified allocator (kmalloc/kfree) instead of the old mem.h
+
+#include "libc/stddef.h"
 
 /* Define the size of the stack for each task (e.g., 4 KB) */
 #define TASK_STACK_SIZE 4096
@@ -19,7 +20,7 @@ static tcb_t *task_list = 0;
 extern void context_switch(uint32_t **old_esp, uint32_t *new_esp);
 
 /* Internal helper: called when a task function returns.
-   In a production OS you might remove the task from the list.
+   In production you might remove the task from the list.
    Here we simply loop forever and yield repeatedly. */
 static void task_exit(void) {
     while (1) {
@@ -37,15 +38,15 @@ void scheduler_init(void) {
    Allocates a TCB and its kernel stack; initializes the stack frame so that
    when the task is switched in, it starts at task_entry. */
 void scheduler_add_task(void (*task_entry)(void)) {
-    /* Allocate a new TCB */
-    tcb_t *new_task = (tcb_t*)malloc(sizeof(tcb_t));
+    /* Allocate a new TCB using kmalloc */
+    tcb_t *new_task = (tcb_t*)kmalloc(sizeof(tcb_t));
     if (!new_task) {
         // In production, handle allocation failure appropriately.
         return;
     }
     
-    /* Allocate a stack for the new task */
-    uint32_t *stack = (uint32_t*)malloc(TASK_STACK_SIZE);
+    /* Allocate a stack for the new task using kmalloc */
+    uint32_t *stack = (uint32_t*)kmalloc(TASK_STACK_SIZE);
     if (!stack) {
         // In production, handle allocation failure appropriately.
         return;
