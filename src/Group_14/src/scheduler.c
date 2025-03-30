@@ -1,5 +1,5 @@
 #include "scheduler.h"
-#include "kmalloc.h"    // Use the unified allocator (kmalloc/kfree) instead of the old mem.h
+#include "kmalloc.h"
 
 #include "libc/stddef.h"
 

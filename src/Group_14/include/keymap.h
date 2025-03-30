@@ -1,3 +1,4 @@
+#pragma once
 #ifndef KEYMAP_H
 #define KEYMAP_H
 
@@ -5,32 +6,21 @@
 extern "C" {
 #endif
 
-#include "keyboard.h"
-
-/* External keymap arrays */
-extern const uint16_t keymap_us_qwerty[128];
-extern const uint16_t keymap_uk_qwerty[128];
-extern const uint16_t keymap_dvorak[128];
-extern const uint16_t keymap_colemak[128];
+#include "libc/stdint.h"
 
 /**
- * @brief Enumeration of supported keyboard layout types.
- *
- * This enumeration defines the available keyboard layouts that can be loaded
- * by the keymap module.
+ * @brief Enumeration of supported keyboard layouts.
  */
 typedef enum {
-    KEYMAP_US_QWERTY, /**< Standard US QWERTY layout */
-    KEYMAP_UK_QWERTY, /**< UK QWERTY layout */
-    KEYMAP_DVORAK,    /**< Dvorak layout */
-    KEYMAP_COLEMAK    /**< Colemak layout */
+    KEYMAP_US_QWERTY = 0,
+    KEYMAP_UK_QWERTY,
+    KEYMAP_DVORAK,
+    KEYMAP_COLEMAK,
+    KEYMAP_NORWEGIAN  // Added Norwegian keyboard layout.
 } KeymapLayout;
 
 /**
- * @brief Loads the specified keyboard layout.
- *
- * This function selects one of the predefined keymaps and updates the active
- * keymap in the keyboard driver accordingly.
+ * @brief Loads the specified keyboard layout into the keyboard driver.
  *
  * @param layout The keyboard layout to load.
  */
