@@ -1,28 +1,103 @@
-/**
- * keyboard_map.h
- *
- * Provides a function to convert PS/2 “Set 1” scancodes into ASCII 
- * without handling Shift, Caps Lock, or other modifiers. 
- *
- * For advanced usage, you can add SHIFT, Caps Lock, or other logic 
- * by expanding the lookup table or storing state about key presses.
- */
+#ifndef KEYBOARD_H
+#define KEYBOARD_H
 
- #ifndef KEYBOARD_MAP_H
- #define KEYBOARD_MAP_H
- 
- #include <libc/stdint.h>
- 
- /**
-  * scancode_to_ascii
-  *
-  * Converts a single “Set 1” scancode (0..127) into a corresponding ASCII char. 
-  * If the scancode is out of range or corresponds to a special/release code, returns 0.
-  *
-  * @param scancode  The PS/2 Set 1 scancode (usually < 128 on press).
-  * @return          The corresponding ASCII character, or 0 if none.
-  */
- char scancode_to_ascii(uint8_t scancode);
- 
- #endif // KEYBOARD_MAP_H
- 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <stdint.h>
+#include <stdbool.h>
+
+/**
+ * @brief Enumeration of supported key codes.
+ * 
+ * Alphanumeric keys use their ASCII values directly; special keys have values
+ * starting above the standard ASCII range.
+ */
+typedef enum {
+    KEY_UNKNOWN = 0x80,
+    KEY_ESC,
+    KEY_F1,
+    KEY_F2,
+    KEY_F3,
+    KEY_F4,
+    KEY_F5,
+    KEY_F6,
+    KEY_F7,
+    KEY_F8,
+    KEY_F9,
+    KEY_F10,
+    KEY_TILDE,
+    KEY_BACKSPACE,
+    KEY_TAB,
+    KEY_CTRL,
+    KEY_LEFT_SHIFT,
+    KEY_RIGHT_SHIFT,
+    KEY_ALT,
+    KEY_CAPS,
+    KEY_NUM,
+    KEY_SCROLL,
+    KEY_HOME,
+    KEY_UP,
+    KEY_PAGE_UP,
+    KEY_LEFT,
+    KEY_RIGHT,
+    KEY_END,
+    KEY_DOWN,
+    KEY_PAGE_DOWN,
+    KEY_INSERT,
+    KEY_DELETE,
+    KEY_COUNT
+} KeyCode;
+
+/**
+ * @brief Bitmask values for modifier keys.
+ */
+typedef enum {
+    MOD_NONE   = 0,
+    MOD_SHIFT  = 1 << 0,
+    MOD_CTRL   = 1 << 1,
+    MOD_ALT    = 1 << 2,
+    MOD_CAPS   = 1 << 3,
+    MOD_NUM    = 1 << 4,
+    MOD_SCROLL = 1 << 5,
+    MOD_ALT_GR = 1 << 6,
+    MOD_SUPER  = 1 << 7
+} KeyModifier;
+
+/**
+ * @brief Enumeration of key actions.
+ */
+typedef enum {
+    KEY_PRESS,      /**< Key press event */
+    KEY_RELEASE,    /**< Key release event */
+    KEY_REPEAT      /**< Key repeat event */
+} KeyAction;
+
+/**
+ * @brief Structure representing a keyboard event.
+ */
+typedef struct {
+    KeyCode code;       /**< The key code (either a special code or ASCII) */
+    KeyAction action;   /**< The type of event (press, release, repeat) */
+    uint8_t modifiers;  /**< Bitmask representing active modifier keys */
+    uint32_t timestamp; /**< Timestamp from PIT ticks when the event occurred */
+} KeyEvent;
+
+/* Function declarations for the keyboard driver */
+void keyboard_init(void);
+bool keyboard_poll_event(KeyEvent* event);
+bool keyboard_is_key_down(KeyCode key);
+uint8_t keyboard_get_modifiers(void);
+void keyboard_set_leds(bool scroll, bool num, bool caps);
+void keyboard_set_keymap(const uint16_t* keymap);
+void keyboard_set_repeat_rate(uint8_t delay, uint8_t speed);
+void keyboard_register_callback(void (*callback)(KeyEvent));
+char apply_modifiers(char c, uint8_t modifiers);
+char apply_modifiers_extended(char c, uint8_t modifiers);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // KEYBOARD_H
