@@ -1,74 +1,103 @@
 #include "gdt.h"
-#include "tss.h"       // For TSS definitions and initialization.
-#include "terminal.h"  // For debug output (optional)
-
+#include "tss.h"
+#include "terminal.h"
 #include "libc/stdint.h"
 
-// External assembly routines.
-extern void gdt_flush(uint32_t);
-extern void tss_flush(uint32_t);
+// Assembly routines to load our GDT and TSS.
+extern void gdt_flush(uint32_t gdt_ptr);
+extern void tss_flush(uint32_t tss_selector);
 
-// Global TSS; defined and initialized in tss.c.
+// The actual TSS is defined in tss.c as a global variable (tss).
+// Here, we only "extern" it if we need to reference it.
 extern struct tss_entry tss;
 
-// We now have 6 GDT entries: null, kernel code, kernel data, user code, user data, TSS.
+// We define 6 GDT entries: 0: Null, 1: Kernel Code, 2: Kernel Data,
+// 3: User Code, 4: User Data, 5: TSS.
 static struct gdt_entry gdt_entries[6];
-static struct gdt_ptr gp;
+static struct gdt_ptr   gp;
 
 /**
- * @brief Sets an individual GDT entry.
+ * gdt_set_gate
+ *   Helper function to fill in one GDT entry.
  *
- * @param idx    Index in the GDT array.
- * @param base   Base address for the segment.
- * @param limit  Limit for the segment.
- * @param access Access flags.
- * @param gran   Granularity flags.
+ * @param idx     Which GDT index to fill.
+ * @param base    Base address of the segment.
+ * @param limit   Segment limit (e.g. 0xFFFFFFFF for 4GB).
+ * @param access  Access flags (present bit, ring bits, segment type).
+ * @param gran    Granularity (page gran, 32-bit ops, etc.).
  */
-static void gdt_set_gate(int idx, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran) {
+static void gdt_set_gate(int idx,
+                         uint32_t base,
+                         uint32_t limit,
+                         uint8_t access,
+                         uint8_t gran)
+{
     gdt_entries[idx].base_low    = (uint16_t)(base & 0xFFFF);
     gdt_entries[idx].base_middle = (uint8_t)((base >> 16) & 0xFF);
     gdt_entries[idx].base_high   = (uint8_t)((base >> 24) & 0xFF);
     gdt_entries[idx].limit_low   = (uint16_t)(limit & 0xFFFF);
-    gdt_entries[idx].granularity = (uint8_t)(((limit >> 16) & 0x0F) | (gran & 0xF0));
+
+    // For the high nibble of the limit plus the granularity bits:
+    gdt_entries[idx].granularity =
+        (uint8_t)(((limit >> 16) & 0x0F) | (gran & 0xF0));
+
     gdt_entries[idx].access = access;
 }
 
-void gdt_init(void) {
-    // Total number of entries: 6.
-    gp.limit = (sizeof(struct gdt_entry) * 6) - 1;
-    gp.base  = (uint32_t)&gdt_entries;
-    
-    // Entry 0: Null descriptor.
+/**
+ * gdt_init
+ *
+ * Sets up our 6–entry GDT (null, kernel code/data, user code/data, TSS),
+ * then loads it into the CPU via gdt_flush. Finally, calls tss_init() and
+ * tss_flush to load the TSS into TR register.
+ */
+void gdt_init(void)
+{
+    // Fill in GDT pointer
+    gp.limit = (uint16_t)(sizeof(gdt_entries) - 1);
+    gp.base  = (uint32_t)&gdt_entries[0];
+
+    // 0) Null descriptor
     gdt_set_gate(0, 0, 0, 0, 0);
-    
-    // Entry 1: Kernel code segment. Base 0, limit 4GB, ring 0.
+
+    // 1) Kernel code: base=0, limit=4GB, ring0, code
+    //    Access = 0x9A => P=1, DPL=0, S=1 (code/data), type=1010b (executable, readable).
+    //    Gran  = 0xCF => G=1 (4k pages), DB=1 (32-bit), limit high=0xF.
     gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xCF);
-    
-    // Entry 2: Kernel data segment. Base 0, limit 4GB, ring 0.
+
+    // 2) Kernel data: base=0, limit=4GB, ring0, data
+    //    Access = 0x92 => P=1, DPL=0, S=1, type=0010b (writable data).
+    //    Gran  = 0xCF => same as code.
     gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF);
-    
-    // Entry 3: User code segment. Base 0, limit 4GB, ring 3.
+
+    // 3) User code: base=0, limit=4GB, ring3, code
+    //    Access = 0xFA => P=1, DPL=3, S=1, type=1010b
+    //    Gran  = 0xCF
     gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF);
-    
-    // Entry 4: User data segment. Base 0, limit 4GB, ring 3.
+
+    // 4) User data: base=0, limit=4GB, ring3, data
+    //    Access = 0xF2 => P=1, DPL=3, S=1, type=0010b
+    //    Gran  = 0xCF
     gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF);
-    
-    // Entry 5: TSS descriptor.
-    // For a 32-bit TSS, the limit is sizeof(tss_entry)-1.
-    uint32_t base = (uint32_t)&tss;
-    uint32_t limit = sizeof(struct tss_entry) - 1;
-    // Access byte 0x89: present, type 9 (available 32-bit TSS), DPL 0.
-    // Granularity: set lower 4 bits of limit (from limit) and 0x40 to indicate byte granularity.
-    gdt_set_gate(5, base, limit, 0x89, 0x40);
-    
-    // Load the new GDT.
+
+    // 5) TSS descriptor
+    //    Typically: base -> &tss, limit -> size of TSS - 1
+    //    Access = 0x89 => P=1, DPL=0, type=1001b (32-bit TSS (available)).
+    //    Gran  = 0x00 or 0x40 for TSS. Usually G=0 because TSS is small.
+    uint32_t tss_base  = (uint32_t)&tss;
+    uint32_t tss_limit = (sizeof(struct tss_entry) - 1);
+
+    gdt_set_gate(5, tss_base, tss_limit, 0x89, 0x40);
+
+    // 1) Load the GDT into GDTR
     gdt_flush((uint32_t)&gp);
-    
-    // Initialize and load the TSS.
+
+    // 2) Initialize TSS structure fields (in tss_init())
     tss_init();
-    // Selector for the TSS entry: index 5, descriptor in GDT.
-    // The selector value is 5*8 (offset in GDT) with RPL 3 typically used for user mode.
+
+    // 3) Load TSS into TR
+    //    TSS descriptor is at index 5 => selector is 5 * 8 = 0x28
     tss_flush(5 * 8);
-    
+
     terminal_write("GDT and TSS initialized.\n");
 }

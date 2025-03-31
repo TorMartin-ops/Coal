@@ -31,13 +31,15 @@ bits 32
 
 _start:
     cli
-
     mov esp, stack_top
 
-	push ebx
-	push eax
+    ; EBX has the Multiboot info pointer
+    ; EAX has the Multiboot magic
 
-    call main ; Jump main function
+    push ebx   ; second parameter
+    push eax   ; first parameter
+
+    call main  ; calls main(uint32_t magic, struct multiboot_info*)
 
 section .bss
 stack_bottom:

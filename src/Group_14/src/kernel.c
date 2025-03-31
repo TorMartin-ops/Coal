@@ -1,93 +1,68 @@
 /**
  * kernel.c
- * 
- * World–Class Upgraded Kernel Entry Point for a 32-bit x86 OS.
  *
- * This upgraded kernel initializes essential subsystems in the correct order:
- *   - Terminal (for immediate debug output)
- *   - Global Descriptor Table (GDT) & TSS (for both kernel and user mode)
- *   - Interrupt Descriptor Table (IDT) & Programmable Interrupt Controller (PIC)
- *   - Paging (enabled early so that dynamic heap growth works)
- *   - Kernel Memory Manager (using a buddy allocator with dynamic heap extension via paging,
- *     and a unified per-CPU allocator for small allocations)
- *   - Programmable Interval Timer (PIT)
- *   - Keyboard (with dynamic keymap loading and interactive input)
- *   - PC Speaker and Song Player (for audio output)
- *   - (Future work) User-mode process loader and system call interface.
+ * World-Class Upgraded Kernel Entry Point for a 32-bit x86 OS.
  *
- * After initialization, the kernel demonstrates dynamic memory allocation using the
- * per-CPU allocator, then enters the main loop to poll for keyboard events.
+ * This kernel initializes:
+ *   - Terminal (for debug output),
+ *   - GDT & TSS (segmentation + safe kernel stack),
+ *   - IDT & PIC (interrupt handling),
+ *   - Paging (identity + higher-half),
+ *   - Memory allocators (buddy, per-CPU, global),
+ *   - PIT, Keyboard, PC Speaker,
+ *   - Process management (ELF loading),
+ *   - Syscalls (INT 0x80),
+ * Then enables interrupts and enters a main loop.
  */
 
  #include <libc/stdint.h>
  #include <libc/stddef.h>
- #include <multiboot2.h>
+ #include <libc/stdbool.h>
  #include <libc/string.h>
+ #include <multiboot2.h>  // Make sure this is the correct path to your multiboot2.h
+ 
  #include "terminal.h"
  #include "gdt.h"
+ #include "tss.h"
  #include "idt.h"
  #include "pit.h"
  #include "keyboard.h"
- #include "keymap.h"       // For loading keymaps
- #include "buddy.h"        // Buddy allocator interface (for large allocations)
- #include "percpu_alloc.h" // Per-CPU allocator interface for small allocations
- #include "kmalloc.h"      // Unified kmalloc/kfree interface (can be configured to use per-CPU alloc)
+ #include "keymap.h"
+ #include "buddy.h"
+ #include "percpu_alloc.h"
+ #include "kmalloc.h"
  #include "pc_speaker.h"
  #include "song.h"
  #include "song_player.h"
  #include "my_songs.h"
- #include "paging.h"       // Paging interface
+ #include "paging.h"
+ #include "elf_loader.h"
+ #include "process.h"
+ #include "syscall.h"
+ #include "scheduler.h"
  #include "get_cpu_id.h"
- // Optionally include process and syscall modules when ready
- //#include "process.h"
- //#include "syscall.h"
  
  #define MULTIBOOT2_BOOTLOADER_MAGIC 0x36d76289
  
- // 'end' is defined in the linker script; it marks the end of the kernel image.
+ /*
+  * We define a single global kernel stack here.
+  * In real SMP systems, each CPU typically has its own stack in the TSS.
+  */
+ #define KERNEL_STACK_SIZE (4096 * 4)
+ /* 
+  * Move the alignment attribute to the front or with the type,
+  * so older compilers don't complain on arrays.
+  */
+ static __attribute__((aligned(16))) uint8_t kernel_stack[KERNEL_STACK_SIZE];
+ 
+ /* 
+  * Symbol from your linker script marking the end of the kernel image. 
+  * Used so the buddy allocator knows where free memory can begin.
+  */
  extern uint32_t end;
  
- /* Minimal multiboot info structure (unused in this sample) */
- struct multiboot_info {
-     uint32_t size;
-     uint32_t reserved;
-     struct multiboot_tag* first;
- };
- 
- /* External function to get the current CPU's ID in an SMP environment.
-    For production, get_cpu_id() is implemented in get_cpu_id.c using CPUID. */
- extern int get_cpu_id(void);
- 
  /**
-  * init_paging - Sets up identity-mapped paging for the first 4 MB.
-  *
-  * This routine creates a simple page directory and one page table,
-  * mapping the first 4 MB of memory. It then loads the page directory,
-  * enables paging, and sets the global page directory for the paging module.
-  */
- static void init_paging(void) {
-     static uint32_t page_directory[1024] __attribute__((aligned(4096)));
-     static uint32_t first_page_table[1024] __attribute__((aligned(4096)));
-     
-     for (int i = 0; i < 1024; i++) {
-         first_page_table[i] = (i * 0x1000) | 3; // Present, RW.
-     }
-     page_directory[0] = ((uint32_t)first_page_table) | 3;
-     for (int i = 1; i < 1024; i++) {
-         page_directory[i] = 0;
-     }
-     
-     __asm__ volatile("mov %0, %%cr3" : : "r"(page_directory));
-     uint32_t cr0;
-     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-     cr0 |= 0x80000000; // Enable paging.
-     __asm__ volatile("mov %0, %%cr0" : : "r"(cr0));
-     
-     paging_set_directory(page_directory);
- }
- 
- /**
-  * print_hex - Helper function to print a 32-bit value in hexadecimal.
+  * A simple utility to print a 32-bit value in hex.
   */
  static void print_hex(uint32_t value) {
      char hex[9];
@@ -100,120 +75,197 @@
  }
  
  /**
-  * print_memory_layout - Prints the kernel's memory layout.
+  * Show kernel memory layout: specifically the 'end' symbol address.
   */
  static void print_memory_layout(void) {
-     terminal_write("Memory Layout:\nKernel end address: ");
+     terminal_write("\n[Kernel] Memory Layout:\n  - Kernel end address: 0x");
      print_hex((uint32_t)&end);
      terminal_write("\n");
  }
  
  /**
-  * main - Kernel entry point.
+  * init_paging - Basic identity + higher-half mapping for first 64 MB
   *
-  * Initializes subsystems in the proper order. Paging is enabled before the memory manager
-  * so that dynamic heap extension works correctly. The buddy allocator is initialized first,
-  * followed by the per-CPU unified allocator (kmalloc and percpu_alloc). The kernel then
-  * initializes hardware drivers (PIT, keyboard, PC speaker) and enables interrupts. Finally,
-  * the kernel demonstrates dynamic memory allocation and enters the main loop.
+  * Physical addresses [0..16MB) are mapped at 0x00000000 (identity)
+  * and also at [0xC0000000..(0xC0000000+16MB)] (higher-half).
+  *
+  * This is a simple example. A real OS might do more sophisticated mappings.
   */
- void main(uint32_t magic, struct multiboot_info* mb_info_addr) {
-     (void)mb_info_addr;  // Unused in this sample.
-     
-     // Validate multiboot magic.
+ static void init_paging(void) {
+     const uint32_t PHYS_MAPPING_SIZE = 64 * 1024 * 1024; // 64 MB
+     static uint32_t page_directory[1024] __attribute__((aligned(4096)));
+ 
+     // Clear PD
+     for (int i = 0; i < 1024; i++) {
+         page_directory[i] = 0;
+     }
+ 
+     uint32_t num_pages = PHYS_MAPPING_SIZE / 4096;
+ 
+     // 1) Identity mapping
+     for (uint32_t i = 0; i < num_pages; i++) {
+         uint32_t phys_addr   = i * 4096;
+         uint32_t dir_index   = phys_addr >> 22;
+         uint32_t table_index = (phys_addr >> 12) & 0x3FF;
+ 
+         if (!(page_directory[dir_index] & 1)) { // PAGE_PRESENT = 1
+             uint32_t* pt = buddy_alloc(4096);
+             if (!pt) {
+                 terminal_write("[Paging] Failed to alloc PT (identity)\n");
+                 return;
+             }
+             for (int j = 0; j < 1024; j++)
+                 pt[j] = 0;
+             // Present + RW
+             page_directory[dir_index] = (uint32_t)pt | 3; 
+         }
+         uint32_t* pt = (uint32_t*)(page_directory[dir_index] & ~0xFFF);
+         pt[table_index] = phys_addr | 3; // present + rw
+     }
+ 
+     // 2) Higher-half mapping @ 0xC0000000
+     for (uint32_t i = 0; i < num_pages; i++) {
+         uint32_t phys_addr   = i * 4096;
+         uint32_t virt_addr   = 0xC0000000 + phys_addr;
+         uint32_t dir_index   = virt_addr >> 22;
+         uint32_t table_index = (virt_addr >> 12) & 0x3FF;
+ 
+         if (!(page_directory[dir_index] & 1)) { // PAGE_PRESENT
+             uint32_t* pt = buddy_alloc(4096);
+             if (!pt) {
+                 terminal_write("[Paging] Failed to alloc PT (higher-half)\n");
+                 return;
+             }
+             for (int j = 0; j < 1024; j++)
+                 pt[j] = 0;
+             page_directory[dir_index] = (uint32_t)pt | 3; 
+         }
+         uint32_t* pt = (uint32_t*)(page_directory[dir_index] & ~0xFFF);
+         pt[table_index] = phys_addr | 3; 
+     }
+ 
+     // Load CR3
+     __asm__ volatile("mov %0, %%cr3" : : "r"(page_directory));
+ 
+     // Enable paging by setting PG bit in CR0
+     uint32_t cr0;
+     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+     cr0 |= 0x80000000;  // set paging bit
+     __asm__ volatile("mov %0, %%cr0" : : "r"(cr0));
+ 
+     paging_set_directory(page_directory);
+ }
+ 
+ /**
+  * main - kernel entry point
+  *
+  * For a 32-bit Multiboot2 system:
+  *   - 'magic' = EAX
+  *   - 'mb_info_addr' = EBX
+  */
+ void main(uint32_t magic, struct multiboot_info *mb_info_addr) {
      if (magic != MULTIBOOT2_BOOTLOADER_MAGIC) {
+         // Minimal terminal to show the error
          terminal_init();
-         terminal_write("Error: Invalid multiboot2 magic!\n");
+         terminal_write("[ERROR] Invalid multiboot2 magic number!\n");
          while (1) { __asm__ volatile("hlt"); }
      }
-     
-     // Initialize the terminal.
+ 
+     // 1) Basic terminal initialization
      terminal_init();
-     terminal_write("=== UiAOS Booting (Upgraded with User Mode, Syscalls, and Per-CPU Allocator) ===\n\n");
-     
-     // Initialize GDT (which includes user-mode segments and TSS).
-     terminal_write("Initializing GDT... ");
+     terminal_write("=== UiAOS: World-Class Kernel Booting ===\n\n");
+ 
+     // 2) Initialize GDT & TSS
+     terminal_write("[Kernel] Initializing GDT & TSS...\n");
      gdt_init();
-     terminal_write("Done.\n");
-     
-     // Initialize IDT & PIC.
-     terminal_write("Initializing IDT & PIC... ");
+     // Use our dedicated kernel stack when CPU transitions to ring 0
+     tss_set_kernel_stack((uint32_t)(kernel_stack + KERNEL_STACK_SIZE));
+     terminal_write("  [OK] GDT & TSS ready.\n");
+ 
+     // 3) Initialize IDT & PIC
+     terminal_write("[Kernel] Initializing IDT & PIC...\n");
      idt_init();
-     terminal_write("Done.\n");
-     
-     // Enable paging before memory management.
-     terminal_write("Initializing Paging...\n");
+     terminal_write("  [OK] IDT & PIC ready.\n");
+ 
+     // 4) Paging
+     terminal_write("[Kernel] Setting up Paging...\n");
      init_paging();
-     
-     // Initialize the Buddy Allocator with a reserved heap region (e.g., 2 MB starting at 'end').
-     terminal_write("Initializing Buddy Allocator...\n");
-     #define BUDDY_HEAP_SIZE 0x200000  // 2 MB reserved.
-     buddy_init((void*)&end, BUDDY_HEAP_SIZE);
-     
-     // Initialize the unified per-CPU allocator for small allocations.
-     terminal_write("Initializing Per-CPU Unified Allocator...\n");
+     terminal_write("  [OK] Paging enabled.\n");
+ 
+     // 5) Memory allocators
+     terminal_write("[Kernel] Initializing Buddy Allocator...\n");
+     #define BUDDY_HEAP_SIZE (0x200000) // 2 MB from 'end'
+     buddy_init((void *)&end, BUDDY_HEAP_SIZE);
+ 
+     terminal_write("[Kernel] Initializing Per-CPU Allocator...\n");
      percpu_kmalloc_init();
-     
-     // (Optional) Initialize the global unified allocator if needed.
+ 
+     terminal_write("[Kernel] Initializing Kmalloc (slab) Allocator...\n");
      kmalloc_init();
-     
-     // Display memory layout.
+ 
+     // Print kernel memory layout (for demonstration)
      print_memory_layout();
-     
-     // Initialize the Programmable Interval Timer.
-     terminal_write("Initializing PIT...\n");
+ 
+     // 6) PIT
+     terminal_write("[Kernel] Initializing PIT...\n");
      init_pit();
-     
-     // Initialize the Keyboard Subsystem and load the default keymap.
-     terminal_write("Initializing Keyboard...\n");
+ 
+     // 7) Keyboard
+     terminal_write("[Kernel] Initializing Keyboard...\n");
      keyboard_init();
-     terminal_write("Loading Norwegian keymap...\n");
+     terminal_write("  Loading Norwegian keymap...\n");
      keymap_load(KEYMAP_NORWEGIAN);
      keyboard_register_callback(terminal_handle_key_event);
-     
-     // Enable interrupts.
-     terminal_write("Enabling interrupts (STI)...\n");
+ 
+     // 8) Now it is safe to enable interrupts
+     terminal_write("[Kernel] Enabling interrupts (STI)...\n");
      __asm__ volatile("sti");
-     
-     // (Optional) Test some interrupts.
-     terminal_write("Testing ISRs (0..2)...\n");
-     asm volatile("int $0x0");
-     asm volatile("int $0x1");
-     asm volatile("int $0x2");
-     
-     // Demonstrate dynamic memory allocation using the per-CPU allocator.
-     terminal_write("\nDemonstrating per-CPU memory usage...\n");
+ 
+     // 9) Syscall interface
+     terminal_write("[Kernel] Syscall interface is up.\n");
+ 
+     // 10) Create test user process (ELF loading)
+     terminal_write("[Kernel] Attempting to create user process '/kernel.bin'...\n");
+     process_t *user_proc = create_user_process("/kernel.bin");
+     if (user_proc) {
+         add_process_to_scheduler(user_proc);
+     } else {
+         terminal_write("  [WARNING] Unable to create user process.\n");
+     }
+ 
+     // 11) Demonstrate dynamic memory usage
+     terminal_write("\n[Kernel] Demonstrating per-CPU allocation...\n");
      int cpu_id = get_cpu_id();
      void *block1 = percpu_kmalloc(1024, cpu_id);
-     if (block1)
-         terminal_write("Per-CPU allocator allocated 1 KB.\n");
+     if (block1) {
+         terminal_write("  Allocated 1KB in per-CPU slab.\n");
+     }
+ 
      void *block2 = percpu_kmalloc(8192, cpu_id);
-     if (block2)
-         terminal_write("Per-CPU allocator allocated 8 KB (buddy fallback).\n");
+     if (block2) {
+         terminal_write("  Allocated 8KB (buddy fallback).\n");
+     }
+ 
+     // Free them
      percpu_kfree(block1, 1024, cpu_id);
      percpu_kfree(block2, 8192, cpu_id);
-     terminal_write("Per-CPU allocator freed allocated blocks.\n");
-     
-     // (Future Integration) Load a user-mode process using your ELF loader and process management.
-     // process_t *user_proc = create_user_process("/path/to/user_app.elf");
-     // if (user_proc) { add_process_to_scheduler(user_proc); }
-     
-     // (Future Integration) Set up the system call interface.
-     // Ensure that the IDT entry for INT 0x80 is set to your syscall assembly stub.
-     
-     // Play a test song via the PC speaker.
-     terminal_write("\nPlaying test song via PC speaker...\n");
+     terminal_write("  Freed both blocks.\n");
+ 
+     // 12) Manually test a syscall
+     terminal_write("\n[Kernel] Testing SYS_WRITE via syscall_handler...\n");
+     syscall_context_t ctx;
+     ctx.eax = SYS_WRITE;
+     ctx.ebx = (uint32_t)"Hello from a test syscall!\n";
+     syscall_handler(&ctx);
+ 
+     // 13) Test PC speaker
+     terminal_write("\n[Kernel] Playing testSong...\n");
      play_song(&testSong);
-     sleep_interrupt(2000);
-     
-     // Enter main loop: poll for keyboard events.
-     terminal_write("Entering main loop. Press keys to see echoed characters:\n");
-     KeyEvent event;
+     sleep_interrupt(1500);
+ 
+     // 14) Final main loop (PIT triggers scheduling if multi–tasking is set up)
+     terminal_write("\n[Kernel] Entering idle loop...\n");
      while (1) {
-         if (keyboard_poll_event(&event)) {
-             // Process keyboard events (user input, commands, etc.)
-         }
          __asm__ volatile("hlt");
      }
  }
- 
