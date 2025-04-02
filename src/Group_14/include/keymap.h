@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-#include "libc/stdint.h"
+#include "types.h"
 
 /**
  * @brief Enumeration of supported keyboard layouts.

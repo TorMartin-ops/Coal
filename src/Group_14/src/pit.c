@@ -11,8 +11,7 @@
  #include "port_io.h"
  #include "scheduler.h"  
  
- #include <libc/stdint.h>
- #include <libc/stddef.h>
+#include "types.h"
  
  static volatile uint32_t pit_ticks = 0;
  

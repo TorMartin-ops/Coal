@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-#include <libc/stdint.h>
+#include "types.h"
 #include "keyboard.h"   // Needed for KeyEvent type
 
 #define MAX_INPUT_LENGTH 256

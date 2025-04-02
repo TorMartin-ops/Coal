@@ -13,8 +13,7 @@
  #include "terminal.h"
  #include "port_io.h"      // For outb, inb
  #include "keyboard.h"     // For KeyEvent, KeyCode, keyboard_get_modifiers, apply_modifiers_extended, etc.
- #include <libc/stdint.h>
- #include <libc/stddef.h>
+ #include "types.h"
  #include <libc/stdarg.h>       // For va_list, va_start, va_end
  #include <string.h>            // For memset, memcpy, memmove, strlen, strcat
  

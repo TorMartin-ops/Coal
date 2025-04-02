@@ -1,43 +1,47 @@
-#pragma once
 #ifndef KMALLOC_H
 #define KMALLOC_H
 
-#include "libc/stddef.h"   // Provides size_t, NULL
-#include "libc/stdint.h"   // Provides uint32_t, etc.
-#include "libc/stdbool.h"  // Provides bool, true, false
+#include "types.h" 
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
- * @brief Initializes the unified kernel memory allocator.
+ * kmalloc_init
  *
- * This function must be called during kernel initialization (after paging and the buddy allocator are initialized)
- * to set up slab caches for small allocations.
+ * Initializes the kernel allocator. If USE_PERCPU_ALLOC is defined, 
+ * calls percpu_kmalloc_init(); otherwise creates global slab caches.
  */
 void kmalloc_init(void);
 
 /**
- * @brief Allocates memory from the kernel.
+ * kmalloc
  *
- * For requests up to SMALL_ALLOC_MAX bytes, the allocation is rounded up to the next supported size class
- * and handled by the slab allocator; larger requests are handled by the buddy allocator.
+ * Allocates 'size' bytes. If size <= 4096 => slab or per-CPU slab. 
+ * Otherwise => buddy. 
  *
- * @param size The number of bytes requested.
- * @return A pointer to the allocated memory, or NULL on failure.
+ * @param size the requested size in bytes
+ * @return pointer or NULL
  */
 void *kmalloc(size_t size);
 
 /**
- * @brief Frees memory previously allocated by kmalloc.
+ * kfree
  *
- * The caller must supply the original allocation size so that the allocator can choose the proper free routine.
+ * Frees memory previously allocated by kmalloc. 
+ * The 'size' must match the original requested size.
  *
- * @param ptr  Pointer to the memory to free.
- * @param size The original allocation size.
+ * @param ptr  pointer from kmalloc
+ * @param size same size used in kmalloc
  */
 void kfree(void *ptr, size_t size);
+
+/**
+ * In global mode, you can optionally track usage stats. 
+ * If that’s the case:
+ */
+void kmalloc_get_usage(uint32_t *out_alloc, uint32_t *out_free);
 
 #ifdef __cplusplus
 }

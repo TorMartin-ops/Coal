@@ -7,8 +7,7 @@
  #include "idt.h"
  #include "terminal.h"
  #include "port_io.h"
- #include <libc/stdint.h>
- #include <libc/stddef.h>
+ #include "types.h"
  
  // IDT entries and pointer.
  static struct idt_entry idt_entries[IDT_ENTRIES];

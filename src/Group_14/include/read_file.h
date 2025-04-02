@@ -2,8 +2,7 @@
 #ifndef READ_FILE_H
 #define READ_FILE_H
 
-#include <stddef.h>         // For size_t, NULL
-#include "libc/stddef.h"    // For additional definitions (if any)
+#include "types.h" 
 
 /**
  * @brief Reads an entire file from disk into memory.

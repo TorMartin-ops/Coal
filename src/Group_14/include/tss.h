@@ -2,9 +2,7 @@
 #ifndef TSS_H
 #define TSS_H
 
-#include "libc/stddef.h"
-#include "libc/stdint.h"
-#include "libc/stdbool.h"
+#include "types.h"
 
 /**
  * @brief Task State Segment (TSS) structure for 32-bit x86.

@@ -1,8 +1,7 @@
 #include "tss.h"
 #include "terminal.h"
-#include "libc/stdint.h"
-#include "libc/stddef.h"
-#include "libc/string.h"  // for memset
+#include "types.h"
+#include "string.h"  // for memset
 
 // We define the actual TSS structure here.
 tss_entry_t tss;

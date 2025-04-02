@@ -2,10 +2,7 @@
 #ifndef GET_CPU_ID_H
 #define GET_CPU_ID_H
 
-#include "libc/stddef.h"
-#include "libc/stdint.h"
-#include "libc/stdbool.h"
-
+#include "types.h" 
 #ifdef __cplusplus
 extern "C" {
 #endif

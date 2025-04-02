@@ -1,7 +1,7 @@
 #include "pc_speaker.h"
 #include "port_io.h"   // for inb, outb
 #include "pit.h"       // for PIT_BASE_FREQUENCY
-#include <libc/stdint.h>
+#include "types.h"
 
 #define PC_SPEAKER_PORT 0x61  // Control port for the PC speaker
 

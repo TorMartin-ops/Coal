@@ -15,8 +15,7 @@
  * not rely on a standard C library.
  */
 
- #include <stddef.h>         // For NULL
- #include <stdbool.h>        // For bool type
+ #include "types.h"
  #include "keyboard.h"
  #include "idt.h"            // For interrupt handler registration
  #include "terminal.h"       // For echo output (if desired)

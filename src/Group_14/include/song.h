@@ -2,7 +2,7 @@
 #ifndef SONG_H
 #define SONG_H
 
-#include <libc/stdint.h>
+#include "types.h"
 
 typedef struct {
     uint32_t frequency;  // e.g. 440 = A4

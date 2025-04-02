@@ -1,7 +1,7 @@
 #ifndef IDT_H
 #define IDT_H
 
-#include "libc/stdint.h"  // Adapt to your real path if needed
+#include "types.h"
 
 #define IDT_ENTRIES 256
 

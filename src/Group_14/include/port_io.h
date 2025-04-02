@@ -1,7 +1,7 @@
 #ifndef PORT_IO_H
 #define PORT_IO_H
 
-#include <libc/stdint.h>
+#include "types.h"
 
 /**
  * Read a byte from the specified port.

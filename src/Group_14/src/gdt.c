@@ -1,7 +1,7 @@
 #include "gdt.h"
 #include "tss.h"
 #include "terminal.h"
-#include "libc/stdint.h"
+#include "types.h"
 
 // Assembly routines to load our GDT and TSS.
 extern void gdt_flush(uint32_t gdt_ptr);

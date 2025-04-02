@@ -1,7 +1,7 @@
 #ifndef PIT_H
 #define PIT_H
 
-#include <libc/stdint.h>
+#include "types.h"
 
 /**
  * PIT (Programmable Interval Timer) I/O port addresses

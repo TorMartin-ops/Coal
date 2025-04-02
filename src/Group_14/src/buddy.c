@@ -1,54 +1,52 @@
 #include "buddy.h"
-#include "terminal.h"  // For debug output; disable or remove in production
+#include "terminal.h"  // For debug prints (disable in production)
+#include "types.h"
 
-#include "libc/stddef.h"    // Provides size_t and NULL
-#include "libc/stdbool.h"   // Provides bool, true, false
-#include "libc/stdint.h"    // Intended to provide uint32_t, etc.
-
-// Ensure uintptr_t is defined. If not, define it for i386.
 #ifndef UINTPTR_MAX
 typedef unsigned int uintptr_t;
 #endif
 
-// Use a common page size definition for integration with paging and slab allocators.
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
 #endif
 
-// Define the minimum order (MIN_ORDER = 5 means minimum block size is 2^5 = 32 bytes)
+// The minimum order: 2^5 = 32 bytes
 #define MIN_ORDER 5
 
-// Define the maximum order such that 2^(MAX_ORDER) equals the maximum block size.
-// For example, MAX_ORDER = 21 gives blocks up to 2 MB (if MIN_ORDER = 5).
+// The maximum order. Example: 21 => 2^(21) = 2MB
 #define MAX_ORDER 21
 
-// Minimum block size in bytes.
+// The smallest block size is 2^(MIN_ORDER) = 32
 #define MIN_BLOCK_SIZE (1 << MIN_ORDER)
 
-// ----------------------------------------------------------------------------
-// Data Structures and Global Variables
-// ----------------------------------------------------------------------------
-
-// Each free block is represented by a simple structure containing a pointer to the next free block.
-// The actual block size is implicit in the order (i.e. block size = 2^(order)).
+/**
+ * Each free block is a linked list node. The block size is implied by its "order".
+ * The buddy system is organized so that free_lists[order] contains blocks of size 2^(order).
+ */
 typedef struct buddy_block {
     struct buddy_block *next;
 } buddy_block_t;
 
-// An array of free lists; each index corresponds to an order from MIN_ORDER to MAX_ORDER.
-// For example, free_lists[order] contains blocks of size 2^(order) bytes.
+/* 
+ * Global array of free lists, from MIN_ORDER..MAX_ORDER. 
+ * free_lists[i] is a linked list of free blocks of size 2^i. 
+ */
 static buddy_block_t *free_lists[MAX_ORDER + 1] = {0};
 
-// ----------------------------------------------------------------------------
-// Internal Helper Functions
-// ----------------------------------------------------------------------------
+/* 
+ * Track the total size of the buddy-managed region and how many bytes remain free. 
+ * These are optional “debugging” variables to help you monitor usage.
+ */
+static size_t g_buddy_total_size = 0;
+static size_t g_buddy_free_bytes = 0;
 
 /**
- * next_power_of_two
- *
- * Rounds up the given size to the next power of two, ensuring a minimum of MIN_BLOCK_SIZE.
+ * buddy_round_up_to_power_of_two
+ * 
+ * Rounds an integer size up to the next power of two, 
+ * ensuring it's at least MIN_BLOCK_SIZE.
  */
-static size_t next_power_of_two(size_t size) {
+static size_t buddy_round_up_to_power_of_two(size_t size) {
     size_t power = MIN_BLOCK_SIZE;
     while (power < size)
         power <<= 1;
@@ -56,14 +54,15 @@ static size_t next_power_of_two(size_t size) {
 }
 
 /**
- * size_to_order
+ * buddy_size_to_order
  *
- * Computes the order corresponding to a block size.
- * For example, if MIN_BLOCK_SIZE is 32 (2^5), then a 32-byte block is order 5.
+ * Determines which “order” matches a given size. 
+ * For instance, if MIN_ORDER=5 (32 bytes) and size=128, 
+ * then the order is 7 (2^7=128).
  */
-static int size_to_order(size_t size) {
+static int buddy_size_to_order(size_t size) {
     int order = MIN_ORDER;
-    size_t block_size = MIN_BLOCK_SIZE;
+    size_t block_size = (size_t)1 << MIN_ORDER;  // e.g. 32
     while (block_size < size) {
         block_size <<= 1;
         order++;
@@ -71,100 +70,172 @@ static int size_to_order(size_t size) {
     return order;
 }
 
-// ----------------------------------------------------------------------------
-// Public API Functions
-// ----------------------------------------------------------------------------
-
+/**
+ * buddy_init
+ *
+ * Initializes the buddy system over a heap region [heap, heap + size).
+ * - 'size' should be a power of two (or at least big enough to hold a block).
+ * - All memory is initially inserted as one large free block at order=buddy_size_to_order(size).
+ *
+ * @param heap  Start of the free memory region.
+ * @param size  The total size in bytes, ideally a power of two.
+ */
 void buddy_init(void *heap, size_t size) {
-    // Assume that 'size' is exactly a power of two.
-    int order = size_to_order(size);
+    // Wipe all free lists
+    for (int i = MIN_ORDER; i <= MAX_ORDER; i++) {
+        free_lists[i] = NULL;
+    }
+
+    // Round the region size up if it's not a perfect power of two
+    // or at least handle the largest power-of-two that fits.
+    // But we keep the original approach: "assume exact power of two".
+    int order = buddy_size_to_order(size);
     if (order > MAX_ORDER) {
-        terminal_write("Error: Heap size too large for buddy system.\n");
+        terminal_write("[Buddy] Error: heap size too large for buddy.\n");
         return;
     }
-    // Initialize all free lists (for orders MIN_ORDER to MAX_ORDER) to NULL.
-    for (int i = MIN_ORDER; i <= MAX_ORDER; i++) {
-        free_lists[i] = 0;
-    }
-    // Insert the entire heap as a single free block at the computed order.
-    buddy_block_t *block = (buddy_block_t *)heap;
+
+    // We store debug usage stats
+    g_buddy_total_size = (size_t)1 << order; // The actual block size used
+    g_buddy_free_bytes = g_buddy_total_size;
+
+    // Put a single free block in the free list at 'order'.
+    buddy_block_t *block = (buddy_block_t*)heap;
     block->next = NULL;
     free_lists[order] = block;
-    terminal_write("Buddy allocator initialized.\n");
+
+    terminal_write("[Buddy] init done. size=");
+    // Print numeric
+    // (Quick & dirty decimal printing or just say in hex)
+    terminal_write("0x");
+    // We'll do a quick hex print
+    {
+        char buf[9];
+        unsigned val = g_buddy_total_size;
+        for (int i = 0; i < 8; i++) {
+            unsigned nibble = (val >> ((7-i)*4)) & 0xF;
+            buf[i] = (nibble < 10) ? ('0'+nibble) : ('A'+nibble-10);
+        }
+        buf[8] = '\0';
+        terminal_write(buf);
+    }
+    terminal_write(" bytes\n");
 }
 
+/**
+ * buddy_alloc
+ *
+ * Allocates 'size' bytes from the buddy system. 
+ * The allocation is rounded up to the next power of two. 
+ * Then we look for a free block in that order or higher. 
+ * If found in a higher order, we split blocks down until we get the desired size.
+ *
+ * @param size Number of bytes requested.
+ * @return A pointer to the allocated block, or NULL if out of memory.
+ */
 void *buddy_alloc(size_t size) {
-    if (size == 0)
-        return NULL;
-    
-    // Round up the requested size to the next power of two.
-    size_t req_size = next_power_of_two(size);
-    int req_order = size_to_order(req_size);
-    
-    // Search for a free block in the free lists of order req_order or higher.
+    if (size == 0) return NULL;
+
+    // Round to next power of two
+    size_t req_size = buddy_round_up_to_power_of_two(size);
+    int req_order   = buddy_size_to_order(req_size);
+
+    // Find a free block at order req_order or higher
     int order = req_order;
-    while (order <= MAX_ORDER && free_lists[order] == NULL)
+    while (order <= MAX_ORDER && free_lists[order] == NULL) {
         order++;
-    
+    }
     if (order > MAX_ORDER) {
-        terminal_write("Buddy_alloc: Out of memory.\n");
+        terminal_write("[Buddy] Out of memory (no block >= requested size)\n");
         return NULL;
     }
-    
-    // Remove a block from the free list.
+
+    // Pop one block from free_lists[order].
     buddy_block_t *block = free_lists[order];
-    free_lists[order] = block->next;
-    
-    // Split the block repeatedly until we reach the desired order.
+    free_lists[order]     = block->next;
+
+    // "Split" bigger block down to the exact order we need
     while (order > req_order) {
         order--;
-        size_t block_size = (size_t)1 << order;
-        // Split block into two buddies.
-        buddy_block_t *buddy = (buddy_block_t *)((uint8_t *)block + block_size);
-        // Insert the buddy into the free list at the lower order.
+        size_t half_size = (size_t)1 << order;
+        // The second half is the "buddy"
+        buddy_block_t *buddy = (buddy_block_t*)((uint8_t*)block + half_size);
+        // Insert the buddy in the free list of [order].
         buddy->next = free_lists[order];
         free_lists[order] = buddy;
     }
-    
-    return (void *)block;
+
+    // Decrease free usage
+    g_buddy_free_bytes -= req_size;
+
+    return (void*)block;
 }
 
+/**
+ * buddy_free
+ *
+ * Frees a previously allocated block of 'size' bytes. 
+ * The buddy system merges the block with its buddy if possible, 
+ * repeating until we can no longer merge into a bigger block.
+ *
+ * @param ptr  The pointer returned by buddy_alloc.
+ * @param size The original requested size (the buddy system will round it).
+ */
 void buddy_free(void *ptr, size_t size) {
-    if (!ptr)
-        return;
-    
-    size_t req_size = next_power_of_two(size);
-    int order = size_to_order(req_size);
-    
-    // Convert pointer to an integer address.
+    if (!ptr) return;
+
+    // Round size up to the actual block size we allocated
+    size_t req_size = buddy_round_up_to_power_of_two(size);
+    int order = buddy_size_to_order(req_size);
+
+    // Reclaim usage
+    g_buddy_free_bytes += req_size;
+
+    // We repeatedly check if its buddy is free to merge
     uintptr_t addr = (uintptr_t)ptr;
-    
-    // Attempt to merge the freed block with its buddy recursively.
+
     while (order < MAX_ORDER) {
+        // Buddy address is flipping the bit at the current order
         uintptr_t buddy_addr = addr ^ ((uintptr_t)1 << order);
-        buddy_block_t **prev = &free_lists[order];
+
+        // See if buddy_addr is on the free list of the same 'order'
+        buddy_block_t *prev = NULL;
         buddy_block_t *curr = free_lists[order];
         bool merged = false;
         while (curr) {
             if ((uintptr_t)curr == buddy_addr) {
-                // Buddy found; remove it from the free list.
-                *prev = curr->next;
-                // Update addr to the lower of the two addresses.
+                // Remove the buddy from the free list
+                if (prev) 
+                    prev->next = curr->next;
+                else
+                    free_lists[order] = curr->next;
+
+                // Merge
                 if (buddy_addr < addr)
                     addr = buddy_addr;
                 order++;
                 merged = true;
                 break;
             }
-            prev = &curr->next;
+            prev = curr;
             curr = curr->next;
         }
-        if (!merged)
+        if (!merged) {
             break;
+        }
     }
-    
-    // Insert the (possibly merged) block back into the free list for the final order.
-    buddy_block_t *block = (buddy_block_t *)addr;
+
+    // Insert the final block back into the free list of 'order'
+    buddy_block_t *block = (buddy_block_t*)addr;
     block->next = free_lists[order];
     free_lists[order] = block;
+}
+
+/**
+ * buddy_free_space
+ *
+ * Returns how many bytes are free in the buddy system (for debugging).
+ */
+size_t buddy_free_space(void) {
+    return g_buddy_free_bytes;
 }

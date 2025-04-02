@@ -2,8 +2,7 @@
 #ifndef ELF_LOADER_H
 #define ELF_LOADER_H
 
-#include "libc/stddef.h"
-#include "libc/stdint.h"
+#include "types.h" 
 
 #define EI_NIDENT 16
 

@@ -1,7 +1,7 @@
 #ifndef PC_SPEAKER_H
 #define PC_SPEAKER_H
 
-#include <libc/stdint.h>
+#include "types.h"
 
 /**
  * Enables the PC speaker by setting the appropriate bits in port 0x61.

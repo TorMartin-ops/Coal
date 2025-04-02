@@ -2,9 +2,7 @@
 #ifndef SYSCALL_H
 #define SYSCALL_H
 
-#include "libc/stddef.h"   // For size_t, NULL
-#include "libc/stdint.h"   // For uint32_t, etc.
-#include "libc/stdbool.h"  // For bool, true, false
+#include "types.h"
 
 // System call numbers.
 enum {

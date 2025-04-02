@@ -2,7 +2,7 @@
 #ifndef GDT_H
 #define GDT_H
 
-#include "libc/stdint.h"  // Provides uint32_t, etc.
+#include "types.h"
 
 #ifdef __cplusplus
 extern "C" {

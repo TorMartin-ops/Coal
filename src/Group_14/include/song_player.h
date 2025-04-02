@@ -1,7 +1,7 @@
 #ifndef SONG_PLAYER_H
 #define SONG_PLAYER_H
 
-#include <libc/stdint.h>
+#include "types.h"
 #include "song.h"  // for Song struct
 
 /**

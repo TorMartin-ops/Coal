@@ -1,44 +1,47 @@
-#pragma once
 #ifndef PAGING_H
 #define PAGING_H
 
-#include "libc/stdint.h"
-#include "libc/stddef.h"
+#include "types.h"
 
-/* Paging flags */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Common flags
 #define PAGE_PRESENT 0x1
 #define PAGE_RW      0x2
 #define PAGE_USER    0x4
 
 /**
- * @brief Sets the global page directory pointer.
- *
- * @param pd A pointer to the page directory.
+ * Sets the global kernel_page_directory pointer (if you track it in paging.c).
  */
 void paging_set_directory(uint32_t* pd);
 
 /**
- * @brief Maps a single virtual address to an identity mapping.
+ * paging_map_page
  *
- * If no page table exists for the corresponding directory entry, a new page table
- * is allocated using the buddy allocator.
- *
- * @param virt_addr The virtual address to map.
+ * Maps a single virtual address to an identity mapping in the global PD.
+ * If PDE is missing, allocate from buddy. 
  */
 void paging_map_page(void* virt_addr);
 
 /**
- * @brief Maps a contiguous range of virtual addresses to identity mappings.
+ * paging_map_range
  *
- * This function maps 'memsz' bytes starting from 'virt_addr' using the given flags.
- * It allocates new page tables dynamically if needed.
- *
- * @param page_directory The page directory to update.
- * @param virt_addr      Starting virtual address.
- * @param memsz          Size of the region to map (in bytes).
- * @param flags          Paging flags (e.g., PAGE_PRESENT | PAGE_RW).
- * @return 0 on success, non-zero on failure.
+ * Maps [virt_addr..virt_addr+memsz) to identity with 'flags',
+ * allocating page tables if needed.
+ * 
+ * @param page_directory The PD to modify
+ * @param virt_addr      start address
+ * @param memsz          size in bytes
+ * @param flags          PAGE_PRESENT | PAGE_RW | PAGE_USER, etc.
+ * @return 0 on success, -1 on failure
  */
-int paging_map_range(uint32_t *page_directory, uint32_t virt_addr, uint32_t memsz, uint32_t flags);
+int paging_map_range(uint32_t *page_directory, uint32_t virt_addr, 
+                     uint32_t memsz, uint32_t flags);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // PAGING_H
