@@ -1,96 +1,75 @@
 #include "disk.h"
-#include "block_device.h"   // Lower-level block device interface
-#include "terminal.h"
-#include "kmalloc.h"
-#include <string.h>
+#include "block_device.h"   // For block_device_init, block_device_read/write
+#include "terminal.h"       // For logging
 #include "types.h"
+#include <string.h>         // For memset
 
-/*
- * disk_probe:
- * Probe the underlying block device and fill in a block_device_t structure.
- * Returns 0 on success.
- */
-static int disk_probe(block_device_t *bd, const char *device) {
-    if (block_device_init(device, bd) != 0) {
-        terminal_write("[Disk] Probe: Failed to initialize block device.\n");
-        return -1;
-    }
-    return 0;
-}
-
-/*
+/**
  * disk_init:
- * Initializes the disk structure by probing the underlying block device.
+ * Initializes the disk_t structure by initializing the underlying block device.
  */
-int disk_init(disk_t *disk, const char *device) {
-    if (!disk || !device) {
+int disk_init(disk_t *disk, const char *device_name) {
+    if (!disk || !device_name) {
         terminal_write("[Disk] disk_init: Invalid parameters.\n");
-        return -1;
+        return -1; // Invalid parameters
     }
 
-    block_device_t bd;
-    if (disk_probe(&bd, device) != 0) {
-        terminal_write("[Disk] disk_init: Device probe failed.\n");
-        return -1;
+    // Zero initialize the disk structure first
+    memset(disk, 0, sizeof(disk_t));
+
+    // Initialize the embedded block_device_t structure.
+    // block_device_init will perform the ATA IDENTIFY and fill geometry info.
+    int ret = block_device_init(device_name, &disk->blk_dev);
+    if (ret != 0) {
+        terminal_write("[Disk] disk_init: Underlying block device initialization failed for ");
+        terminal_write(device_name);
+        terminal_write(".\n");
+        disk->initialized = false;
+        return -1; // Initialization failed
     }
 
-    /* Populate our disk structure from the block device info. */
-    disk->device_name = bd.device_name;
-    disk->io_base = bd.io_base;
-    disk->control_base = bd.control_base;
-    disk->sector_size = bd.sector_size;
-    disk->total_sectors = bd.total_sectors;
-
-    terminal_write("[Disk] Initialized disk: ");
-    terminal_write(device);
+    // Disk is now considered initialized
+    disk->initialized = true;
+    terminal_write("[Disk] Initialized logical disk: ");
+    terminal_write(disk->blk_dev.device_name); // Use name from block_device
     terminal_write("\n");
-    return 0;
+    return 0; // Success
 }
 
-int disk_read_sector(disk_t *disk, uint32_t lba, void *buffer) {
-    if (!disk || !buffer) {
-        terminal_write("[Disk] disk_read_sector: Invalid parameters.\n");
-        return -1;
-    }
-    int ret = block_device_read((block_device_t *)disk, lba, buffer, 1);
-    if (ret != 0) {
-        terminal_write("[Disk] disk_read_sector: Read operation failed.\n");
-    }
-    return ret;
-}
-
-int disk_write_sector(disk_t *disk, uint32_t lba, const void *buffer) {
-    if (!disk || !buffer) {
-        terminal_write("[Disk] disk_write_sector: Invalid parameters.\n");
-        return -1;
-    }
-    int ret = block_device_write((block_device_t *)disk, lba, buffer, 1);
-    if (ret != 0) {
-        terminal_write("[Disk] disk_write_sector: Write operation failed.\n");
-    }
-    return ret;
-}
-
+/**
+ * disk_read_sectors:
+ * Reads one or more sectors by calling the block device layer.
+ */
 int disk_read_sectors(disk_t *disk, uint32_t lba, void *buffer, size_t count) {
-    if (!disk || !buffer || count == 0) {
-        terminal_write("[Disk] disk_read_sectors: Invalid parameters.\n");
+    if (!disk || !disk->initialized || !buffer || count == 0) {
+        terminal_write("[Disk] disk_read_sectors: Invalid parameters or disk not initialized.\n");
         return -1;
     }
-    int ret = block_device_read((block_device_t *)disk, lba, buffer, count);
+
+    // Delegate directly to the block device function
+    int ret = block_device_read(&disk->blk_dev, lba, buffer, count);
     if (ret != 0) {
-        terminal_write("[Disk] disk_read_sectors: Multi-sector read failed.\n");
+        terminal_write("[Disk] disk_read_sectors: block_device_read failed.\n");
+        // Error logged in block_device_read already
     }
     return ret;
 }
 
+/**
+ * disk_write_sectors:
+ * Writes one or more sectors by calling the block device layer.
+ */
 int disk_write_sectors(disk_t *disk, uint32_t lba, const void *buffer, size_t count) {
-    if (!disk || !buffer || count == 0) {
-        terminal_write("[Disk] disk_write_sectors: Invalid parameters.\n");
+    if (!disk || !disk->initialized || !buffer || count == 0) {
+        terminal_write("[Disk] disk_write_sectors: Invalid parameters or disk not initialized.\n");
         return -1;
     }
-    int ret = block_device_write((block_device_t *)disk, lba, buffer, count);
+
+    // Delegate directly to the block device function
+    int ret = block_device_write(&disk->blk_dev, lba, buffer, count);
     if (ret != 0) {
-        terminal_write("[Disk] disk_write_sectors: Multi-sector write failed.\n");
+         terminal_write("[Disk] disk_write_sectors: block_device_write failed.\n");
+         // Error logged in block_device_write already
     }
     return ret;
 }

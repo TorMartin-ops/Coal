@@ -14,6 +14,20 @@ extern "C" {
 #include <libc/stdbool.h>   // Provides bool, true, false
 
 /*---------------------------------------------------------------------------
+ * 64-bit Integer Types (if not already in libc/stdint.h)
+ *--------------------------------------------------------------------------*/
+#ifndef _UINT64_T_DEFINED // Add guards if these might be defined elsewhere later
+typedef unsigned long long uint64_t;
+#define _UINT64_T_DEFINED
+#endif
+
+#ifndef _INT64_T_DEFINED
+typedef long long int64_t;
+#define _INT64_T_DEFINED
+#endif
+
+
+/*---------------------------------------------------------------------------
  * Basic Utility Macros
  *--------------------------------------------------------------------------*/
 

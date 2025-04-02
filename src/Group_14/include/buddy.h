@@ -1,35 +1,21 @@
 #ifndef BUDDY_H
 #define BUDDY_H
 
+#include "types.h"
 
-#include "types.h" 
+// Define configuration constants here so they are accessible via the header
+#define MIN_ORDER 5  // Smallest block order (2^5 = 32 bytes)
+#define MAX_ORDER 22 // Largest block order (2^22 = 4MB) - ADJUST AS NEEDED
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/**
- * Initializes the buddy allocator over a region [heap .. heap + size).
- * 
- * @param heap pointer to start of free region
- * @param size total size in bytes (prefer a power of two)
- */
+// Function declarations remain the same
 void buddy_init(void *heap, size_t size);
-
-/**
- * Allocates 'size' bytes from the buddy system (rounded up to next power of two).
- *
- * @param size number of bytes requested
- * @return pointer to allocated block, or NULL if out of memory
- */
 void *buddy_alloc(size_t size);
-
-/**
- * Frees a block previously allocated by buddy_alloc.
- *
- * @param ptr pointer from buddy_alloc
- * @param size original requested size
- */
 void buddy_free(void *ptr, size_t size);
+size_t buddy_free_space(void);
 
 #ifdef __cplusplus
 }

@@ -1,226 +1,133 @@
 /**
  * percpu_alloc.c
  *
- * A world-class, production-style per-CPU allocator for small objects (<= 4KB),
- * leveraging slab caches for each CPU. Larger allocations fall back to buddy.
- *
- * KEY FEATURES:
- *   - Each CPU has an array of slab caches, one per size class (32..4096).
- *   - For a given size <= 4KB, we pick the next size class that fits.
- *   - If the CPU ID is invalid or the size is > 4KB, we fallback to buddy_alloc.
- *   - (Optional) If you want concurrency, each CPU might lock before slab_alloc.
- *   - Additional debugging messages and usage statistics can be enabled.
+ * Per-CPU slab allocator implementation. Assumes sizes passed are <= SMALL_ALLOC_MAX.
+ * Fallback logic is handled by the higher-level kmalloc.
  */
 
  #include "percpu_alloc.h"
  #include "slab.h"      // Slab allocator for small objects
- #include "buddy.h"     // Buddy allocator fallback for larger objects
- #include "terminal.h"  // For debug output (remove or #ifdef in production)
- 
- #include "types.h">
+ #include "buddy.h"     // Needed only if slab_create fails during init
+ #include "terminal.h"  // For debug output
+ #include "types.h"     // Common types
  
  // ---------------------------------------------------------------------------
- // Constants
+ // Constants (Ensure these match kmalloc.c if defined there)
  // ---------------------------------------------------------------------------
- 
- // The largest size that is handled by slab caching. Larger => buddy fallback.
+ #ifndef SMALL_ALLOC_MAX
  #define SMALL_ALLOC_MAX 4096
+ #endif
  
- // The size classes used by the slab allocator. Each CPU has a slab_cache for each class.
- static const size_t kmalloc_size_classes[] = {32, 64, 128, 256, 512, 1024, 2048, 4096};
- #define NUM_SIZE_CLASSES (sizeof(kmalloc_size_classes) / sizeof(kmalloc_size_classes[0]))
+ // Size classes MUST match those used/checked by kmalloc.c
+ static const size_t percpu_size_classes[] = {32, 64, 128, 256, 512, 1024, 2048, 4096};
+ #define NUM_PERCPU_SIZE_CLASSES (sizeof(percpu_size_classes) / sizeof(percpu_size_classes[0]))
  
- // Max number of CPUs. Adjust for your system if SMP with more than 4.
- #define MAX_CPUS 4
+ #ifndef MAX_CPUS
+ #define MAX_CPUS 4 // Adjust as needed
+ #endif
  
  // ---------------------------------------------------------------------------
  // Data Structures
  // ---------------------------------------------------------------------------
- 
- /**
-  * cpu_allocator
-  *
-  * Each CPU has an array of slab caches, one for each size class,
-  * plus optional usage stats.
-  */
  typedef struct cpu_allocator {
-     slab_cache_t *kmalloc_caches[NUM_SIZE_CLASSES];
- 
-     // Optional usage stats: how many allocations/frees happened on that CPU
+     slab_cache_t *slab_caches[NUM_PERCPU_SIZE_CLASSES];
      uint32_t alloc_count;
      uint32_t free_count;
  } cpu_allocator_t;
  
- // Global array for all CPUs. We index by CPU ID.
  static cpu_allocator_t cpu_allocators[MAX_CPUS];
  
  // ---------------------------------------------------------------------------
- // Internal Helper Functions
+ // Internal Helper - Find matching size class index
  // ---------------------------------------------------------------------------
- 
- /**
-  * round_up_to_class
-  *
-  * Rounds up the 'size' to the next supported slab size class.
-  * Returns 0 if 'size' > 4096 (i.e. not handled by slab).
-  */
- static size_t round_up_to_class(size_t size) {
-     for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
-         if (size <= kmalloc_size_classes[i]) {
-             return kmalloc_size_classes[i];
+ static int get_size_class_index(size_t size) {
+     for (int i = 0; i < NUM_PERCPU_SIZE_CLASSES; i++) {
+         if (size <= percpu_size_classes[i]) {
+             return i;
          }
      }
-     return 0;
+     // Should not be reached if size <= SMALL_ALLOC_MAX
+     terminal_write("[percpu] Error: Size > SMALL_ALLOC_MAX passed to get_size_class_index.\n");
+     return -1;
  }
  
  // ---------------------------------------------------------------------------
- // Public API
+ // Public API Implementation
  // ---------------------------------------------------------------------------
  
- /**
-  * percpu_kmalloc_init
-  *
-  * Initializes a slab cache for each size class on each CPU.
-  * Must be called once at boot, after buddy/slab subsystems are ready.
-  *
-  * We do not handle concurrency here. In an SMP system, you may want
-  * to lock or run this init on the BSP before APs start.
-  */
  void percpu_kmalloc_init(void) {
+     terminal_write("[percpu] Initializing per-CPU slab caches...\n");
+     bool success = true;
      for (int cpu = 0; cpu < MAX_CPUS; cpu++) {
-         // Zero usage stats
          cpu_allocators[cpu].alloc_count = 0;
-         cpu_allocators[cpu].free_count  = 0;
- 
-         for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
-             // Create a new slab cache for each size class
-             cpu_allocators[cpu].kmalloc_caches[i] =
-                 slab_create("percpu_kmalloc_cache", kmalloc_size_classes[i]);
- 
-             if (!cpu_allocators[cpu].kmalloc_caches[i]) {
-                 // For robust error handling, you could fallback or keep track of failure.
-                 terminal_write("percpu_kmalloc_init: Failed to create slab cache for CPU ");
-                 // Optionally log the CPU number:
-                 // (You may add a custom print function to convert int->string.)
+         cpu_allocators[cpu].free_count = 0;
+         for (int i = 0; i < NUM_PERCPU_SIZE_CLASSES; i++) {
+             // TODO: Generate unique names per CPU/size if desired for debugging
+             // e.g., snprintf(cache_name, sizeof(cache_name), "percpu_%d_sz_%d", cpu, percpu_size_classes[i]);
+             cpu_allocators[cpu].slab_caches[i] = slab_create("percpu_slab", percpu_size_classes[i]);
+             if (!cpu_allocators[cpu].slab_caches[i]) {
+                 terminal_printf("[percpu] Failed to create slab cache for CPU %d, size %d\n", cpu, percpu_size_classes[i]);
+                 success = false;
+                 // Consider cleanup or alternative strategy if init fails
              }
          }
      }
-     terminal_write("Per-CPU kmalloc initialized.\n");
- }
- 
- /**
-  * percpu_kmalloc
-  *
-  * Allocates 'size' bytes on the slab cache for 'cpu_id' if size <= SMALL_ALLOC_MAX,
-  * else uses the buddy system. If 'cpu_id' is invalid, fallback to buddy as well.
-  *
-  * @param size   number of bytes requested
-  * @param cpu_id which CPU is calling
-  * @return pointer to allocated memory, or NULL on failure
-  *
-  * NOTE: In an SMP system, you typically want to call this from code that
-  * already knows the local CPU ID. You might also need a spinlock if your
-  * code can be preempted during allocation.
-  */
- void *percpu_kmalloc(size_t size, int cpu_id) {
-     if (size == 0) {
-         return NULL;
-     }
- 
-     // If cpu_id is out of range, fallback to buddy
-     if (cpu_id < 0 || cpu_id >= MAX_CPUS) {
-         return buddy_alloc(size);
-     }
- 
-     // If size is within small allocation range => slab
-     if (size <= SMALL_ALLOC_MAX) {
-         size_t class_size = round_up_to_class(size);
-         if (class_size == 0) {
-             // Means > 4096, fallback buddy
-             return buddy_alloc(size);
-         }
-         // Find the matching slab cache
-         for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
-             if (kmalloc_size_classes[i] == class_size) {
-                 void *obj = slab_alloc(cpu_allocators[cpu_id].kmalloc_caches[i]);
-                 if (!obj) {
-                     terminal_write("percpu_kmalloc: slab_alloc failed (CPU ");
-                     // optionally print CPU ID
-                     terminal_write(")\n");
-                     return NULL;
-                 }
-                 // Update usage stat
-                 cpu_allocators[cpu_id].alloc_count++;
-                 return obj;
-             }
-         }
-         // Should never get here if round_up_to_class is correct
-         return NULL;
+     if (success) {
+         terminal_write("[percpu] Per-CPU slab caches initialized.\n");
      } else {
-         // If bigger than 4KB => buddy
-         return buddy_alloc(size);
+         terminal_write("[percpu] Warning: Some per-CPU slab caches failed to initialize.\n");
      }
  }
  
- /**
-  * percpu_kfree
-  *
-  * Frees memory previously allocated by percpu_kmalloc (including buddy fallback).
-  * We rely on the 'size' to find the correct slab or buddy free.
-  *
-  * @param ptr    The pointer to free
-  * @param size   The size originally passed to percpu_kmalloc
-  * @param cpu_id The CPU that did the allocation
-  */
- void percpu_kfree(void *ptr, size_t size, int cpu_id) {
-     if (!ptr) {
-         return; // freeing NULL is no-op
+ void *percpu_kmalloc(size_t size, int cpu_id) {
+     // Assumes size > 0, size <= SMALL_ALLOC_MAX, and cpu_id is valid (checked by kmalloc)
+     int index = get_size_class_index(size);
+     if (index < 0) {
+         // This indicates an internal logic error or incorrect size passed.
+         return NULL;
      }
  
-     // If CPU is invalid, fallback to buddy
-     if (cpu_id < 0 || cpu_id >= MAX_CPUS) {
-         buddy_free(ptr, size);
+     slab_cache_t *cache = cpu_allocators[cpu_id].slab_caches[index];
+     if (!cache) {
+          terminal_printf("[percpu] Slab cache for CPU %d size %d not initialized!\n", cpu_id, percpu_size_classes[index]);
+          return NULL; // Cache wasn't created during init
+     }
+ 
+     // Attempt to allocate from the specific slab cache for this CPU and size class
+     void *obj = slab_alloc(cache);
+     if (obj) {
+         cpu_allocators[cpu_id].alloc_count++;
+     } else {
+          // Log slab failure, fallback is handled by kmalloc
+          terminal_printf("[percpu] slab_alloc failed for CPU %d size %d. Fallback needed.\n", cpu_id, percpu_size_classes[index]);
+     }
+     return obj;
+ }
+ 
+ void percpu_kfree(void *ptr, size_t size, int cpu_id) {
+     // Assumes ptr is valid, size > 0, size <= SMALL_ALLOC_MAX, and cpu_id is valid
+     int index = get_size_class_index(size);
+     if (index < 0) {
+          terminal_write("[percpu] kfree: Invalid size class derived.\n");
+         // Cannot determine which slab cache it belonged to. This indicates a major issue.
+         // Maybe attempt buddy_free as a last resort? Or panic?
          return;
      }
  
-     if (size <= SMALL_ALLOC_MAX) {
-         size_t class_size = round_up_to_class(size);
-         if (class_size == 0) {
-             // Means size > 4096 => buddy
-             buddy_free(ptr, size);
-             return;
-         }
-         // Find matching slab
-         for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
-             if (kmalloc_size_classes[i] == class_size) {
-                 slab_free(cpu_allocators[cpu_id].kmalloc_caches[i], ptr);
-                 // Update usage stats
-                 cpu_allocators[cpu_id].free_count++;
-                 return;
-             }
-         }
-         // If no match found, fallback 
-         buddy_free(ptr, size);
-     } else {
-         // Larger => buddy
-         buddy_free(ptr, size);
-     }
+      slab_cache_t *cache = cpu_allocators[cpu_id].slab_caches[index];
+      if (!cache) {
+           terminal_printf("[percpu] kfree: Slab cache for CPU %d size %d not initialized!\n", cpu_id, percpu_size_classes[index]);
+           // Major issue - where did the memory come from?
+           return;
+      }
+ 
+     slab_free(cache, ptr);
+     cpu_allocators[cpu_id].free_count++;
  }
  
- /**
-  * percpu_get_stats
-  *
-  * Optional debugging function to see how many allocations/frees occurred
-  * on a particular CPU. You can call this from the kernel shell or logs.
-  *
-  * @param cpu_id The CPU to query
-  * @param out_alloc_count If non-NULL, store the number of successful allocations
-  * @param out_free_count  If non-NULL, store the number of frees
-  * @return 0 on success, -1 if invalid CPU
-  */
  int percpu_get_stats(int cpu_id, uint32_t *out_alloc_count, uint32_t *out_free_count) {
      if (cpu_id < 0 || cpu_id >= MAX_CPUS) {
-         return -1;
+         return -1; // Invalid CPU ID
      }
      if (out_alloc_count) {
          *out_alloc_count = cpu_allocators[cpu_id].alloc_count;
@@ -230,4 +137,3 @@
      }
      return 0;
  }
- 

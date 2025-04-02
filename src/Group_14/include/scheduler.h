@@ -2,18 +2,21 @@
 #ifndef SCHEDULER_H
 #define SCHEDULER_H
 
-#include "types.h" 
+#include "types.h"
+#include "process.h" // Include process.h for pcb_t definition
 
 /**
  * @brief Task Control Block (TCB)
  *
- * Each task is represented by a TCB containing a saved stack pointer (esp),
- * a unique process ID (pid), and a pointer to the next TCB in the circular run queue.
+ * Represents the schedulable entity (often a thread or lightweight process).
+ * Contains the saved kernel stack pointer for context switching and a pointer
+ * to the associated process's PCB (which holds the address space information).
  */
 typedef struct tcb {
-    uint32_t *esp;      ///< Saved stack pointer for context switching.
-    uint32_t pid;       ///< Unique process ID.
-    struct tcb *next;   ///< Next task in the circular linked list.
+    uint32_t *esp;      ///< Saved kernel stack pointer for context switching.
+    pcb_t *process;     ///< Pointer to the associated Process Control Block (PCB).
+    struct tcb *next;   ///< Next task in the circular run queue.
+    // Add other scheduling info: priority, state (ready, running, blocked), time slice etc.
 } tcb_t;
 
 #ifdef __cplusplus
@@ -22,61 +25,50 @@ extern "C" {
 
 /**
  * @brief Initializes the scheduler.
- *
- * Resets internal pointers and counters.
  */
 void scheduler_init(void);
 
 /**
- * @brief Adds a new task to the scheduler.
+ * @brief Adds a new task to the scheduler, associated with a given process (PCB).
  *
- * Allocates a new TCB and a kernel stack for the task, creates an initial
- * call frame so that the task starts at task_entry, and inserts it into the
- * circular run queue.
+ * Creates a TCB for the given PCB, allocates a kernel stack, sets up the initial
+ * stack frame to enable jumping to the process's user-mode entry point on the
+ * first context switch, and adds the TCB to the run queue.
  *
- * @param task_entry Pointer to the function where the new task starts.
+ * @param pcb Pointer to the Process Control Block (pcb_t) for the task.
+ * @return 0 on success, negative error code on failure.
  */
-void scheduler_add_task(void (*task_entry)(void));
+int scheduler_add_task(pcb_t *pcb);
 
 /**
- * @brief Voluntarily yields the CPU.
- *
- * Invokes the scheduler to perform a context switch.
+ * @brief Voluntarily yields the CPU to the next task.
  */
 void yield(void);
 
 /**
- * @brief Performs round‑robin scheduling.
- *
- * Saves the context of the currently running task and switches to the next one.
+ * @brief Performs round‑robin scheduling, switching context and address space.
  */
 void schedule(void);
 
 /**
- * @brief Retrieves the currently running task.
- *
- * @return Pointer to the current task's TCB.
+ * @brief Gets the TCB of the currently running task.
+ * @return Pointer to the current task's TCB, or NULL if none running.
  */
 tcb_t *get_current_task(void);
 
 /**
- * @brief Removes the current task from the scheduler.
+ * @brief Removes the currently running task from the scheduler and frees its resources.
  *
- * This function removes the currently running task from the run queue,
- * reclaims its resources, and switches to the next task. In a production
- * OS, this function should also free the task's kernel stack and TCB.
+ * Removes the current TCB from the run queue, calls destroy_process() on the
+ * associated PCB (which frees page dir, kernel stack, PCB), frees the TCB,
+ * and schedules the next available task.
  *
- * @param code Exit code of the task (for logging or debugging purposes).
+ * @param code Exit code (for logging or potential cleanup).
  */
 void remove_current_task_with_code(uint32_t code);
 
 /**
- * @brief Retrieves scheduler statistics.
- *
- * Fills in the total number of tasks and context switches.
- *
- * @param[out] out_task_count Pointer to store the task count.
- * @param[out] out_switches Pointer to store the number of context switches.
+ * @brief Retrieves scheduler statistics (optional).
  */
 void debug_scheduler_stats(uint32_t *out_task_count, uint32_t *out_switches);
 

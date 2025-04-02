@@ -1,250 +1,169 @@
 /**
  * kmalloc.c
  *
- * A world–class kernel memory allocator supporting two modes:
- *
- *   1) Per-CPU Slab (if USE_PERCPU_ALLOC is defined)
- *      - For small allocations (<= 4KB), we call percpu_kmalloc/cpu_id.
- *      - For larger or invalid CPU, fallback to buddy.
- *
- *   2) Global Slab + Buddy (fallback)
- *      - We create an array of slab caches for class sizes {32,64,128,256,512,1024,2048,4096}.
- *      - If allocation <= 4096, we find the correct slab cache; otherwise buddy fallback.
- *
- * Additional features:
- *   - Thorough documentation
- *   - Optional usage stats (alloc_count, free_count in global mode)
- *   - Enhanced debug logs (buddy fallback messages, creation failures, etc.)
- *   - Concurrency disclaimers (in SMP or interrupts, consider locking or disabling ints)
+ * Central kernel memory allocator. Acts as a facade, choosing between
+ * per-CPU slab, global slab, and buddy allocators based on configuration
+ * and allocation size. (Revised to handle PAGE_SIZE allocations correctly)
  */
 
  #include "kmalloc.h"
-
- #ifdef USE_PERCPU_ALLOC
- #  include "percpu_alloc.h" // Must define percpu_kmalloc, percpu_kfree
- #  include "buddy.h"        // For fallback
- #  include "terminal.h"
- #  include "types.h"
+ #include "buddy.h"      // Underlying page allocator
+ #include "terminal.h"   // For logging
+ #include "types.h"      // Common types
+ #include "paging.h"     // Include for PAGE_SIZE definition
  
+ // Include necessary headers based on configuration
+ #ifdef USE_PERCPU_ALLOC
+ #  include "percpu_alloc.h" // Per-CPU slab allocator interface
+ #  include "get_cpu_id.h"   // Required to get current CPU ID
  #else
- #  include "buddy.h"
- #  include "slab.h"
- #  include "terminal.h"
- #  include "types.h"
+ #  include "slab.h"         // Global slab allocator interface
  #endif
  
- // The maximum size that the slab caches handle (4KB).
- #define SMALL_ALLOC_MAX 4096
+ // ---------------------------------------------------------------------------
+ // Constants
+ // ---------------------------------------------------------------------------
  
- // The size classes for slab caching (must be ascending).
- static const size_t kmalloc_size_classes[] = {
-     32, 64, 128, 256, 512, 1024, 2048, 4096
- };
- #define NUM_SIZE_CLASSES (sizeof(kmalloc_size_classes)/sizeof(kmalloc_size_classes[0]))
+ // Define a practical upper limit for slab allocations.
+ // It MUST be less than PAGE_SIZE to allow space for the slab_t header.
+ // Reserve at least sizeof(slab_t) + alignment padding. Let's use 64 bytes reserve.
+ #define SLAB_ALLOC_MAX_SIZE (PAGE_SIZE - 64)
  
- /**
-  * round_up_to_class
-  *
-  * Rounds 'size' up to the next size class <= 4096.
-  * If 'size' > 4096, returns 0 => fallback to buddy.
-  */
- static size_t round_up_to_class(size_t size) {
-     for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
-         if (size <= kmalloc_size_classes[i]) {
-             return kmalloc_size_classes[i];
-         }
-     }
-     // Means it's bigger than 4096 => buddy fallback
-     return 0;
- }
+ // ---------------------------------------------------------------------------
+ // Global Slab Mode Specifics (Only if USE_PERCPU_ALLOC is NOT defined)
+ // ---------------------------------------------------------------------------
+ #ifndef USE_PERCPU_ALLOC
+ // Size classes for global slabs - MUST NOT include PAGE_SIZE or larger.
+ // Adjust the largest size class to be <= SLAB_ALLOC_MAX_SIZE
+ static const size_t kmalloc_size_classes[] = {32, 64, 128, 256, 512, 1024, 2048}; // REMOVED 4096
+ #define NUM_KMALLOC_SIZE_CLASSES (sizeof(kmalloc_size_classes) / sizeof(kmalloc_size_classes[0]))
  
- #ifdef USE_PERCPU_ALLOC
- 
- //--------------------------------------------------------------------------
- // PER-CPU MODE
- //
- // We rely on percpu_kmalloc_init() to create slab caches for each CPU
- // up to 4KB. Larger => buddy. Must have get_cpu_id() to find local CPU.
- //
- // No usage stats here, unless you add them in percpu_alloc.
- //--------------------------------------------------------------------------
- 
- void kmalloc_init(void) {
-     percpu_kmalloc_init();
-     terminal_write("[kmalloc] Per-CPU unified allocator initialized.\n");
- }
- 
- void *kmalloc(size_t size) {
-     if (size == 0) return NULL;
- 
-     // In SMP, you might do "disable interrupts" or lock here for concurrency.
-     // This code remains minimal.
- 
-     int cpu_id = get_cpu_id(); // You must implement get_cpu_id() somewhere
- 
-     if (size <= SMALL_ALLOC_MAX) {
-         return percpu_kmalloc(size, cpu_id);
-     } else {
-         // buddy fallback
-         void *ptr = buddy_alloc(size);
-         if (!ptr) {
-             terminal_write("[kmalloc] buddy_alloc failed in per-CPU mode.\n");
-         }
-         return ptr;
-     }
- }
- 
- void kfree(void *ptr, size_t size) {
-     if (!ptr) return;
- 
-     int cpu_id = get_cpu_id(); 
- 
-     if (size <= SMALL_ALLOC_MAX) {
-         percpu_kfree(ptr, size, cpu_id);
-     } else {
-         buddy_free(ptr, size);
-     }
- }
- 
- #else  // GLOBAL SLAB MODE
- 
- //--------------------------------------------------------------------------
- // GLOBAL MODE
- //
- // We define a static array of slab caches for size classes up to 4KB.
- // If bigger => buddy. We also track usage stats (alloc_count, free_count).
- //--------------------------------------------------------------------------
- 
- // Our global slab caches. Each index is a different size class.
- static slab_cache_t *kmalloc_caches[NUM_SIZE_CLASSES] = { NULL };
- 
- // Usage stats
+ static slab_cache_t *global_slab_caches[NUM_KMALLOC_SIZE_CLASSES] = {NULL};
  static uint32_t global_alloc_count = 0;
- static uint32_t global_free_count  = 0;
+ static uint32_t global_free_count = 0;
  
- /**
-  * kmalloc_init
-  *
-  * Creates a slab cache for each class: 32,64,128,256,512,1024,2048,4096.
-  * If one fails, we just log and keep going. Then usage stats are reset.
-  */
- void kmalloc_init(void) {
-     for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
-         kmalloc_caches[i] = slab_create("kmalloc_cache", kmalloc_size_classes[i]);
-         if (!kmalloc_caches[i]) {
-             terminal_write("[kmalloc_init] slab_create failed for size class ");
-             // you might convert kmalloc_size_classes[i] to decimal or hex:
-             // e.g. print_number(kmalloc_size_classes[i]);
-             terminal_write("\n");
+ // Helper to find the index for a given size in global mode
+ static int get_global_slab_index(size_t size) {
+     // Assumes size <= SLAB_ALLOC_MAX_SIZE
+     for (int i = 0; i < NUM_KMALLOC_SIZE_CLASSES; i++) {
+         if (size <= kmalloc_size_classes[i]) {
+             return i;
          }
      }
-     global_alloc_count = 0;
-     global_free_count  = 0;
+     // This might happen if size is > last class but <= SLAB_ALLOC_MAX_SIZE
+     // In that case, it should fall back to buddy.
+     terminal_printf("[kmalloc] Warning: Size %d > largest slab class %d, but <= max %d. Using buddy.\n",
+                     size, kmalloc_size_classes[NUM_KMALLOC_SIZE_CLASSES-1], SLAB_ALLOC_MAX_SIZE);
+     return -1;
+ }
+ #endif // !USE_PERCPU_ALLOC
  
-     terminal_write("[kmalloc] Global kernel allocator initialized.\n");
+ // ---------------------------------------------------------------------------
+ // Public API Implementation
+ // ---------------------------------------------------------------------------
+ 
+ void kmalloc_init(void) {
+ #ifdef USE_PERCPU_ALLOC
+     percpu_kmalloc_init(); // Assumes percpu_alloc handles its own size limits appropriately
+     terminal_write("[kmalloc] Initialized with Per-CPU strategy.\n");
+ #else
+     // Initialize global slab caches (only up to max defined class size)
+     terminal_write("[kmalloc] Initializing Global Slab strategy...\n");
+     bool success = true;
+     global_alloc_count = 0; global_free_count = 0;
+     for (int i = 0; i < NUM_KMALLOC_SIZE_CLASSES; i++) { // Use correct loop bound
+         global_slab_caches[i] = slab_create("global_slab", kmalloc_size_classes[i]);
+         if (!global_slab_caches[i]) { /* ... error handling ... */ success = false; }
+     }
+     if (success) terminal_write("[kmalloc] Initialized Global Slab strategy.\n");
+     else terminal_write("[kmalloc] Warning: Some global slab caches failed.\n");
+ #endif
  }
  
- /**
-  * kmalloc
-  *
-  * If size <= 4KB => find the matching slab cache. If that fails => buddy fallback.
-  * If size > 4KB => buddy directly. We do not track concurrency here, so in a real SMP
-  * environment you want a spinlock or interrupt disable around it.
-  *
-  * @param size The requested size in bytes
-  * @return pointer or NULL
-  */
  void *kmalloc(size_t size) {
      if (size == 0) return NULL;
  
-     if (size <= SMALL_ALLOC_MAX) {
-         size_t class_size = round_up_to_class(size);
-         if (class_size == 0) {
-             // means size > 4096 => buddy
-             void *p = buddy_alloc(size);
-             if (!p) terminal_write("[kmalloc] buddy_alloc failed!\n");
-             return p;
+     // ** FIX: Decide strategy based on SLAB_ALLOC_MAX_SIZE **
+     if (size <= SLAB_ALLOC_MAX_SIZE) {
+         // Attempt Slab allocation (Per-CPU or Global)
+ #ifdef USE_PERCPU_ALLOC
+         int cpu_id = get_cpu_id();
+         if (cpu_id < 0 /* || cpu_id >= MAX_CPUS */) { // MAX_CPUS needs definition if used
+              terminal_printf("[kmalloc] Invalid CPU ID %d, fallback buddy.\n", cpu_id);
+              return buddy_alloc(size); // Direct buddy alloc if CPU invalid
          }
- 
-         // find the slab cache that matches class_size
-         for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
-             if (kmalloc_size_classes[i] == class_size) {
-                 void *obj = slab_alloc(kmalloc_caches[i]);
-                 if (!obj) {
-                     terminal_write("[kmalloc] slab_alloc failed, fallback buddy.\n");
-                     // fallback
-                     void *p = buddy_alloc(size);
-                     if (!p) terminal_write("[kmalloc] buddy fallback also failed!\n");
-                     return p;
-                 }
-                 global_alloc_count++;
-                 return obj;
-             }
+         void *ptr = percpu_kmalloc(size, cpu_id);
+         if (ptr) return ptr; // Per-CPU success
+         // Fallback to buddy IF percpu_kmalloc fails
+         terminal_printf("[kmalloc] Per-CPU slab failed CPU %d size %d, fallback buddy.\n", cpu_id, size);
+         return buddy_alloc(size);
+ #else
+         // Global Slab Strategy
+         int index = get_global_slab_index(size);
+         if (index >= 0) { // Fits in a defined global slab class
+              slab_cache_t *cache = global_slab_caches[index];
+              if (cache) {
+                  void *ptr = slab_alloc(cache);
+                  if (ptr) { global_alloc_count++; return ptr; } // Global slab success
+                  // Fallback to buddy if slab_alloc failed
+                  terminal_printf("[kmalloc] Global slab failed size %d, fallback buddy.\n", kmalloc_size_classes[index]);
+                  return buddy_alloc(size);
+              } else { // Cache wasn't initialized
+                   terminal_printf("[kmalloc] Global slab cache %d uninitialized, fallback buddy.\n", index);
+                   return buddy_alloc(size);
+              }
+         } else {
+             // Size is <= SLAB_ALLOC_MAX_SIZE but too big for largest defined slab class
+             // Fallback to buddy
+             terminal_printf("[kmalloc] Size %d fits max slab but not class, fallback buddy.\n", size);
+             return buddy_alloc(size);
          }
-         // Should not happen, but fallback if so
-         terminal_write("[kmalloc] class_size mismatch? fallback buddy.\n");
-         void *p = buddy_alloc(size);
-         if (!p) terminal_write("[kmalloc] fallback buddy failed!\n");
-         return p;
+ #endif
      } else {
-         // buddy for bigger sizes
-         void *p = buddy_alloc(size);
-         if (!p) terminal_write("[kmalloc] buddy_alloc (large) failed.\n");
-         return p;
+         // --- Buddy Allocator Strategy (for large allocations > SLAB_ALLOC_MAX_SIZE) ---
+         terminal_printf("[kmalloc] Large allocation (%d bytes > %d), using buddy.\n", size, SLAB_ALLOC_MAX_SIZE);
+         return buddy_alloc(size);
      }
  }
  
- /**
-  * kfree
-  *
-  * Frees memory previously allocated by kmalloc. We rely on the 'size' 
-  * to figure out if it is a slab or buddy block. 
-  *
-  * @param ptr  pointer from kmalloc
-  * @param size same size used in kmalloc
-  */
  void kfree(void *ptr, size_t size) {
-     if (!ptr) return;
+     if (!ptr || size == 0) return;
  
-     if (size <= SMALL_ALLOC_MAX) {
-         size_t class_size = round_up_to_class(size);
-         if (class_size == 0) {
-             // means size > 4096 => buddy
-             buddy_free(ptr, size);
-             return;
+     // ** FIX: Decide strategy based on SLAB_ALLOC_MAX_SIZE **
+     if (size <= SLAB_ALLOC_MAX_SIZE) {
+ #ifdef USE_PERCPU_ALLOC
+         // Per-CPU Free (Trusting caller provided correct size and ptr)
+         int cpu_id = get_cpu_id();
+         // Assuming percpu_kfree handles invalid cpu_id if necessary
+         percpu_kfree(ptr, size, cpu_id);
+ #else
+         // Global Slab Free
+         int index = get_global_slab_index(size);
+         if (index >= 0) { // Check if it *could* have come from a slab
+              slab_cache_t *cache = global_slab_caches[index];
+              if (cache) {
+                  // Assume it came from slab - relies on slab_free being robust
+                  slab_free(cache, ptr);
+                  global_free_count++;
+                  return; // Done
+              }
          }
-         // find the correct slab cache
-         for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
-             if (kmalloc_size_classes[i] == class_size) {
-                 slab_free(kmalloc_caches[i], ptr);
-                 global_free_count++;
-                 return;
-             }
-         }
-         // fallback if not found
+         // If no slab index or cache not init, assume it came from buddy fallback
+         terminal_printf("[kfree] No suitable slab cache for size %d, using buddy_free.\n", size);
          buddy_free(ptr, size);
+ #endif
      } else {
+         // --- Buddy Free (for large allocations) ---
          buddy_free(ptr, size);
      }
  }
  
- /**
-  * kmalloc_get_usage
-  *
-  * Optional function to retrieve how many times we've allocated/freed 
-  * in global slab mode.
-  *
-  * @param out_alloc optional pointer to store global_alloc_count
-  * @param out_free  optional pointer to store global_free_count
-  */
- void kmalloc_get_usage(uint32_t *out_alloc, uint32_t *out_free) {
-     if (out_alloc) {
-         *out_alloc = global_alloc_count;
-     }
-     if (out_free) {
-         *out_free = global_free_count;
-     }
+ void kmalloc_get_global_stats(uint32_t *out_alloc, uint32_t *out_free) {
+     // ... (same as before) ...
+     #ifndef USE_PERCPU_ALLOC
+     if (out_alloc) *out_alloc = global_alloc_count;
+     if (out_free) *out_free = global_free_count;
+     #else
+     if (out_alloc) *out_alloc = 0; if (out_free) *out_free = 0;
+     #endif
  }
- 
- #endif // USE_PERCPU_ALLOC
- 

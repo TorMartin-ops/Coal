@@ -2,47 +2,30 @@
 #ifndef PROCESS_H
 #define PROCESS_H
 
-#include "types.h" 
+#include "types.h"
+
+// Define the size for the kernel stack allocated per process
+#define PROCESS_KSTACK_SIZE 4096
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/**
- * @brief Process Control Block (PCB) structure.
- *
- * Represents a user process with its own page directory, entry point, user stack,
- * and additional context for scheduling. Processes are maintained in a circular linked list
- * for round-robin scheduling.
- */
-typedef struct process {
-    uint32_t pid;              // Unique process identifier.
-    uint32_t *page_directory;  // Process-specific page directory pointer.
-    uint32_t entry_point;      // ELF entry point for user-mode execution.
-    void *user_stack;          // Pointer to the allocated user-mode stack.
-    // Additional fields such as register context (EIP, ESP, etc.) can be added later.
-    struct process *next;      // Pointer to the next process in the scheduler's list.
-} process_t;
+typedef struct pcb {
+    uint32_t pid;
+    uint32_t *page_directory;   // Physical address
+    uint32_t entry_point;       // Virtual address
+    void *user_stack_top;       // Virtual address
 
-/**
- * @brief Creates a new user process by loading an ELF binary.
- *
- * This function allocates a new PCB, creates a new page directory for the process,
- * loads the ELF binary into the process's address space, and allocates a user stack.
- *
- * @param path Path to the ELF binary to load.
- * @return Pointer to the newly created process structure, or NULL on failure.
- */
-process_t *create_user_process(const char *path);
+    // Kernel Stack Info
+    uint32_t kernel_stack_phys_base; // Physical base address (for freeing)
+    uint32_t *kernel_stack_vaddr_top; // Virtual top address (for ESP setup)
 
-/**
- * @brief Adds a process to the scheduler's process list.
- *
- * For simplicity, the process is added into a circular linked list.
- *
- * @param proc Pointer to the process structure to add.
- */
-void add_process_to_scheduler(process_t *proc);
+    // Add other process-specific info...
+} pcb_t;
+
+pcb_t *create_user_process(const char *path);
+void destroy_process(pcb_t *pcb);
 
 #ifdef __cplusplus
 }

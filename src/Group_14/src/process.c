@@ -1,154 +1,145 @@
 #include "process.h"
-#include "kmalloc.h"       // For PCB, PDE memory
-#include "elf_loader.h"    // ELF loader
-#include "paging.h"        // For paging_map_range, PDE copying
-#include "terminal.h"      // For debug logs
+#include "kmalloc.h"
+#include "elf_loader.h"
+#include "paging.h"     // Includes PAGE_SIZE, KERNEL_SPACE_VIRT_START etc.
+#include "terminal.h"
 #include "types.h"
-#include "string.h"        // for memset, memcpy if needed
+#include "string.h"
 
-#ifndef PAGE_SIZE
-#define PAGE_SIZE 4096
-#endif
+extern uint32_t *kernel_page_directory; // From paging.c
+#define KERNEL_PDE_INDEX (KERNEL_SPACE_VIRT_START >> 22)
 
-// Suppose we keep a pointer to the kernel's PDE
-extern uint32_t *kernel_page_directory;  
+#define USER_STACK_PAGES        1
+#define USER_STACK_SIZE         (USER_STACK_PAGES * PAGE_SIZE)
+#define USER_STACK_BOTTOM_VIRT  (KERNEL_SPACE_VIRT_START - USER_STACK_SIZE)
+#define USER_STACK_TOP_VIRT_ADDR KERNEL_SPACE_VIRT_START
 
-// Suppose PDE indices 768..1023 (3GB..4GB) are kernel
-#define KERNEL_SPACE_PDE_START 768   // 768*4MB=3GB
-#define USER_STACK_TOP 0xBFFF0000    // Some address below 3GB
-
-// Global process list and next PID
-static process_t *process_list = NULL;
 static uint32_t next_pid = 1;
 
-/**
- * copy_kernel_pde_entries
- *
- * Copies the kernel portion of PDE from 'kernel_page_directory' 
- * into 'new_pd', so the new process can access kernel memory 
- * from 0xC0000000..0xFFFFFFFF while having its own user PDE below.
- * 
- * For a typical higher-half kernel, PDE entries 768..1023 
- * might contain kernel space. We replicate them.
- */
 static void copy_kernel_pde_entries(uint32_t *new_pd) {
-    // new_pd is zeroed, so we just copy PDE [768..1023].
-    for (int i = KERNEL_SPACE_PDE_START; i < 1024; i++) {
+    // ... (same as before) ...
+    if (!kernel_page_directory) {
+        terminal_write("[Process] Error: Kernel page directory is NULL in copy_kernel_pde_entries.\n");
+        return;
+    }
+    for (int i = KERNEL_PDE_INDEX; i < 1024; i++) {
         new_pd[i] = kernel_page_directory[i];
     }
 }
 
-/**
- * map_user_stack
- *
- * Maps a single page at 'USER_STACK_TOP - PAGE_SIZE' so the user 
- * stack can start near 0xBFFF0000. 
- * We'll store the pointer to that memory in 'proc->user_stack' 
- * or we might just store the top address for ring 3 context.
- */
-static bool map_user_stack(process_t *proc) {
-    // Let's choose stack base at (USER_STACK_TOP - PAGE_SIZE).
-    uint32_t stack_base = (USER_STACK_TOP - PAGE_SIZE);
-    // We'll pass PAGE_PRESENT|PAGE_RW|PAGE_USER as flags
-    // so user-mode can read/write.
-    int result = paging_map_range(proc->page_directory, stack_base, PAGE_SIZE,
+static bool map_user_stack(pcb_t *proc) {
+    // ... (same as before) ...
+    terminal_printf("[Process] Mapping user stack at 0x%x - 0x%x\n", USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR);
+    int result = paging_map_range(proc->page_directory,
+                                  USER_STACK_BOTTOM_VIRT,
+                                  USER_STACK_SIZE,
                                   PAGE_PRESENT | PAGE_RW | PAGE_USER);
     if (result != 0) {
-        terminal_write("[process] map_user_stack: paging_map_range failed.\n");
+        terminal_write("[Process] map_user_stack: paging_map_range failed.\n");
         return false;
     }
-    // We'll store user_stack as the top (empty) address
-    // so the user-mode initial ESP is 0xBFFF0000.
-    proc->user_stack = (void *)USER_STACK_TOP;
+    proc->user_stack_top = (void *)USER_STACK_TOP_VIRT_ADDR;
     return true;
 }
 
 /**
- * create_user_process
- *
- * The “real–deal” version: 
- *   1) Allocates a PCB
- *   2) Creates a PDE, copies kernel PDE entries
- *   3) Loads ELF segments
- *   4) Maps a user stack
- *   5) On success, returns the new PCB
- *   6) On failure, cleans up partial resources
+ * @brief Allocates a kernel stack and calculates its virtual top address.
  */
-process_t *create_user_process(const char *path) {
-    // 1) Allocate a new PCB
-    process_t *proc = (process_t *)kmalloc(sizeof(process_t));
-    if (!proc) {
-        terminal_write("[process] create_user_process: no memory for PCB.\n");
-        return NULL;
-    }
-    // Initialize some fields
+static bool allocate_kernel_stack(pcb_t *proc) {
+     // Allocate physical memory for the stack
+     uint32_t kstack_phys_base = (uint32_t)kmalloc(PROCESS_KSTACK_SIZE);
+     if (!kstack_phys_base) {
+         terminal_write("[Process] Failed to allocate kernel stack physical memory.\n");
+         return false;
+     }
+     proc->kernel_stack_phys_base = kstack_phys_base; // Store physical base for freeing
+
+     // Calculate the corresponding virtual address top using the higher-half mapping
+     // Assumes the physical memory [0..X] is mapped starting at KERNEL_SPACE_VIRT_START
+     // Check if the allocated physical address is within the mapped range
+     // Example mapping range from kernel.c: PHYS_MAPPING_SIZE = 64MB
+     // This check might need adjustment based on your actual mapping size.
+     #define PHYS_MAPPING_SIZE_FOR_KERNEL (64 * 1024 * 1024)
+     if (kstack_phys_base + PROCESS_KSTACK_SIZE > PHYS_MAPPING_SIZE_FOR_KERNEL) {
+         terminal_printf("[Process] Error: Allocated kernel stack (phys 0x%x) is outside initial kernel mapping range (up to 0x%x).\n",
+                         kstack_phys_base, PHYS_MAPPING_SIZE_FOR_KERNEL);
+         kfree((void*)kstack_phys_base, PROCESS_KSTACK_SIZE); // Free the unusable stack
+         return false;
+     }
+
+     uintptr_t kstack_virt_top = KERNEL_SPACE_VIRT_START + kstack_phys_base + PROCESS_KSTACK_SIZE;
+     proc->kernel_stack_vaddr_top = (uint32_t *)kstack_virt_top; // Store VIRTUAL top address
+
+     terminal_printf("[Process] Allocated kernel stack for PID %d at phys [0x%x - 0x%x], virt top 0x%x\n",
+                     proc->pid, kstack_phys_base, kstack_phys_base + PROCESS_KSTACK_SIZE, (uintptr_t)proc->kernel_stack_vaddr_top);
+     return true;
+}
+
+pcb_t *create_user_process(const char *path) {
+    // ... (Allocation of PCB, Page Directory same as before) ...
+     terminal_printf("[Process] Creating user process from '%s'.\n", path);
+
+    pcb_t *proc = (pcb_t *)kmalloc(sizeof(pcb_t));
+    if (!proc) { /* ... error handling ... */ terminal_write("[Process] create_user_process: Failed to allocate PCB.\n"); return NULL; }
+    memset(proc, 0, sizeof(pcb_t));
     proc->pid = next_pid++;
-    proc->next = NULL;
-    proc->entry_point = 0;
-    proc->user_stack = NULL;  
-    // 2) PDE
+
     proc->page_directory = (uint32_t *)kmalloc(PAGE_SIZE);
-    if (!proc->page_directory) {
-        terminal_write("[process] PDE alloc failed.\n");
-        kfree(proc, sizeof(process_t));
-        return NULL;
-    }
-    // Zero the PDE
+    if (!proc->page_directory) { /* ... error handling ... */ terminal_write("[Process] create_user_process: Failed to allocate page directory.\n"); kfree(proc, sizeof(pcb_t)); return NULL; }
     memset(proc->page_directory, 0, PAGE_SIZE);
-
-    // Copy kernel PDE entries
     copy_kernel_pde_entries(proc->page_directory);
+    terminal_printf("[Process] Allocated page directory for PID %d at 0x%x\n", proc->pid, proc->page_directory);
 
-    // 3) Load the ELF
+    // Allocate Kernel Stack (gets virtual top address)
+    if (!allocate_kernel_stack(proc)) {
+        kfree(proc->page_directory, PAGE_SIZE);
+        kfree(proc, sizeof(pcb_t));
+        return NULL;
+    }
+
+    // Load ELF
     if (load_elf_binary(path, proc->page_directory, &proc->entry_point) != 0) {
-        terminal_write("[process] ELF load failed.\n");
-        // cleanup
+        // Clean up stack, page dir, pcb
+        kfree((void*)proc->kernel_stack_phys_base, PROCESS_KSTACK_SIZE);
         kfree(proc->page_directory, PAGE_SIZE);
-        kfree(proc, sizeof(process_t));
+        kfree(proc, sizeof(pcb_t));
         return NULL;
     }
+     terminal_printf("[Process] ELF loaded for PID %d, entry point: 0x%x\n", proc->pid, proc->entry_point);
 
-    // 4) Map user stack near 0xBFFF0000
+    // Map User Stack
     if (!map_user_stack(proc)) {
-        // cleanup
+        // Clean up ELF pages?, stack, page dir, pcb
+        kfree((void*)proc->kernel_stack_phys_base, PROCESS_KSTACK_SIZE);
         kfree(proc->page_directory, PAGE_SIZE);
-        kfree(proc, sizeof(process_t));
+        kfree(proc, sizeof(pcb_t));
         return NULL;
     }
+     terminal_printf("[Process] Mapped user stack for PID %d at 0x%x\n", proc->pid, proc->user_stack_top);
 
-    terminal_write("[process] Created user process: PID=");
-    // Optionally convert pid to string
-    // ...
-    terminal_write("\n");
+    terminal_printf("[Process] Successfully created PCB for PID %d.\n", proc->pid);
     return proc;
 }
 
-/**
- * add_process_to_scheduler
- *
- * Inserts 'proc' into a circular list. 
- * Real OS might do more advanced logic (priority, queues, etc.).
- *
- * concurrency disclaimers:
- *   If SMP or interrupts, disable or spinlock around 'process_list'.
- */
-void add_process_to_scheduler(process_t *proc) {
-    if (!proc) {
-        terminal_write("[process] add_process_to_scheduler: proc is NULL.\n");
-        return;
+void destroy_process(pcb_t *pcb) {
+    if (!pcb) return;
+    terminal_printf("[Process] Destroying process PID %d.\n", pcb->pid);
+
+    // Free the kernel stack using its physical base address
+    if (pcb->kernel_stack_phys_base) {
+        terminal_printf("[Process] Freeing kernel stack for PID %d (phys_base: 0x%x).\n", pcb->pid, pcb->kernel_stack_phys_base);
+        kfree((void *)pcb->kernel_stack_phys_base, PROCESS_KSTACK_SIZE);
     }
-    if (!process_list) {
-        process_list = proc;
-        proc->next = proc;
-    } else {
-        process_t *temp = process_list;
-        while (temp->next != process_list) {
-            temp = temp->next;
-        }
-        temp->next = proc;
-        proc->next = process_list;
+
+    // Free the process's page directory and associated page tables
+    if (pcb->page_directory) {
+        terminal_printf("[Process] Freeing page directory for PID %d (addr: 0x%x).\n", pcb->pid, pcb->page_directory);
+        // TODO: Implement page table freeing
+        terminal_write("[Process] TODO: Implement page table freeing in destroy_process.\n");
+        kfree(pcb->page_directory, PAGE_SIZE);
     }
-    terminal_write("[process] Added process to scheduler (PID=");
-    // ...
-    terminal_write(")\n");
+
+    // Free the PCB structure
+    terminal_printf("[Process] Freeing PCB for PID %d.\n", pcb->pid);
+    kfree(pcb, sizeof(pcb_t));
 }

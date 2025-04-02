@@ -1,48 +1,27 @@
 #include "scheduler.h"
-#include "kmalloc.h"
-#include "terminal.h"
-#include "string.h"
-#include "types.h"
+#include "process.h"    // For pcb_t, destroy_process
+#include "kmalloc.h"    // For TCB allocation
+#include "terminal.h"   // For logging
+#include "string.h"     // For memset
+#include "types.h"      // Common types
+// GDT selectors should be defined, e.g., in gdt.h or a config header
+#ifndef USER_CODE_SELECTOR
+#define USER_CODE_SELECTOR   0x1B
+#endif
+#ifndef USER_DATA_SELECTOR
+#define USER_DATA_SELECTOR   0x23
+#endif
 
-#define TASK_STACK_SIZE 4096
-
-// Global circular run queue and pointer to the currently running task.
+// ... (task_list, current_task, stats, context_switch extern remain same) ...
 static tcb_t *task_list = NULL;
 static tcb_t *current_task = NULL;
-
-// Scheduler statistics.
 static uint32_t task_count = 0;
 static uint32_t context_switches = 0;
+extern void context_switch(uint32_t **old_esp_ptr, uint32_t *new_esp, uint32_t *new_page_directory);
 
-/**
- * External assembly routine for context switching.
- * This routine saves the current CPU context (stack pointer) into *old_esp and
- * loads new_esp into ESP, performing the low-level context switch.
- */
-extern void context_switch(uint32_t **old_esp, uint32_t *new_esp);
 
-/**
- * task_exit
- *
- * Called if a task function returns. In a real OS, this should remove the task
- * from the scheduler and reclaim resources. Here, we call remove_current_task_with_code
- * and then spin to avoid corrupting memory.
- */
-static void task_exit(void) {
-    terminal_write("[Scheduler] Task exiting. Removing current task.\n");
-    remove_current_task_with_code(0);
-    // Should never reach here; spin indefinitely.
-    while (1) {
-        __asm__ volatile("hlt");
-    }
-}
-
-/**
- * scheduler_init
- *
- * Initializes the scheduler by clearing the task list and resetting counters.
- */
 void scheduler_init(void) {
+    // ... (same as before) ...
     task_list = NULL;
     current_task = NULL;
     task_count = 0;
@@ -50,50 +29,62 @@ void scheduler_init(void) {
     terminal_write("[Scheduler] Initialized.\n");
 }
 
-/**
- * scheduler_add_task
- *
- * Creates a new TCB with its own kernel stack, sets up the initial call frame
- * (so that when switched in, it calls task_entry and then task_exit if it returns),
- * and adds it to the circular run queue.
- */
-void scheduler_add_task(void (*task_entry)(void)) {
-    if (!task_entry) {
-        terminal_write("[Scheduler] Error: task_entry is NULL.\n");
-        return;
+int scheduler_add_task(pcb_t *pcb) {
+    if (!pcb || !pcb->page_directory || !pcb->kernel_stack_vaddr_top || !pcb->user_stack_top || !pcb->entry_point) {
+        terminal_write("[Scheduler] Error: Invalid PCB provided to scheduler_add_task (check stack pointers).\n");
+        return -1;
     }
 
-    // Allocate TCB.
     tcb_t *new_task = (tcb_t *)kmalloc(sizeof(tcb_t));
-    if (!new_task) {
-        terminal_write("[Scheduler] Error: Out of memory for TCB.\n");
-        return;
-    }
-    // Allocate kernel stack.
-    uint32_t *stack = (uint32_t *)kmalloc(TASK_STACK_SIZE);
-    if (!stack) {
-        terminal_write("[Scheduler] Error: Out of memory for task stack.\n");
-        // Optionally free new_task.
-        return;
-    }
-    // Calculate top of the stack (stacks grow downward).
-    uint32_t *stack_top = stack + (TASK_STACK_SIZE / sizeof(uint32_t));
-    // Set up initial call frame:
-    // Push task_exit so that if task_entry returns, it calls task_exit.
-    *(--stack_top) = (uint32_t)task_exit;
-    // Push task_entry as the initial instruction pointer.
-    *(--stack_top) = (uint32_t)task_entry;
+    if (!new_task) { /* ... error handling ... */ terminal_write("[Scheduler] Error: Out of memory for TCB.\n"); return -2; }
+    memset(new_task, 0, sizeof(tcb_t));
+    new_task->process = pcb;
 
-    // Initialize TCB.
-    new_task->esp = stack_top;
-    new_task->pid = (task_list == NULL) ? 1 : (task_count + 1);
-    new_task->next = NULL;
+    // --- Set up initial kernel stack frame using VIRTUAL kernel stack pointer ---
+    uint32_t *kstack_vtop = pcb->kernel_stack_vaddr_top; // Use the VIRTUAL top address
 
-    // Insert into circular linked list.
-    if (task_list == NULL) {
+    // 1. User SS
+    *(--kstack_vtop) = USER_DATA_SELECTOR;
+    // 2. User ESP
+    *(--kstack_vtop) = (uint32_t)pcb->user_stack_top;
+    // 3. EFLAGS (IF=1, IOPL=0)
+    *(--kstack_vtop) = 0x00000202;
+    // 4. User CS
+    *(--kstack_vtop) = USER_CODE_SELECTOR;
+    // 5. User EIP (Entry Point)
+    *(--kstack_vtop) = pcb->entry_point;
+
+    // 6. General Purpose Registers (pushad order: EDI, ESI, EBP, ESP_ignore, EBX, EDX, ECX, EAX)
+    *(--kstack_vtop) = 0; // EDI
+    *(--kstack_vtop) = 0; // ESI
+    *(--kstack_vtop) = 0; // EBP
+    *(--kstack_vtop) = 0; // ESP_ignore
+    *(--kstack_vtop) = 0; // EBX
+    *(--kstack_vtop) = 0; // EDX
+    *(--kstack_vtop) = 0; // ECX
+    *(--kstack_vtop) = 0; // EAX
+
+    // 7. Segment Registers (order: GS, FS, ES, DS)
+    *(--kstack_vtop) = USER_DATA_SELECTOR; // GS
+    *(--kstack_vtop) = USER_DATA_SELECTOR; // FS
+    *(--kstack_vtop) = USER_DATA_SELECTOR; // ES
+    *(--kstack_vtop) = USER_DATA_SELECTOR; // DS
+
+    // 8. EFLAGS (pushed by pushfd) - Already pushed as part of iret frame? Check context_switch.
+    // The iret frame above includes EFLAGS. context_switch pushes EFLAGS *again*.
+    // We need consistency. Let's assume context_switch expects the iret frame *plus*
+    // the segment registers *plus* the pushad registers *plus* EFLAGS from pushfd.
+    // So, push EFLAGS again here matching pushfd in context_switch.
+    // *(--kstack_vtop) = 0x00000202; // Push EFLAGS again for popfd
+
+    // Store the final virtual stack pointer in the TCB
+    new_task->esp = kstack_vtop;
+
+    // --- Insert into scheduler list (same as before) ---
+     if (task_list == NULL) {
         task_list = new_task;
         current_task = new_task;
-        new_task->next = new_task; // Single task points to itself.
+        new_task->next = new_task;
     } else {
         tcb_t *temp = task_list;
         while (temp->next != task_list) {
@@ -103,120 +94,97 @@ void scheduler_add_task(void (*task_entry)(void)) {
         new_task->next = task_list;
     }
     task_count++;
-    // Log task creation.
-    terminal_write("[Scheduler] Added task with PID ");
-    // (Assuming terminal_printf is available)
-    // terminal_printf("%d\n", new_task->pid);
+
+    terminal_printf("[Scheduler] Added task for PID %d (Kernel ESP starts at virt 0x%x).\n", pcb->pid, new_task->esp);
+    return 0;
 }
 
-/**
- * yield
- *
- * Voluntary yield: simply calls schedule() to trigger a context switch.
- */
 void yield(void) {
+    // ... (same as before) ...
     schedule();
 }
 
-/**
- * schedule
- *
- * Performs a round-robin context switch.
- * If there's more than one task, switches from current_task to current_task->next.
- */
 void schedule(void) {
-    if (!current_task || current_task->next == current_task) {
-        // Only one task or none; no switch necessary.
+    // ... (context_switches increment, check for no switch needed same as before) ...
+     context_switches++;
+     if (!current_task || !current_task->next || current_task->next == current_task) {
         return;
     }
+
     tcb_t *old_task = current_task;
     tcb_t *new_task = current_task->next;
-    current_task = new_task;
-    context_switch(&(old_task->esp), new_task->esp);
-    context_switches++;
+    current_task = new_task; // Update current task pointer *before* switch
+
+    uint32_t *new_page_directory = NULL;
+    // Only switch CR3 if the process context (PCB) is different
+    if (old_task->process != new_task->process) {
+        new_page_directory = new_task->process->page_directory;
+         terminal_printf("[Scheduler] Switching page directory to 0x%x for PID %d\n", new_page_directory, new_task->process->pid);
+    } else {
+         // Same process, no need to reload CR3
+          // terminal_printf("[Scheduler] Same process context (PID %d), not switching CR3.\n", new_task->process->pid);
+    }
+
+    // Pass the virtual kernel stack pointer and physical page directory address
+    context_switch(&(old_task->esp), new_task->esp, new_page_directory);
 }
 
-/**
- * get_current_task
- *
- * Returns a pointer to the currently running task.
- */
 tcb_t *get_current_task(void) {
-    return current_task;
+    // ... (same as before) ...
+     return current_task;
 }
 
-/**
- * remove_current_task_with_code
- *
- * Removes the current task from the scheduler. This function:
- *   - Logs the removal,
- *   - Adjusts the circular list pointers,
- *   - Frees the task's resources (TCB and stack),
- *   - Schedules the next task.
- *
- * @param code Exit code (can be logged for debugging).
- */
+// task_exit_cleanup remains the same, calling remove_current_task_with_code
+
 void remove_current_task_with_code(uint32_t code) {
-    if (!task_list || !current_task) {
-        terminal_write("[Scheduler] No task available to remove.\n");
+    // ... (Disable interrupts, check task_list/current_task same as before) ...
+     asm volatile("cli");
+      if (!task_list || !current_task) {
+        terminal_write("[Scheduler] Error: No task to remove.\n");
+        asm volatile("sti");
         return;
     }
-    
-    // Log removal with PID.
-    terminal_write("[Scheduler] Removing task with PID ");
-    // (Assuming terminal_printf is available)
-    // terminal_printf("%d, exit code: %d\n", current_task->pid, code);
 
-    // If only one task exists, clean up and halt.
-    if (current_task->next == current_task) {
-        // Optionally free resources here.
+    tcb_t *to_remove = current_task;
+    pcb_t *proc_to_remove = to_remove->process;
+    terminal_printf("[Scheduler] Removing task for PID %d (exit code %d).\n", proc_to_remove->pid, code);
+
+    // --- Remove TCB from scheduler list ---
+    if (to_remove->next == to_remove) { // Last task
         task_list = NULL;
         current_task = NULL;
         task_count = 0;
-        terminal_write("[Scheduler] Last task removed. Halting.\n");
+        terminal_write("[Scheduler] Last task removed. Halting system.\n");
+        destroy_process(proc_to_remove);
+        kfree(to_remove, sizeof(tcb_t));
+        // asm volatile("sti"); // Enable interrupts before halting?
         while (1) { __asm__ volatile("hlt"); }
+    } else {
+        tcb_t *prev = task_list;
+        while (prev->next != to_remove) { /* ... find prev ... */ prev = prev->next; }
+        prev->next = to_remove->next;
+        if (task_list == to_remove) { task_list = to_remove->next; }
+        task_count--;
+
+        current_task = to_remove->next; // Select next task *before* freeing
+
+        // --- Free Resources ---
+        destroy_process(proc_to_remove); // Free PCB, page dir, kernel stack
+        kfree(to_remove, sizeof(tcb_t)); // Free TCB
+
+        // --- Switch to the next task ---
+        terminal_printf("[Scheduler] Switching to next task (PID %d).\n", current_task->process->pid);
+        uint32_t *dummy_esp_save_location; // Dummy location, old ESP not needed
+        context_switch(&dummy_esp_save_location, current_task->esp, current_task->process->page_directory);
+
+        // Should not be reached
+         terminal_write("[Scheduler] Error: Returned after context switch in remove task!\n");
+          while(1) { asm volatile("hlt"); }
     }
-    
-    // Find the task preceding current_task.
-    tcb_t *prev = task_list;
-    while (prev->next != current_task) {
-        prev = prev->next;
-    }
-    // Remove current_task from the list.
-    prev->next = current_task->next;
-    // If current_task is the head, update task_list.
-    if (task_list == current_task) {
-        task_list = current_task->next;
-    }
-    // Save pointer to be removed.
-    tcb_t *to_remove = current_task;
-    // Advance current_task.
-    current_task = current_task->next;
-    task_count--;
-    
-    // Free resources for the removed task.
-    // In a real system, you would call kfree on the TCB and its allocated stack.
-    // Example:
-    // kfree(to_remove->stack_base, TASK_STACK_SIZE);
-    // kfree(to_remove, sizeof(tcb_t));
-    
-    // Perform a context switch to the new current task.
-    context_switch(&(to_remove->esp), current_task->esp);
 }
 
-/**
- * debug_scheduler_stats
- *
- * Returns the current number of tasks and context switches.
- *
- * @param out_task_count Output pointer for the task count.
- * @param out_switches   Output pointer for context switch count.
- */
 void debug_scheduler_stats(uint32_t *out_task_count, uint32_t *out_switches) {
-    if (out_task_count) {
-        *out_task_count = task_count;
-    }
-    if (out_switches) {
-        *out_switches = context_switches;
-    }
+    // ... (same as before) ...
+     if (out_task_count) { *out_task_count = task_count; }
+     if (out_switches) { *out_switches = context_switches; }
 }

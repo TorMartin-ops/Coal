@@ -2,19 +2,24 @@
 #ifndef READ_FILE_H
 #define READ_FILE_H
 
-#include "types.h" 
+#include "types.h"
 
 /**
- * @brief Reads an entire file from disk into memory.
+ * @brief Reads an entire file from the VFS into a newly allocated buffer.
  *
- * In a production system, this function should interface with your filesystem driver
- * to load the file from disk into a dynamically allocated memory buffer.
+ * Opens the file specified by path, determines its size, allocates memory
+ * using kmalloc, reads the full content, and closes the file.
  *
- * This stub implementation prints an error message and returns NULL.
+ * The caller is responsible for freeing the returned buffer using kfree()
+ * with the size returned in file_size.
  *
- * @param path      The path to the file.
- * @param file_size Output parameter to receive the file size in bytes.
- * @return Pointer to the file data, or NULL on failure.
+ * @param path The null-terminated path to the file within the VFS.
+ * @param file_size Output parameter pointer; will be filled with the file's size
+ * in bytes on success. Crucially, if a short read occurs, this reflects
+ * the actual bytes read into the buffer.
+ * @return Pointer to the allocated buffer containing the file data, or NULL
+ * on failure (e.g., file not found, out of memory, I/O error). Returns
+ * NULL for zero-byte files in this implementation.
  */
 void *read_file(const char *path, size_t *file_size);
 
