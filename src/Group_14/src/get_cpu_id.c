@@ -1,9 +1,6 @@
 #include "get_cpu_id.h"
 
-// If uintptr_t is not defined in your libc's stdint.h, define it here.
-#ifndef UINTPTR_MAX
-typedef unsigned int uintptr_t;
-#endif
+
 
 /**
  * get_cpu_id - Retrieves the current CPU's identifier.

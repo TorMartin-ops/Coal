@@ -2,9 +2,6 @@
 #include "terminal.h"  // For debug prints (disable in production)
 #include "types.h"
 
-#ifndef UINTPTR_MAX
-typedef unsigned int uintptr_t;
-#endif
 
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096

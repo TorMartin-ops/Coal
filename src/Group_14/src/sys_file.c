@@ -48,7 +48,9 @@ int sys_open(const char *pathname, int flags, int mode) {
         return -1;
     }
     
-    // Call VFS open with the pathname and flags (mode is ignored if not supported)
+    /* Call VFS open with the pathname and flags.
+     * The extra mode parameter is not used by vfs_open.
+     */
     file_t *vfile = vfs_open(pathname, flags);
     if (!vfile) {
         terminal_write("[sys_open] vfs_open failed.\n");

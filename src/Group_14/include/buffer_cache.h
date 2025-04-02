@@ -2,14 +2,16 @@
 #ifndef BUFFER_CACHE_H
 #define BUFFER_CACHE_H
 
-#include "types.h" 
+#include "types.h"
+#include "disk.h" // Include disk.h for disk_t type
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* Buffer flag definitions */
-#define BUFFER_FLAG_VALID   0x01
-#define BUFFER_FLAG_DIRTY   0x02
+#define BUFFER_FLAG_VALID   0x01 // Buffer contains valid data read from disk
+#define BUFFER_FLAG_DIRTY   0x02 // Buffer has been modified and needs writing back
 
 /**
  * buffer_t
@@ -17,60 +19,69 @@ extern "C" {
  * Represents a cached disk block.
  */
 typedef struct buffer {
-    uint32_t block_number;      // Disk block number
-    const char *device;         // Device identifier (e.g., "ata0")
-    uint8_t *data;              // Pointer to data (size is assumed BUFFER_BLOCK_SIZE)
-    uint32_t flags;             // Status flags (valid, dirty)
-    uint32_t ref_count;         // Reference count (for concurrency management)
-    
-    // Hash table chaining (for quick lookup in buffer cache)
+    uint32_t block_number;      // Disk block number (LBA)
+    disk_t *disk;               // Pointer to the disk device structure this buffer belongs to
+    uint8_t *data;              // Pointer to the cached data (size typically disk->sector_size)
+    uint32_t flags;             // Status flags (BUFFER_FLAG_VALID, BUFFER_FLAG_DIRTY)
+    uint32_t ref_count;         // Reference count (how many users currently hold this buffer)
+
+    // Hash table chaining (for quick lookup in the buffer cache)
     struct buffer *hash_next;
-    
-    // For future use: pointers for LRU or free list eviction
-    struct buffer *prev;
-    struct buffer *next;
+
+    // Doubly linked list pointers for LRU (Least Recently Used) eviction strategy
+    struct buffer *prev; // Previous buffer in LRU list
+    struct buffer *next; // Next buffer in LRU list
+
+    // Add mutex/lock here if supporting concurrency
 } buffer_t;
 
-/* 
+/*
  * Initialize the buffer cache subsystem.
+ * Must be called once during kernel initialization.
  */
 void buffer_cache_init(void);
 
 /*
- * Retrieve a buffer for a given device and block number.
- * If not cached, the block is read from disk.
- * Increments the buffer's reference count.
+ * Retrieve a buffer for a given device name and block number.
+ * If the block is not in the cache, it reads it from the disk.
+ * This function increments the buffer's reference count. The caller
+ * MUST call buffer_release() when done with the buffer.
  *
- * @param device      Device identifier string.
- * @param block_number Disk block number.
- * @return Pointer to buffer_t on success, or NULL on error.
+ * @param device_name Device identifier string (e.g., "hd0").
+ * @param block_number Disk block number (LBA).
+ * @return Pointer to buffer_t on success, or NULL on error (e.g., out of memory, I/O error).
  */
-buffer_t *buffer_get(const char *device, uint32_t block_number);
+buffer_t *buffer_get(const char *device_name, uint32_t block_number);
 
 /*
- * Release a previously acquired buffer (decrement its reference count).
+ * Release a previously acquired buffer (obtained via buffer_get).
+ * Decrements the buffer's reference count. If the count reaches zero,
+ * the buffer becomes a candidate for eviction (e.g., via LRU).
  *
- * @param buf Pointer to the buffer.
+ * @param buf Pointer to the buffer_t to release.
  */
 void buffer_release(buffer_t *buf);
 
 /*
- * Mark a buffer as dirty so it will be flushed to disk.
+ * Mark a buffer as dirty (modified).
+ * Dirty buffers will be written back to disk during sync or eviction.
  *
- * @param buf Pointer to the buffer.
+ * @param buf Pointer to the buffer_t to mark as dirty.
  */
 void buffer_mark_dirty(buffer_t *buf);
 
 /*
- * Flush a single buffer to disk if it is dirty.
+ * Flush a single buffer to disk if it is dirty and valid.
+ * Clears the dirty flag upon successful write.
  *
- * @param buf Pointer to the buffer.
- * @return 0 on success, non-zero on error.
+ * @param buf Pointer to the buffer_t to flush.
+ * @return 0 on success or if the buffer wasn't dirty/valid, negative error code on write failure.
  */
 int buffer_flush(buffer_t *buf);
 
 /*
- * Synchronize the entire buffer cache by flushing all dirty buffers.
+ * Synchronize the entire buffer cache.
+ * Writes all dirty buffers with a reference count of zero back to their respective disks.
  */
 void buffer_cache_sync(void);
 

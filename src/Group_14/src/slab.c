@@ -30,9 +30,7 @@
 #include "types.h"
  #include <string.h>  // For memset if needed
  
- #ifndef UINTPTR_MAX
- typedef unsigned int uintptr_t;
- #endif
+
  
  #ifndef PAGE_SIZE
  #define PAGE_SIZE 4096

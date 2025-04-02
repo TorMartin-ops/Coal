@@ -15,22 +15,24 @@ extern "C" {
  * Negative values indicate errors.
  */
 typedef enum fs_error {
-    FS_SUCCESS = 0,                /* No error */
-    FS_ERR_UNKNOWN = -1,           /* Unknown error */
-    FS_ERR_INVALID_PARAM = -2,     /* Invalid parameter */
-    FS_ERR_OUT_OF_MEMORY = -3,     /* Out of memory */
-    FS_ERR_IO = -4,                /* Input/output error */
-    FS_ERR_NOT_FOUND = -5,         /* File or directory not found */
-    FS_ERR_PERMISSION_DENIED = -6, /* Permission denied */
-    FS_ERR_FILE_EXISTS = -7,       /* File or directory already exists */
-    FS_ERR_NOT_A_DIRECTORY = -8,   /* Expected a directory, found file */
-    FS_ERR_IS_A_DIRECTORY = -9,    /* Expected a file, found directory */
-    FS_ERR_NO_SPACE = -10,         /* No space left on device */
-    FS_ERR_READ_ONLY = -11,        /* File system is read-only */
-    FS_ERR_NOT_SUPPORTED = -12,    /* Operation not supported */
-    FS_ERR_INVALID_FORMAT = -13,   /* Invalid file system format */
-    FS_ERR_CORRUPT = -14,          /* File system corrupt */
-    // Extend with additional error codes as needed.
+    FS_SUCCESS              = 0,    /* No error */
+    FS_ERR_UNKNOWN          = -1,   /* Unknown error */
+    FS_ERR_INVALID_PARAM    = -2,   /* Invalid parameter */
+    FS_ERR_OUT_OF_MEMORY    = -3,   /* Out of memory */
+    FS_ERR_IO               = -4,   /* I/O error */
+    FS_ERR_NOT_FOUND        = -5,   /* File or directory not found */
+    FS_ERR_PERMISSION_DENIED= -6,   /* Permission denied */
+    FS_ERR_FILE_EXISTS      = -7,   /* File or directory already exists */
+    FS_ERR_NOT_A_DIRECTORY  = -8,   /* Expected a directory, found file */
+    FS_ERR_IS_A_DIRECTORY   = -9,   /* Expected a file, found directory */
+    FS_ERR_NO_SPACE         = -10,  /* No space left on device */
+    FS_ERR_READ_ONLY        = -11,  /* File system is read-only */
+    FS_ERR_NOT_SUPPORTED    = -12,  /* Operation not supported */
+    FS_ERR_INVALID_FORMAT   = -13,  /* Invalid file system format */
+    FS_ERR_CORRUPT          = -14,  /* File system corrupt */
+    FS_ERR_MOUNT            = -15,  /* Mount error */
+    FS_ERR_NOT_INIT         = -16,  /* File system not initialized */
+    // Add additional error codes as needed.
 } fs_error_t;
 
 /**
@@ -58,6 +60,8 @@ static inline const char *fs_strerror(fs_error_t err) {
         case FS_ERR_NOT_SUPPORTED:      return "Operation not supported";
         case FS_ERR_INVALID_FORMAT:     return "Invalid file system format";
         case FS_ERR_CORRUPT:            return "File system corrupt";
+        case FS_ERR_MOUNT:              return "Mount error";
+        case FS_ERR_NOT_INIT:           return "File system not initialized";
         default:                        return "Unrecognized error";
     }
 }

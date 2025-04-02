@@ -2,8 +2,9 @@
 #ifndef FAT_H
 #define FAT_H
 
-
 #include "types.h"
+#include "disk.h" // Include disk.h for disk_t type
+#include "vfs.h"  // Include vfs.h for vfs_driver_t (if needed directly)
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,9 +15,7 @@ extern "C" {
 #define FAT_TYPE_FAT16  16
 #define FAT_TYPE_FAT32  32
 
-/* For FAT32, define the End-Of-Chain marker.
- * (For FAT12/16 this value is different.)
- */
+/* For FAT32, define the End-Of-Chain marker. */
 #define FAT32_EOC 0x0FFFFFFF
 
 /* BIOS Parameter Block (BPB) & Boot Sector structure */
@@ -59,55 +58,48 @@ typedef struct {
 #pragma pack(push, 1)
 typedef struct {
     uint8_t  name[11];     // 8.3 filename format
-    uint8_t  attr;
-    uint8_t  nt_reserved;
-    uint8_t  creation_time_tenth;
-    uint16_t creation_time;
-    uint16_t creation_date;
-    uint16_t last_access_date;
-    uint16_t first_cluster_high;  // For FAT32
-    uint16_t write_time;
-    uint16_t write_date;
-    uint16_t first_cluster_low;
-    uint32_t file_size;
+    uint8_t  attr;         // File attributes
+    uint8_t  nt_reserved;  // Reserved for use by Windows NT
+    uint8_t  creation_time_tenth; // Tenths of a second timestamp for creation time
+    uint16_t creation_time; // Time file was created
+    uint16_t creation_date; // Date file was created
+    uint16_t last_access_date; // Last access date
+    uint16_t first_cluster_high; // High word of this entry's first cluster number (FAT32)
+    uint16_t write_time;    // Time of last write
+    uint16_t write_date;    // Date of last write
+    uint16_t first_cluster_low; // Low word of this entry's first cluster number
+    uint32_t file_size;     // 32-bit file size in bytes
 } fat_dir_entry_t;
 #pragma pack(pop)
 
-/* FAT filesystem instance */
-typedef struct {
-    const char *device;            // Device identifier (e.g., "hd0")
+/* FAT filesystem instance structure */
+typedef struct fat_fs {
+    disk_t disk;                   // Underlying disk device structure
     fat_boot_sector_t boot_sector; // Copy of boot sector data
     uint32_t fat_size;             // FAT size in sectors
     uint32_t total_sectors;        // Total sectors on the volume
     uint32_t first_data_sector;    // First data sector (after reserved+FAT+root dir)
-    uint32_t root_dir_sectors;     // Number of sectors for root directory (FAT12/16)
+    uint32_t root_dir_sectors;     // Number of sectors for root directory (FAT12/16 only)
     uint32_t cluster_count;        // Number of data clusters
     uint8_t  type;                 // FAT type: FAT12, FAT16, or FAT32
-    void *fat_table;               // Pointer to the in‑memory FAT table (array of uint32_t for FAT32)
+    void *fat_table;               // Pointer to the in-memory FAT table
+    // Add mutex/lock here if supporting concurrency
 } fat_fs_t;
 
-/* FAT file handle */
-typedef struct {
-    fat_fs_t *fs;            // Associated filesystem
-    uint32_t first_cluster;  // First cluster of the file
-    uint32_t current_cluster;// Current cluster in file chain
-    uint32_t file_size;      // Size of the file in bytes
-    uint32_t pos;            // Current byte offset in the file
-} fat_file_t;
+/*
+ * NOTE: The primary way to interact with the FAT filesystem should now be
+ * through the VFS functions (vfs_open, vfs_read, etc.) after registering
+ * the FAT driver and mounting a FAT volume.
+ * The fat_file_t structure is removed as file state is managed internally
+ * via the VFS file_t and the driver's internal context (fat_file_context_t).
+ */
 
-/* FAT driver integration with VFS */
-typedef struct vfs_driver vfs_driver_t;  // Forward declaration (defined in vfs.h)
-
-/* FAT Filesystem API */
+/* FAT driver registration with VFS */
 int fat_register_driver(void);
 void fat_unregister_driver(void);
 
-int fat_mount(const char *device, fat_fs_t *fs);
-int fat_unmount(fat_fs_t *fs);
-int fat_open(fat_fs_t *fs, const char *path, fat_file_t *file);
-int fat_read(fat_fs_t *fs, fat_file_t *file, void *buf, size_t len, size_t *read_bytes);
-int fat_write(fat_fs_t *fs, fat_file_t *file, const void *buf, size_t len, size_t *written_bytes);
-int fat_close(fat_fs_t *fs, fat_file_t *file);
+/* fat_readdir remains as a potentially useful helper, though not part of the core VFS driver API */
+/* Reads directory entries from a given path (currently only root supported and needs rework) */
 int fat_readdir(fat_fs_t *fs, const char *path, fat_dir_entry_t **entries, size_t *entry_count);
 
 #ifdef __cplusplus

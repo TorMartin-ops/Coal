@@ -1,5 +1,5 @@
 #include "fs_init.h"
-#include "vfs.h"          // VFS API
+#include "vfs.h"          // VFS API (vfs_init, vfs_mount_root, vfs_shutdown, etc.)
 #include "mount.h"        // Mount operations
 #include "fat.h"          // FAT driver registration routines
 #include "terminal.h"     // For logging/debug output
@@ -12,21 +12,21 @@
 /* Global flag to track whether the file system layer has been initialized. */
 static bool fs_initialized = false;
 
-/* Default filesystem type for the root mount (we now use FAT32) */
+/* Default filesystem type for the root mount (using FAT32 in this example) */
 static const char *default_fs = "FAT32";
 
-/* 
+/*
  * fs_init:
- * Initializes the file system layer:
- *  - Initializes the VFS layer.
- *  - Registers available filesystem drivers.
- *  - Mounts the root filesystem.
+ * Initializes the file system layer by:
+ *   - Initializing the VFS layer.
+ *   - Registering available filesystem drivers.
+ *   - Mounting the root filesystem.
  */
 int fs_init(void)
 {
     terminal_write("[FS_INIT] Starting file system initialization...\n");
 
-    /* Initialize VFS (vfs_init returns void) */
+    /* Initialize the VFS layer (vfs_init returns void) */
     vfs_init();
 
     /* Register filesystem drivers. */
@@ -35,12 +35,12 @@ int fs_init(void)
     }
 
     /* Determine the root device.
-     * In a production system, this would come from boot parameters.
+     * In production, this would be obtained from boot configuration.
      */
     const char *root_device = "hd0";
 
     /* Mount the root filesystem.
-     * vfs_mount_root now expects: mount point, filesystem name, device.
+     * vfs_mount_root expects: mount point, filesystem name, device identifier.
      */
     if (vfs_mount_root("/", default_fs, root_device) != 0) {
         terminal_write("[FS_INIT] Error: Root file system mount failed.\n");
@@ -49,13 +49,15 @@ int fs_init(void)
 
     fs_initialized = true;
     terminal_write("[FS_INIT] File system initialization complete.\n");
-    return 0;
+    return FS_SUCCESS;
 }
 
 /*
  * fs_shutdown:
- * Shuts down the file system layer by unmounting the root filesystem,
- * unregistering drivers, and shutting down VFS.
+ * Shuts down the file system layer by:
+ *   - Unmounting the root filesystem.
+ *   - Unregistering filesystem drivers.
+ *   - Shutting down the VFS layer.
  */
 int fs_shutdown(void)
 {
@@ -64,6 +66,7 @@ int fs_shutdown(void)
         return FS_ERR_NOT_INIT;
     }
 
+    /* Unmount the root filesystem. */
     if (vfs_unmount_root() != 0) {
         terminal_write("[FS_SHUTDOWN] Warning: Root file system unmount failed.\n");
     }
@@ -71,10 +74,10 @@ int fs_shutdown(void)
     /* Unregister FAT driver */
     fat_unregister_driver();
 
-    /* Shutdown VFS */
+    /* Shutdown the VFS layer. */
     vfs_shutdown();
 
     fs_initialized = false;
     terminal_write("[FS_SHUTDOWN] File system shutdown complete.\n");
-    return 0;
+    return FS_SUCCESS;
 }

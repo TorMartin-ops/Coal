@@ -1,165 +1,271 @@
-#pragma once
-#ifndef STRING_H
-#define STRING_H
+#include "string.h"
 
-#include "types.h"
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/**
- * @brief Sets the first n bytes of the memory area pointed to by dest to the constant byte c.
- * @param dest Pointer to the memory area.
- * @param c The byte value to set.
- * @param n Number of bytes to set.
- * @return Pointer to dest.
- */
-void *memset(void *dest, int c, size_t n);
-
-/**
- * @brief Copies n bytes from memory area src to memory area dest.
- * The memory areas must not overlap.
- * @param dest Destination memory area.
- * @param src Source memory area.
- * @param n Number of bytes to copy.
- * @return Pointer to dest.
- */
-void *memcpy(void *dest, const void *src, size_t n);
-
-/**
- * @brief Copies n bytes from memory area src to memory area dest.
- * The memory areas may overlap.
- * @param dest Destination memory area.
- * @param src Source memory area.
- * @param n Number of bytes to copy.
- * @return Pointer to dest.
- */
-void *memmove(void *dest, const void *src, size_t n);
-
-/**
- * @brief Scans the initial n bytes of the memory area pointed to by s for the first instance of c.
- * @param s Memory area to scan.
- * @param c Character to search for (converted to unsigned char).
- * @param n Number of bytes to scan.
- * @return Pointer to the matching byte or NULL if c does not occur.
- */
-void *memchr(const void *s, int c, size_t n);
-
-/**
- * @brief Compares n bytes of memory areas s1 and s2.
- * @param s1 First memory area.
- * @param s2 Second memory area.
- * @param n Number of bytes to compare.
- * @return Integer less than, equal to, or greater than zero if s1 is found,
- *         respectively, to be less than, to match, or be greater than s2.
- */
-int memcmp(const void *s1, const void *s2, size_t n);
-
-/**
- * @brief Computes the length of the string s (excluding the terminating null byte).
- * @param s Null-terminated string.
- * @return Number of characters in s.
- */
-size_t strlen(const char *s);
-
-/**
- * @brief Compares the two strings s1 and s2.
- * @param s1 First null-terminated string.
- * @param s2 Second null-terminated string.
- * @return An integer less than, equal to, or greater than zero if s1 is found,
- *         respectively, to be less than, to match, or be greater than s2.
- */
-int strcmp(const char *s1, const char *s2);
-
-/**
- * @brief Compares up to n characters of the two strings s1 and s2.
- * @param s1 First null-terminated string.
- * @param s2 Second null-terminated string.
- * @param n Maximum number of characters to compare.
- * @return An integer less than, equal to, or greater than zero if s1 is found,
- *         respectively, to be less than, to match, or be greater than s2.
- */
-int strncmp(const char *s1, const char *s2, size_t n);
-
-/**
- * @brief Copies the string pointed to by src (including the terminating null byte) to dest.
- * @param dest Destination buffer.
- * @param src Source string.
- * @return Pointer to dest.
- */
-char *strcpy(char *dest, const char *src);
-
-/**
- * @brief Copies up to n characters from the string pointed to by src to dest.
- * If src is less than n characters long, the remainder of dest is padded with '\0'.
- * @param dest Destination buffer.
- * @param src Source string.
- * @param n Maximum number of characters to copy.
- * @return Pointer to dest.
- */
-char *strncpy(char *dest, const char *src, size_t n);
-
-/**
- * @brief Appends the string pointed to by src to the end of the string pointed to by dest.
- * @param dest Destination buffer (must be large enough).
- * @param src Source string.
- * @return Pointer to dest.
- */
-char *strcat(char *dest, const char *src);
-
-/**
- * @brief Appends up to n characters from the string pointed to by src to the end of dest.
- * @param dest Destination buffer.
- * @param src Source string.
- * @param n Maximum number of characters to append.
- * @return Pointer to dest.
- */
-char *strncat(char *dest, const char *src, size_t n);
-
-/**
- * @brief Returns a pointer to the first occurrence of character c in the string s.
- * @param s String to search.
- * @param c Character to search for.
- * @return Pointer to the first occurrence of c, or NULL if c is not found.
- */
-char *strchr(const char *s, int c);
-
-/**
- * @brief Returns a pointer to the last occurrence of character c in the string s.
- * @param s String to search.
- * @param c Character to search for.
- * @return Pointer to the last occurrence of c, or NULL if c is not found.
- */
-char *strrchr(const char *s, int c);
-
-/**
- * @brief Returns the length of the initial segment of str which consists entirely of characters in accept.
- * @param str String to be scanned.
- * @param accept String containing the characters to match.
- * @return Number of characters in the initial segment of str which consist only of characters from accept.
- */
-size_t strspn(const char *str, const char *accept);
-
-/**
- * @brief Finds the first occurrence in str of any character in accept.
- * @param str String to be scanned.
- * @param accept String containing the characters to search for.
- * @return Pointer to the first occurrence or NULL if no character from accept is found.
- */
-char *strpbrk(const char *str, const char *accept);
-
-/**
- * @brief Breaks string into a series of tokens using the delimiter delim.
- * @param str String to tokenize. In first call, this is the string to tokenize.
- *        In subsequent calls, this should be NULL to continue tokenizing.
- * @param delim String containing delimiter characters.
- * @return Pointer to the next token, or NULL if there are no more tokens.
- *         Note: This function maintains internal state between calls.
- */
-char *strtok(char *str, const char *delim);
-
-#ifdef __cplusplus
+void *memset(void *dest, int c, size_t n) {
+    unsigned char *ptr = (unsigned char *)dest;
+    unsigned char value = (unsigned char)c;
+    
+    for (size_t i = 0; i < n; i++) {
+        ptr[i] = value;
+    }
+    
+    return dest;
 }
-#endif
 
-#endif /* STRING_H */
+void *memcpy(void *dest, const void *src, size_t n) {
+    unsigned char *d = (unsigned char *)dest;
+    const unsigned char *s = (const unsigned char *)src;
+    
+    for (size_t i = 0; i < n; i++) {
+        d[i] = s[i];
+    }
+    
+    return dest;
+}
+
+void *memmove(void *dest, const void *src, size_t n) {
+    unsigned char *d = (unsigned char *)dest;
+    const unsigned char *s = (const unsigned char *)src;
+    
+    // If dest is before src or after src+n, we can use a forward copy
+    if (d <= s || d >= s + n) {
+        return memcpy(dest, src, n);
+    }
+    
+    // Otherwise, we need to copy backward to avoid overwriting source data
+    for (size_t i = n; i > 0; i--) {
+        d[i-1] = s[i-1];
+    }
+    
+    return dest;
+}
+
+void *memchr(const void *s, int c, size_t n) {
+    const unsigned char *ptr = (const unsigned char *)s;
+    unsigned char value = (unsigned char)c;
+    
+    for (size_t i = 0; i < n; i++) {
+        if (ptr[i] == value) {
+            return (void *)(ptr + i);
+        }
+    }
+    
+    return NULL;
+}
+
+int memcmp(const void *s1, const void *s2, size_t n) {
+    const unsigned char *p1 = (const unsigned char *)s1;
+    const unsigned char *p2 = (const unsigned char *)s2;
+    
+    for (size_t i = 0; i < n; i++) {
+        if (p1[i] != p2[i]) {
+            return p1[i] - p2[i];
+        }
+    }
+    
+    return 0;
+}
+
+size_t strlen(const char *s) {
+    size_t len = 0;
+    
+    while (s[len] != '\0') {
+        len++;
+    }
+    
+    return len;
+}
+
+int strcmp(const char *s1, const char *s2) {
+    while (*s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
+    }
+    
+    return *(const unsigned char *)s1 - *(const unsigned char *)s2;
+}
+
+int strncmp(const char *s1, const char *s2, size_t n) {
+    if (n == 0) {
+        return 0;
+    }
+    
+    while (n-- > 0 && *s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
+    }
+    
+    return n < 0 ? 0 : *(const unsigned char *)s1 - *(const unsigned char *)s2;
+}
+
+char *strcpy(char *dest, const char *src) {
+    char *original_dest = dest;
+    
+    while ((*dest++ = *src++) != '\0');
+    
+    return original_dest;
+}
+
+char *strncpy(char *dest, const char *src, size_t n) {
+    size_t i;
+    
+    // Copy from src to dest, up to n characters or until src is exhausted
+    for (i = 0; i < n && src[i] != '\0'; i++) {
+        dest[i] = src[i];
+    }
+    
+    // Pad remaining characters in dest with nulls
+    for (; i < n; i++) {
+        dest[i] = '\0';
+    }
+    
+    return dest;
+}
+
+char *strcat(char *dest, const char *src) {
+    char *original_dest = dest;
+    
+    // Find the end of dest
+    while (*dest) {
+        dest++;
+    }
+    
+    // Copy src to the end of dest
+    while ((*dest++ = *src++) != '\0');
+    
+    return original_dest;
+}
+
+char *strncat(char *dest, const char *src, size_t n) {
+    char *original_dest = dest;
+    size_t dest_len;
+    
+    // Find the end of dest
+    while (*dest) {
+        dest++;
+    }
+    dest_len = dest - original_dest;
+    
+    // Append at most n characters from src
+    size_t i;
+    for (i = 0; i < n && src[i] != '\0'; i++) {
+        dest[i] = src[i];
+    }
+    
+    // Add terminating null byte
+    dest[i] = '\0';
+    
+    return original_dest;
+}
+
+char *strchr(const char *s, int c) {
+    while (*s != '\0') {
+        if (*s == (char)c) {
+            return (char *)s;
+        }
+        s++;
+    }
+    
+    // Also check for terminating null if c is '\0'
+    if ((char)c == '\0') {
+        return (char *)s;
+    }
+    
+    return NULL;
+}
+
+char *strrchr(const char *s, int c) {
+    const char *last = NULL;
+    
+    // Search for the last occurrence
+    while (*s != '\0') {
+        if (*s == (char)c) {
+            last = s;
+        }
+        s++;
+    }
+    
+    // Check terminating null if c is '\0'
+    if ((char)c == '\0') {
+        return (char *)s;
+    }
+    
+    return (char *)last;
+}
+
+size_t strspn(const char *str, const char *accept) {
+    size_t count = 0;
+    
+    while (str[count] != '\0') {
+        // Check if current character is in accept
+        size_t i = 0;
+        while (accept[i] != '\0') {
+            if (str[count] == accept[i]) {
+                break;
+            }
+            i++;
+        }
+        
+        // If we reached the end of accept, character is not accepted
+        if (accept[i] == '\0') {
+            return count;
+        }
+        
+        count++;
+    }
+    
+    return count;
+}
+
+char *strpbrk(const char *str, const char *accept) {
+    while (*str != '\0') {
+        // Check if current character is in accept
+        const char *a = accept;
+        while (*a != '\0') {
+            if (*str == *a) {
+                return (char *)str;
+            }
+            a++;
+        }
+        str++;
+    }
+    
+    return NULL;
+}
+
+// Static variable for strtok's state
+static char *strtok_next = NULL;
+
+char *strtok(char *str, const char *delim) {
+    char *token_start;
+    
+    // If str is NULL, use the saved position
+    if (str == NULL) {
+        str = strtok_next;
+    }
+    
+    // If starting position is NULL, we're done
+    if (str == NULL) {
+        return NULL;
+    }
+    
+    // Skip leading delimiters
+    str += strspn(str, delim);
+    if (*str == '\0') {
+        strtok_next = NULL;
+        return NULL;
+    }
+    
+    // Find the end of the token
+    token_start = str;
+    str = strpbrk(token_start, delim);
+    if (str == NULL) {
+        // This is the last token
+        strtok_next = NULL;
+    } else {
+        // Terminate the token and set the next position
+        *str = '\0';
+        strtok_next = str + 1;
+    }
+    
+    return token_start;
+}

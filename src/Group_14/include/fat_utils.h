@@ -2,8 +2,12 @@
 #ifndef FAT_UTILS_H
 #define FAT_UTILS_H
 
-#include "types.h" 
-#include "fat.h"
+#include "types.h"
+#include "fat.h" // Include fat.h for fat_fs_t definition
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * @brief Converts a FAT cluster number into its corresponding Logical Block Address (LBA).
@@ -21,7 +25,7 @@ uint32_t fat_cluster_to_lba(fat_fs_t *fs, uint32_t cluster);
  * @brief Retrieves the next cluster in the chain from the FAT table.
  *
  * For FAT16, each FAT entry is 16 bits; for FAT32, each entry is 32 bits with the upper 4 bits reserved.
- * FAT12 is not supported in this demo.
+ * FAT12 is not fully supported in this demo.
  *
  * @param fs Pointer to the FAT filesystem context.
  * @param current_cluster The current cluster number.
@@ -42,5 +46,22 @@ int fat_get_next_cluster(fat_fs_t *fs, uint32_t current_cluster, uint32_t *next_
  * @return 0 on success, or a negative error code on failure.
  */
 int fat_set_cluster_entry(fat_fs_t *fs, uint32_t cluster, uint32_t value);
+
+/**
+ * @brief Converts a standard filename to FAT 8.3 format.
+ *
+ * Converts the filename part (before '.') to uppercase, pads with spaces to 8 chars.
+ * Converts the extension part (after '.') to uppercase, pads with spaces to 3 chars.
+ * Handles cases with no extension, or names/extensions shorter/longer than limits.
+ *
+ * @param input The null-terminated input filename (e.g., "file.txt").
+ * @param output_8_3 A character array of exactly 11 bytes to store the result
+ * (e.g., "FILE    TXT"). The output is NOT null-terminated by this function.
+ */
+void format_filename(const char *input, char output_8_3[11]);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // FAT_UTILS_H

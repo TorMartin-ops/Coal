@@ -1,5 +1,3 @@
-typedef unsigned int uintptr_t;
-
 #include "syscall.h"
 #include "terminal.h"
 #include "scheduler.h"    // For removing tasks, scheduling next, etc.

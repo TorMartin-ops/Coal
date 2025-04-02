@@ -10,7 +10,7 @@ extern "C" {
  * Foundational Includes
  *--------------------------------------------------------------------------*/
 #include <libc/stddef.h>    // Provides size_t, NULL, etc.
-#include <libc/stdint.h>    // Provides fixed-width integer types
+#include <libc/stdint.h>    // Provides fixed-width integer types (like uint32_t)
 #include <libc/stdbool.h>   // Provides bool, true, false
 
 /*---------------------------------------------------------------------------
@@ -34,6 +34,15 @@ extern "C" {
 /*---------------------------------------------------------------------------
  * Additional OS-Specific Types
  *--------------------------------------------------------------------------*/
+
+/*
+ * uintptr_t: Unsigned integer type capable of holding a pointer.
+ * For i386 (32-bit), this is typically uint32_t.
+ */
+#ifndef _UINTPTR_T_DEFINED // Use a guard to prevent redefinition
+typedef uint32_t uintptr_t;
+#define _UINTPTR_T_DEFINED
+#endif
 
 /*
  * ssize_t: Signed integer type for byte counts and error codes.
