@@ -76,4 +76,7 @@ void sleep_busy(uint32_t milliseconds);
  */
 void sleep_interrupt(uint32_t milliseconds);
 
+void pit_set_scheduler_ready(void);
+
+
 #endif // PIT_H

@@ -17,10 +17,6 @@
  #include <libc/stdarg.h>       // For va_list, va_start, va_end
  #include <string.h>            // For memset, memcpy, memmove, strlen, strcat
  
- /* VGA text mode constants */
- #define VGA_ADDRESS 0xB8000
- #define VGA_COLS    80
- #define VGA_ROWS    25
  
  /* Fixed tab width (number of spaces per tab) */
  #define TAB_WIDTH   4

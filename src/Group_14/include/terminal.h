@@ -8,6 +8,13 @@ extern "C" {
 #include "types.h"
 #include "keyboard.h"   // Needed for KeyEvent type
 
+
+// <<< ADD THESE DEFINES HERE >>>
+#define VGA_ADDRESS 0xB8000
+#define VGA_COLS    80
+#define VGA_ROWS    25
+// <<< END OF ADDED DEFINES >>>
+
 #define MAX_INPUT_LENGTH 256
 
 /**

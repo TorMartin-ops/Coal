@@ -2,84 +2,66 @@
 #ifndef VFS_H
 #define VFS_H
 
-#include "types.h"
+#include <libc/stddef.h>    // For size_t, NULL, etc.
+#include <libc/stdint.h>    // For uint32_t and friends
+#include <libc/stdbool.h>   // For bool
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/*---------------------------------------------------------------------------
- * File Open Flags
- *
- * NOTE: These definitions were moved to sys_file.h to resolve conflicts.
- * Ensure sys_file.h provides the standard O_* definitions (O_RDONLY=0, etc.)
- * if needed directly by VFS API users, or rely on the values passed
- * from the system call layer.
- *---------------------------------------------------------------------------*/
-// #define O_RDONLY    0x0001 // REMOVED
-// #define O_WRONLY    0x0002 // REMOVED
-// #define O_RDWR      0x0004 // REMOVED
-// #define O_CREAT     0x0008 // REMOVED
-// #define O_TRUNC     0x0010 // REMOVED
 
-/*---------------------------------------------------------------------------
- * File offset type and SEEK definitions (can stay or be moved to types.h)
- *---------------------------------------------------------------------------*/
-// typedef long off_t; // Already in types.h
-
+/* Define SEEK macros if not already defined */
 #ifndef SEEK_SET
-#define SEEK_SET 0
+#define SEEK_SET    0
 #endif
 #ifndef SEEK_CUR
-#define SEEK_CUR 1
+#define SEEK_CUR    1
 #endif
 #ifndef SEEK_END
-#define SEEK_END 2
+#define SEEK_END    2
 #endif
 
-/*---------------------------------------------------------------------------
- * Forward Declarations
- *---------------------------------------------------------------------------*/
-typedef struct vnode vnode_t;
-typedef struct vfs_driver vfs_driver_t; // Forward declare driver struct
+/* Type for file offset */
+typedef long off_t;
 
-/*---------------------------------------------------------------------------
- * File Handle
- *---------------------------------------------------------------------------*/
+/* Forward declaration for vnode */
+typedef struct vnode vnode_t;
+
+/* VFS file handle structure */
 typedef struct file {
-    vnode_t *vnode;      // Underlying file representation (vnode)
-    int flags;           // Open flags (O_RDONLY, etc. passed from syscall)
-    off_t offset;        // Current file offset
-    // Add lock/mutex here if multiple threads can access the same file_t
+    vnode_t *vnode;    // Underlying vnode pointer
+    uint32_t flags;    // Open flags
+    off_t offset;      // Current file offset
 } file_t;
 
-/*---------------------------------------------------------------------------
- * VFS Driver Interface
- *---------------------------------------------------------------------------*/
-struct vfs_driver { // Changed from typedef struct vfs_driver
-    const char *fs_name;  // Filesystem name (e.g. "FAT32")
+/* VFS driver interface */
+typedef struct vfs_driver {
+    const char *fs_name;  // Filesystem name (e.g., "FAT32")
+    /* Mount function: returns a filesystem-specific context pointer or NULL on failure. */
     void *(*mount)(const char *device);
+    /* Unmount function: returns 0 on success, negative on error. */
     int (*unmount)(void *fs_context);
+    /* Open: returns a pointer to a vnode or NULL on error. */
     vnode_t *(*open)(void *fs_context, const char *path, int flags);
+    /* Read: returns the number of bytes read or negative error code. */
     int (*read)(file_t *file, void *buf, size_t len);
+    /* Write: returns the number of bytes written or negative error code. */
     int (*write)(file_t *file, const void *buf, size_t len);
+    /* Close: returns 0 on success, negative error code on failure. */
     int (*close)(file_t *file);
+    /* Lseek: returns new file offset or negative error code. */
     off_t (*lseek)(file_t *file, off_t offset, int whence);
-    vfs_driver_t *next;  // Use struct vfs_driver here too
-}; // No typedef needed now
+    struct vfs_driver *next; // Linked list pointer for registered drivers
+} vfs_driver_t;
 
-/*---------------------------------------------------------------------------
- * Abstract Vnode
- *---------------------------------------------------------------------------*/
+/* Abstract vnode structure */
 struct vnode {
-    void *data;              // Filesystem-specific file or directory data.
-    vfs_driver_t *fs_driver; // Pointer to the VFS driver handling this vnode.
-    // Add common vnode info like type (file/dir), size, permissions, refcount?
+    void *data;                // Filesystem‑specific data (driver-specific context)
+    vfs_driver_t *fs_driver;   // Pointer to the driver handling this vnode
 };
 
-/*---------------------------------------------------------------------------
- * VFS API
- *---------------------------------------------------------------------------*/
+/* VFS API */
 void vfs_init(void);
 int vfs_register_driver(vfs_driver_t *driver);
 int vfs_unregister_driver(vfs_driver_t *driver);

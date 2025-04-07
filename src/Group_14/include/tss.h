@@ -51,4 +51,6 @@ void tss_init(void);
  */
 void tss_set_kernel_stack(uint32_t stack);
 
+extern void tss_flush(uint32_t tss_selector); 
+
 #endif // TSS_H
