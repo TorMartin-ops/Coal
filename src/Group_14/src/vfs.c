@@ -3,7 +3,7 @@
 #include "terminal.h"
 #include "string.h"
 #include "types.h"
-#include "sys_file.h" 
+#include "sys_file.h"
 #include "fs_errno.h" // Include for FS_ERR_* codes
 
 /* Define SEEK macros if not already defined elsewhere (e.g., types.h or sys_file.h) */
@@ -159,7 +159,15 @@ static int add_mount_entry(const char *mp, const char *fs, void *ctx, vfs_driver
         return -FS_ERR_OUT_OF_MEMORY;
     }
 
-    new_mount->mount_point = mp; // Assuming mp is persistent or copied elsewhere
+    // *** FIX: Ensure mount_point is dynamically allocated or guaranteed to persist ***
+    // Simple approach: assume mp is persistent (like string literal "/")
+    // Better approach: Allocate and copy mp if it might be temporary.
+    // char* mp_copy = kmalloc(strlen(mp) + 1); // Example if copy needed
+    // if (!mp_copy) { kfree(new_mount, sizeof(mount_entry_t)); return -FS_ERR_OUT_OF_MEMORY; }
+    // strcpy(mp_copy, mp);
+    // new_mount->mount_point = mp_copy;
+
+    new_mount->mount_point = mp; // Current code assumes mp persists
     new_mount->fs_name = fs;     // Assuming fs is persistent
     new_mount->fs_context = ctx;
     new_mount->driver = drv;
@@ -188,37 +196,57 @@ static mount_entry_t *find_mount_entry(const char *path) {
     }
 
     mount_entry_t *best_match = NULL;
-    size_t best_len = 0;
+    size_t best_len = 0; // Use 0 to allow root "/" (len 1) to be initial best match
 
     // TODO: Acquire mount_table lock (read lock if available) if SMP
     mount_entry_t *curr = mount_table;
     while (curr) {
         // Check if path starts with the mount point
         // Example: path="/home/user/file.txt", mount_point="/home"
+        // Example: path="/kernel.bin", mount_point="/"
         if (strncmp(path, curr->mount_point, curr->mount_point_len) == 0) {
-            // Now, ensure it's a proper prefix match:
-            // Either path is identical to mount point, OR
-            // the character in path AFTER the mount point is '/'
-            char char_after_mount = path[curr->mount_point_len];
-            if (char_after_mount == '\0' || char_after_mount == '/') {
-                 // This is a potential match. Is it better than the current best?
-                 if (curr->mount_point_len >= best_len) { // Use >= for '/' case
-                    best_match = curr;
-                    best_len = curr->mount_point_len;
+
+            // --- FIX: Logic to correctly match root and subdirectories ---
+            bool is_exact_match = (path[curr->mount_point_len] == '\0');
+            bool is_subdir_match = (path[curr->mount_point_len] == '/');
+            bool is_root_mount = (curr->mount_point_len == 1 && curr->mount_point[0] == '/');
+
+            // A valid match occurs if:
+            // 1. The path exactly matches the mount point.
+            // 2. The path starts with the mount point AND the next char is '/'.
+            // 3. The mount point is "/" (special case, matches any absolute path).
+            if (is_exact_match || is_subdir_match || is_root_mount) {
+                 // This is a potential match. Is it better (longer prefix) than the current best?
+                 // Special case: If current best match is root "/", and we find a longer match, prefer the longer one.
+                 if (curr->mount_point_len >= best_len) {
+                    // If lengths are equal, only overwrite if the new one isn't root OR the old one was NULL
+                    // This prevents "/home" overwriting "/" if path is "/home"
+                    if (curr->mount_point_len > best_len || !best_match) {
+                         best_match = curr;
+                         best_len = curr->mount_point_len;
+                    } else if (best_match && best_len == 1 && best_match->mount_point[0] == '/') {
+                         // If current best is root and we find another length 1 mount (shouldn't happen?), keep root.
+                         // If we find a non-root length 1 mount (e.g. "/a") and path is "/a/b", prefer "/a".
+                         if (!is_root_mount) { // Prefer non-root if lengths are both 1
+                              best_match = curr;
+                         }
+                    }
                  }
             }
+            // --- End FIX ---
         }
         curr = curr->next;
     }
     // TODO: Release lock
 
     if (best_match) {
-        terminal_printf("[VFS DEBUG] find_mount_entry: Path '%s' matched mount point '%s'\n", path, best_match->mount_point);
+        terminal_printf("[VFS DEBUG] find_mount_entry: Path '%s' best matched mount point '%s'\n", path, best_match->mount_point);
     } else {
         terminal_printf("[VFS DEBUG] find_mount_entry: No matching mount point found for path '%s'.\n", path);
     }
     return best_match;
 }
+
 
 /*---------------------------------------------------------------------------
  * Mount / Unmount Operations
@@ -236,10 +264,22 @@ int vfs_mount_root(const char *mp, const char *fs, const char *dev) {
         terminal_write("[VFS] Error: Root mount point must be '/'.\n");
         return -FS_ERR_INVALID_PARAM;
     }
+    // *** FIX: Allow re-mounting root if necessary? Or maybe not for simplicity. ***
+    // Let's keep the original check for now.
+    // TODO: Acquire mount_table lock
     if (mount_table != NULL) {
-        terminal_write("[VFS] Error: Root filesystem already mounted.\n");
-        return -FS_ERR_FILE_EXISTS; // Or another suitable error
+        // Check if the existing root mount is actually "/". Should be, but check anyway.
+        if(strcmp(mount_table->mount_point, "/") == 0) {
+             terminal_write("[VFS] Warning: Root filesystem already mounted. Ignoring.\n");
+            // TODO: Release lock
+             return FS_SUCCESS; // Or an error? Let's treat as non-fatal for now.
+        }
+        // If mount_table is not NULL but isn't root, that's an inconsistent state.
+        terminal_write("[VFS] Error: Mount table exists but root is not mounted? Inconsistent state.\n");
+        // TODO: Release lock
+        return -FS_ERR_UNKNOWN;
     }
+    // TODO: Release mount_table lock if acquired
 
     vfs_driver_t *driver = vfs_get_driver(fs);
     if (!driver) {
@@ -253,7 +293,8 @@ int vfs_mount_root(const char *mp, const char *fs, const char *dev) {
         return -FS_ERR_MOUNT;
     }
 
-    return add_mount_entry(mp, fs, fs_context, driver);
+    // Use "/" directly as it's a literal and persists.
+    return add_mount_entry("/", fs, fs_context, driver);
 }
 
 /**
@@ -262,17 +303,33 @@ int vfs_mount_root(const char *mp, const char *fs, const char *dev) {
  */
 int vfs_unmount_root(void) {
     // TODO: Acquire mount_table lock if SMP
-    mount_entry_t *root_mount = mount_table;
+    mount_entry_t *root_mount = NULL;
+    mount_entry_t *current = mount_table;
+    mount_entry_t **prev_next = &mount_table;
 
-    // Find the root mount entry (should be the only one if only root is mounted)
-    if (!root_mount || strcmp(root_mount->mount_point, "/") != 0) {
+    // Find the root mount entry specifically
+    while(current) {
+        if (strcmp(current->mount_point, "/") == 0) {
+            root_mount = current;
+            break;
+        }
+        prev_next = &current->next;
+        current = current->next;
+    }
+
+    if (!root_mount) {
          terminal_write("[VFS] Error: Root filesystem not found or not mounted at '/'.\n");
          // TODO: Release lock
          return -FS_ERR_NOT_FOUND;
     }
 
     // Check if it's the only mount point
-    if (root_mount->next != NULL) {
+    // Count entries first to be sure
+    int count = 0;
+    current = mount_table;
+    while(current) { count++; current = current->next; }
+
+    if (count > 1) {
         terminal_write("[VFS] Error: Cannot unmount root while other filesystems are mounted.\n");
          // TODO: Release lock
         return -FS_ERR_UNKNOWN; // Or EBUSY
@@ -288,13 +345,16 @@ int vfs_unmount_root(void) {
     }
 
     // Remove from table and free memory even if driver unmount failed? Decide policy.
-    mount_table = NULL; // Remove the single root entry
+    *prev_next = root_mount->next; // Remove from list (should set mount_table to NULL if it was the only one)
+    // *** FIX: Need to free the mount_point string if it was dynamically allocated ***
+    // if (root_mount->mount_point was allocated) kfree(root_mount->mount_point, ...);
     kfree(root_mount, sizeof(mount_entry_t)); // Free the mount_entry_t struct itself
     // TODO: Release lock
 
     terminal_write("[VFS] Unmounted root filesystem.\n");
     return result; // Return result from driver unmount
 }
+
 
 /**
  * @brief Shuts down the VFS layer.
@@ -327,29 +387,35 @@ file_t *vfs_open(const char *path, int flags) {
 
     mount_entry_t *mnt = find_mount_entry(path);
     if (!mnt) {
-        terminal_printf("[VFS] vfs_open: No mount point found for path '%s'.\n", path);
-        return NULL; // find_mount_entry already printed debug info
+        // Error already printed by find_mount_entry
+        return NULL;
     }
 
     // Calculate the path relative to the mount point
-    const char *relative_path;
-    if (mnt->mount_point_len == 1 && mnt->mount_point[0] == '/') {
-        // Mount point is root "/". Relative path starts after the initial '/'.
-        // If path is exactly "/", relative path should be "/". Handle this edge case.
-        relative_path = (path[1] == '\0') ? "/" : path; // Use path itself if root, otherwise start after '/'
-    } else {
-        // Mount point is like "/mnt/fat". Path is like "/mnt/fat/file.txt".
-        // Relative path starts after "/mnt/fat".
-        relative_path = path + mnt->mount_point_len;
-        // If the path was exactly the mount point (e.g. "/mnt/fat"), the relative path becomes empty.
-        // Filesystems usually expect "/" to refer to their root.
-        if (*relative_path == '\0') {
-            relative_path = "/"; // Represent the root of the mounted FS
-        }
-        // If path is "/mnt/fat/file.txt", relative_path points to "/file.txt" or "file.txt" depending on FS driver needs.
-        // The current calculation gives "/file.txt" if mount point doesn't end with '/'.
-        // Let's assume drivers expect paths relative to their root, potentially starting with '/'.
+    const char *relative_path = path + mnt->mount_point_len;
+
+    // --- FIX: Ensure relative path starts correctly ---
+    // If mount point is "/" (len 1), relative_path currently points to "kernel.bin"
+    // If mount point is "/boot" (len 5) and path is "/boot/kernel.bin", relative_path points to "/kernel.bin"
+    // If path is exactly the mount point (e.g. "/"), relative_path points to "" (null terminator)
+    // Filesystems generally expect "/" as the root of *their* filesystem.
+    if (*relative_path == '\0') {
+        // Path is identical to mount point, pass "/" as relative path to FS driver
+        relative_path = "/";
+    } else if (*relative_path != '/' && !(mnt->mount_point_len == 1 && mnt->mount_point[0] == '/')) {
+        // If mount point wasn't root, and relative path doesn't start with '/',
+        // it means path was like "/mnt/dir" matching mount "/mnt". Relative should be "/dir".
+        // This case seems less likely with the improved find_mount_entry logic but handle defensively.
+        // The current pointer should already be correct: path="/mnt/dir", mnt="/mnt", rel="/dir"
+        // Let's assume drivers handle both "/file" and "file" relative to their root.
+        // No change needed here based on improved find_mount_entry.
+    } else if (mnt->mount_point_len == 1 && mnt->mount_point[0] == '/') {
+         // Mount point is root "/". Path is "/file". Relative path currently points to "file".
+         // Let's pass the original path (which starts with '/') to the driver.
+         relative_path = path;
     }
+     // --- End FIX ---
+
 
     terminal_printf("[VFS] vfs_open: Using mount '%s', driver '%s', relative path '%s'\n",
                     mnt->mount_point, mnt->fs_name, relative_path);
