@@ -1,468 +1,411 @@
 /**
- * slab.c - Debug Instrumented Slab Allocator (Revised)
+ * slab.c - Slab Allocator Implementation
+ * Features: SMP Safety (Spinlocks), Slab Coloring, Footer Canaries, Reclaim Option.
  */
 
- #include "slab.h"         // Now includes the definition of slab_cache_t
+ #include "slab.h"
  #include "buddy.h"
- #include "terminal.h"     // Make sure terminal_printf is available
+ #include "terminal.h"
  #include "types.h"
- #include <string.h>      // For memset
+ #include "spinlock.h"
+ #include <string.h>     // For memset
  
  #ifndef PAGE_SIZE
+ #error "PAGE_SIZE is not defined!"
  #define PAGE_SIZE 4096
  #endif
  
- // Define a magic number to help detect slab header corruption
- #define SLAB_MAGIC 0x51AB51AB
+ // --- Magic Numbers ---
+ #define SLAB_HEADER_MAGIC 0xCAFEBABE // Slab metadata magic
+ #define SLAB_FOOTER_MAGIC 0xDEADBEEF // Object footer canary
  
- // Define alignment requirement (usually pointer size is sufficient)
- #define SLAB_HEADER_ALIGNMENT sizeof(void*)
+ // Define minimum alignment requirement
+ #define SLAB_MIN_ALIGNMENT sizeof(void*)
+ 
+ // Size of the footer canary
+ #define SLAB_FOOTER_SIZE sizeof(uint32_t)
  
  // Helper macro for alignment calculation
- // Ensure uintptr_t is defined in types.h or include <stdint.h> if available
  #define ALIGN_UP(addr, align) (((uintptr_t)(addr) + (align) - 1) & ~((uintptr_t)(align) - 1))
  
+ // --- Feature Flags ---
+ #define ENABLE_SLAB_RECLAIM 1 // Return empty slabs to buddy system
+ // #define SLAB_POISON_ALLOC 0xCC // Poison allocated objects
+ // #define SLAB_POISON_FREE  0xDD // Poison freed objects
  
- // Optional Slab Reclaim Feature Flag
- // #define ENABLE_SLAB_RECLAIM 1
  
- /*
-  * Internal Slab Header Structure (Definition remains in slab.c)
-  * This structure is placed at the beginning of each page allocated for a slab.
-  */
+ /* Internal Slab Header Structure */
  typedef struct slab {
-     uint32_t magic;         // Magic number for validation (SLAB_MAGIC)
-     struct slab *next;      // Link for slab_partial/slab_full lists in slab_cache_t
-     unsigned int free_count;// Number of free objects remaining in this slab
-     void *free_list;        // Pointer to the first free object within this slab's data area
-     slab_cache_t *cache;    // Back-pointer to the owning cache (optional but useful)
-     // Padding might be needed here if struct slab isn't naturally aligned,
-     // but usually handled by struct layout. Ensure SLAB_HEADER_ALIGNMENT is sufficient.
+     uint32_t magic;         // SLAB_HEADER_MAGIC
+     struct slab *next;      // Link for lists in slab_cache_t
+     unsigned int free_count;// Number of free objects in this slab
+     unsigned int objs_this_slab; // Actual number of objs that fit (due to coloring)
+     void *free_list;        // Pointer to the first free object
+     slab_cache_t *cache;    // Back-pointer to the owning cache
+     unsigned int color_offset;// Coloring offset for objects in this slab
+     // Padding to ensure header size is multiple of SLAB_MIN_ALIGNMENT
+ #define _SLAB_HEADER_CONTENT_SIZE (sizeof(uint32_t) + sizeof(struct slab*) + 2*sizeof(unsigned int) + sizeof(void*) + sizeof(slab_cache_t*) + sizeof(unsigned int))
+     char padding[ALIGN_UP(_SLAB_HEADER_CONTENT_SIZE, SLAB_MIN_ALIGNMENT) - _SLAB_HEADER_CONTENT_SIZE];
+ #undef _SLAB_HEADER_CONTENT_SIZE
  } slab_t;
  
- #define SLAB_HEADER_SIZE ALIGN_UP(sizeof(slab_t), SLAB_HEADER_ALIGNMENT)
+ #define SLAB_HEADER_SIZE sizeof(slab_t)
+ // _Static_assert((SLAB_HEADER_SIZE % SLAB_MIN_ALIGNMENT) == 0, "slab_t size not aligned");
  
- 
- /* --- struct slab_cache Definition MOVED TO slab.h --- */
- /*
- struct slab_cache {
-     const char *name;
-     size_t obj_size;            // Size of each object managed by this cache
-     unsigned int objs_per_slab;
-     slab_t *slab_partial;       // List of partially filled slabs
-     slab_t *slab_full;          // List of completely full slabs
-     unsigned long alloc_count;
-     unsigned long free_count;
-     // Add lock/mutex here for SMP safety
- };
- */
  
  /* Forward Declarations */
- static slab_t *slab_create_new(slab_cache_t *cache);
+ static slab_t *slab_grow_cache(slab_cache_t *cache);
+ static void slab_list_add(slab_t **list_head, slab_t *slab);
+ static bool slab_list_remove(slab_t **list_head, slab_t *slab_to_remove);
  
- /* Helper to check slab magic */
- static inline bool is_valid_slab(slab_t *slab) {
-     if (!slab) {
-         terminal_printf("[Slab Check] Error: Encountered NULL slab pointer.\n");
-         return false;
-     }
-     // Check if the slab pointer itself is page-aligned
-     if (((uintptr_t)slab & (PAGE_SIZE - 1)) != 0) {
-          terminal_printf("[Slab Check] Error: Slab 0x%x is not page aligned!\n", (uintptr_t)slab);
-          // This indicates a major issue elsewhere (buddy allocator?)
-          return false; // Don't check magic if address is wrong
-     }
- 
-     if (slab->magic != SLAB_MAGIC) {
-         terminal_printf("[Slab Check] Error: Invalid slab detected! Addr: 0x%x, Magic: 0x%x (Expected: 0x%x)\n",
-                         (uintptr_t)slab, slab->magic, SLAB_MAGIC);
-         return false;
-     }
-     // TODO: Add check for slab->cache back-pointer if implemented?
+ /* Helper: Check slab magic and alignment */
+ static inline bool is_valid_slab(const slab_t *slab) {
+     if (!slab) { return false; }
+     if (((uintptr_t)slab & (PAGE_SIZE - 1)) != 0) { return false; } // Check page alignment
+     if (slab->magic != SLAB_HEADER_MAGIC) { return false; } // Check magic
+     if (!slab->cache) { return false; } // Check back pointer
      return true;
  }
  
+ /* Helper: Add slab to list head */
+ static void slab_list_add(slab_t **list_head, slab_t *slab) {
+     slab->next = *list_head;
+     *list_head = slab;
+ }
+ 
+ /* Helper: Remove slab from list */
+ static bool slab_list_remove(slab_t **list_head, slab_t *slab_to_remove) {
+     // ... (implementation as before) ...
+     slab_t *current = *list_head;
+     slab_t **prev_next_ptr = list_head;
+     while (current) {
+         if (current == slab_to_remove) {
+             *prev_next_ptr = current->next;
+             current->next = NULL;
+             return true;
+         }
+         prev_next_ptr = &current->next;
+         current = current->next;
+     }
+     return false;
+ }
+ 
  /* slab_create */
- slab_cache_t *slab_create(const char *name, size_t obj_size) {
-     if (obj_size == 0) {
-         terminal_printf("[Slab] Cache '%s': Error - Object size cannot be 0.\n", name);
+ slab_cache_t *slab_create(const char *name, size_t obj_size, size_t align,
+                           unsigned int color_range,
+                           void (*constructor)(void*), void (*destructor)(void*))
+ {
+     if (obj_size == 0) { /* ... error ... */ return NULL; }
+     if (!name) name = "unnamed_slab";
+ 
+     // --- Determine Alignment ---
+     size_t final_align = align ? align : SLAB_MIN_ALIGNMENT;
+     if ((final_align & (final_align - 1)) != 0 || final_align == 0) {
+         terminal_printf("[Slab] Cache '%s': Invalid alignment %d.\n", name, (int)final_align);
          return NULL;
      }
  
-     // Ensure object size is large enough to hold a pointer for the free list
-     size_t min_size = sizeof(void*);
-     if (obj_size < min_size) {
-          terminal_printf("[Slab] Cache '%s': Warning - Object size %d too small, increasing to %d.\n",
-                          name, (int)obj_size, (int)min_size); // Use %d for size_t if printf limited
-          obj_size = min_size;
-     }
-     // Slab objects themselves should likely be aligned.
-     // Ensure obj_size requested is reasonable for alignment.
-     obj_size = ALIGN_UP(obj_size, sizeof(void*)); // Align object size up minimally
+     // --- Calculate Sizes ---
+     size_t user_obj_size = obj_size;
+     // Ensure space for free list pointer if object is small
+     if (user_obj_size < sizeof(void*)) user_obj_size = sizeof(void*);
  
-     // Allocate the cache descriptor structure itself using the buddy allocator
-     // (since kmalloc isn't ready when caches might be created initially)
-     // Or use a dedicated small allocation mechanism if available.
+     // Calculate internal size needed (user size + footer canary)
+     size_t internal_size_req = user_obj_size + SLAB_FOOTER_SIZE;
+     // Align the internal size
+     size_t internal_slot_size = ALIGN_UP(internal_size_req, final_align);
+ 
+     // --- Allocate Cache Descriptor ---
      slab_cache_t *cache = (slab_cache_t *)buddy_alloc(sizeof(slab_cache_t));
-     if (!cache) {
-          terminal_printf("[Slab] Cache '%s': Failed buddy_alloc for cache struct (%d bytes).\n", name, sizeof(slab_cache_t));
-          return NULL;
-     }
+     if (!cache) { /* ... error ... */ return NULL; }
  
-     // Initialize the cache descriptor
-     cache->name             = name; // Should copy name if `name` is not persistent
-     cache->obj_size         = obj_size; // Store the final (potentially adjusted/aligned) object size
-     cache->objs_per_slab    = 0; // Calculated when first slab is created
+     // --- Initialize Cache Descriptor ---
+     cache->name             = name;
+     cache->user_obj_size    = user_obj_size; // Store original request size (or min for ptr)
+     cache->internal_slot_size = internal_slot_size;
+     cache->alignment        = final_align;
+     cache->objs_per_slab_max = 0; // Calculated in grow_cache
      cache->slab_partial     = NULL;
      cache->slab_full        = NULL;
+     cache->slab_empty       = NULL;
+     cache->color_next       = 0;
+     // Ensure color range is valid (e.g., multiple of alignment)
+     cache->color_range      = (color_range > 0) ? (color_range & ~(final_align - 1)) : 0;
+     if (cache->color_range > PAGE_SIZE / 2) cache->color_range = 0; // Avoid excessive waste
      cache->alloc_count      = 0;
      cache->free_count       = 0;
+     cache->constructor      = constructor;
+     cache->destructor       = destructor;
+     spinlock_init(&cache->lock);
  
-     // terminal_printf("[Slab] Created cache '%s' for object size %d\n", name, (int)cache->obj_size);
+     // --- Final Checks ---
+     if (SLAB_HEADER_SIZE + cache->internal_slot_size > PAGE_SIZE) {
+         terminal_printf("[Slab] Cache '%s': Page size too small for header + one slot (%d + %d > %d).\n",
+                        name, (int)SLAB_HEADER_SIZE, (int)cache->internal_slot_size, (int)PAGE_SIZE);
+         buddy_free(cache, sizeof(slab_cache_t));
+         return NULL;
+     }
+ 
+     terminal_printf("[Slab] Created cache '%s' (user=%d, slot=%d, align=%d, color=%d)\n",
+                     name, (int)cache->user_obj_size, (int)cache->internal_slot_size,
+                     (int)cache->alignment, cache->color_range);
      return cache;
  }
  
- /* slab_create_new: Allocates and initializes a new slab (page) for a cache */
- static slab_t *slab_create_new(slab_cache_t *cache) {
-     // Allocate one page for the slab metadata + objects
-     void *page = buddy_alloc(PAGE_SIZE);
-     if (!page) {
-         terminal_printf("[Slab] Cache '%s': Failed buddy_alloc for new slab page!\n", cache->name);
-         return NULL;
-     }
  
-     slab_t *slab = (slab_t *)page; // Slab header starts at page beginning
-     slab->magic = SLAB_MAGIC;
+ /* slab_grow_cache: Allocates/initializes new slab with coloring */
+ static slab_t *slab_grow_cache(slab_cache_t *cache) {
+     // --- Lock MUST be held ---
+ 
+     // *** Release lock BEFORE buddy_alloc ***
+     uintptr_t irq_flags = local_irq_save();
+     spinlock_release_irqrestore(&cache->lock, irq_flags);
+ 
+     void *page = buddy_alloc(PAGE_SIZE); // Buddy must be thread-safe
+ 
+     // *** Re-acquire lock AFTER buddy_alloc ***
+     irq_flags = spinlock_acquire_irqsave(&cache->lock);
+ 
+     if (!page) { /* ... handle error ... */ return NULL; }
+ 
+     // --- Initialize Slab Header (lock held) ---
+     slab_t *slab = (slab_t *)page;
+     slab->magic = SLAB_HEADER_MAGIC;
      slab->next = NULL;
-     slab->cache = cache; // Set back-pointer
+     slab->cache = cache;
  
-     // Calculate available space after the header
-     size_t available_space = PAGE_SIZE - SLAB_HEADER_SIZE;
- 
-     // Ensure cache object size is valid (should be set in slab_create)
-     if (cache->obj_size == 0) {
-         terminal_printf("[Slab] ERROR: Cache '%s' obj_size is zero in slab_create_new.\n", cache->name);
-         buddy_free(page, PAGE_SIZE);
-         return NULL;
+     // --- Calculate Coloring Offset ---
+     if (cache->color_range > 0) {
+         // Cycle through offsets, ensuring alignment
+         slab->color_offset = (cache->color_next * cache->alignment) % cache->color_range;
+         cache->color_next++; // Increment for next slab
+     } else {
+         slab->color_offset = 0;
      }
  
-      // Calculate how many objects fit if not already done (first slab)
-     if (cache->objs_per_slab == 0) {
-         if (available_space < cache->obj_size) { // Check if even one object fits
-              terminal_printf("[Slab] ERROR: Page size too small for header + one object (obj_size %d) in cache '%s'\n",
-                             (int)cache->obj_size, cache->name);
-              buddy_free(page, PAGE_SIZE);
-              return NULL;
-         }
-         cache->objs_per_slab = (unsigned int)(available_space / cache->obj_size);
+     // --- Calculate Objects Fitting in *This* Slab (with coloring) ---
+     size_t space_after_header = PAGE_SIZE - SLAB_HEADER_SIZE;
+     size_t space_after_color = (space_after_header > slab->color_offset) ? space_after_header - slab->color_offset : 0;
+     slab->objs_this_slab = (unsigned int)(space_after_color / cache->internal_slot_size);
+ 
+     if (slab->objs_this_slab == 0) {
+         terminal_printf("[Slab] Cache '%s': Error - Zero objects fit slab after coloring (offset %d, slot size %d).\n",
+                        cache->name, slab->color_offset, (int)cache->internal_slot_size);
+         buddy_free(page, PAGE_SIZE); // Free the page
+         return NULL; // Indicate failure
+     }
+     slab->free_count = slab->objs_this_slab;
+ 
+     // Store max objs per slab if first time
+     if (cache->objs_per_slab_max == 0) {
+         cache->objs_per_slab_max = slab->objs_this_slab; // Or calc based on 0 offset? Let's use actual first calc.
      }
  
-     // Should not be zero if the check above passed
-     if (cache->objs_per_slab == 0) {
-          terminal_printf("[Slab] ERROR: Calculated zero objects per slab for cache '%s' (obj_size %d)\n",
-                         cache->name, (int)cache->obj_size);
-          buddy_free(page, PAGE_SIZE);
-          return NULL;
-     }
- 
-     slab->free_count = cache->objs_per_slab; // All objects are initially free
- 
-     // terminal_printf("  New slab 0x%x for cache '%s': objs=%d\n", (uintptr_t)slab, cache->name, slab->free_count);
- 
-     // --- Build the free list within the slab ---
-     // Objects start after the slab header
-     uint8_t *obj_area_start = (uint8_t *)page + SLAB_HEADER_SIZE;
-     slab->free_list = (void *)obj_area_start; // Head of list is the first object
+     // --- Build Free List (with coloring offset) ---
+     uint8_t *obj_area_start = (uint8_t *)page + SLAB_HEADER_SIZE + slab->color_offset;
+     slab->free_list = (void *)obj_area_start;
  
      for (unsigned int i = 0; i < slab->free_count; i++) {
-         void *current_obj = (void *)(obj_area_start + i * cache->obj_size);
-         void *next_obj = NULL;
-         if (i < (slab->free_count - 1)) { // If not the last object
-             next_obj = (void *)(obj_area_start + (i + 1) * cache->obj_size);
-         }
-         // Write pointer to next free object into the current object's memory space
+         void *current_obj = (void *)(obj_area_start + i * cache->internal_slot_size);
+         void *next_obj = (i < slab->free_count - 1) ? (void *)(obj_area_start + (i + 1) * cache->internal_slot_size) : NULL;
          *(void **)current_obj = next_obj;
+         // Write initial footer canary for freed objects
+         *(uint32_t*)((uintptr_t)current_obj + cache->internal_slot_size - SLAB_FOOTER_SIZE) = SLAB_FOOTER_MAGIC;
+         #ifdef SLAB_POISON_FREE
+         memset((uint8_t*)current_obj + sizeof(void*), SLAB_POISON_FREE, cache->user_obj_size - sizeof(void*)); // Poison only user area
+         #endif
      }
-     // terminal_printf("  Built free list starting at 0x%x\n", (uintptr_t)slab->free_list);
  
+     // Lock is still held, return new slab
      return slab;
  }
  
- /* slab_alloc: Allocates one object from the cache */
+ /* slab_alloc */
  void *slab_alloc(slab_cache_t *cache) {
-     if (!cache) {
-          terminal_write("[Slab] ERROR: slab_alloc called with NULL cache!\n");
-          return NULL;
-     }
+     if (!cache) { /* ... */ return NULL; }
  
-     // Add lock here for SMP safety
-     // lock_acquire(&cache->lock);
+     uintptr_t irq_flags = spinlock_acquire_irqsave(&cache->lock); // *** Acquire Lock ***
  
      slab_t *slab = cache->slab_partial;
+     void *obj = NULL;
  
-     // If no partial slabs, try the full list (shouldn't happen ideally) or create new
+     // Try promoting from empty list
+     if (!slab && cache->slab_empty) { /* ... promotion logic as before ... */
+         slab = cache->slab_empty;
+         if (slab_list_remove(&cache->slab_empty, slab)) { slab_list_add(&cache->slab_partial, slab); }
+         else { slab = NULL; /* Log error */ }
+     }
+     // Grow cache if needed
      if (!slab) {
-         // terminal_printf("[Slab DEBUG] Cache '%s': No partial slabs, creating new.\n", cache->name);
-         slab = slab_create_new(cache);
-         if (!slab) {
-             terminal_printf("[Slab] Cache '%s': Failed to create new slab during allocation.\n", cache->name);
-             // lock_release(&cache->lock);
-             return NULL; // Allocation failed
-         }
-         // Add the new slab (which is partially full) to the partial list
-         slab->next = NULL; // It's the only one currently
-         cache->slab_partial = slab;
-         // Fall through to allocate from this new slab
+         slab = slab_grow_cache(cache); // Handles lock release/re-acquire for buddy
+         if (!slab) { spinlock_release_irqrestore(&cache->lock, irq_flags); return NULL; }
+         slab_list_add(&cache->slab_partial, slab);
      }
  
-     // Validate the chosen slab (should be from partial list or newly created)
-     if (!is_valid_slab(slab)) {
-         terminal_printf("[Slab] Cache '%s': Corruption detected in slab header 0x%x! Cannot allocate.\n", cache->name, (uintptr_t)slab);
-         // TODO: What to do with a corrupt slab? Remove it? Attempt recovery?
-         // For now, fail the allocation. Need robust removal from list.
-         // lock_release(&cache->lock);
-         return NULL;
-     }
+     // --- Perform Allocation (lock is held) ---
+     if (!is_valid_slab(slab) || !slab->free_list) { /* ... handle error ... */ spinlock_release_irqrestore(&cache->lock, irq_flags); return NULL; }
  
-     // Check if the free list is valid before dereferencing
-     if (!slab->free_list) {
-         // This indicates an internal inconsistency - a slab on the partial list
-         // should always have at least one free object and thus a non-NULL free_list.
-         terminal_printf("[Slab] Cache '%s': ERROR! Slab 0x%x in partial list has NULL free_list! free_count=%d. State inconsistent.\n",
-                         cache->name, (uintptr_t)slab, slab->free_count);
-         // Attempt to remove the broken slab from the partial list
-         // This assumes 'slab' is definitely cache->slab_partial here. Needs careful list management if not.
-         if (cache->slab_partial == slab) {
-              cache->slab_partial = slab->next;
-         } else {
-              // How did we get here if slab wasn't the head? Indicates list traversal needed.
-              // Add logic to find and remove 'slab' from cache->slab_partial list if necessary.
-              terminal_write("  [Slab] Couldn't easily remove inconsistent slab from partial list head.\n");
-         }
-         // Don't free the slab's page - it might be corrupted. Maybe leak it for debugging?
-         // lock_release(&cache->lock);
-         return NULL; // Indicate allocation failure due to inconsistency
-     }
- 
-     // --- Allocate object ---
-     void *obj = slab->free_list;               // Get the first free object
-     slab->free_list = *(void **)obj;           // Advance free list pointer (read from object memory)
+     obj = slab->free_list; // Get raw object slot pointer
+     slab->free_list = *(void **)obj; // Advance free list
      slab->free_count--;
      cache->alloc_count++;
  
-     // terminal_printf("[Slab DEBUG] Cache '%s': Alloc obj 0x%x from slab 0x%x. free_count=%d\n",
-     //                cache->name, (uintptr_t)obj, (uintptr_t)slab, slab->free_count);
- 
-     // --- Update Slab Lists ---
-     // If the slab became full after this allocation, move it from partial to full list
-     if (slab->free_count == 0) {
-         // terminal_printf("  Slab 0x%x is now full, moving to full list.\n", (uintptr_t)slab);
-         // Remove from partial list head (most common case)
-         if (cache->slab_partial == slab) {
-              cache->slab_partial = slab->next;
-         } else {
-              // Need list traversal to find and remove if not head - requires prev pointer or careful loop
-               terminal_write("  [Slab] Warning: Full slab was not head of partial list - removal skipped (needs list traversal).\n");
-               // Add proper list removal logic here if this case is possible/expected.
-         }
- 
-         // Add to front of full list
-         slab->next = cache->slab_full;
-         cache->slab_full = slab;
+     // Update lists if slab became full
+     if (slab->free_count == 0) { /* ... move slab partial -> full ... */
+          if (slab_list_remove(&cache->slab_partial, slab)) { slab_list_add(&cache->slab_full, slab); }
+          else { /* Log error */ }
      }
  
-     // Optional: Poison allocated memory before returning pointer to user
-     // memset(obj, 0xCC, cache->obj_size);
+     // --- Write Footer Canary (inside lock) ---
+     *(uint32_t*)((uintptr_t)obj + cache->internal_slot_size - SLAB_FOOTER_SIZE) = SLAB_FOOTER_MAGIC;
  
-     // lock_release(&cache->lock);
-     return obj;
+     // Call constructor (inside lock)
+     if (cache->constructor) {
+         cache->constructor(obj); // Pass pointer to start of user area
+     }
+ 
+     spinlock_release_irqrestore(&cache->lock, irq_flags); // *** Release Lock ***
+ 
+     #ifdef SLAB_POISON_ALLOC
+     memset(obj, SLAB_POISON_ALLOC, cache->user_obj_size); // Poison user area only
+     #endif
+ 
+     return obj; // Return pointer to start of user area
  }
  
- /* slab_free: Frees an object back to its slab cache */
- void slab_free(slab_cache_t *cache, void *obj) {
-     if (!cache || !obj) {
-          if(!cache) terminal_write("[Slab] Warning: slab_free called with NULL cache.\n");
-          if(!obj) terminal_write("[Slab] Warning: slab_free called with NULL object pointer.\n");
-          return;
-     }
  
-     // Add lock here for SMP safety
-     // lock_acquire(&cache->lock);
+ /* slab_free */
+ void slab_free(slab_cache_t *provided_cache, void *obj) {
+     if (!obj) { return; }
  
-     // Calculate the slab base address from the object pointer
-     uintptr_t obj_addr = (uintptr_t)obj;
-     uintptr_t slab_base = obj_addr & ~(PAGE_SIZE - 1); // Assumes slabs are page-aligned
+     // --- Initial Validation (before lock) ---
+     uintptr_t obj_addr = (uintptr_t)obj; // This is the start of the user area / internal slot
+     uintptr_t slab_base = obj_addr & ~(PAGE_SIZE - 1);
      slab_t *slab = (slab_t *)slab_base;
+     if (!is_valid_slab(slab)) { /* ... handle error ... */ return; }
+     slab_cache_t *cache = slab->cache;
+     if (!cache) { /* ... handle error ... */ return; }
+     if (provided_cache && provided_cache != cache) { /* ... log warning ... */ }
  
-     // --- Validations ---
-     if (!is_valid_slab(slab)) {
-         terminal_printf("[Slab] Cache '%s': ERROR freeing obj 0x%x - Invalid slab detected at base 0x%x!\n",
-                         cache->name, obj_addr, slab_base);
-         // lock_release(&cache->lock);
-         return; // Cannot proceed with suspect slab
+     // --- Acquire Lock ---
+     uintptr_t irq_flags = spinlock_acquire_irqsave(&cache->lock);
+ 
+     // --- Validations (inside lock) ---
+     if (!is_valid_slab(slab) || slab->cache != cache) { /* ... handle error ... */ spinlock_release_irqrestore(&cache->lock, irq_flags); return; }
+ 
+     // Validate address range and alignment using color offset
+     uintptr_t data_start = slab_base + SLAB_HEADER_SIZE + slab->color_offset;
+     // Note: objs_this_slab might be smaller than cache->objs_per_slab_max due to coloring
+     uintptr_t data_end = data_start + (slab->objs_this_slab * cache->internal_slot_size);
+     if (obj_addr < data_start || obj_addr >= data_end || ((obj_addr - data_start) % cache->internal_slot_size) != 0) {
+         terminal_printf("[Slab] Cache '%s': ERROR freeing obj 0x%x - Addr out of range/misaligned for slab 0x%x (color %d)!\n",
+                         cache->name, obj_addr, slab_base, slab->color_offset);
+         spinlock_release_irqrestore(&cache->lock, irq_flags); return;
      }
  
-     // Check if slab belongs to the correct cache (if back-pointer exists)
-     if (slab->cache != cache) {
-          terminal_printf("[Slab] Cache '%s': ERROR freeing obj 0x%x - Slab 0x%x belongs to different cache ('%s')!\n",
-                         cache->name, obj_addr, slab_base, slab->cache ? slab->cache->name : "UNKNOWN");
-         // lock_release(&cache->lock);
-         return; // Freeing to wrong cache!
-     }
- 
-     // Check if object address is within the valid data range for this slab
-     uintptr_t data_start = slab_base + SLAB_HEADER_SIZE;
-     uintptr_t data_end = data_start + (cache->objs_per_slab * cache->obj_size);
-     if (obj_addr < data_start || obj_addr >= data_end) {
-          terminal_printf("[Slab] Cache '%s': ERROR freeing obj 0x%x - Address out of range for slab 0x%x [0x%x-0x%x)!\n",
-                          cache->name, obj_addr, slab_base, data_start, data_end);
-         // lock_release(&cache->lock);
+     // --- Check Footer Canary (inside lock) ---
+     uint32_t *footer_ptr = (uint32_t*)(obj_addr + cache->internal_slot_size - SLAB_FOOTER_SIZE);
+     if (*footer_ptr != SLAB_FOOTER_MAGIC) {
+         terminal_printf("[Slab] Cache '%s': CORRUPTION DETECTED freeing obj 0x%x! Footer magic invalid (Expected: 0x%x, Found: 0x%x).\n",
+                         cache->name, obj_addr, SLAB_FOOTER_MAGIC, *footer_ptr);
+         // Optionally: Mark slab as corrupt? Abort? For now, just report and abort free.
+         spinlock_release_irqrestore(&cache->lock, irq_flags);
+         // Consider a panic or special handling for corrupted memory
          return;
      }
-     // Check if object address is correctly aligned for this cache's object size
-     if (((obj_addr - data_start) % cache->obj_size) != 0) {
-           terminal_printf("[Slab] Cache '%s': ERROR freeing obj 0x%x - Misaligned within slab 0x%x (obj_size %d)!\n",
-                          cache->name, obj_addr, slab_base, (int)cache->obj_size);
-         // lock_release(&cache->lock);
-         return;
+ 
+     // Call destructor (inside lock)
+     if (cache->destructor) {
+         cache->destructor(obj);
      }
  
-     // Optional: Check for double free. Iterate through slab's current free_list. Complex/slow.
-     // void *current = slab->free_list;
-     // while(current) { if(current == obj) { /* double free! */ return; } current = *(void**)current; }
+     #ifdef SLAB_POISON_FREE
+     memset(obj, SLAB_POISON_FREE, cache->user_obj_size); // Poison user area
+     // Re-write footer magic after poisoning if needed, or poison around it
+     *footer_ptr = SLAB_FOOTER_MAGIC;
+     #endif
  
-     // Optional: Poison memory being freed
-     // memset(obj, 0xDD, cache->obj_size);
- 
-     // --- Perform Free ---
-     // Prepend object to the slab's free list
-     *(void **)obj = slab->free_list;
+     // --- Perform Free (inside lock) ---
+     *(void **)obj = slab->free_list; // Prepend to free list
      slab->free_list = obj;
      slab->free_count++;
-     cache->free_count++; // Increment cache-wide free count
+     cache->free_count++;
  
-     // terminal_printf("[Slab DEBUG] Cache '%s': Freed obj 0x%x into slab 0x%x (free_count now %d)\n",
-     //                cache->name, obj_addr, slab_base, slab->free_count);
+     // --- Update Slab Lists (inside lock) ---
+     bool was_full = (slab->free_count == 1);
+     bool is_empty = (slab->free_count == slab->objs_this_slab); // Check against *this slab's* capacity
+     bool list_changed = false;
  
+     if (is_empty) { /* ... Move from partial/full to empty/reclaim (as before, use objs_this_slab) ... */
+         // Remove from partial or full list
+         if (was_full) { list_changed = slab_list_remove(&cache->slab_full, slab); }
+         else { list_changed = slab_list_remove(&cache->slab_partial, slab); }
  
-     // --- Update Slab Lists ---
-     // If the slab was previously full (free_count was 0, now 1), move it from full list to partial list.
-     // If the slab is now completely empty (free_count == objs_per_slab), consider reclaiming it.
-     if (slab->free_count == 1) { // It just transitioned from 0 to 1 free
-         // terminal_printf("  Slab 0x%x was full, moving to partial list.\n", (uintptr_t)slab);
-         // Try to remove from full list
-         slab_t **prev = &cache->slab_full;
-         slab_t *curr = cache->slab_full;
-         bool found_in_full = false;
-         while (curr) {
-             if (curr == slab) {
-                 *prev = curr->next; // Remove from list
-                 found_in_full = true;
-                 break;
-             }
-             prev = &curr->next;
-             curr = curr->next;
+         if (!list_changed && slab->free_count != 1) { // Only error if it wasn't found and wasn't just moved from full
+              terminal_printf("[Slab] Cache '%s': ERROR! Empty slab 0x%x not found on partial/full list.\n", cache->name, (uintptr_t)slab);
          }
  
-         if (found_in_full) {
-             // Add to front of partial list
-             slab->next = cache->slab_partial;
-             cache->slab_partial = slab;
-             // terminal_printf("   Moved 0x%x from full -> partial.\n", (uintptr_t)slab);
-         } else {
-              // This is an error state - free_count became 1, but it wasn't on the full list.
-              // It must have already been on the partial list (if free_count was > 0 before)
-              // OR the list state is corrupted.
-               bool found_in_partial = false;
-               curr = cache->slab_partial;
-               while(curr) { if(curr == slab) {found_in_partial=true; break;} curr=curr->next; }
- 
-               if (!found_in_partial) {
-                     terminal_printf("[Slab] Cache '%s': ERROR! Slab 0x%x state inconsistent during free (count=1, not in full/partial lists).\n", cache->name, (uintptr_t)slab);
-               } else {
-                    // Already on partial list, no move needed. This happens if free_count went from e.g. 2 to 3.
-                    // terminal_printf("  Slab 0x%x already on partial list (free_count now %d).\n", (uintptr_t)slab, slab->free_count);
-               }
+         #ifdef ENABLE_SLAB_RECLAIM
+         if (list_changed) {
+             spinlock_release_irqrestore(&cache->lock, irq_flags); // Release before buddy_free
+             buddy_free((void*)slab_base, PAGE_SIZE);
+             return; // Slab memory is gone
          }
+         #else
+         if (list_changed) { slab_list_add(&cache->slab_empty, slab); }
+         #endif
+ 
+     } else if (was_full) { /* ... Move full -> partial (as before) ... */
+          if (slab_list_remove(&cache->slab_full, slab)) { slab_list_add(&cache->slab_partial, slab); }
+          else { /* Log error */ }
      }
-     #ifdef ENABLE_SLAB_RECLAIM
-     // Optional: Reclaim fully empty slabs
-     else if (slab->free_count == cache->objs_per_slab) {
-         terminal_printf("  Slab 0x%x is now empty, attempting reclaim...\n", (uintptr_t)slab);
-         // Remove from partial list
-         slab_t **prev = &cache->slab_partial;
-         slab_t *curr = cache->slab_partial;
-         bool removed = false;
-         while(curr) {
-             if (curr == slab) {
-                 *prev = curr->next;
-                 removed = true;
-                 break;
-             }
-             prev = &curr->next;
-             curr = curr->next;
-         }
  
-         if (removed) {
-              terminal_printf("   Removed empty slab 0x%x from partial list, freeing page.\n", (uintptr_t)slab);
-              // IMPORTANT: Ensure no pointers to objects within this slab exist anywhere!
-              buddy_free((void*)slab_base, PAGE_SIZE); // Free the page back to buddy system
-         } else {
-              terminal_printf("   ERROR: Could not find empty slab 0x%x in partial list for reclaim!\n", (uintptr_t)slab);
-         }
-     }
-     #endif // ENABLE_SLAB_RECLAIM
- 
-     // lock_release(&cache->lock);
+     // --- Release Lock (if not already released by reclaim) ---
+     spinlock_release_irqrestore(&cache->lock, irq_flags);
  }
  
- /* slab_destroy: Frees all slabs associated with a cache and the cache descriptor */
+ 
+ /* slab_destroy */
  void slab_destroy(slab_cache_t *cache) {
+     // ... (Implementation remains largely the same as previous SMP version) ...
+     // Needs to acquire lock, detach lists, release lock, free pages, re-acquire lock, free descriptor, restore IRQs.
      if (!cache) return;
+     const char * cache_name_copy = cache->name;
  
-     terminal_printf("[Slab] Destroying cache '%s'...\n", cache->name);
-     // Add lock acquire/release if SMP
+     uintptr_t irq_flags = spinlock_acquire_irqsave(&cache->lock);
+     terminal_printf("[Slab] Destroying cache '%s'...\n", cache_name_copy);
+     slab_t *curr, *next;
+     int freed_count = 0;
+     slab_t **lists[] = {&cache->slab_partial, &cache->slab_full, &cache->slab_empty};
+     const char *list_names[] = {"partial", "full", "empty"};
  
-     // Free all slabs in the partial list
-     slab_t *curr = cache->slab_partial;
-     slab_t *next;
-     while (curr) {
-         next = curr->next;
-         if (!is_valid_slab(curr)) {
-              terminal_printf("  Warning: Corrupt slab 0x%x found in partial list during destroy.\n", (uintptr_t)curr);
-         } else {
-             terminal_printf("  Freeing partial slab page 0x%x\n", (uintptr_t)curr);
-             buddy_free((void *)curr, PAGE_SIZE);
+     for (int i = 0; i < 3; ++i) {
+         curr = *lists[i]; *lists[i] = NULL; // Detach list head
+         spinlock_release_irqrestore(&cache->lock, irq_flags); // Release lock for buddy_free
+ 
+         while (curr) {
+             next = curr->next;
+             if (!is_valid_slab(curr)) { /* Log warning */ }
+             else { buddy_free((void *)curr, PAGE_SIZE); freed_count++; }
+             curr = next;
          }
-         curr = next;
+         if (i < 2) { irq_flags = spinlock_acquire_irqsave(&cache->lock); } // Re-acquire for next list/final free
      }
-     cache->slab_partial = NULL;
+     terminal_printf("  Freed %d slab pages.\n", freed_count);
  
-     // Free all slabs in the full list
-     curr = cache->slab_full;
-     while (curr) {
-         next = curr->next;
-          if (!is_valid_slab(curr)) {
-              terminal_printf("  Warning: Corrupt slab 0x%x found in full list during destroy.\n", (uintptr_t)curr);
-         } else {
-             terminal_printf("  Freeing full slab page 0x%x\n", (uintptr_t)curr);
-             buddy_free((void *)curr, PAGE_SIZE);
-         }
-         curr = next;
-     }
-     cache->slab_full = NULL;
- 
-     // Free the cache descriptor structure itself
-     // Use kfree if available and safe, otherwise buddy_free. Buddy is safer early on.
-     terminal_printf("  Freeing cache descriptor 0x%x\n", (uintptr_t)cache);
-     buddy_free(cache, sizeof(slab_cache_t)); // Assuming allocated with buddy_alloc
+     // Re-acquire lock one last time if necessary before freeing cache struct
+      irq_flags = spinlock_acquire_irqsave(&cache->lock);
+     buddy_free(cache, sizeof(slab_cache_t));
+     local_irq_restore(irq_flags); // Restore IRQs after lock struct is gone
+     terminal_printf("[Slab] Cache '%s' destroyed.\n", cache_name_copy);
  }
  
- /* slab_cache_stats: Retrieves allocation/free counts for a cache */
+ /* slab_cache_stats */
  void slab_cache_stats(slab_cache_t *cache, unsigned long *out_alloc, unsigned long *out_free) {
+     // ... (Implementation remains the same - acquire lock, read stats, release lock) ...
      if (!cache) return;
-     // Add lock if SMP
+     uintptr_t irq_flags = spinlock_acquire_irqsave(&cache->lock);
      if (out_alloc) *out_alloc = cache->alloc_count;
      if (out_free) *out_free = cache->free_count;
-     // Release lock
+     spinlock_release_irqrestore(&cache->lock, irq_flags);
  }

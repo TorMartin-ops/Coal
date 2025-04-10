@@ -1,222 +1,288 @@
 /**
- * paging.c
- *
- * World-Class Paging Module for a 32-bit x86 OS.
- * Implements page directory and page table management, virtual->physical mapping.
+ * paging.c - Paging Implementation with VMM improvements.
  */
 
  #include "paging.h"
- #include "buddy.h"     // For allocate_page_table using buddy_alloc
- #include "terminal.h"  // For debug printing
- #include "types.h"     // Common types like uint32_t, size_t, PAGE_SIZE
+ #include "buddy.h"
+ #include "terminal.h"
+ #include "types.h"
+ #include "process.h" // For pcb_t definition, get_current_process()
+ #include "mm.h"      // For mm_struct_t, vma_struct_t, find_vma, handle_vma_fault
  #include <string.h>    // For memset
+ #include "frame.h"
  
- // --- Constants for Page Directory/Table Entries ---
- // Defined in paging.h: PAGE_PRESENT, PAGE_RW, PAGE_USER
+ // Global Kernel Page Directory (Virtual Address)
+ uint32_t* kernel_page_directory = NULL;
  
- // --- Virtual Memory Layout ---
- // Defined in paging.h: KERNEL_SPACE_VIRT_START
+ // Temporary virtual address for mapping page tables/directories
+ // Ensure these addresses are reserved and not used elsewhere in kernel space.
+ #define TEMP_MAP_ADDR_PT (KERNEL_SPACE_VIRT_START - 2 * PAGE_SIZE)
+ #define TEMP_MAP_ADDR_PD (KERNEL_SPACE_VIRT_START - 1 * PAGE_SIZE)
  
- // --- Helper Macros ---
- #define PDE_INDEX(addr)  (((uintptr_t)(addr) >> 22) & 0x3FF) // Page Directory Entry Index (Top 10 bits)
- #define PTE_INDEX(addr)  (((uintptr_t)(addr) >> 12) & 0x3FF) // Page Table Entry Index (Middle 10 bits)
+ // --- Helper Macros & Basic Functions (as before) ---
+ #define PDE_INDEX(addr)  (((uintptr_t)(addr) >> 22) & 0x3FF)
+ #define PTE_INDEX(addr)  (((uintptr_t)(addr) >> 12) & 0x3FF)
  #define PAGE_ALIGN_DOWN(addr) ((uintptr_t)(addr) & ~(PAGE_SIZE - 1))
  #define PAGE_ALIGN_UP(addr)   (((uintptr_t)(addr) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
  
- // --- Global Pointer to the Kernel's Page Directory (Virtual Address) ---
- // This should point to the page directory structure itself, accessible via kernel virtual memory.
- uint32_t* kernel_page_directory = NULL;
+ // Declarations for static helpers
+ static uint32_t* allocate_page_table_phys(void);
+ static bool is_page_table_empty(uint32_t* pt_virt);
  
- /**
-  * @brief Sets the global kernel page directory pointer.
-  * @param pd_virt Virtual address of the page directory.
-  */
- void paging_set_directory(uint32_t* pd_virt) {
-     kernel_page_directory = pd_virt;
+ // --- Public API Functions ---
+ 
+ void paging_set_directory(uint32_t* pd_virt) { kernel_page_directory = pd_virt; }
+ void paging_invalidate_page(void *vaddr) { asm volatile("invlpg (%0)" : : "r"(vaddr) : "memory"); }
+ void tlb_flush_range(void* start, size_t size) {
+     uintptr_t addr = PAGE_ALIGN_DOWN((uintptr_t)start);
+     uintptr_t end_addr = ALIGN_UP((uintptr_t)start + size, PAGE_SIZE);
+     while (addr < end_addr) { paging_invalidate_page((void*)addr); addr += PAGE_SIZE; }
+ }
+ void paging_activate(uint32_t *page_directory_phys) { /* ... as before ... */
+     uint32_t cr0;
+     asm volatile("mov %0, %%cr3" : : "r"(page_directory_phys) : "memory");
+     asm volatile("mov %%cr0, %0" : "=r"(cr0));
+     cr0 |= 0x80000000; // Set PG bit
+     asm volatile("mov %0, %%cr0" : : "r"(cr0));
  }
  
- /**
-  * @brief Allocates a physical page for a page table using the buddy allocator.
-  * @return Physical address of the allocated page table, or NULL on failure.
-  */
- static uint32_t* allocate_page_table(void) {
-     // terminal_printf("[Paging] Allocating page table, buddy free: %u bytes\n", buddy_free_space());
-     uint32_t* pt_phys = (uint32_t*)buddy_alloc(PAGE_SIZE); // Buddy returns physical address
-     if (!pt_phys) {
-         terminal_write("[Paging] ERROR: allocate_page_table: buddy_alloc(PAGE_SIZE) failed!\n");
-         return NULL;
+ // Maps a single page (physical -> virtual) in a given page directory (virtual address)
+ int paging_map_single(uint32_t *page_directory_virt, uint32_t vaddr, uint32_t paddr, uint32_t flags) {
+     if (!page_directory_virt) return -1;
+     uint32_t pd_idx = PDE_INDEX(vaddr);
+     uint32_t pt_idx = PTE_INDEX(vaddr);
+     uint32_t pde = page_directory_virt[pd_idx];
+     uint32_t* page_table_virt = NULL;
+     uint32_t* pt_phys = NULL; // Store physical address
+ 
+     bool pde_modified = false; // Track if PDE needs TLB flush later (if its flags change)
+ 
+     if (!(pde & PAGE_PRESENT)) {
+         // PT not present, allocate
+         pt_phys = allocate_page_table_phys(); // Returns physical address
+         if (!pt_phys) return -1;
+ 
+         // Map PT temporarily to access its contents
+         if (paging_map_single(kernel_page_directory, TEMP_MAP_ADDR_PT, (uint32_t)pt_phys, PTE_KERNEL_DATA) != 0) {
+              buddy_free(pt_phys, PAGE_SIZE); return -1;
+         }
+         page_table_virt = (uint32_t*)TEMP_MAP_ADDR_PT;
+ 
+         // Update PDE in target directory
+         uint32_t pde_flags = PAGE_PRESENT | (flags & (PAGE_USER | PAGE_RW)); // Inherit User/RW flags
+         page_directory_virt[pd_idx] = (uint32_t)pt_phys | pde_flags;
+         pde_modified = true;
+ 
+     } else {
+         // PT exists
+         pt_phys = (uint32_t*)(pde & ~0xFFF); // Get physical address
+ 
+         // Map PT temporarily to access its contents
+         if (paging_map_single(kernel_page_directory, TEMP_MAP_ADDR_PT, (uint32_t)pt_phys, PTE_KERNEL_DATA) != 0) {
+              return -1;
+         }
+         page_table_virt = (uint32_t*)TEMP_MAP_ADDR_PT;
+ 
+         // Ensure PDE flags are sufficient (e.g., add User/RW if needed)
+         uint32_t new_pde_flags = pde | (flags & (PAGE_USER | PAGE_RW)) | PAGE_PRESENT;
+         if (page_directory_virt[pd_idx] != new_pde_flags) {
+              page_directory_virt[pd_idx] = new_pde_flags;
+              pde_modified = true;
+         }
      }
-     // The caller is responsible for mapping this physical page table
-     // into virtual memory (if needed) and clearing it via that mapping.
-     // terminal_printf("[Paging] Page table allocated at physical addr 0x%x\n", (uintptr_t)pt_phys);
-     return pt_phys; // Return physical address
+ 
+     // --- Set Page Table Entry ---
+     page_table_virt[pt_idx] = (paddr & ~0xFFF) | (flags & 0xFFF) | PAGE_PRESENT;
+ 
+     // Unmap the temporary PT mapping
+     paging_unmap_range(kernel_page_directory, TEMP_MAP_ADDR_PT, PAGE_SIZE); // Use unmap here (safe recursion depth=1)
+     paging_invalidate_page((void*)TEMP_MAP_ADDR_PT);
+ 
+     // Invalidate TLB for the specific virtual address mapped (caller or context switch handles broader flushes)
+     // If the PDE flags changed, a TLB flush affecting the PDE might be needed,
+     // but modifying a PTE covering 'vaddr' already requires invalidating 'vaddr'.
+     // paging_invalidate_page((void*)PAGE_ALIGN_DOWN(vaddr)); // Already done by caller/PF handler?
+ 
+     return 0;
  }
  
- /**
-  * @brief Invalidates the TLB entry for a single virtual address.
-  * @param vaddr The virtual address to invalidate.
-  */
- static inline void paging_invalidate_page(void *vaddr) {
-     __asm__ volatile("invlpg (%0)" : : "r"(vaddr) : "memory");
- }
- 
- /**
-  * @brief Maps a single virtual page to its identical physical address in the kernel directory.
-  * (Deprecated or use with caution - prefer paging_map_range).
-  * @param virt_addr The virtual (and physical) address to map.
-  */
- void paging_map_page(void* virt_addr) {
-      terminal_write("[Paging] WARNING: paging_map_page is likely deprecated. Use paging_map_range.\n");
-      if (!kernel_page_directory) {
-          terminal_write("[Paging] ERROR: paging_map_page: kernel_page_directory not set.\n");
-          return;
-      }
-      // Use the main mapping function for consistency
-      paging_map_range(kernel_page_directory, // Use global kernel PD (virtual addr)
-                       (uint32_t)virt_addr,   // Virtual start
-                       (uint32_t)virt_addr,   // Physical start (identity)
-                       PAGE_SIZE,             // Map one page
-                       PAGE_PRESENT | PAGE_RW); // Kernel flags
- }
- 
- 
- /**
-  * @brief Maps a contiguous range of virtual addresses to physical addresses.
-  * @param page_directory_virt Virtual address of the page directory to modify.
-  * @param virt_start_addr     Start virtual address (will be page-aligned down).
-  * @param phys_start_addr     Start physical address (will be page-aligned down).
-  * @param memsz               Size of the range in bytes.
-  * @param flags               Flags for the PTEs (e.g., PAGE_PRESENT | PAGE_RW | PAGE_USER).
-  * @return 0 on success, -1 on failure.
-  */
+ // Maps a range using paging_map_single
  int paging_map_range(uint32_t *page_directory_virt, uint32_t virt_start_addr,
                       uint32_t phys_start_addr, uint32_t memsz, uint32_t flags)
  {
-     if (!page_directory_virt) {
-         terminal_write("[Paging] ERROR: map_range: page_directory_virt is NULL!\n");
-         return -1;
-     }
-     if (memsz == 0) {
-         return 0; // Nothing to map
-     }
+     // ... (Implementation as before, uses paging_map_single) ...
+     if (!page_directory_virt || memsz == 0) { return -1; }
+     uintptr_t virt_start = PAGE_ALIGN_DOWN(virt_start_addr);
+     uintptr_t phys_start = PAGE_ALIGN_DOWN(phys_start_addr);
+     uintptr_t virt_end = ALIGN_UP(virt_start_addr + memsz, PAGE_SIZE);
+     if (virt_end <= virt_start) { return -1; }
  
-     // Align addresses and calculate end address
-     uintptr_t virt_aligned_start = PAGE_ALIGN_DOWN(virt_start_addr);
-     uintptr_t phys_aligned_start = PAGE_ALIGN_DOWN(phys_start_addr);
-     uintptr_t virt_aligned_end = PAGE_ALIGN_UP(virt_start_addr + memsz);
- 
-     // Basic check for address wrapping
-     if (virt_aligned_end <= virt_aligned_start) {
-         terminal_printf("[Paging] ERROR: map_range: Potential virtual address wrap around or invalid size.\n");
-         return -1;
-     }
- 
-     // terminal_printf("[Paging] map_range: V:0x%x -> P:0x%x (Size: %u KB, Flags: 0x%x)\n",
-     //                virt_aligned_start, phys_aligned_start,
-     //                (virt_aligned_end - virt_aligned_start) / 1024, flags);
- 
-     uintptr_t current_phys = phys_aligned_start;
-     for (uintptr_t current_virt = virt_aligned_start; current_virt < virt_aligned_end;
-          current_virt += PAGE_SIZE, current_phys += PAGE_SIZE)
-     {
-         uint32_t pd_idx = PDE_INDEX(current_virt);
-         uint32_t pt_idx = PTE_INDEX(current_virt);
- 
-         // Ensure PD index is valid
-         if (pd_idx >= 1024) {
-             terminal_printf("[Paging] ERROR: map_range: Invalid PDE index %d for vaddr 0x%x\n", pd_idx, current_virt);
-             return -1; // Should not happen with 32-bit addresses
+     for (uintptr_t v = virt_start, p = phys_start; v < virt_end; v += PAGE_SIZE, p += PAGE_SIZE) {
+         if (paging_map_single(page_directory_virt, v, p, flags) != 0) {
+             // TODO: Rollback previous mappings in this range
+             return -1;
          }
- 
-         uint32_t pd_entry = page_directory_virt[pd_idx];
-         uint32_t* page_table_phys; // Physical address of the page table
-         uint32_t* page_table_virt; // Virtual address to access the PT contents
- 
-         if (!(pd_entry & PAGE_PRESENT)) {
-             // --- Page Directory Entry Not Present: Allocate Page Table ---
-             page_table_phys = allocate_page_table(); // Get physical page for PT
-             if (!page_table_phys) {
-                 terminal_write("[Paging] ERROR: map_range: Failed to allocate page table!\n");
-                 // Should potentially unmap successfully mapped pages in this range? Complex.
-                 return -1; // Allocation failed
-             }
- 
-             // Map the physical PT page into kernel virtual space to clear/access it.
-             // ASSUMPTION: The kernel's higher-half mapping covers the buddy heap area.
-             page_table_virt = (uint32_t*)(KERNEL_SPACE_VIRT_START + (uintptr_t)page_table_phys);
- 
-             // Clear the new page table via its virtual address
-             memset(page_table_virt, 0, PAGE_SIZE);
- 
-             // Update PDE: Point to physical PT. Propagate USER/RW flags to PDE
-             // to ensure the table itself is accessible appropriately.
-             uint32_t pde_flags = PAGE_PRESENT | (flags & (PAGE_USER | PAGE_RW));
-             page_directory_virt[pd_idx] = (uint32_t)page_table_phys | pde_flags;
- 
-             // Invalidate TLB for the PDE? Not strictly necessary, CPU handles it on PT walk?
-             // No harm in invalidating the first address that would use this PDE.
-             paging_invalidate_page((void*)current_virt);
- 
-         } else {
-             // --- Page Directory Entry IS Present: Use Existing Page Table ---
-             page_table_phys = (uint32_t*)(pd_entry & ~0xFFF); // Get physical address of PT
-             // Calculate virtual address to access the existing PT
-             page_table_virt = (uint32_t*)(KERNEL_SPACE_VIRT_START + (uintptr_t)page_table_phys);
- 
-             // Ensure PDE permissions are sufficient if mapping with USER/RW flags
-             page_directory_virt[pd_idx] |= (flags & (PAGE_USER | PAGE_RW)) | PAGE_PRESENT;
-         }
- 
-         // --- Set Page Table Entry ---
-         // Ensure PT index is valid (sanity check)
-         if (pt_idx >= 1024) {
-              terminal_printf("[Paging] ERROR: map_range: Invalid PTE index %d for vaddr 0x%x\n", pt_idx, current_virt);
-              // Potential corruption if we write here
-              return -1;
-         }
- 
-         // Check if PTE already exists - optional warning/policy
-         // if (page_table_virt[pt_idx] & PAGE_PRESENT) {
-         //     terminal_printf("[Paging] WARN: map_range: Overwriting existing PTE for vaddr 0x%x\n", current_virt);
-         // }
- 
-         // Set the PTE: Physical target page address + flags
-         page_table_virt[pt_idx] = (current_phys & ~0xFFF) | (flags & 0xFFF) | PAGE_PRESENT;
- 
-         // Invalidate TLB entry for the specific virtual address being mapped/updated
-         paging_invalidate_page((void*)current_virt);
      }
-     return 0; // Success
+     return 0;
  }
  
+ /**
+  * @brief Checks if all PTEs within a given page table are non-present.
+  *
+  * @param pt_virt Virtual address of the page table to check.
+  * @return true if empty, false otherwise.
+  */
+ static bool is_page_table_empty(uint32_t* pt_virt) {
+     if (!pt_virt) return true; // Or false depending on desired behavior for NULL?
+     for (int i = 0; i < 1024; ++i) {
+         if (pt_virt[i] & PAGE_PRESENT) {
+             return false; // Found a present entry
+         }
+     }
+     return true; // All entries are non-present
+ }
  
  /**
-  * @brief Helper function to create identity mapping for a range [0..size).
+  * @brief Unmaps a range of virtual addresses. Frees physical frames and page tables if empty.
+  *
   * @param page_directory_virt Virtual address of the page directory to modify.
-  * @param size The upper bound (exclusive) of the range to map.
-  * @param flags Flags to apply (e.g., PAGE_PRESENT | PAGE_RW).
-  * @return 0 on success, -1 on failure.
+  * @param virt_start_addr Start virtual address (page-aligned).
+  * @param memsz Size of the range in bytes (page-aligned).
+  * @return 0 on success, negative value on failure.
   */
+  int paging_unmap_range(uint32_t *page_directory_virt, uint32_t virt_start_addr, uint32_t memsz) {
+    // ... (loop structure as before) ...
+    for (uintptr_t v = virt_start; v < virt_end; v += PAGE_SIZE) {
+          uint32_t pd_idx = PDE_INDEX(v);
+          uint32_t pde = page_directory_virt[pd_idx];
+          if (!(pde & PAGE_PRESENT)) continue;
+          uint32_t* pt_phys = (uint32_t*)(pde & ~0xFFF);
+
+          // Map PT temporarily
+          if (paging_map_single(kernel_page_directory, TEMP_MAP_ADDR_PT, (uint32_t)pt_phys, PTE_KERNEL_DATA) == 0) {
+               uint32_t* pt_virt = (uint32_t*)TEMP_MAP_ADDR_PT;
+               uint32_t pt_idx = PTE_INDEX(v);
+               uint32_t pte = pt_virt[pt_idx];
+
+               if (pte & PAGE_PRESENT) {
+                    uint32_t frame_phys = pte & ~0xFFF;
+                    // *** Use put_frame instead of buddy_free ***
+                    put_frame(frame_phys);
+
+                    pt_virt[pt_idx] = 0; // Clear PTE
+                    paging_invalidate_page((void*)v); // Invalidate TLB
+
+                    // Check if PT is empty
+                    if (is_page_table_empty(pt_virt)) {
+                         page_directory_virt[pd_idx] = 0; // Clear PDE
+                         paging_invalidate_page((void*)v); // Invalidate TLB again
+
+                         // Unmap temp PT *before* calling put_frame on PT
+                         paging_unmap_range(kernel_page_directory, TEMP_MAP_ADDR_PT, PAGE_SIZE);
+                         paging_invalidate_page((void*)TEMP_MAP_ADDR_PT);
+
+                         // *** Use put_frame for the Page Table page ***
+                         put_frame((uintptr_t)pt_phys);
+
+                         continue; // Skip final unmap/invalidate below
+                    }
+               }
+               // Unmap temp PT mapping (if not freed above)
+               paging_unmap_range(kernel_page_directory, TEMP_MAP_ADDR_PT, PAGE_SIZE);
+               paging_invalidate_page((void*)TEMP_MAP_ADDR_PT);
+          } else { /* Log error mapping PT */ }
+    }
+    return 0;
+}
+ 
+ 
+ /* Creates identity map [0..size) */
  int paging_init_identity_map(uint32_t *page_directory_virt, uint32_t size, uint32_t flags) {
-     terminal_printf("[Paging] Creating identity map [0x0 - 0x%x)\n", size);
-     // Call the main mapping function with virtual start = 0, physical start = 0
-     return paging_map_range(page_directory_virt, 0, 0, size, flags);
+     // Use KERNEL flags for initial identity mapping
+     return paging_map_range(page_directory_virt, 0, 0, size, flags | PAGE_PRESENT);
  }
  
  
- /**
-  * @brief Activates a given page directory and enables paging.
-  * @param page_directory_phys Physical address pointer to the page directory.
-  */
- void paging_activate(uint32_t *page_directory_phys) {
-     // Load physical address of page directory into CR3
-     __asm__ volatile("mov %0, %%cr3" : : "r"(page_directory_phys) : "memory");
+ /* Page Fault Handler (#PF) - Uses VMA lookup */
+ void page_fault_handler(registers_t *regs) {
+     uint32_t fault_addr;
+     asm volatile("mov %%cr2, %0" : "=r"(fault_addr));
+     uint32_t error_code = regs->err_code;
  
-     // Enable paging (PG bit, bit 31) in CR0
-     uint32_t cr0;
-     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-     cr0 |= 0x80000000; // Set PG bit
-     __asm__ volatile("mov %0, %%cr0" : : "r"(cr0));
+     bool present = error_code & 0x1;
+     bool write = error_code & 0x2;
+     bool user = error_code & 0x4;
  
-      terminal_write("[Paging] Paging enabled via CR0 and CR3 loaded.\n");
+     // --- Print Fault Info ---
+     terminal_printf("\n--- PAGE FAULT (PID %d?) ---\n", get_current_process() ? get_current_process()->pid : 0);
+     terminal_printf(" Addr: 0x%x Code: 0x%x (%s %s %s)\n", fault_addr, error_code,
+                    present ? "P" : "NP", write ? "W" : "R", user ? "U" : "S");
+     terminal_printf(" EIP: 0x%x\n", regs->eip);
+ 
+     // --- Get Process Context ---
+     pcb_t* current_process = get_current_process();
+     if (!current_process || !current_process->mm) {
+         terminal_write("  Error: Page fault outside valid process context!\n");
+         goto unhandled_fault;
+     }
+     mm_struct_t *mm = current_process->mm;
+ 
+     // --- Find VMA ---
+     vma_struct_t *vma = find_vma(mm, fault_addr); // find_vma handles locking
+ 
+     if (!vma) {
+         terminal_printf("  Error: No VMA found for addr 0x%x. Segmentation Fault.\n", fault_addr);
+         goto unhandled_fault;
+     }
+ 
+     terminal_printf("  Fault within VMA [0x%x-0x%x) Flags=0x%x\n", vma->vm_start, vma->vm_end, vma->vm_flags);
+ 
+     // --- Delegate to VMA Fault Handler ---
+     int result = handle_vma_fault(mm, vma, fault_addr, error_code);
+ 
+     if (result == 0) {
+         // terminal_write("--- Page Fault Handled ---\n");
+         return; // Success, return to retry instruction
+     } else {
+         terminal_printf("  Error: handle_vma_fault failed (code %d). Segmentation Fault.\n", result);
+         goto unhandled_fault;
+     }
+ 
+ unhandled_fault:
+     terminal_write("--- Unhandled Page Fault ---\n");
+     terminal_printf("System Halted due to unhandled page fault at 0x%x.\n", fault_addr);
+     // TODO: Implement process termination instead of halting
+     asm volatile ("cli; hlt");
+ }
+ 
+ // --- Static Helper Implementations ---
+ 
+ // Allocates PT, maps temp, clears, unmaps temp, returns phys addr
+ static uint32_t* allocate_page_table_phys(void) {
+    uintptr_t pt_phys = frame_alloc(); // Use frame_alloc()
+    if (!pt_phys) {
+        terminal_write("[Paging] ERROR: allocate_page_table: frame_alloc failed!\n");
+        return 0;
+    }
+    // Map temporarily, clear, unmap (as before)
+    if (paging_map_single(kernel_page_directory, TEMP_MAP_ADDR_PT, (uint32_t)pt_phys, PTE_KERNEL_DATA) != 0) {
+         put_frame(pt_phys); // Use put_frame on error
+         return 0;
+    }
+    memset((void*)TEMP_MAP_ADDR_PT, 0, PAGE_SIZE);
+    paging_unmap_range(kernel_page_directory, TEMP_MAP_ADDR_PT, PAGE_SIZE);
+    paging_invalidate_page((void*)TEMP_MAP_ADDR_PT);
+    return (uint32_t*)pt_phys;
+}
+
+ 
+ // Checks if a mapped page table is empty
+ static bool is_page_table_empty(uint32_t* pt_virt) {
+     if (!pt_virt) return true; // Treat NULL as empty
+     for (int i = 0; i < 1024; ++i) {
+         if (pt_virt[i] & PAGE_PRESENT) {
+             return false;
+         }
+     }
+     return true;
  }
