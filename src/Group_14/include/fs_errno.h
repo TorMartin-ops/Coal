@@ -32,6 +32,7 @@ typedef enum fs_error {
     FS_ERR_CORRUPT          = -14,  /* File system corrupt */
     FS_ERR_MOUNT            = -15,  /* Mount error */
     FS_ERR_NOT_INIT         = -16,  /* File system not initialized */
+    FS_ERR_BUSY             = -17,  /* Resource is busy */
     // Add additional error codes as needed.
 } fs_error_t;
 
@@ -62,6 +63,7 @@ static inline const char *fs_strerror(fs_error_t err) {
         case FS_ERR_CORRUPT:            return "File system corrupt";
         case FS_ERR_MOUNT:              return "Mount error";
         case FS_ERR_NOT_INIT:           return "File system not initialized";
+        case FS_ERR_BUSY:               return "Resource is busy";
         default:                        return "Unrecognized error";
     }
 }

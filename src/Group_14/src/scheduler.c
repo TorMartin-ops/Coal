@@ -156,7 +156,7 @@ void remove_current_task_with_code(uint32_t code) {
         task_count = 0;
         terminal_write("[Scheduler] Last task removed. Halting system.\n");
         destroy_process(proc_to_remove);
-        kfree(to_remove, sizeof(tcb_t));
+        kfree(to_remove);
         // asm volatile("sti"); // Enable interrupts before halting?
         while (1) { __asm__ volatile("hlt"); }
     } else {
@@ -170,7 +170,7 @@ void remove_current_task_with_code(uint32_t code) {
 
         // --- Free Resources ---
         destroy_process(proc_to_remove); // Free PCB, page dir, kernel stack
-        kfree(to_remove, sizeof(tcb_t)); // Free TCB
+        kfree(to_remove); // Free TCB
 
         // --- Switch to the next task ---
         terminal_printf("[Scheduler] Switching to next task (PID %d).\n", current_task->process->pid);

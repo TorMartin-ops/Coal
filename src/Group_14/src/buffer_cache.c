@@ -169,7 +169,7 @@ buffer_t *buffer_get(const char *device_name, uint32_t block_number) {
     buf->data = (uint8_t *)kmalloc(data_block_size);
     if (!buf->data) {
         terminal_write("[BufferCache] buffer_get: Out of memory for data buffer.\n");
-        kfree(buf, sizeof(buffer_t));
+        kfree(buf);
         return NULL;
     }
 
@@ -178,7 +178,7 @@ buffer_t *buffer_get(const char *device_name, uint32_t block_number) {
         terminal_printf("[BufferCache] buffer_get: Failed to read block %u from disk %s.\n",
                         block_number, disk->blk_dev.device_name);
         kfree(buf->data, data_block_size);
-        kfree(buf, sizeof(buffer_t));
+        kfree(buf);
         return NULL;
     }
 

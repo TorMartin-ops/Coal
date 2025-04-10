@@ -63,7 +63,7 @@ static bool allocate_kernel_stack(pcb_t *proc) {
      if (kstack_phys_base + PROCESS_KSTACK_SIZE > PHYS_MAPPING_SIZE_FOR_KERNEL) {
          terminal_printf("[Process] Error: Allocated kernel stack (phys 0x%x) is outside initial kernel mapping range (up to 0x%x).\n",
                          kstack_phys_base, PHYS_MAPPING_SIZE_FOR_KERNEL);
-         kfree((void*)kstack_phys_base, PROCESS_KSTACK_SIZE); // Free the unusable stack
+         kfree((void*)kstack_phys_base); // Free the unusable stack
          return false;
      }
 
@@ -92,17 +92,17 @@ pcb_t *create_user_process(const char *path) {
 
     // Allocate Kernel Stack (gets virtual top address)
     if (!allocate_kernel_stack(proc)) {
-        kfree(proc->page_directory, PAGE_SIZE);
-        kfree(proc, sizeof(pcb_t));
+        kfree(proc->page_directory);
+        kfree(proc);
         return NULL;
     }
 
     // Load ELF
     if (load_elf_binary(path, proc->page_directory, &proc->entry_point) != 0) {
         // Clean up stack, page dir, pcb
-        kfree((void*)proc->kernel_stack_phys_base, PROCESS_KSTACK_SIZE);
-        kfree(proc->page_directory, PAGE_SIZE);
-        kfree(proc, sizeof(pcb_t));
+        kfree((void*)proc->kernel_stack_phys_base);
+        kfree(proc->page_directory);
+        kfree(proc);
         return NULL;
     }
      terminal_printf("[Process] ELF loaded for PID %d, entry point: 0x%x\n", proc->pid, proc->entry_point);
@@ -110,9 +110,9 @@ pcb_t *create_user_process(const char *path) {
     // Map User Stack
     if (!map_user_stack(proc)) {
         // Clean up ELF pages?, stack, page dir, pcb
-        kfree((void*)proc->kernel_stack_phys_base, PROCESS_KSTACK_SIZE);
-        kfree(proc->page_directory, PAGE_SIZE);
-        kfree(proc, sizeof(pcb_t));
+        kfree((void*)proc->kernel_stack_phys_base);
+        kfree(proc->page_directory);
+        kfree(proc);
         return NULL;
     }
      terminal_printf("[Process] Mapped user stack for PID %d at 0x%x\n", proc->pid, proc->user_stack_top);
@@ -128,7 +128,7 @@ void destroy_process(pcb_t *pcb) {
     // Free the kernel stack using its physical base address
     if (pcb->kernel_stack_phys_base) {
         terminal_printf("[Process] Freeing kernel stack for PID %d (phys_base: 0x%x).\n", pcb->pid, pcb->kernel_stack_phys_base);
-        kfree((void *)pcb->kernel_stack_phys_base, PROCESS_KSTACK_SIZE);
+        kfree((void *)pcb->kernel_stack_phys_base);
     }
 
     // Free the process's page directory and associated page tables
@@ -136,10 +136,10 @@ void destroy_process(pcb_t *pcb) {
         terminal_printf("[Process] Freeing page directory for PID %d (addr: 0x%x).\n", pcb->pid, pcb->page_directory);
         // TODO: Implement page table freeing
         terminal_write("[Process] TODO: Implement page table freeing in destroy_process.\n");
-        kfree(pcb->page_directory, PAGE_SIZE);
+        kfree(pcb->page_directory);
     }
 
     // Free the PCB structure
     terminal_printf("[Process] Freeing PCB for PID %d.\n", pcb->pid);
-    kfree(pcb, sizeof(pcb_t));
+    kfree(pcb);
 }

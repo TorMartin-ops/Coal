@@ -71,7 +71,7 @@ void *read_file(const char *path, size_t *file_size) {
     int bytes_read = vfs_read(file, buffer, size);
     if (bytes_read < 0) {
         terminal_printf("[read_file] Error: Failed to read file '%s' (%d).\n", path, bytes_read);
-        kfree(buffer, size); // Free allocated buffer on error
+        kfree(buffer); // Free allocated buffer on error
         vfs_close(file);
         return NULL;
     }

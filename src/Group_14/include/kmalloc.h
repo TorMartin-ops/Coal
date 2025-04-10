@@ -2,7 +2,7 @@
 #ifndef KMALLOC_H
 #define KMALLOC_H
 
-#include "types.h"
+#include "types.h" // Includes size_t, uint32_t etc.
 
 // Configuration Macro: Define this in your build system (e.g., CMakeLists.txt)
 // if you want to enable the per-CPU allocation strategy. Otherwise, it uses
@@ -17,60 +17,50 @@ extern "C" {
 /**
  * @brief Initializes the primary kernel memory allocator.
  *
- * Depending on whether USE_PERCPU_ALLOC is defined, this initializes either
- * the per-CPU slab caches or the global slab caches. Must be called once
- * during kernel startup after the underlying allocators (buddy, slab) are ready.
+ * Must be called once during kernel startup after the underlying allocators
+ * (buddy, slab/percpu) are ready. Initializes internal structures and slab caches.
  */
 void kmalloc_init(void);
 
 /**
- * @brief Allocates a block of memory of at least 'size' bytes.
+ * @brief Allocates a block of memory of at least 'user_size' bytes.
  *
  * This is the main entry point for kernel dynamic memory allocation.
- * It employs different strategies based on the requested size and configuration:
- * - If USE_PERCPU_ALLOC is defined:
- * - For small sizes (<= SMALL_ALLOC_MAX): Attempts allocation from the current CPU's slab cache.
- * Falls back to the buddy allocator if the per-CPU slab allocation fails.
- * - For large sizes (> SMALL_ALLOC_MAX): Uses the buddy allocator directly.
- * - If USE_PERCPU_ALLOC is not defined:
- * - For small sizes (<= SMALL_ALLOC_MAX): Attempts allocation from a global slab cache.
- * Falls back to the buddy allocator if slab allocation fails.
- * - For large sizes (> SMALL_ALLOC_MAX): Uses the buddy allocator directly.
+ * It automatically selects an appropriate underlying allocator (slab or buddy)
+ * based on the requested size and configuration.
+ * It stores metadata before the returned pointer for robust freeing.
  *
- * @param size The minimum number of bytes to allocate.
- * @return Pointer to the allocated memory block, or NULL if allocation fails.
+ * @param user_size The minimum number of bytes required by the caller.
+ * @return Pointer to the allocated memory block (aligned appropriately),
+ * or NULL if allocation fails. The pointer points to the user data area,
+ * after the internal metadata header.
  */
-void *kmalloc(size_t size);
+void *kmalloc(size_t user_size);
 
 /**
  * @brief Frees a block of memory previously allocated by kmalloc.
  *
- * The freeing mechanism depends on the original allocation size and configuration:
- * - If USE_PERCPU_ALLOC is defined:
- * - Small sizes are freed back to the appropriate per-CPU slab cache.
- * - Large sizes are freed back to the buddy allocator.
- * - If USE_PERCPU_ALLOC is not defined:
- * - Small sizes are freed back to the appropriate global slab cache.
- * - Large sizes are freed back to the buddy allocator.
+ * This function automatically determines the correct underlying allocator
+ * (slab or buddy) and the original allocated size using metadata stored
+ * before the given pointer.
  *
- * IMPORTANT: The 'size' parameter must match the original size passed to kmalloc
- * when the block was allocated. Incorrect size can lead to corruption.
- *
- * @param ptr Pointer to the memory block to free. If NULL, the function does nothing.
- * @param size The original size of the memory block requested during allocation.
+ * @param ptr Pointer to the user data area of the memory block to free
+ * (the pointer originally returned by kmalloc).
+ * If NULL, the function does nothing.
  */
-void kfree(void *ptr, size_t size);
+void kfree(void *ptr);
 
 /**
- * @brief Retrieves global allocation statistics. (Optional)
+ * @brief Retrieves global allocation statistics (Global Slab Mode Only).
  *
  * If using the global slab allocator mode (USE_PERCPU_ALLOC not defined),
- * this function can retrieve the total number of successful allocations
- * and frees performed via the slab caches.
- * Note: This does not track per-CPU stats or buddy allocator stats.
+ * this function retrieves the total number of successful slab allocations
+ * and frees performed via kmalloc.
+ * Note: This does not track buddy allocator stats directly via kmalloc, nor
+ * per-CPU stats if USE_PERCPU_ALLOC is defined.
  *
- * @param out_alloc Pointer to store the total allocation count (can be NULL).
- * @param out_free Pointer to store the total free count (can be NULL).
+ * @param out_alloc Pointer to store the total slab allocation count (can be NULL).
+ * @param out_free Pointer to store the total slab free count (can be NULL).
  */
 void kmalloc_get_global_stats(uint32_t *out_alloc, uint32_t *out_free);
 

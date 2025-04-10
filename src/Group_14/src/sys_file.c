@@ -73,7 +73,7 @@ int sys_open(const char *pathname, int flags, int mode) {
     if (fd < 0) {
         terminal_write("[sys_open] No available file descriptor.\n");
         vfs_close(vfile);
-        kfree(sf, sizeof(sys_file_t));
+        kfree(sf);
         return -1;
     }
     sf->fd = fd;
@@ -125,7 +125,7 @@ int sys_close(int fd) {
     
     sys_file_t *sf = fd_table[fd];
     int ret = vfs_close(sf->file);
-    kfree(sf, sizeof(sys_file_t));
+    kfree(sf);
     fd_table[fd] = NULL;
     return ret;
 }

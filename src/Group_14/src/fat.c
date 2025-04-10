@@ -114,7 +114,7 @@ static int load_fat_table(fat_fs_t *fs) {
         int read_result = read_fat_sector(fs, i, current_ptr);
         if (read_result != FS_SUCCESS) {
             terminal_printf("[FAT] load_fat_table: Failed to read FAT sector %u. Error: %d\n", i, read_result);
-            kfree(fs->fat_table, table_size);
+            kfree(fs->fat_table);
             fs->fat_table = NULL;
             return -FS_ERR_IO;
         }
@@ -238,14 +238,14 @@ static void *fat_mount_internal(const char *device) {
      // Initialize underlying disk
      if (disk_init(&fs->disk, device) != 0) {
          terminal_printf("[FAT] mount_internal: Failed to initialize disk '%s'.\n", device);
-         kfree(fs, sizeof(fat_fs_t));
+         kfree(fs);
          return NULL;
      }
 
      // Basic validation of underlying block device info
      if (fs->disk.blk_dev.sector_size == 0) {
          terminal_printf("[FAT] mount_internal: Disk '%s' reported sector size 0.\n", device);
-          kfree(fs, sizeof(fat_fs_t));
+          kfree(fs);
          return NULL;
      }
 
@@ -253,7 +253,7 @@ static void *fat_mount_internal(const char *device) {
      buffer_t *bs_buf = buffer_get(device, 0);
      if (!bs_buf) {
           terminal_printf("[FAT] mount_internal: Failed to read boot sector (LBA 0) for '%s'.\n", device);
-         kfree(fs, sizeof(fat_fs_t));
+         kfree(fs);
          return NULL;
      }
      memcpy(&fs->boot_sector, bs_buf->data, sizeof(fat_boot_sector_t));
@@ -262,14 +262,14 @@ static void *fat_mount_internal(const char *device) {
      // Validate boot sector signature
      if (fs->boot_sector.boot_sector_signature != 0xAA55) {
          terminal_printf("[FAT] mount_internal: Invalid boot sector signature (0x%x) on '%s'.\n", fs->boot_sector.boot_sector_signature, device);
-         kfree(fs, sizeof(fat_fs_t));
+         kfree(fs);
          return NULL;
      }
 
      // Validate bytes per sector
      if (fs->boot_sector.bytes_per_sector == 0) {
           terminal_printf("[FAT] mount_internal: Invalid bytes_per_sector (0) in boot sector on '%s'.\n", device);
-         kfree(fs, sizeof(fat_fs_t));
+         kfree(fs);
          return NULL;
      }
      // Update underlying block device's sector size if different? Or trust IDENTIFY?
@@ -283,7 +283,7 @@ static void *fat_mount_internal(const char *device) {
      if (total_sectors == 0 || fat_size == 0 || fs->boot_sector.num_fats == 0) {
          terminal_printf("[FAT] mount_internal: Invalid geometry (TotalSectors=%u, FatSize=%u, NumFATs=%u) on '%s'.\n",
                          total_sectors, fat_size, fs->boot_sector.num_fats, device);
-         kfree(fs, sizeof(fat_fs_t)); return NULL;
+         kfree(fs); return NULL;
      }
      fs->total_sectors = total_sectors;
      fs->fat_size = fat_size; // Size of ONE fat in sectors
@@ -300,13 +300,13 @@ static void *fat_mount_internal(const char *device) {
      if (fs->first_data_sector >= total_sectors) {
           terminal_printf("[FAT] mount_internal: Calculated first data sector (%u) exceeds total sectors (%u) on '%s'.\n",
                          fs->first_data_sector, total_sectors, device);
-          kfree(fs, sizeof(fat_fs_t)); return NULL;
+          kfree(fs); return NULL;
      }
 
      // Calculate data sectors and cluster count
      if (fs->boot_sector.sectors_per_cluster == 0) {
           terminal_printf("[FAT] mount_internal: Invalid sectors_per_cluster (0) in boot sector on '%s'.\n", device);
-          kfree(fs, sizeof(fat_fs_t)); return NULL;
+          kfree(fs); return NULL;
      }
      uint32_t data_sectors = total_sectors - fs->first_data_sector;
      fs->cluster_count = data_sectors / fs->boot_sector.sectors_per_cluster;
@@ -338,7 +338,7 @@ static void *fat_mount_internal(const char *device) {
      // Load FAT table into memory
      if (load_fat_table(fs) != FS_SUCCESS) {
          terminal_printf("[FAT] mount_internal: Failed to load FAT table for '%s'.\n", device);
-         kfree(fs, sizeof(fat_fs_t));
+         kfree(fs);
          return NULL;
      }
 
@@ -362,7 +362,7 @@ static int fat_unmount_internal(void *fs_context) {
         }
         size_t table_size = fs->fat_size * fs->boot_sector.bytes_per_sector;
         if (table_size > 0) { // Avoid kfree with size 0
-             kfree(fs->fat_table, table_size);
+             kfree(fs->fat_table);
         }
         fs->fat_table = NULL;
     }
@@ -372,7 +372,7 @@ static int fat_unmount_internal(void *fs_context) {
     buffer_cache_sync();
 
     // Free the filesystem context structure
-    kfree(fs, sizeof(fat_fs_t));
+    kfree(fs);
     terminal_write("[FAT] Unmount complete.\n");
     return FS_SUCCESS;
 }
@@ -519,7 +519,7 @@ static int find_entry_in_dir(fat_fs_t *fs, uint32_t dir_start_cluster, const cha
     while (current_cluster >= 2 && current_cluster < eoc_marker) {
         int read_res = read_cluster(fs, current_cluster, 0, cluster_buffer, cluster_size);
         if (read_res < 0) {
-            kfree(cluster_buffer, cluster_size);
+            kfree(cluster_buffer);
             return read_res; // Propagate read error
         }
         if ((size_t)read_res != cluster_size && read_res > 0) {
@@ -534,7 +534,7 @@ static int find_entry_in_dir(fat_fs_t *fs, uint32_t dir_start_cluster, const cha
             uint8_t first_byte = entries[i].name[0];
 
             if (first_byte == 0x00) { // End of directory marker
-                kfree(cluster_buffer, cluster_size);
+                kfree(cluster_buffer);
                 return -FS_ERR_NOT_FOUND;
             }
             if (first_byte == 0xE5) { // Deleted entry marker
@@ -550,7 +550,7 @@ static int find_entry_in_dir(fat_fs_t *fs, uint32_t dir_start_cluster, const cha
                 memcpy(entry, &entries[i], sizeof(fat_dir_entry_t));
                 *entry_cluster_num = current_cluster;
                 *entry_offset_in_cluster = i * sizeof(fat_dir_entry_t);
-                kfree(cluster_buffer, cluster_size);
+                kfree(cluster_buffer);
                 return FS_SUCCESS; // Found it!
             }
         } // End loop through entries in cluster
@@ -558,13 +558,13 @@ static int find_entry_in_dir(fat_fs_t *fs, uint32_t dir_start_cluster, const cha
         // Get next cluster in the directory chain
         uint32_t next_cluster = 0;
         if (fat_get_next_cluster(fs, current_cluster, &next_cluster) != 0) {
-            kfree(cluster_buffer, cluster_size);
+            kfree(cluster_buffer);
             return -FS_ERR_IO; // Error reading FAT
         }
         current_cluster = next_cluster;
     } // End loop through cluster chain
 
-    kfree(cluster_buffer, cluster_size);
+    kfree(cluster_buffer);
     return -FS_ERR_NOT_FOUND; // Reached end of chain without finding
 }
 
@@ -679,7 +679,7 @@ static vnode_t *fat_open_internal(void *fs_context, const char *path, int flags)
     fat_file_context_t *file_ctx = (fat_file_context_t *)kmalloc(sizeof(fat_file_context_t));
      if (!file_ctx) {
         terminal_write("  [ERROR] Failed kmalloc for file context.\n");
-        kfree(vnode, sizeof(vnode_t));
+        kfree(vnode);
         return NULL;
     }
     memset(file_ctx, 0, sizeof(fat_file_context_t)); // Initialize context

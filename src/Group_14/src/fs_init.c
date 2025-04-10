@@ -6,6 +6,7 @@
 #include "kmalloc.h"      // Potentially used by VFS internals
 #include "fs_errno.h"     // Defines FS_ERR_* error codes
 #include "types.h"        // Centralized type definitions
+#include "sys_file.h"
 
 #include <string.h>       // For string functions if needed
 

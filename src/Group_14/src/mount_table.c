@@ -25,7 +25,7 @@ int mount_table_remove(const char *mount_point) {
     while (curr) {
         if (strcmp(curr->mount_point, mount_point) == 0) {
             *prev = curr->next;
-            kfree(curr, sizeof(mount_t));
+            kfree(curr);
             return 0;
         }
         prev = &curr->next;

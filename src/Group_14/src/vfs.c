@@ -232,7 +232,7 @@ static int add_mount_entry(const char *mp, const char *fs, void *ctx, vfs_driver
     mount_entry_t *new_mount = (mount_entry_t *)kmalloc(sizeof(mount_entry_t));
     if (!new_mount) {
         VFS_ERROR("Failed to allocate memory for mount entry");
-        kfree(mp_copy, mp_len + 1);
+        kfree(mp_copy);
         return -FS_ERR_OUT_OF_MEMORY;
     }
 
@@ -446,8 +446,8 @@ int vfs_unmount_root(void) {
     *prev_next = root_mount->next;
     
     // Free the mount point string that we allocated in add_mount_entry
-    kfree((void*)root_mount->mount_point, root_mount->mount_point_len + 1);
-    kfree(root_mount, sizeof(mount_entry_t));
+    kfree((void*)root_mount->mount_point);
+    kfree(root_mount);
 
     VFS_LOG("Root filesystem unmounted successfully");
     return result;
@@ -593,19 +593,19 @@ int vfs_close(file_t *file) {
     
     if (!file->vnode) {
         VFS_ERROR("File handle has NULL vnode");
-        kfree(file, sizeof(file_t));
+        kfree(file);
         return -FS_ERR_INVALID_PARAM;
     }
     
     if (!file->vnode->fs_driver) {
         VFS_ERROR("File vnode has NULL fs_driver");
-        kfree(file, sizeof(file_t));
+        kfree(file);
         return -FS_ERR_INVALID_PARAM;
     }
     
     if (!file->vnode->fs_driver->close) {
         VFS_ERROR("Driver has no close function");
-        kfree(file, sizeof(file_t));
+        kfree(file);
         return -FS_ERR_NOT_SUPPORTED;
     }
 
@@ -615,7 +615,7 @@ int vfs_close(file_t *file) {
     int result = file->vnode->fs_driver->close(file);
     
     // Free the file handle
-    kfree(file, sizeof(file_t));
+    kfree(file);
     
     if (result != FS_SUCCESS) {
         VFS_ERROR("Driver returned error %d from close operation", result);
