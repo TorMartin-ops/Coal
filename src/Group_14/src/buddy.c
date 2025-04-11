@@ -90,60 +90,86 @@ static int buddy_size_to_order(size_t size) {
 
 
 /* buddy_init */
-void buddy_init(void *heap, size_t size) {
-    terminal_printf("[Buddy] Initializing with heap @ 0x%x, size %u bytes.\n", (uintptr_t)heap, size);
+void buddy_init(void *heap_region_start, size_t initial_size) {
+    terminal_printf("[Buddy] Initializing with region @ 0x%x, initial size %u bytes.\n", (uintptr_t)heap_region_start, initial_size);
     for (int i = MIN_ORDER; i <= MAX_ORDER; i++) {
         free_lists[i] = NULL;
     }
 
     // Initialize locks
+    terminal_write("  [Buddy Debug] Initializing lock...\n"); // DEBUG
     spinlock_init(&g_buddy_lock);
     #ifdef DEBUG_BUDDY
     spinlock_init(&g_alloc_tracker_lock);
     g_alloc_tracker_list = NULL;
     #endif
+    terminal_write("  [Buddy Debug] Locks initialized.\n"); // DEBUG
 
-    // Align heap start address up to the greater of MIN_BLOCK_SIZE or DEFAULT_ALIGNMENT
+    // --- Alignment and Size Adjustment ---
+    terminal_write("  [Buddy Debug] Calculating alignment...\n"); // DEBUG
     size_t required_alignment = (MIN_BLOCK_SIZE > DEFAULT_ALIGNMENT) ? MIN_BLOCK_SIZE : DEFAULT_ALIGNMENT;
-    uintptr_t heap_addr = (uintptr_t)heap;
-    // Use ALIGN_UP from kmalloc_internal.h
+    uintptr_t heap_addr = (uintptr_t)heap_region_start;
     uintptr_t aligned_addr = ALIGN_UP(heap_addr, required_alignment);
     size_t adjustment = aligned_addr - heap_addr;
+    terminal_printf("  [Buddy Debug] Required Align: %u, Aligned Addr: 0x%x, Adjustment: %u\n", required_alignment, aligned_addr, adjustment); // DEBUG
 
-    if (size <= adjustment) {
+    if (initial_size <= adjustment) {
+        terminal_write("  [Buddy Debug] ERROR: Initial size <= adjustment.\n"); // DEBUG
         terminal_write("[Buddy] Error: No space left after alignment adjustment.\n");
         g_buddy_total_size = 0; g_buddy_free_bytes = 0; g_heap_start_addr = 0;
         return;
     }
-    heap = (void*)aligned_addr;
-    size -= adjustment;
-    g_heap_start_addr = aligned_addr; // Store aligned start
 
-    // Find the largest power-of-two block that fits in the adjusted size
+    void* aligned_heap_ptr = (void*)aligned_addr;
+    size_t available_size = initial_size - adjustment;
+    g_heap_start_addr = aligned_addr;
+    terminal_printf("  [Buddy Debug] Available Size: %u, Aligned Ptr: 0x%x\n", available_size, (uintptr_t)aligned_heap_ptr); // DEBUG
+
+    // --- Determine the Largest Manageable Block ---
+    terminal_write("  [Buddy Debug] Determining largest block...\n"); // DEBUG
     int order = MAX_ORDER;
     size_t block_size = (size_t)1 << order;
-    while (order > MIN_ORDER && block_size > size) {
-        order--;
-        block_size >>= 1;
-    }
-
-    if (block_size < MIN_BLOCK_SIZE || order < MIN_ORDER) {
-         terminal_printf("[Buddy] Error: Aligned heap size (%u bytes) too small for MIN_ORDER (%d).\n",
-                        size, MIN_ORDER);
+    // Check for potential shift overflow before the loop
+    if (order >= (sizeof(size_t) * 8)) {
+         terminal_printf("[Buddy] Error: MAX_ORDER (%d) is too large for size_t.\n", order);
          g_buddy_total_size = 0; g_buddy_free_bytes = 0; g_heap_start_addr = 0;
          return;
     }
+    terminal_printf("  [Buddy Debug] Initial Max Block Size: %u (Order %d)\n", block_size, order); // DEBUG
 
-    // Initialize with the largest fitting block
-    g_buddy_total_size = block_size; // Only manage the largest power-of-two block
+    while (order > MIN_ORDER && block_size > available_size) {
+        order--;
+        block_size >>= 1;
+    }
+    terminal_printf("  [Buddy Debug] Final Block Size: %u (Order %d)\n", block_size, order); // DEBUG
+
+    if (block_size < MIN_BLOCK_SIZE || order < MIN_ORDER) {
+        terminal_printf("  [Buddy Debug] ERROR: Final block size too small.\n"); // DEBUG
+        terminal_printf("[Buddy] Error: Aligned heap size (%u bytes) too small for MIN_ORDER (%d). Needs at least %u bytes.\n",
+                       available_size, MIN_ORDER, MIN_BLOCK_SIZE);
+        g_buddy_total_size = 0; g_buddy_free_bytes = 0; g_heap_start_addr = 0;
+        return;
+    }
+
+    // --- Initialize Free List ---
+    terminal_write("  [Buddy Debug] Setting globals and initial block...\n"); // DEBUG
+    g_buddy_total_size = block_size;
     g_buddy_free_bytes = g_buddy_total_size;
 
-    buddy_block_t *initial_block = (buddy_block_t*)heap;
-    initial_block->next = NULL;
-    free_lists[order] = initial_block;
+    // *** CRITICAL POINT: Accessing aligned_heap_ptr ***
+    terminal_printf("  [Buddy Debug] Accessing initial block pointer @ 0x%x\n", (uintptr_t)aligned_heap_ptr); // DEBUG
+    buddy_block_t *initial_block = (buddy_block_t*)aligned_heap_ptr;
+    terminal_write("  [Buddy Debug] Setting initial_block->next = NULL\n"); // DEBUG
+    initial_block->next = NULL; // <--- Potential crash point if memory is bad
+    terminal_printf("  [Buddy Debug] Setting free_lists[%d] = initial_block\n", order); // DEBUG
+    free_lists[order] = initial_block; // <--- Potential crash point
+
+    terminal_printf("  [Buddy Debug] Globals and list set.\n"); // DEBUG
 
     terminal_printf("[Buddy] Init done. Aligned Base: 0x%x, Managed Size: 0x%x bytes (Order %d), Free: %u bytes\n",
                     g_heap_start_addr, g_buddy_total_size, order, g_buddy_free_bytes);
+    terminal_printf("  (Note: Available region size was %u bytes. %u bytes potentially unused at end.)\n",
+                    available_size, available_size - g_buddy_total_size);
 }
 
 #ifdef DEBUG_BUDDY
