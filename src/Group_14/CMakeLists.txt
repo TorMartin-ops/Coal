@@ -61,6 +61,7 @@ file(GLOB SOURCES
     "src/*.c"  "src/*.cpp"  "src/*.asm"
     "src/Group_14/src/*.c"
     "src/Group_14/src/*.asm"
+	"src/library/stdio_impl.c"
 )
 
 # Add the executable using the gathered source files

@@ -2,7 +2,7 @@
 #define PAGING_H
 
 #include "types.h"
-#include "spinlock.h"
+#include "spinlock.h" // Included spinlock.h
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,7 +42,8 @@ extern "C" {
 #define PDE_INDEX(addr)  (((uintptr_t)(addr) >> 22) & 0x3FF)
 #define PTE_INDEX(addr)  (((uintptr_t)(addr) >> 12) & 0x3FF)
 #define PAGE_ALIGN_DOWN(addr) ((uintptr_t)(addr) & ~(PAGE_SIZE - 1))
-#define PAGE_ALIGN_UP(addr)   (((uintptr_t)(addr) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
+// *** REMOVED DUPLICATE ALIGN_UP DEFINITION ***
+// #define PAGE_ALIGN_UP(addr)   (((uintptr_t)(addr) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
 #define PAGE_LARGE_ALIGN_DOWN(addr) ((uintptr_t)(addr) & ~(PAGE_SIZE_LARGE - 1))
 #define PAGE_LARGE_ALIGN_UP(addr)   (((uintptr_t)(addr) + PAGE_SIZE_LARGE - 1) & ~(PAGE_SIZE_LARGE - 1))
 
@@ -54,6 +55,8 @@ extern "C" {
 #define TEMP_PT_MAP_ADDR (KERNEL_SPACE_VIRT_START - 2 * PAGE_SIZE)
 #endif
 
+
+#define PAGE_ALIGN_UP(addr) (((addr) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
 // --- CPU State Structure ---
 typedef struct registers {
     uint32_t ds, es, fs, gs;
@@ -64,8 +67,8 @@ typedef struct registers {
 
 // --- Globals ---
 extern bool g_pse_supported;
-extern uint32_t* g_kernel_page_directory_virt;
-extern uint32_t g_kernel_page_directory_phys;
+extern uint32_t* g_kernel_page_directory_virt; // Virtual address pointer
+extern uint32_t g_kernel_page_directory_phys; // Physical address
 
 // --- Function Signatures ---
 bool check_and_enable_pse(void);

@@ -2,6 +2,7 @@ ENTRY(_start)
 
 SECTIONS {
     . = 1M;
+    _kernel_start_phys = .;  /* Add this line */
 
     .boot :
     {
@@ -32,5 +33,6 @@ SECTIONS {
         *(.bss .bss.*)
     }
 
-    end = .; 
+    end = .;
+    _kernel_end_phys = .;
 }

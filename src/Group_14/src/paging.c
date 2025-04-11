@@ -11,6 +11,7 @@
  #include "scheduler.h"
  #include <string.h>
  #include "cpuid.h" // Assuming a simple cpuid.h helper exists
+ #include "kmalloc_internal.h"
 
  // --- Globals ---
  // Pointers to the kernel's page directory (set by paging_init)
