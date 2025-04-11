@@ -9,6 +9,7 @@
 
 // Define default alignment requirement for the architecture
 #define DEFAULT_ALIGNMENT 8 // e.g., 8 bytes for 32/64-bit systems
+#define MIN_BLOCK_SIZE (1 << MIN_ORDER)
 
 // --- Optional Debug Feature ---
 // Define DEBUG_BUDDY (e.g., via build flags -DDEBUG_BUDDY) to enable tracking

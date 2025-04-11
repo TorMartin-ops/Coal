@@ -9,7 +9,8 @@
 #include "scheduler.h"
 #include "read_file.h"
 #include "buddy.h"
-#include "frame.h"      // Now used directly for kernel stack
+#include "frame.h"
+#include "kmalloc_internal.h"     // Now used directly for kernel stack
 
 // --- Definitions --- (KERNEL_SPACE_VIRT_START, USER_STACK_*, TEMP_PD_MAP_ADDR, etc.)
 extern uint32_t* g_kernel_page_directory_virt; // Use globals from paging.c
@@ -92,7 +93,8 @@ int load_elf_and_init_memory(const char *path, mm_struct_t *mm, uint32_t *entry_
         uintptr_t vm_start = PAGE_ALIGN_DOWN(seg_vaddr);
         uintptr_t vm_end = ALIGN_UP(seg_vaddr + seg_memsz, PAGE_SIZE);
         uint32_t vm_flags = VM_READ | VM_ANONYMOUS;
-        if (seg_flags & 2) vm_flags |= VM_WRITE; if (seg_flags & 1) vm_flags |= VM_EXEC;
+        if (seg_flags & 2) { vm_flags |= VM_WRITE; }
+        if (seg_flags & 1) { vm_flags |= VM_EXEC; }
         uint32_t page_prot = PAGE_PRESENT | PAGE_USER;
         if (vm_flags & VM_WRITE) page_prot |= PAGE_RW;
 

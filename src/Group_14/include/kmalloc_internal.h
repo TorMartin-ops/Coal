@@ -4,6 +4,9 @@
 #include "slab.h" // For slab_cache_t* definition
 #include "types.h" // For size_t etc.
 
+// Define KMALLOC_HEADER_MAGIC before the struct definition
+#define KMALLOC_HEADER_MAGIC 0xDEADBEEF
+
 // --- Configuration ---
 #ifndef KMALLOC_MIN_ALIGNMENT
 #define KMALLOC_MIN_ALIGNMENT sizeof(void*)
@@ -24,7 +27,7 @@ typedef struct kmalloc_header {
     slab_cache_t *cache;   // Pointer to slab cache (NULL if buddy)
     // Removed cpu_id for now, relying on cache pointer for slab_free
 
-#ifdef KMALLOC_HEADER_MAGIC
+#ifdef KMALLOC_HEADER_MAGIC // Magic member is now included due to the define above
     uint32_t magic;
 #endif
 

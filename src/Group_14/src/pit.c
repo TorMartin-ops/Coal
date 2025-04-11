@@ -17,15 +17,13 @@
  
  /* PIT IRQ handler:
     Increments the tick counter and calls the scheduler *if ready*. */
- static void pit_irq_handler(void* data) {
-     (void)data; // Unused parameter
- 
-     pit_ticks++;
- 
-     if (scheduler_ready) { // <<< ADDED CHECK
-         schedule(); // Preempt current task by scheduling the next one
-     }
- }
+    static void pit_irq_handler(registers_t *regs) {
+        (void)regs; // Mark regs as unused if needed, or remove if truly unused
+        pit_ticks++;
+        if (scheduler_ready) { // ADDED CHECK
+            schedule(); // Preempt current task by scheduling the next one
+        }
+    }
  
  /* Returns the current tick count since PIT initialization. */
  uint32_t get_pit_ticks(void) {
