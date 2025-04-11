@@ -1,9 +1,11 @@
 #include "frame.h"
-#include "buddy.h"      // Underlying physical allocator
-#include "paging.h"     // For PAGE_SIZE, KERNEL_SPACE_VIRT_START (for mapping frame array)
-#include "terminal.h"   // For logging
-#include "spinlock.h"   // For locking
-#include <string.h>     // For memset
+#include "buddy.h"
+#include "paging.h"
+#include "terminal.h"
+#include "spinlock.h"
+#include <string.h>
+#include <types.h>
+#include "kmalloc_internal.h"   // For memset
 
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
@@ -30,147 +32,89 @@ static inline uintptr_t pfn_to_addr(size_t pfn) {
  * Initializes the physical frame reference counting system.
  * Needs careful placement to allocate the refcount array itself.
  */
-int frame_init(struct multiboot_tag_mmap *mmap_tag,
-               uintptr_t kernel_phys_start, uintptr_t kernel_phys_end,
-               uintptr_t buddy_heap_phys_start, uintptr_t buddy_heap_phys_end)
+ int frame_init(struct multiboot_tag_mmap *mmap_tag,
+    uintptr_t kernel_phys_start, uintptr_t kernel_phys_end,
+    uintptr_t buddy_heap_phys_start, uintptr_t buddy_heap_phys_end)
 {
-    terminal_write("[Frame] Initializing physical frame manager...\n");
-    spinlock_init(&g_frame_lock);
+terminal_write("[Frame] Initializing physical frame manager...\n");
+spinlock_init(&g_frame_lock);
+if (!mmap_tag) { return -1; }
 
-    if (!mmap_tag) {
-        terminal_write("  [Frame] Error: Multiboot memory map not provided!\n");
-        return -1;
-    }
+// Pass 1: Find highest address (remains the same)
+g_highest_address = 0;
+// ... find highest address from mmap_tag ...
+multiboot_memory_map_t *mmap_entry = mmap_tag->entries;
+uintptr_t mmap_end = (uintptr_t)mmap_tag + mmap_tag->size;
+while ((uintptr_t)mmap_entry < mmap_end) {
+uintptr_t region_end = (uintptr_t)mmap_entry->addr + (uintptr_t)mmap_entry->len;
+if (region_end > g_highest_address) g_highest_address = region_end;
+mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag->entry_size);
+}
+if (g_highest_address == 0) return -1;
 
-    // --- Pass 1: Find the highest physical address to determine array size ---
-    g_highest_address = 0;
-    multiboot_memory_map_t *mmap_entry = mmap_tag->entries;
-    uintptr_t mmap_end = (uintptr_t)mmap_tag + mmap_tag->size;
+// *** Use ALIGN_UP macro ***
+g_highest_address = ALIGN_UP(g_highest_address, PAGE_SIZE);
+g_total_frames = addr_to_pfn(g_highest_address);
+terminal_printf("  Detected highest physical address: 0x%x (%u total frames)\n",
+         g_highest_address, g_total_frames);
 
-    while ((uintptr_t)mmap_entry < mmap_end) {
-        uintptr_t region_start = (uintptr_t)mmap_entry->addr;
-        uintptr_t region_end = region_start + (uintptr_t)mmap_entry->len;
-        if (region_end > g_highest_address) {
-            g_highest_address = region_end;
-        }
-        mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag->entry_size);
-    }
+// Allocate refcount array using buddy
+size_t refcount_array_size = g_total_frames * sizeof(uint32_t);
+refcount_array_size = ALIGN_UP(refcount_array_size, PAGE_SIZE);
+// *** Use physical address for buddy_alloc ***
+void* refcount_array_phys = buddy_alloc(refcount_array_size);
+if (!refcount_array_phys) { return -1; }
+g_frame_refcounts = (volatile uint32_t *)refcount_array_phys; // Store phys addr for now
+terminal_printf("  Allocated refcount array at phys 0x%x (size %u bytes)\n",
+         (uintptr_t)g_frame_refcounts, refcount_array_size);
 
-    if (g_highest_address == 0) {
-         terminal_write("  [Frame] Error: Could not determine memory size from map!\n");
-         return -1;
-    }
-
-    // Round highest address UP to the nearest page boundary
-    g_highest_address = ALIGN_UP(g_highest_address, PAGE_SIZE);
-    g_total_frames = addr_to_pfn(g_highest_address);
-    terminal_printf("  Detected highest physical address: 0x%x (%u total frames)\n",
-                    g_highest_address, g_total_frames);
-
-    // --- Allocate memory for the reference count array ---
-    size_t refcount_array_size = g_total_frames * sizeof(uint32_t);
-    refcount_array_size = ALIGN_UP(refcount_array_size, PAGE_SIZE); // Align size for buddy
-
-    // Problem: Where to allocate this array? It needs to be done *before*
-    // the main buddy allocator manages this memory. We need to find a suitable
-    // region from the memory map *after* the kernel.
-    // This requires the memory map parsing logic to be available very early.
-    // For now, we'll *assume* buddy_alloc can be called once here safely,
-    // or that a dedicated early allocator exists.
-    // *** THIS IS A SIMPLIFICATION - Real kernel needs careful boot memory management ***
-    g_frame_refcounts = (uint32_t*)buddy_alloc(refcount_array_size);
-    if (!g_frame_refcounts) {
-        terminal_write("  [Frame] Error: Failed to allocate memory for refcount array!\n");
-        g_total_frames = 0;
-        return -1;
-    }
-     terminal_printf("  Allocated refcount array at phys 0x%x (size %u bytes)\n",
-                    (uintptr_t)g_frame_refcounts, refcount_array_size);
-
-     // Map the refcount array into kernel space to initialize it
-     uintptr_t refcount_array_vaddr = KERNEL_SPACE_VIRT_START + (uintptr_t)g_frame_refcounts;
-     if (paging_map_range(kernel_page_directory,
-                           refcount_array_vaddr,
-                           (uintptr_t)g_frame_refcounts,
-                           refcount_array_size,
-                           PTE_KERNEL_DATA) != 0) // Use kernel RW flags
-    {
-         terminal_write("  [Frame] Error: Failed to map refcount array into kernel space!\n");
-         // Need to free the physical memory allocated for the array
-         buddy_free((void*)g_frame_refcounts, refcount_array_size);
-         g_frame_refcounts = NULL;
-         g_total_frames = 0;
-         return -1;
-    }
-     terminal_printf("  Refcount array mapped at virt 0x%x\n", refcount_array_vaddr);
-     volatile uint32_t* refcounts_virt = (volatile uint32_t*)refcount_array_vaddr;
+// Map the refcount array into kernel virtual space *using kernel's PD*
+uintptr_t refcount_array_vaddr = KERNEL_SPACE_VIRT_START + (uintptr_t)g_frame_refcounts;
+// *** Use g_kernel_page_directory_phys ***
+if (paging_map_range((uint32_t*)g_kernel_page_directory_phys,
+                refcount_array_vaddr,
+                (uintptr_t)g_frame_refcounts, // Physical address
+                refcount_array_size,
+                PTE_KERNEL_DATA) != 0)
+{
+buddy_free(refcount_array_phys, refcount_array_size); // Free physical memory
+g_frame_refcounts = NULL; return -1;
+}
+volatile uint32_t* refcounts_virt = (volatile uint32_t*)refcount_array_vaddr;
+terminal_printf("  Refcount array mapped at virt 0x%x\n", refcount_array_vaddr);
 
 
-    // --- Pass 2: Initialize reference counts based on memory map ---
-    // Mark all frames as RESERVED initially
-    for (size_t i = 0; i < g_total_frames; ++i) {
-        refcounts_virt[i] = 1; // Reserve by default (ref count > 0)
-    }
-
-    // Mark AVAILABLE frames identified by Multiboot as having refcount 0
-    mmap_entry = mmap_tag->entries;
-    while ((uintptr_t)mmap_entry < mmap_end) {
-        if (mmap_entry->type == MULTIBOOT_MEMORY_AVAILABLE) {
-            uintptr_t region_start = (uintptr_t)mmap_entry->addr;
-            uintptr_t region_end = region_start + (uintptr_t)mmap_entry->len;
-
-            size_t first_pfn = addr_to_pfn(ALIGN_UP(region_start, PAGE_SIZE));
-            size_t last_pfn = addr_to_pfn(PAGE_ALIGN_DOWN(region_end)); // PFN before the end
-
-            for (size_t pfn = first_pfn; pfn < last_pfn && pfn < g_total_frames; ++pfn) {
-                refcounts_virt[pfn] = 0; // Mark as available
-            }
-        }
-        mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag->entry_size);
-    }
-
-    // --- Pass 3: Re-reserve frames used by kernel, buddy heap, refcount array ---
-    // Round kernel start down, end up
-    size_t kernel_start_pfn = addr_to_pfn(PAGE_ALIGN_DOWN(kernel_phys_start));
-    size_t kernel_end_pfn = addr_to_pfn(ALIGN_UP(kernel_phys_end, PAGE_SIZE));
-    terminal_printf("  Reserving kernel frames PFN %u - %u\n", kernel_start_pfn, kernel_end_pfn);
-    for (size_t pfn = kernel_start_pfn; pfn < kernel_end_pfn && pfn < g_total_frames; ++pfn) {
-        refcounts_virt[pfn] = 1; // Mark as reserved/in-use
-    }
-
-    // Reserve frames used by the refcount array itself
-    size_t refcount_start_pfn = addr_to_pfn((uintptr_t)g_frame_refcounts);
-    size_t refcount_end_pfn = addr_to_pfn((uintptr_t)g_frame_refcounts + refcount_array_size);
-     terminal_printf("  Reserving refcount array frames PFN %u - %u\n", refcount_start_pfn, refcount_end_pfn);
-    for (size_t pfn = refcount_start_pfn; pfn < refcount_end_pfn && pfn < g_total_frames; ++pfn) {
-        refcounts_virt[pfn] = 1;
-    }
-
-    // Reserve frames intended for the buddy heap
-    // Note: Buddy init should only use frames marked with refcount 0 by this init process.
-    // Re-reserving here ensures buddy doesn't accidentally use kernel/refcount array space.
-    size_t buddy_start_pfn = addr_to_pfn(buddy_heap_phys_start); // Use the aligned start
-    size_t buddy_end_pfn = addr_to_pfn(buddy_heap_phys_end);
-    terminal_printf("  Reserving buddy heap area frames PFN %u - %u\n", buddy_start_pfn, buddy_end_pfn);
-     for (size_t pfn = buddy_start_pfn; pfn < buddy_end_pfn && pfn < g_total_frames; ++pfn) {
-         // Only reserve if buddy will actually use it (was available)
-         // Buddy init will only take available pages. We just ensure count is >0
-         // if it overlaps kernel etc. This loop might be redundant if buddy_init
-         // is modified to respect initial refcounts.
-         // Let's assume buddy_init gets called *after* this and only uses pages with count 0.
-         // If buddy overlaps kernel, kernel reservation takes precedence.
-     }
-
-     // Ensure frames below 1MB are reserved (BIOS, VGA etc.)
-     size_t first_mb_pfn_limit = addr_to_pfn(0x100000);
-     terminal_printf("  Reserving frames below 1MB (PFN 0 - %u)\n", first_mb_pfn_limit);
-     for (size_t pfn = 0; pfn < first_mb_pfn_limit && pfn < g_total_frames; ++pfn) {
-          refcounts_virt[pfn] = 1;
-     }
+// Pass 2 & 3: Initialize counts (remain the same, use refcounts_virt)
+// ... mark all reserved (1), then mark available (0) from mmap ...
+for (size_t i = 0; i < g_total_frames; ++i) refcounts_virt[i] = 1;
+mmap_entry = mmap_tag->entries;
+while ((uintptr_t)mmap_entry < mmap_end) {
+if (mmap_entry->type == MULTIBOOT_MEMORY_AVAILABLE) {
+  uintptr_t region_start = (uintptr_t)mmap_entry->addr;
+  uintptr_t region_end = region_start + (uintptr_t)mmap_entry->len;
+  size_t first_pfn = addr_to_pfn(ALIGN_UP(region_start, PAGE_SIZE));
+  // *** Use PAGE_ALIGN_DOWN macro ***
+  size_t last_pfn = addr_to_pfn(PAGE_ALIGN_DOWN(region_end));
+  for (size_t pfn = first_pfn; pfn < last_pfn && pfn < g_total_frames; ++pfn) {
+      refcounts_virt[pfn] = 0;
+  }
+}
+mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag->entry_size);
+}
+// ... re-reserve kernel, refcount array, buddy heap area, <1MB ...
+size_t kernel_start_pfn = addr_to_pfn(PAGE_ALIGN_DOWN(kernel_phys_start));
+size_t kernel_end_pfn = addr_to_pfn(ALIGN_UP(kernel_phys_end, PAGE_SIZE));
+for (size_t pfn = kernel_start_pfn; pfn < kernel_end_pfn && pfn < g_total_frames; ++pfn) refcounts_virt[pfn] = 1;
+size_t refcount_start_pfn = addr_to_pfn((uintptr_t)g_frame_refcounts);
+size_t refcount_end_pfn = addr_to_pfn((uintptr_t)g_frame_refcounts + refcount_array_size);
+for (size_t pfn = refcount_start_pfn; pfn < refcount_end_pfn && pfn < g_total_frames; ++pfn) refcounts_virt[pfn] = 1;
+// Buddy area reservation depends on buddy implementation details, skip explicit reservation here
+size_t first_mb_pfn_limit = addr_to_pfn(0x100000);
+for (size_t pfn = 0; pfn < first_mb_pfn_limit && pfn < g_total_frames; ++pfn) refcounts_virt[pfn] = 1;
 
 
-    terminal_write("[Frame] Frame manager initialized.\n");
-    return 0;
+terminal_write("[Frame] Frame manager initialized.\n");
+return 0;
 }
 
 /**

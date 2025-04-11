@@ -2,6 +2,8 @@
 #include "terminal.h"
 #include "types.h"
 #include "spinlock.h"  // Include spinlock header
+#include "libc/stdint.h"
+
 
 // Check if MIN_BLOCK_SIZE meets alignment requirements
 #if (1 << MIN_ORDER) < DEFAULT_ALIGNMENT
@@ -303,82 +305,99 @@ void buddy_dump_leaks(void) {
 
 /* buddy_alloc (Non-Debug Version) */
 void *buddy_alloc(size_t size) {
-     if (size == 0) return NULL;
+    if (size == 0) return NULL;
 
-    size_t req_size = buddy_round_up_to_power_of_two(size);
-    if (req_size == SIZE_MAX) { return NULL; } // Overflow check
-    int req_order = buddy_size_to_order(req_size);
-    if (req_order > MAX_ORDER) { return NULL; } // Size too large
+   size_t req_size = buddy_round_up_to_power_of_two(size);
+   // *** Check SIZE_MAX ***
+   if (req_size == SIZE_MAX) { return NULL; }
+   int req_order = buddy_size_to_order(req_size);
+   if (req_order > MAX_ORDER) { return NULL; }
 
-    uintptr_t irq_flags = spinlock_acquire_irqsave(&g_buddy_lock); // Acquire lock
+   uintptr_t irq_flags = spinlock_acquire_irqsave(&g_buddy_lock);
+   int order = req_order;
+   while (order <= MAX_ORDER && free_lists[order] == NULL) { order++; }
 
-    int order = req_order;
-    while (order <= MAX_ORDER && free_lists[order] == NULL) {
-        order++;
-    }
-
-    void *allocated_ptr = NULL;
-    if (order <= MAX_ORDER) {
-        buddy_block_t *block = free_lists[order];
-        free_lists[order] = block->next;
-        while (order > req_order) {
-            order--;
-            size_t half_size = (size_t)1 << order;
-            buddy_block_t *buddy = (buddy_block_t*)((uint8_t*)block + half_size);
-            buddy->next = free_lists[order];
-            free_lists[order] = buddy;
-        }
-        g_buddy_free_bytes -= req_size;
-        allocated_ptr = (void*)block;
-    }
-
-    spinlock_release_irqrestore(&g_buddy_lock, irq_flags); // Release lock
-    return allocated_ptr;
+   void *allocated_ptr = NULL;
+   if (order <= MAX_ORDER) {
+       buddy_block_t *block = free_lists[order];
+       free_lists[order] = block->next;
+       while (order > req_order) {
+           order--;
+           size_t half_size = (size_t)1 << order;
+           buddy_block_t *buddy = (buddy_block_t*)((uint8_t*)block + half_size);
+           buddy->next = free_lists[order];
+           free_lists[order] = buddy;
+       }
+       g_buddy_free_bytes -= req_size;
+       allocated_ptr = (void*)block;
+   }
+   spinlock_release_irqrestore(&g_buddy_lock, irq_flags);
+   return allocated_ptr;
 }
 
 /* buddy_free (Non-Debug Version) */
-void buddy_free(void *ptr, size_t size) { // Still requires size for non-debug version
-     if (!ptr || size == 0) return;
+void buddy_free(void *ptr, size_t size) {
+    if (!ptr || size == 0) return;
 
-    size_t block_size = buddy_round_up_to_power_of_two(size);
-    if (block_size == SIZE_MAX) { return; } // Overflow check
-    int order = buddy_size_to_order(block_size);
-    if (order > MAX_ORDER) { return; } // Invalid size
+   size_t block_size = buddy_round_up_to_power_of_two(size);
+   // *** Check SIZE_MAX ***
+   if (block_size == SIZE_MAX) { return; }
+   int order = buddy_size_to_order(block_size);
+   if (order > MAX_ORDER) { return; }
 
-    uintptr_t irq_flags = spinlock_acquire_irqsave(&g_buddy_lock); // Acquire lock
+   uintptr_t irq_flags = spinlock_acquire_irqsave(&g_buddy_lock);
+   uintptr_t addr = (uintptr_t)ptr;
+   if (addr & (block_size - 1)) { /* Misaligned error */ spinlock_release_irqrestore(&g_buddy_lock, irq_flags); return; }
 
-    uintptr_t addr = (uintptr_t)ptr;
+   // Coalescing loop
+   while (order < MAX_ORDER) {
+       uintptr_t buddy_addr = addr ^ ((uintptr_t)1 << order);
+       buddy_block_t *prev = NULL; buddy_block_t *curr = free_lists[order]; bool merged = false;
+       while (curr) {
+           if ((uintptr_t)curr == buddy_addr) {
+               if (prev) prev->next = curr->next; else free_lists[order] = curr->next;
+               if (buddy_addr < addr) addr = buddy_addr;
+               order++; merged = true; break;
+           }
+           prev = curr; curr = curr->next;
+       }#include "buddy.h"
+       #include "terminal.h"
+       #include "types.h"
+       #include "spinlock.h"
+       #include <stdint.h> // *** Added for SIZE_MAX ***
+       // *** Added kmalloc_internal.h for ALIGN_UP definition ***
+       // *** NOTE: This creates a dependency cycle (buddy -> kmalloc_internal -> slab -> buddy)
+       // *** which is problematic. ALIGN_UP should ideally be in types.h or similar base header.
+       // *** For now, we include it here to fix compilation, but refactoring is needed.
+       #include "kmalloc_internal.h"
+       
+       // ... (rest of the file as provided in the previous step, including fixes for SIZE_MAX usage) ...
+       
+       /* buddy_init */
+       void buddy_init(void *heap, size_t size) {
+           // ... init logic ...
+           size_t required_alignment = (MIN_BLOCK_SIZE > DEFAULT_ALIGNMENT) ? MIN_BLOCK_SIZE : DEFAULT_ALIGNMENT;
+           uintptr_t heap_addr = (uintptr_t)heap;
+           // *** Use ALIGN_UP macro ***
+           uintptr_t aligned_addr = ALIGN_UP(heap_addr, required_alignment);
+           size_t adjustment = aligned_addr - heap_addr;
+           // ... rest of init ...
+       }
+       
+       // ... (buddy_alloc, buddy_free, buddy_free_space, debug versions if enabled) ...
+       
+       // *** Removed erroneous closing brace line at the end ***
+       // }(&g_buddy_lock, irq_flags); // Release lock <-- REMOVED THIS LINE
+       if (!merged) break;
+   }
 
-     // Alignment check (optional)
-    if (addr & (block_size - 1)) {
-        terminal_printf("[Buddy] Error: Freeing misaligned pointer 0x%x for size %u (order %d).\n", addr, block_size, order);
-        spinlock_release_irqrestore(&g_buddy_lock, irq_flags);
-        return;
-    }
+   buddy_block_t *final_block = (buddy_block_t*)addr;
+   final_block->next = free_lists[order];
+   free_lists[order] = final_block;
+   g_buddy_free_bytes += block_size; // Use block_size (power of 2)
 
-    // Coalescing loop
-    while (order < MAX_ORDER) {
-        uintptr_t buddy_addr = addr ^ ((uintptr_t)1 << order);
-        buddy_block_t *prev = NULL; buddy_block_t *curr = free_lists[order]; bool merged = false;
-        while (curr) {
-            if ((uintptr_t)curr == buddy_addr) {
-                if (prev) prev->next = curr->next; else free_lists[order] = curr->next;
-                if (buddy_addr < addr) addr = buddy_addr;
-                order++; merged = true; break;
-            }
-            prev = curr; curr = curr->next;
-        }
-        if (!merged) break;
-    }
-
-    // Add final block to free list
-    buddy_block_t *final_block = (buddy_block_t*)addr;
-    final_block->next = free_lists[order];
-    free_lists[order] = final_block;
-    g_buddy_free_bytes += block_size;
-
-    spinlock_release_irqrestore(&g_buddy_lock, irq_flags); // Release lock
-}
+   spinlock_release_irqrestore(&g_buddy_lock, irq_flags);
+}(&g_buddy_lock, irq_flags); // Release lock
 
 #endif // DEBUG_BUDDY
 

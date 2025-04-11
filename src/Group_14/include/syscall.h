@@ -6,32 +6,38 @@
 
 // System call numbers.
 enum {
-    SYS_WRITE = 1,
-    SYS_EXIT  = 2,
-    // Additional syscalls can be defined here.
+    SYS_WRITE  = 1,
+    SYS_EXIT   = 2,
+    SYS_MMAP   = 3,
+    SYS_MUNMAP = 4,
+    SYS_BRK    = 5, // Added brk syscall number
+    // Add more syscalls up to MAX_SYSCALL
 };
 
-/**
- * Structure representing the register context for a system call.
- * The syscall number is in EAX; arguments are passed in EBX, ECX, EDX, etc.
- */
+// --- mmap protection flags ---
+#define PROT_NONE       0x0     /* Page cannot be accessed */
+#define PROT_READ       0x1     /* Page can be read */
+#define PROT_WRITE      0x2     /* Page can be written */
+#define PROT_EXEC       0x4     /* Page can be executed */
+
+// --- mmap mapping flags ---
+#define MAP_SHARED      0x01    /* Share changes */
+#define MAP_PRIVATE     0x02    /* Changes are private (copy-on-write) */
+#define MAP_FIXED       0x10    /* Interpret addr exactly */
+#define MAP_ANONYMOUS   0x20    /* Don't use a file */
+// Add other flags like MAP_NORESERVE, MAP_POPULATE as needed
+
+
 typedef struct syscall_context {
-    uint32_t eax;   // Syscall number (and return value)
-    uint32_t ebx;   // Argument 1
-    uint32_t ecx;   // Argument 2
-    uint32_t edx;   // Argument 3
-    uint32_t esi;   // Argument 4
-    uint32_t edi;   // Argument 5
-    uint32_t ebp;   // Base pointer
+    // Pushed by syscall_handler_asm (order: pusha, segments)
+    uint32_t gs, fs, es, ds;
+    uint32_t edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax;
+
+    // Pushed by CPU during interrupt
+    uint32_t eip, cs, eflags, user_esp, user_ss;
 } syscall_context_t;
 
-/**
- * Handles a system call.
- * This function is called from the syscall assembly stub.
- *
- * @param ctx Pointer to the syscall context.
- * @return The value to be returned in EAX.
- */
-int syscall_handler(syscall_context_t *ctx) __attribute__((used));
+
+int syscall_handler(syscall_context_t *ctx);
 
 #endif // SYSCALL_H

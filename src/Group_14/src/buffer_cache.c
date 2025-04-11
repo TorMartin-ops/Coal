@@ -99,17 +99,17 @@ static void buffer_insert(buffer_t *buf) {
  * Remove a buffer from the hash table.
  * (Marked as unused by the compiler, keep for potential LRU implementation)
  */
-static void buffer_remove(buffer_t *buf) {
-     if (!buf || !buf->disk) return;
-    uint32_t index = buffer_hash(buf->disk, buf->block_number);
-    buffer_t **prev = &buffer_hash_table[index];
-    while (*prev) {
-        if (*prev == buf) {
-            *prev = buf->hash_next;
-            break;
-        }
-        prev = &((*prev)->hash_next);
-    }
+ static void buffer_remove(buffer_t *buf) {
+    if (!buf || !buf->disk) return;
+   uint32_t index = buffer_hash(buf->disk, buf->block_number);
+   buffer_t **prev = &buffer_hash_table[index];
+   while (*prev) {
+       if (*prev == buf) {
+           *prev = buf->hash_next;
+           break;
+       }
+       prev = &((*prev)->hash_next);
+   }
 }
 
 /*
@@ -125,66 +125,38 @@ void buffer_cache_init(void) {
 /*
  * Retrieve (or load) a buffer for the given device name and block number.
  */
-buffer_t *buffer_get(const char *device_name, uint32_t block_number) {
-    if (!device_name) {
-        terminal_write("[BufferCache] buffer_get: Invalid device name parameter.\n");
-        return NULL;
-    }
-
-    // Get the disk_t structure for the device name
+ buffer_t *buffer_get(const char *device_name, uint32_t block_number) {
+    if (!device_name) { return NULL; }
     disk_t *disk = get_disk_by_name(device_name);
-    if (!disk || !disk->initialized) { // Check if disk init succeeded
-         terminal_printf("[BufferCache] buffer_get: Could not find or initialize disk for device: %s\n", device_name);
-         return NULL;
-    }
+    if (!disk || !disk->initialized) { return NULL; }
 
-    // Lookup using the disk_t pointer
     buffer_t *buf = buffer_lookup(disk, block_number);
     if (buf) {
         buf->ref_count++;
-        // TODO: If using LRU, move buf to the front: lru_make_recent(buf);
         return buf;
     }
 
-    // Not in cache, allocate a new buffer structure.
     buf = (buffer_t *)kmalloc(sizeof(buffer_t));
-    if (!buf) {
-        terminal_write("[BufferCache] buffer_get: Out of memory for buffer_t.\n");
-        return NULL;
-    }
-    memset(buf, 0, sizeof(buffer_t)); // Clear the buffer structure
+    if (!buf) { return NULL; }
+    memset(buf, 0, sizeof(buffer_t));
 
-    // Store disk_t pointer
     buf->disk = disk;
     buf->block_number = block_number;
-    buf->flags = 0;
     buf->ref_count = 1;
-    buf->prev = NULL; // For LRU
-    buf->next = NULL; // For LRU
-    buf->hash_next = NULL;
 
-    // Allocate data block. Use actual sector size from the block device.
-    // Access sector_size via the nested blk_dev structure
     size_t data_block_size = disk->blk_dev.sector_size > 0 ? disk->blk_dev.sector_size : DEFAULT_BUFFER_BLOCK_SIZE;
     buf->data = (uint8_t *)kmalloc(data_block_size);
-    if (!buf->data) {
-        terminal_write("[BufferCache] buffer_get: Out of memory for data buffer.\n");
-        kfree(buf);
-        return NULL;
-    }
+    if (!buf->data) { kfree(buf); return NULL; } // Use correct kfree
 
-    // Read block from disk using disk_read_sectors
     if (disk_read_sectors(disk, block_number, buf->data, 1) != 0) {
-        terminal_printf("[BufferCache] buffer_get: Failed to read block %u from disk %s.\n",
-                        block_number, disk->blk_dev.device_name);
-        kfree(buf->data, data_block_size);
+        // *** Fixed kfree call: Only pass the pointer ***
+        kfree(buf->data);
         kfree(buf);
         return NULL;
     }
 
     buf->flags |= BUFFER_FLAG_VALID;
-    buffer_insert(buf); // Insert into hash table
-    // TODO: If using LRU, add buf to the list: lru_add(buf);
+    buffer_insert(buf);
     return buf;
 }
 

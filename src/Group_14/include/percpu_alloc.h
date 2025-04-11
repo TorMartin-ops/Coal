@@ -3,6 +3,7 @@
 #define PERCPU_ALLOC_H
 
 #include "types.h"
+#include "slab.h" // Need slab_cache_t
 
 #ifdef __cplusplus
 extern "C" {
@@ -10,48 +11,36 @@ extern "C" {
 
 /**
  * @brief Initializes per-CPU slab caches for small allocations.
- *
- * Creates slab caches for predefined size classes (up to 4096 bytes typically)
- * for each CPU detected (up to MAX_CPUS). Must be called once during system startup
- * after the slab allocator itself is ready.
  */
 void percpu_kmalloc_init(void);
 
 /**
- * @brief Allocates 'size' bytes from the per-CPU slab caches for 'cpu_id'.
+ * @brief Allocates 'total_required_size' bytes from the per-CPU slab caches for 'cpu_id'.
  *
- * IMPORTANT: This function assumes 'size' is within the range handled by
- * the slab caches (e.g., <= 4096 bytes) and 'cpu_id' is valid.
- * It attempts to allocate from the appropriate slab cache for the given CPU.
- * Fallback to other allocators (like buddy) should be handled by the caller
- * (e.g., the main kmalloc function) if this function returns NULL.
+ * Attempts to find the best-fitting per-CPU slab cache for the given CPU and total size.
+ * Returns the raw pointer allocated by the slab allocator.
+ * The caller (kmalloc) is responsible for adding the header.
  *
- * @param size The requested size in bytes (assumed <= SMALL_ALLOC_MAX).
- * @param cpu_id The ID of the CPU requesting the allocation (assumed valid).
- * @return Pointer to the allocated object, or NULL on failure (e.g., slab cache full).
+ * @param total_required_size The total size needed (user size + header, aligned).
+ * @param cpu_id The ID of the CPU requesting the allocation.
+ * @param out_cache Optional output pointer to store the slab_cache_t* used.
+ * @return Pointer to the raw allocated memory block (start of slab object), or NULL on failure.
  */
-void *percpu_kmalloc(size_t size, int cpu_id);
+void *percpu_kmalloc(size_t total_required_size, int cpu_id, slab_cache_t **out_cache);
 
 /**
- * @brief Frees memory previously allocated by percpu_kmalloc.
+ * @brief Frees memory previously allocated by percpu_kmalloc, using the cache pointer.
  *
- * IMPORTANT: This function assumes the memory pointed to by 'ptr' was originally
- * allocated via percpu_kmalloc with the same 'size' and 'cpu_id', and that 'size'
- * corresponds to a size handled by the per-CPU slab caches.
+ * Determines the correct per-CPU slab cache using the provided cache pointer
+ * and calls the underlying slab_free.
  *
- * @param ptr Pointer to the memory block to free.
- * @param size The original size requested during allocation (must match).
- * @param cpu_id The ID of the CPU that performed the original allocation.
+ * @param ptr Pointer to the raw memory block (start of slab object) to free.
+ * @param cache Pointer to the slab_cache_t the object belongs to (from header).
  */
-void percpu_kfree(void *ptr, size_t size, int cpu_id);
+void percpu_kfree(void *ptr, slab_cache_t *cache);
 
 /**
  * @brief Retrieves allocation statistics for a specific CPU's allocator. (Optional)
- *
- * @param cpu_id The CPU identifier.
- * @param out_alloc_count Pointer to store the allocation count (can be NULL).
- * @param out_free_count Pointer to store the free count (can be NULL).
- * @return 0 on success, -1 if cpu_id is invalid.
  */
 int percpu_get_stats(int cpu_id, uint32_t *out_alloc_count, uint32_t *out_free_count);
 

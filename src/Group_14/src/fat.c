@@ -1040,8 +1040,8 @@ static int fat_close_internal(file_t *file) {
 
 cleanup:
     // Free context and vnode
-    kfree(file->vnode->data, sizeof(fat_file_context_t)); // Free the fat_file_context_t
-    kfree(file->vnode, sizeof(vnode_t));                 // Free the vnode_t
+    kfree(file->vnode->data); // Free the fat_file_context_t
+    kfree(file->vnode,);                 // Free the vnode_t
     file->vnode = NULL; // Important for vfs_close to know it's freed
 
     return FS_SUCCESS;

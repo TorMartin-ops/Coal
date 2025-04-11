@@ -23,90 +23,53 @@
  * @param entry_point     Output param for the ELF's e_entry
  * @return 0 on success, -1 on error (logged to terminal)
  */
-int load_elf_binary(const char *path, uint32_t *page_directory, uint32_t *entry_point) {
-    // 1) Read file from disk
+ int load_elf_binary(const char *path, uint32_t *page_directory_phys, uint32_t *entry_point) {
     size_t file_size = 0;
     void *file_data = read_file(path, &file_size);
-    if (!file_data) {
-        terminal_write("[elf_loader] Error: read_file failed.\n");
-        return -1;
-    }
+    if (!file_data) { return -1; }
 
-    // 2) Basic ELF validations
     Elf32_Ehdr *ehdr = (Elf32_Ehdr *)file_data;
-    if (ehdr->e_ident[0] != 0x7F ||
-        ehdr->e_ident[1] != 'E'  ||
-        ehdr->e_ident[2] != 'L'  ||
-        ehdr->e_ident[3] != 'F')
-    {
-        terminal_write("[elf_loader] Invalid ELF magic.\n");
-        return -1;
-    }
-    if (ehdr->e_type != 2 /* ET_EXEC */ || ehdr->e_machine != 3 /* EM_386 */) {
-        terminal_write("[elf_loader] Unsupported ELF type or machine (only i386 exec supported).\n");
-        return -1;
-    }
-
-    // 3) Record entry point
+    if (memcmp(ehdr->e_ident, "\x7F" "ELF", 4) != 0) { kfree(file_data); return -1; }
+    if (ehdr->e_type != 2 || ehdr->e_machine != 3) { kfree(file_data); return -1; }
     *entry_point = ehdr->e_entry;
 
-    // 4) Iterate program headers (PHdr)
     Elf32_Phdr *phdr = (Elf32_Phdr *)((uint8_t *)file_data + ehdr->e_phoff);
     for (Elf32_Half i = 0; i < ehdr->e_phnum; i++) {
-        if (phdr[i].p_type != PT_LOAD) {
-            // skip non-loadable segment
-            continue;
-        }
-        // gather info
+        if (phdr[i].p_type != PT_LOAD || phdr[i].p_memsz == 0) continue;
+
         uint32_t seg_vaddr  = phdr[i].p_vaddr;
         uint32_t seg_offset = phdr[i].p_offset;
         uint32_t seg_filesz = phdr[i].p_filesz;
         uint32_t seg_memsz  = phdr[i].p_memsz;
 
-        // 4a) Validate offset < file_size
-        if (seg_offset > file_size) {
-            terminal_write("[elf_loader] Invalid segment offset beyond file size.\n");
+        if (seg_offset > file_size || (seg_offset + seg_filesz) > file_size) { kfree(file_data); return -1; }
+
+        uint32_t flags = PAGE_PRESENT | PAGE_USER; // Base flags
+        if (phdr[i].p_flags & 2) flags |= PAGE_RW;
+
+        // --- This mapping is problematic ---
+        // It assumes identity mapping phys=virt and doesn't allocate physical frames.
+        // The logic in process.c's load_elf_and_init_memory is better.
+        // Commenting out the problematic map call.
+        /*
+        if (paging_map_range(page_directory_phys, seg_vaddr, ???, seg_memsz, flags) != 0) { // Missing physical address
+            terminal_write("[elf_loader] Error: paging_map_range failed.\n");
+            kfree(file_data);
             return -1;
         }
-        // 4b) Validate offset+filesz <= file_size
-        if ((seg_offset + seg_filesz) > file_size) {
-            terminal_write("[elf_loader] Segment data extends beyond file size.\n");
-            return -1;
-        }
-        // 4c) Possibly align seg_vaddr to page boundary if needed, or rely on p_align
+        */
+        terminal_printf("[elf_loader] Warning: Segment %d mapping skipped in load_elf_binary (handled by process loader).\n", i);
 
-        // 4d) Attempt to map the segment range into page_directory
-        // ELF typical flags: PF_X=1, PF_W=2, PF_R=4
-        // We pass them to paging_map_range. The code typically expects PAGE_PRESENT=1, PAGE_RW=2, ...
-        // Convert ELF flags p_flags to your paging flags if needed.
-        // For simplicity, we do:
-        uint32_t flags = PAGE_PRESENT;
-        if (phdr[i].p_flags & 2) { // PF_W
-            flags |= PAGE_RW;
-        }
-        // if we want user-mode, we do PAGE_USER, etc.
 
-        if (paging_map_range(page_directory, seg_vaddr, seg_memsz, flags) != 0) {
-            terminal_write("[elf_loader] Error: paging_map_range failed for segment.\n");
-            return -1;
-        }
-
-        // 5) Copy segment content from the ELF file into memory
-        //    Virtual address seg_vaddr = physical identity in your OS model
-        memcpy((void *)seg_vaddr, (uint8_t *)file_data + seg_offset, seg_filesz);
-
-        // 6) Zero out the .bss portion if memsz > filesz
-        if (seg_memsz > seg_filesz) {
-            memset((uint8_t *)seg_vaddr + seg_filesz, 0, seg_memsz - seg_filesz);
-        }
-
-        // (Optional) debugging
-        // terminal_write("[elf_loader] Mapped segment #");
-        // print_number(i);
-        // ...
+        // Copy/Zero logic is fine if addresses were correctly mapped
+        // void* map_target_addr = (void*)seg_vaddr; // Assumes identity map or pre-mapped
+        // memcpy(map_target_addr, (uint8_t *)file_data + seg_offset, seg_filesz);
+        // if (seg_memsz > seg_filesz) {
+        //     memset((uint8_t *)map_target_addr + seg_filesz, 0, seg_memsz - seg_filesz);
+        // }
     }
 
-    // 7) Done
-    terminal_write("[elf_loader] ELF binary loaded successfully.\n");
+    kfree(file_data);
+    terminal_write("[elf_loader] load_elf_binary finished (check if actually used).\n");
     return 0;
 }

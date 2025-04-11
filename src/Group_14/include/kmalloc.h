@@ -8,7 +8,7 @@
 // if you want to enable the per-CPU allocation strategy. Otherwise, it uses
 // the global slab allocator strategy.
 // Example CMake: target_compile_definitions(mykernel PRIVATE USE_PERCPU_ALLOC)
-// #define USE_PERCPU_ALLOC
+// #define USE_PERCPU_ALLOC // <<--- We will effectively enable this in kmalloc.c
 
 #ifdef __cplusplus
 extern "C" {
@@ -57,7 +57,7 @@ void kfree(void *ptr);
  * this function retrieves the total number of successful slab allocations
  * and frees performed via kmalloc.
  * Note: This does not track buddy allocator stats directly via kmalloc, nor
- * per-CPU stats if USE_PERCPU_ALLOC is defined.
+ * per-CPU stats if USE_PERCPU_ALLOC is defined. Use percpu_get_stats for that.
  *
  * @param out_alloc Pointer to store the total slab allocation count (can be NULL).
  * @param out_free Pointer to store the total slab free count (can be NULL).

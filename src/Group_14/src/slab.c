@@ -8,7 +8,8 @@
  #include "terminal.h"
  #include "types.h"
  #include "spinlock.h"
- #include <string.h>     // For memset
+ #include <string.h>
+ #include "paging.h"     // For memset
  
  #ifndef PAGE_SIZE
  #error "PAGE_SIZE is not defined!"
