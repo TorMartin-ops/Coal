@@ -7,6 +7,7 @@ extern "C" {
 #endif
 
 #include "fs_errno.h"
+#include "types.h" // Include for bool definition
 
 /**
  * fs_init
@@ -25,6 +26,16 @@ int fs_init(void);
  * @return FS_SUCCESS on success, or a negative error code on failure.
  */
 int fs_shutdown(void);
+
+/**
+ * fs_is_initialized     // <<< ADDED PROTOTYPE
+ *
+ * Checks if the filesystem layer has been successfully initialized.
+ *
+ * @return true if initialized, false otherwise.
+ */
+bool fs_is_initialized(void);
+
 
 #ifdef __cplusplus
 }

@@ -2,8 +2,9 @@
 #include "terminal.h"
 #include "buddy.h"
 #include "paging.h"
-#include <string.h>  // for memcpy, memset
+#include <string.h>
 #include "read_file.h"
+#include "kmalloc.h"
 
 /**
  * load_elf_binary

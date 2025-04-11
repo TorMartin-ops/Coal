@@ -200,7 +200,7 @@ int block_device_read(block_device_t *dev, uint32_t lba, void *buffer, size_t co
     for (size_t sector = 0; sector < count; sector++) {
         if (ata_wait_drq(dev->io_base) != 0) return -1;
         uint16_t *buf16 = (uint16_t *)(buf_ptr + sector * dev->sector_size);
-        for (int i = 0; i < (dev->sector_size / 2); i++) { // Read sector_size bytes (sector_size/2 words)
+        for (uint32_t i = 0; i < (dev->sector_size / 2); i++) { 
             buf16[i] = inw(dev->io_base + ATA_DATA);
         }
         ata_status_poll(dev->io_base);
@@ -237,7 +237,7 @@ int block_device_write(block_device_t *dev, uint32_t lba, const void *buffer, si
     for (size_t sector = 0; sector < count; sector++) {
         if (ata_wait_drq(dev->io_base) != 0) return -1;
         const uint16_t *buf16 = (const uint16_t *)(buf_ptr + sector * dev->sector_size);
-        for (int i = 0; i < (dev->sector_size / 2); i++) {
+        for (uint32_t i = 0; i < (dev->sector_size / 2); i++) {
             outw(dev->io_base + ATA_DATA, buf16[i]);
         }
         ata_status_poll(dev->io_base);

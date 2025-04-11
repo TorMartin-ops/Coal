@@ -130,7 +130,7 @@ void buddy_init(void *heap_region_start, size_t initial_size) {
     int order = MAX_ORDER;
     size_t block_size = (size_t)1 << order;
     // Check for potential shift overflow before the loop
-    if (order >= (sizeof(size_t) * 8)) {
+    if ((size_t)order >= (sizeof(size_t) * 8)) {
          terminal_printf("[Buddy] Error: MAX_ORDER (%d) is too large for size_t.\n", order);
          g_buddy_total_size = 0; g_buddy_free_bytes = 0; g_heap_start_addr = 0;
          return;

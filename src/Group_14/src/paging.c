@@ -73,7 +73,8 @@
  static inline uint32_t read_cr4(void);
  static inline void write_cr4(uint32_t value);
  static uint32_t* allocate_page_table_phys_buddy(void);
- static int paging_map_physical(uint32_t *page_directory_phys, uintptr_t phys_addr_to_map, size_t size, uint32_t flags, bool map_to_higher_half);
+ static uintptr_t paging_alloc_early_pt_frame_physical(void);
+
  
  // --- CPU Feature Detection and Control ---
  static inline uint32_t read_cr4(void) {
@@ -178,6 +179,72 @@
      terminal_printf("  [Paging] Allocated early frame at phys 0x%x\n", frame_phys);
      return frame_phys;
  }
+ static int paging_map_physical(uint32_t *page_directory_phys, uintptr_t phys_addr_to_map, size_t size, uint32_t flags, bool map_to_higher_half) {
+    if (!page_directory_phys || size == 0) return -1;
+
+    uintptr_t current_phys = PAGE_ALIGN_DOWN(phys_addr_to_map);
+    uintptr_t end_phys = PAGE_ALIGN_UP(phys_addr_to_map + size); // Non-inclusive end
+
+    flags |= PAGE_PRESENT; // Ensure pages are marked present
+
+    while (current_phys < end_phys) {
+        uintptr_t target_vaddr = map_to_higher_half ? (KERNEL_SPACE_VIRT_START + current_phys) : current_phys;
+        uint32_t pd_idx = PDE_INDEX(target_vaddr);
+        if (pd_idx >= 1024) {
+            terminal_printf("  [PhysMap ERROR] Invalid PDE Index %u for V=0x%x\n", pd_idx, target_vaddr);
+            return -1;
+        }
+
+        uint32_t* pd_entry_ptr = &page_directory_phys[pd_idx]; // PHYSICAL pointer to PDE
+        uint32_t pde = *pd_entry_ptr;
+        uint32_t* pt_phys_ptr = NULL; // PHYSICAL pointer to PT
+
+        if ((pde & PAGE_PRESENT) && (pde & PAGE_SIZE_4MB)) {
+             terminal_printf("  [PhysMap ERROR] Conflict: PDE %d (V=0x%x) already maps 4MB page.\n", pd_idx, target_vaddr);
+             return -1;
+        }
+
+        if (!(pde & PAGE_PRESENT)) {
+            uintptr_t pt_frame_phys = paging_alloc_early_pt_frame_physical();
+            if (!pt_frame_phys) {
+                terminal_printf("  [PhysMap ERROR] Failed alloc PT frame for PDE %d (V=0x%x)\n", pd_idx, target_vaddr);
+                return -1;
+            }
+            pt_phys_ptr = (uint32_t*)pt_frame_phys;
+            uint32_t pde_flags = PAGE_PRESENT | PAGE_RW; // Kernel access needed
+            if (flags & PAGE_USER) pde_flags |= PAGE_USER;
+            *pd_entry_ptr = (pt_frame_phys & ~0xFFF) | pde_flags;
+            pde = *pd_entry_ptr;
+        } else {
+            pt_phys_ptr = (uint32_t*)(pde & ~0xFFF);
+            uint32_t needed_pde_flags = PAGE_PRESENT | PAGE_RW;
+            if (flags & PAGE_USER) needed_pde_flags |= PAGE_USER;
+            if ((pde & needed_pde_flags) != needed_pde_flags) {
+                 *pd_entry_ptr |= (flags & (PAGE_RW | PAGE_USER));
+            }
+        }
+
+        uint32_t pt_idx = PTE_INDEX(target_vaddr);
+        if (pt_idx >= 1024) {
+             terminal_printf("  [PhysMap ERROR] Invalid PTE Index %u for V=0x%x\n", pt_idx, target_vaddr);
+             return -1;
+        }
+        uint32_t* pt_entry_ptr = &pt_phys_ptr[pt_idx]; // PHYSICAL pointer to PTE
+
+        if (*pt_entry_ptr & PAGE_PRESENT) {
+             // Log potential overwrite
+             // terminal_printf("  [PhysMap WARNING] Overwriting PTE for V=0x%x (P=0x%x) was 0x%x -> 0x%x\n",
+             //                 target_vaddr, current_phys, *pt_entry_ptr, (current_phys & ~0xFFF) | flags);
+        }
+
+        *pt_entry_ptr = (current_phys & ~0xFFF) | flags;
+
+        if (current_phys > UINTPTR_MAX - PAGE_SIZE) break; // Prevent overflow
+        current_phys += PAGE_SIZE;
+    }
+    return 0; // Success
+}
+
  
  /**
   * @brief Stage 1: Initialize the Page Directory.
@@ -708,23 +775,24 @@
   *
   * @param page_directory_phys Physical address of the PD.
   */
- void paging_free_user_space(uint32_t *page_directory_phys) {
-     if (!page_directory_phys || !g_kernel_page_directory_virt)
-         return;
-     uint32_t *target_pd_virt = NULL;
-     if (paging_map_single(g_kernel_page_directory_virt, TEMP_MAP_ADDR_PD, (uint32_t)page_directory_phys, PTE_KERNEL_DATA_FLAGS) != 0)
-         return;
-     target_pd_virt = (uint32_t*)TEMP_MAP_ADDR_PD;
-     // Assuming KERNEL_PDE_INDEX defines the first PDE reserved for the kernel.
-     for (int i = 0; i < KERNEL_PDE_INDEX; ++i) {
-         uint32_t pde = target_pd_virt[i];
-         if ((pde & PAGE_PRESENT) && !(pde & PAGE_SIZE_4MB)) {
-             uintptr_t pt_phys = pde & ~0xFFF;
-             BUDDY_FREE((void*)pt_phys, PAGE_SIZE);
-         }
-         target_pd_virt[i] = 0;
-     }
-     paging_unmap_range(g_kernel_page_directory_virt, TEMP_MAP_ADDR_PD, PAGE_SIZE);
-     paging_invalidate_page((void*)TEMP_MAP_ADDR_PD);
- }
+  void paging_free_user_space(uint32_t *page_directory_phys) {
+    if (!page_directory_phys || !g_kernel_page_directory_virt) return;
+    uint32_t *target_pd_virt = NULL;
+
+    if (paging_map_single(g_kernel_page_directory_virt, TEMP_MAP_ADDR_PD, (uint32_t)page_directory_phys, PTE_KERNEL_DATA_FLAGS) != 0) return;
+    target_pd_virt = (uint32_t*)TEMP_MAP_ADDR_PD;
+
+    // *** FIX: Use unsigned int or size_t for loop variable ***
+    for (size_t i = 0; i < KERNEL_PDE_INDEX; ++i) { // Changed int to size_t
+        uint32_t pde = target_pd_virt[i];
+        if ((pde & PAGE_PRESENT) && !(pde & PAGE_SIZE_4MB)) {
+            uintptr_t pt_phys = pde & ~0xFFF;
+            BUDDY_FREE((void*)pt_phys, PAGE_SIZE); // Use macro
+        }
+        target_pd_virt[i] = 0;
+    }
+
+    paging_unmap_range(g_kernel_page_directory_virt, TEMP_MAP_ADDR_PD, PAGE_SIZE);
+    paging_invalidate_page((void*)TEMP_MAP_ADDR_PD);
+}
  
