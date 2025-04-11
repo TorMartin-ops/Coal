@@ -64,6 +64,11 @@ extern uint8_t _kernel_start_phys;    // Physical start address of kernel code/d
 extern uint8_t _kernel_end_phys;      // Physical end address of kernel code/data
 extern uint8_t _kernel_virtual_base;  // Kernel's virtual base address (e.g., 0xC0000000)
 
+// === Global Variables ===
+// Define the global variable to store the Multiboot info address
+uint32_t g_multiboot_info_phys_addr_global = 0;
+
+
 // === Static Function Prototypes ===
 static struct multiboot_tag *find_multiboot_tag(uint32_t mb_info_phys_addr, uint16_t type);
 static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
@@ -79,8 +84,10 @@ static struct multiboot_tag *find_multiboot_tag(uint32_t mb_info_phys_addr, uint
         terminal_write("[Boot Error] Multiboot info address invalid or inaccessible early.\n");
         return NULL;
     }
+    // Access physical memory directly - requires appropriate mapping or runs before paging
     uint32_t total_size = *(uint32_t*)mb_info_phys_addr;
-    if (total_size < 8 || total_size > 0x100000) { // Basic size sanity check
+    // Basic size sanity check (e.g., max 1MB for info struct size)
+    if (total_size < 8 || total_size > 0x100000) {
         terminal_printf("[Boot Error] Multiboot total_size (%u) invalid.\n", total_size);
         return NULL;
     }
@@ -92,8 +99,8 @@ static struct multiboot_tag *find_multiboot_tag(uint32_t mb_info_phys_addr, uint
         uintptr_t current_tag_addr = (uintptr_t)tag;
         // Bounds check tag header
         if (current_tag_addr + 8 > info_end) {
-            terminal_printf("[Boot Error] Multiboot tag header OOB (Tag Addr=0x%x, Info End=0x%x).\n", current_tag_addr, info_end);
-            return NULL;
+             terminal_printf("[Boot Error] Multiboot tag header OOB (Tag Addr=0x%x, Info End=0x%x).\n", current_tag_addr, info_end);
+             return NULL;
         }
         // Bounds check tag content
         if (tag->size < 8 || (current_tag_addr + tag->size) > info_end) {
@@ -103,13 +110,14 @@ static struct multiboot_tag *find_multiboot_tag(uint32_t mb_info_phys_addr, uint
 
         if (tag->type == type) return tag; // Found
 
-        // Advance to the next tag
-        uintptr_t next_tag_addr = current_tag_addr + ((tag->size + 7) & ~7); // 8-byte alignment
+        // Advance to the next tag (8-byte alignment)
+        uintptr_t next_tag_addr = current_tag_addr + ((tag->size + 7) & ~7);
+        // Check bounds before advancing
         if (next_tag_addr >= info_end) {
-            // Allow only if the END tag starts exactly at info_end
-            if (next_tag_addr == info_end && (current_tag_addr + tag->size <= info_end) && tag->type == MULTIBOOT_TAG_TYPE_END) break;
-            terminal_printf("[Boot Error] Next Multiboot tag calculation OOB (Next Addr=0x%x, Info End=0x%x).\n", next_tag_addr, info_end);
-            return NULL;
+             // Allow only if the END tag starts exactly at info_end
+             if (next_tag_addr == info_end && (current_tag_addr + tag->size <= info_end) && tag->type == MULTIBOOT_TAG_TYPE_END) break;
+             terminal_printf("[Boot Error] Next Multiboot tag calculation OOB (Next Addr=0x%x, Info End=0x%x).\n", next_tag_addr, info_end);
+             return NULL;
         }
         tag = (struct multiboot_tag *)next_tag_addr;
     }
@@ -242,7 +250,7 @@ static uintptr_t find_early_free_frame(struct multiboot_tag_mmap *mmap_tag) {
             // Iterate through pages in this available region
             uintptr_t current_page = ALIGN_UP(region_start, PAGE_SIZE);
 
-            while (current_page + PAGE_SIZE <= region_end) {
+            while (current_page < region_end && (current_page + PAGE_SIZE) > current_page /* Check overflow */ ) {
                 // Check if page is >= 1MB
                 if (current_page >= 0x100000) {
                     // Check if it overlaps with the kernel image
@@ -368,6 +376,9 @@ void kernel_idle_task(void) {
 
 // === Main Kernel Entry Point ===
 void main(uint32_t magic, uint32_t mb_info_phys_addr) {
+    // Store Multiboot info address globally FIRST
+    g_multiboot_info_phys_addr_global = mb_info_phys_addr;
+
     // 1. Early Initialization (Terminal, GDT, TSS, IDT)
     terminal_init();
     terminal_write("=== UiAOS Kernel Booting (v3 - Map Parse Init) ===\n\n");
@@ -387,7 +398,8 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     idt_init();
 
     // 2. Memory Management Initialization (Revised Order)
-    if (!init_memory(mb_info_phys_addr)) {
+    // Pass the global variable now, as init_memory uses it internally
+    if (!init_memory(g_multiboot_info_phys_addr_global)) {
         // Panic occurs within init_memory if it returns false
         return; // Should not be reached
     }
