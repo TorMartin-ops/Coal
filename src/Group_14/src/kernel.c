@@ -1,32 +1,31 @@
 /**
  * kernel.c - Main kernel entry point for UiAOS
  *
- * Initializes core subsystems, parses Multiboot information, sets up memory,
- * drivers, filesystem, scheduler, and starts the initial user process before
- * entering the idle loop.
+ * REVISED: Uses staged paging initialization and memory map parsing
+ * to find the initial PD frame, resolving early boot memory issues.
+ * Implements a robust initialization sequence suitable for OS development.
  */
 
 // === Standard/Core Headers ===
-#include <multiboot2.h>      // Multiboot2 specification
-#include "types.h"          // Core type definitions
-#include <string.h>         // Kernel's string functions (memcpy, memset, etc.)
-#include <libc/stdint.h>    // Fixed-width integers (SIZE_MAX)
+#include <multiboot2.h>      // Multiboot2 specification header
+#include "types.h"          // Core type definitions (uintptr_t, size_t, bool, etc.)
+#include <string.h>         // Kernel's string functions (memcpy, memset, strcmp)
+#include <libc/stdint.h>    // Fixed-width integers (SIZE_MAX, uint32_t)
 
 // === Kernel Subsystems ===
 #include "terminal.h"       // Early console output
-#include "gdt.h"            // Global Descriptor Table
-#include "tss.h"            // Task State Segment
-#include "idt.h"            // Interrupt Descriptor Table
-#include "paging.h"         // Paging functions and constants
-#include "frame.h"          // Physical frame allocator
+#include "gdt.h"            // Global Descriptor Table setup
+#include "tss.h"            // Task State Segment setup
+#include "idt.h"            // Interrupt Descriptor Table setup
+#include "paging.h"         // Paging functions and constants (staged init)
+#include "frame.h"          // Physical frame allocator (ref counting)
 #include "buddy.h"          // Physical page allocator (buddy system)
-#include "slab.h"           // Slab allocator (used by kmalloc)
-#include "percpu_alloc.h"   // Per-CPU slab allocator support
+#include "slab.h"           // Slab allocator (object caching)
+#include "percpu_alloc.h"   // Per-CPU slab allocator support (if used)
 #include "kmalloc.h"        // Kernel dynamic memory allocator facade
-#include "kmalloc_internal.h" // Internal kmalloc helpers (ALIGN_UP)
 #include "process.h"        // Process Control Block management
 #include "scheduler.h"      // Task scheduling
-#include "syscall.h"        // System call interface definitions (not handlers)
+#include "syscall.h"        // System call interface definitions
 #include "elf_loader.h"     // ELF binary loading
 #include "vfs.h"            // Virtual File System interface
 #include "mount.h"          // Filesystem mounting
@@ -35,7 +34,7 @@
 #include "read_file.h"      // Helper to read entire files
 
 // === Drivers ===
-#include "pit.h"            // Programmable Interval Timer
+#include "pit.h"            // Programmable Interval Timer driver
 #include "keyboard.h"       // Keyboard driver
 #include "keymap.h"         // Keyboard layout mapping
 #include "pc_speaker.h"     // PC Speaker driver
@@ -46,255 +45,324 @@
 // === Utilities ===
 #include "get_cpu_id.h"     // Function to get current CPU ID
 #include "cpuid.h"          // CPUID instruction helper
+#include "kmalloc_internal.h" // For ALIGN_UP, potentially others
 
 // === Constants ===
 #define MULTIBOOT2_BOOTLOADER_MAGIC 0x36d76289
-#define KERNEL_PANIC_HALT() do { terminal_write("\n[KERNEL PANIC] System Halted.\n"); while(1) { asm volatile("cli; hlt"); } } while(0)
-#define MIN_HEAP_SIZE (1 * 1024 * 1024) // Minimum acceptable heap size
+// Macro for halting the system on critical failure
+#define KERNEL_PANIC_HALT(msg) do { \
+    terminal_printf("\n[KERNEL PANIC] %s System Halted.\n", msg); \
+    while(1) { asm volatile("cli; hlt"); } \
+} while(0)
+
+#define MIN_HEAP_SIZE (1 * 1024 * 1024) // Minimum acceptable heap size (1MB)
 
 // === Linker Symbols ===
-// Provided by linker script (e.g., linker.ld)
-extern uint32_t _kernel_start_phys; // Physical start address of kernel code/data
-extern uint32_t _kernel_end_phys;   // Physical end address of kernel code/data
+// Define these in your linker script (linker.ld)
+// Use void* or uint8_t* for byte-level addresses
+extern uint8_t _kernel_start_phys;    // Physical start address of kernel code/data
+extern uint8_t _kernel_end_phys;      // Physical end address of kernel code/data
+extern uint8_t _kernel_virtual_base;  // Kernel's virtual base address (e.g., 0xC0000000)
 
 // === Static Function Prototypes ===
 static struct multiboot_tag *find_multiboot_tag(uint32_t mb_info_phys_addr, uint16_t type);
-static bool find_largest_memory_area(struct multiboot_tag_mmap *mmap_tag, uintptr_t *out_base_addr, size_t *out_size);
-static bool init_memory(uint32_t mb_info_phys_addr);
-void kernel_idle_task(void); // Keep non-static for potential future assembly calls
+static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
+                             uintptr_t *out_total_memory,
+                             uintptr_t *out_heap_base_addr, size_t *out_heap_size);
+static uintptr_t find_early_free_frame(struct multiboot_tag_mmap *mmap_tag); // Finds frame for initial PD
+static bool init_memory(uint32_t mb_info_phys_addr); // Main memory initialization sequence
+void kernel_idle_task(void); // Idle task loop
 
-// === Multiboot Tag Finding Helper ===
+// === Multiboot Tag Finding Helper (Improved Validation) ===
 static struct multiboot_tag *find_multiboot_tag(uint32_t mb_info_phys_addr, uint16_t type) {
-    // Check if the address is valid (basic check, might need mapping later)
-    if (mb_info_phys_addr == 0) {
-        terminal_write("[Boot] Error: Multiboot info address is NULL.\n");
+    if (mb_info_phys_addr == 0 || mb_info_phys_addr >= 0x100000) { // Assume info struct is below 1MB
+        terminal_write("[Boot Error] Multiboot info address invalid or inaccessible early.\n");
         return NULL;
     }
-
-    // Read total size from the structure start
-    // Ensure address is accessible (usually identity mapped by bootloader < 1MB)
     uint32_t total_size = *(uint32_t*)mb_info_phys_addr;
-    if (total_size < 8) { // Minimum size includes total_size and reserved
-        terminal_printf("[Boot] Error: Multiboot total_size (%u) is too small.\n", total_size);
+    if (total_size < 8 || total_size > 0x100000) { // Basic size sanity check
+        terminal_printf("[Boot Error] Multiboot total_size (%u) invalid.\n", total_size);
         return NULL;
     }
 
-    // Tags start after 'total_size' and 'reserved' fields (8 bytes total)
     struct multiboot_tag *tag = (struct multiboot_tag *)(mb_info_phys_addr + 8);
-    uintptr_t info_end = mb_info_phys_addr + total_size; // Calculate end boundary
+    uintptr_t info_end = mb_info_phys_addr + total_size;
 
     while (tag->type != MULTIBOOT_TAG_TYPE_END) {
         uintptr_t current_tag_addr = (uintptr_t)tag;
-        // Bounds check: Ensure current tag starts within the info structure
-        if (current_tag_addr >= info_end) {
-            terminal_printf("[Boot] Error: Multiboot tag parsing went out of bounds (Tag Addr=0x%x, Info End=0x%x).\n", current_tag_addr, info_end);
+        // Bounds check tag header
+        if (current_tag_addr + 8 > info_end) {
+            terminal_printf("[Boot Error] Multiboot tag header OOB (Tag Addr=0x%x, Info End=0x%x).\n", current_tag_addr, info_end);
             return NULL;
         }
-        // Check tag size is reasonable (at least size of base struct fields: type + size)
-        if (tag->size < 8) { // Use 8 for minimum size (type+size)
-            terminal_printf("[Boot] Error: Multiboot tag has invalid size %u at Addr=0x%x.\n", tag->size, current_tag_addr);
+        // Bounds check tag content
+        if (tag->size < 8 || (current_tag_addr + tag->size) > info_end) {
+            terminal_printf("[Boot Error] Multiboot tag invalid size %u at Addr=0x%x (Info End=0x%x).\n", tag->size, current_tag_addr, info_end);
             return NULL;
         }
 
-        // Found the requested tag type
-        if (tag->type == type) {
-            // Additional check: ensure the found tag doesn't extend beyond info_end
-            if (current_tag_addr + tag->size > info_end) {
-                 terminal_printf("[Boot] Error: Found tag type %u but its size %u extends beyond info end (Addr=0x%x, Info End=0x%x).\n", tag->type, tag->size, current_tag_addr, info_end);
-                 return NULL;
-            }
-            return tag;
-        }
+        if (tag->type == type) return tag; // Found
 
-        // Advance to the next tag, ensuring 8-byte alignment
-        uintptr_t next_tag_addr = current_tag_addr + ((tag->size + 7) & ~7);
-        // Check if the *start* of the next tag would be out of bounds.
+        // Advance to the next tag
+        uintptr_t next_tag_addr = current_tag_addr + ((tag->size + 7) & ~7); // 8-byte alignment
         if (next_tag_addr >= info_end) {
-            // Allow if the *next* tag is the END tag and starts exactly at the boundary
-            if (next_tag_addr == info_end && ((struct multiboot_tag *)next_tag_addr)->type == MULTIBOOT_TAG_TYPE_END) {
-                // Reached end tag perfectly, search failed
-                break;
-            }
-             terminal_printf("[Boot] Error: Next Multiboot tag calculation out of bounds (Next Addr=0x%x, Info End=0x%x).\n", next_tag_addr, info_end);
-             return NULL; // Avoid reading past end
+            // Allow only if the END tag starts exactly at info_end
+            if (next_tag_addr == info_end && (current_tag_addr + tag->size <= info_end) && tag->type == MULTIBOOT_TAG_TYPE_END) break;
+            terminal_printf("[Boot Error] Next Multiboot tag calculation OOB (Next Addr=0x%x, Info End=0x%x).\n", next_tag_addr, info_end);
+            return NULL;
         }
         tag = (struct multiboot_tag *)next_tag_addr;
     }
-
-    // Reached the end tag without finding the requested type
-    return NULL;
+    return NULL; // End tag reached or error
 }
 
-// === Memory Area Finding Helper ===
-static bool find_largest_memory_area(struct multiboot_tag_mmap *mmap_tag, uintptr_t *out_base_addr, size_t *out_size) {
-    uintptr_t best_base = 0;
-    uint64_t best_size = 0; // Use 64-bit to handle large regions before converting to size_t
+
+// === Memory Area Parsing Helper === (Improved Validation)
+static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
+                             uintptr_t *out_total_memory,
+                             uintptr_t *out_heap_base_addr, size_t *out_heap_size)
+{
+    uintptr_t current_total_memory = 0;
+    uintptr_t best_heap_base = 0;
+    uint64_t best_heap_size_64 = 0;
     multiboot_memory_map_t *mmap_entry = mmap_tag->entries;
     uintptr_t mmap_end = (uintptr_t)mmap_tag + mmap_tag->size;
-    uintptr_t kernel_end_aligned = PAGE_ALIGN_UP((uintptr_t)&_kernel_end_phys); // Align kernel end UP
+    uintptr_t kernel_start_phys_addr = (uintptr_t)&_kernel_start_phys;
+    uintptr_t kernel_end_phys_addr = (uintptr_t)&_kernel_end_phys;
 
     terminal_write("Memory Map (from Multiboot):\n");
     while ((uintptr_t)mmap_entry < mmap_end) {
-        // Basic validation of entry size from header
-        if (mmap_tag->entry_size < sizeof(multiboot_memory_map_t)) { // Ensure size is at least minimum expected
-             terminal_printf("  [FATAL] MMAP entry size (%u) in header is too small!\n", mmap_tag->entry_size);
-             return false;
+        if (mmap_tag->entry_size == 0 || mmap_tag->entry_size < sizeof(multiboot_memory_map_t)) {
+            terminal_printf("  [ERR] MMAP entry size (%u) invalid!\n", mmap_tag->entry_size);
+            return false;
         }
 
-        terminal_printf("  Addr: 0x%x%x Len: 0x%x%x Type: %d\n",
-                        (uint32_t)(mmap_entry->addr >> 32), (uint32_t)mmap_entry->addr,
-                        (uint32_t)(mmap_entry->len >> 32), (uint32_t)mmap_entry->len,
-                        mmap_entry->type);
+        uintptr_t region_start = (uintptr_t)mmap_entry->addr;
+        uint64_t region_len = mmap_entry->len;
+        uintptr_t region_end = region_start + region_len;
 
-        // We need AVAILABLE memory located at or above 1MB (0x100000) for the main heap
-        if (mmap_entry->type == MULTIBOOT_MEMORY_AVAILABLE && mmap_entry->addr >= 0x100000) {
-            uintptr_t region_start = (uintptr_t)mmap_entry->addr;
-            uint64_t region_len = mmap_entry->len;
+        terminal_printf("  Addr: 0x%08x Len: 0x%08x Type: %d\n",
+                        region_start, (uint32_t)region_len, mmap_entry->type);
+
+        // Update total memory detected
+        if (region_end > current_total_memory) {
+            current_total_memory = region_end;
+        }
+
+        // Consider AVAILABLE memory >= 1MB for the heap
+        if (mmap_entry->type == MULTIBOOT_MEMORY_AVAILABLE && region_start >= 0x100000) {
             uintptr_t usable_start = region_start;
+            uint64_t usable_len = region_len;
 
-            // Adjust start if the region overlaps with the kernel's physical memory
-            if (usable_start < kernel_end_aligned) {
-                if (region_start + region_len > kernel_end_aligned) {
-                    // Region starts below kernel end but ends after it; adjust start and length
-                    uint64_t overlap = kernel_end_aligned - usable_start;
-                    usable_start = kernel_end_aligned;
-                    region_len = (region_len > overlap) ? region_len - overlap : 0;
+            // Check for overlap with the kernel physical region
+            uintptr_t max_start = (usable_start > kernel_start_phys_addr) ? usable_start : kernel_start_phys_addr;
+            uintptr_t min_end = (region_end < kernel_end_phys_addr) ? region_end : kernel_end_phys_addr;
+
+            if (max_start < min_end) { // Overlap detected
+                // Check portion before kernel
+                if (usable_start < kernel_start_phys_addr) {
+                    if (kernel_start_phys_addr - usable_start > best_heap_size_64) {
+                        best_heap_size_64 = kernel_start_phys_addr - usable_start;
+                        best_heap_base = usable_start;
+                    }
+                }
+                // Check portion after kernel
+                if (region_end > kernel_end_phys_addr) {
+                    usable_start = kernel_end_phys_addr;
+                    usable_len = region_end - kernel_end_phys_addr;
                 } else {
-                    // Region is entirely below kernel end; unusable for our heap
-                    region_len = 0;
+                    usable_len = 0; // Fully contained, no usable part here
                 }
             }
 
-            // Update best region if this one is larger and usable
-            if (region_len > best_size) {
-                best_size = region_len;
-                best_base = usable_start;
+            // Update best heap region if this (potentially adjusted) part is larger
+            if (usable_len > best_heap_size_64) {
+                best_heap_size_64 = usable_len;
+                best_heap_base = usable_start;
             }
         }
-        // Advance to the next entry using the entry_size from the tag header
-        // Add bounds check for advancement
+
+        // Advance to the next entry
         uintptr_t next_entry_addr = (uintptr_t)mmap_entry + mmap_tag->entry_size;
-        if (next_entry_addr > mmap_end) {
-            terminal_printf("  [Warning] MMAP entry advancement goes beyond tag size.\n");
-            break; // Stop processing to avoid reading OOB
+        if (next_entry_addr > mmap_end) { // Check before dereferencing next entry
+             terminal_write("  [Warning] MMAP entry advancement out of bounds.\n");
+             break;
         }
         mmap_entry = (multiboot_memory_map_t *)next_entry_addr;
     }
 
-    // Check if a suitable region was found
-    if (best_size > 0) {
-        *out_base_addr = best_base;
-        // Safely convert best_size (uint64_t) to size_t
-        if (best_size > (uint64_t)SIZE_MAX) {
-            terminal_write("  [Warning] Largest memory region exceeds size_t capacity! Clamping.\n");
-            *out_size = SIZE_MAX;
+    // Final checks and output assignment
+    if (best_heap_size_64 > 0) {
+        *out_heap_base_addr = best_heap_base;
+        if (best_heap_size_64 > (uint64_t)SIZE_MAX) {
+            terminal_write("  [Warning] Largest heap region exceeds size_t! Clamping.\n");
+            *out_heap_size = SIZE_MAX;
         } else {
-            *out_size = (size_t)best_size;
+            *out_heap_size = (size_t)best_heap_size_64;
         }
-        terminal_printf("  Selected Heap Region: Phys Addr=0x%x, Size=%u bytes (%u MB)\n",
-                        *out_base_addr, *out_size, *out_size / (1024 * 1024));
-        return true;
+    } else {
+        terminal_write("  [FATAL] No suitable memory region found >= 1MB for heap!\n");
+        return false;
     }
 
-    terminal_write("  [FATAL] No suitable memory region found above 1MB for heap!\n");
-    return false;
+    *out_total_memory = ALIGN_UP(current_total_memory, PAGE_SIZE);
+    terminal_printf("  Total Physical Memory Detected: %u MB\n", *out_total_memory / (1024*1024));
+    terminal_printf("  Selected Heap Region: Phys Addr=0x%x, Size=%u bytes\n",
+                    *out_heap_base_addr, *out_heap_size);
+    return true;
 }
 
-// === Memory Subsystem Initialization ===
-static bool init_memory(uint32_t mb_info_phys_addr) {
-    terminal_write("[Kernel] Initializing Memory Subsystems...\n");
 
-    // --- Find Memory Map and Heap Region ---
-    struct multiboot_tag_mmap *mmap_tag = (struct multiboot_tag_mmap *)find_multiboot_tag(
-        mb_info_phys_addr, MULTIBOOT_TAG_TYPE_MMAP);
-    if (!mmap_tag) {
-        terminal_write("  [FATAL] Multiboot memory map tag not found!\n");
-        return false;
-    }
+/**
+ * @brief Finds the first available physical page frame >= 1MB from the memory map.
+ * Checks for overlaps with kernel image.
+ *
+ * @param mmap_tag Pointer to the Multiboot memory map tag.
+ * @return Physical address of a free frame, or 0 if none found/error.
+ */
+static uintptr_t find_early_free_frame(struct multiboot_tag_mmap *mmap_tag) {
+    if (!mmap_tag) return 0;
 
-    uintptr_t heap_phys_start = 0;
-    size_t heap_size = 0;
-    uintptr_t total_memory = 0;
-
-    // Determine total physical memory size
     multiboot_memory_map_t *mmap_entry = mmap_tag->entries;
     uintptr_t mmap_end = (uintptr_t)mmap_tag + mmap_tag->size;
+    uintptr_t kernel_start_phys_addr = (uintptr_t)&_kernel_start_phys;
+    uintptr_t kernel_end_phys_addr = (uintptr_t)&_kernel_end_phys;
+
+    terminal_write("  [Kernel] Searching for early free frame >= 1MB...\n");
+
     while ((uintptr_t)mmap_entry < mmap_end) {
-        if (mmap_tag->entry_size == 0) break;
-        uintptr_t region_end = (uintptr_t)mmap_entry->addr + (uintptr_t)mmap_entry->len;
-        if (region_end > total_memory) total_memory = region_end;
-         // Check entry size before advancing
-        if (mmap_tag->entry_size < sizeof(multiboot_memory_map_t)) break;
+        // Validate entry size before use
+        if (mmap_tag->entry_size == 0 || mmap_tag->entry_size < sizeof(multiboot_memory_map_t)) break;
+
+        if (mmap_entry->type == MULTIBOOT_MEMORY_AVAILABLE) {
+            uintptr_t region_start = (uintptr_t)mmap_entry->addr;
+            uint64_t region_len = mmap_entry->len;
+            uintptr_t region_end = region_start + region_len;
+
+            // Iterate through pages in this available region
+            uintptr_t current_page = ALIGN_UP(region_start, PAGE_SIZE);
+
+            while (current_page + PAGE_SIZE <= region_end) {
+                // Check if page is >= 1MB
+                if (current_page >= 0x100000) {
+                    // Check if it overlaps with the kernel image
+                    bool overlaps_kernel = (current_page < kernel_end_phys_addr &&
+                                           (current_page + PAGE_SIZE) > kernel_start_phys_addr);
+
+                    if (!overlaps_kernel) {
+                        // Found a suitable page
+                        terminal_printf("  [Kernel] Found suitable early frame: Phys=0x%x\n", current_page);
+                        return current_page;
+                    }
+                }
+                // Check for potential overflow before adding PAGE_SIZE
+                if (current_page > UINTPTR_MAX - PAGE_SIZE) break;
+                current_page += PAGE_SIZE;
+            }
+        }
+
+        // Advance to the next entry
         uintptr_t next_entry_addr = (uintptr_t)mmap_entry + mmap_tag->entry_size;
-        if (next_entry_addr > mmap_end) break;
+        if (next_entry_addr > mmap_end) break; // Prevent reading past end
         mmap_entry = (multiboot_memory_map_t *)next_entry_addr;
     }
-    total_memory = ALIGN_UP(total_memory, PAGE_SIZE);
-    terminal_printf("  Detected Total Memory: %u MB\n", total_memory / (1024*1024));
 
-    // Find the largest suitable region for the buddy heap
-    if (!find_largest_memory_area(mmap_tag, &heap_phys_start, &heap_size)) {
-        return false; // Error already printed
+    terminal_write("  [Kernel Error] No suitable early free frame found!\n");
+    return 0; // Not found
+}
+
+
+// === Memory Subsystem Initialization (REVISED ORDER) ===
+static bool init_memory(uint32_t mb_info_phys_addr) {
+    terminal_write("[Kernel] Initializing Memory Subsystems (v2)...\n");
+
+    // --- Get Memory Map and Calculate Ranges ---
+    struct multiboot_tag_mmap *mmap_tag = (struct multiboot_tag_mmap *)find_multiboot_tag(
+        mb_info_phys_addr, MULTIBOOT_TAG_TYPE_MMAP);
+    if (!mmap_tag) KERNEL_PANIC_HALT("Multiboot memory map tag not found!");
+
+    uintptr_t total_memory = 0;
+    uintptr_t heap_phys_start = 0;
+    size_t heap_size = 0;
+    if (!parse_memory_map(mmap_tag, &total_memory, &heap_phys_start, &heap_size)) {
+        KERNEL_PANIC_HALT("Failed to parse memory map or find heap region!");
     }
-    if (heap_size < MIN_HEAP_SIZE) {
-        terminal_printf("  [FATAL] Selected heap region size (%u bytes) is less than minimum required (%u bytes).\n", heap_size, MIN_HEAP_SIZE);
-        return false;
+    if (heap_size < MIN_HEAP_SIZE) KERNEL_PANIC_HALT("Heap region too small!");
+
+    uintptr_t kernel_phys_start = (uintptr_t)&_kernel_start_phys;
+    uintptr_t kernel_phys_end = (uintptr_t)&_kernel_end_phys;
+
+    // --- Stage 0: Find Frame for Initial Page Directory ---
+    terminal_write(" Stage 0: Finding early frame for PD...\n");
+    uintptr_t initial_pd_phys = find_early_free_frame(mmap_tag);
+    if (!initial_pd_phys) {
+        KERNEL_PANIC_HALT("Failed to find a free physical frame for the initial PD!");
     }
 
-    // Align heap start UP for the buddy allocator
-    size_t required_alignment = (MIN_BLOCK_SIZE > DEFAULT_ALIGNMENT) ? MIN_BLOCK_SIZE : DEFAULT_ALIGNMENT;
-    uintptr_t aligned_heap_start = ALIGN_UP(heap_phys_start, required_alignment);
-    size_t adjustment = aligned_heap_start - heap_phys_start;
-    if (heap_size <= adjustment) {
-        terminal_printf("  [FATAL] Heap size (%u bytes) is too small after alignment adjustment (%u bytes).\n", heap_size, adjustment);
-        return false;
+    // --- Stage 1: Initialize Page Directory Structure ---
+    terminal_write(" Stage 1: Initializing Page Directory Structure...\n");
+    if (paging_initialize_directory(initial_pd_phys) == 0) { // Pass the found address
+        KERNEL_PANIC_HALT("Failed to initialize page directory structure!");
     }
-    heap_phys_start = aligned_heap_start;
-    heap_size -= adjustment;
-    // --- End Find Memory Map and Heap Region ---
 
+    // --- Stage 2: Setup Early Physical Mappings ---
+    terminal_write(" Stage 2: Setting up early physical maps...\n");
+    if (paging_setup_early_maps(initial_pd_phys, kernel_phys_start, kernel_phys_end, heap_phys_start, heap_size) != 0) {
+        KERNEL_PANIC_HALT("Failed to set up early physical memory maps!");
+    }
+    // The initial PD frame is now identity-mapped.
 
-    // --- Initialize Memory Allocators (Order is CRITICAL!) ---
+    // --- Stage 2.5: Zero the Initial Page Directory ---
+    terminal_printf(" Stage 2.5: Zeroing initial PD frame at phys 0x%x...\n", initial_pd_phys);
+    // Access via physical address (which is identity mapped now)
+    memset((void*)initial_pd_phys, 0, PAGE_SIZE);
+    // Re-apply early mappings because memset cleared them
+    terminal_write("   Re-applying early physical maps after zeroing PD...\n");
+    if (paging_setup_early_maps(initial_pd_phys, kernel_phys_start, kernel_phys_end, heap_phys_start, heap_size) != 0) {
+       KERNEL_PANIC_HALT("Failed to re-apply early physical memory maps!");
+    }
 
-    // 1. Buddy Allocator (Manages physical pages/blocks)
-    terminal_write("  Initializing Buddy Allocator...\n");
+    // --- Stage 3: Initialize Buddy Allocator ---
+    terminal_write(" Stage 3: Initializing Buddy Allocator...\n");
+    // Pass the heap region which is now identity-mapped.
     buddy_init((void *)heap_phys_start, heap_size);
-    if (buddy_free_space() == 0 && heap_size >= MIN_BLOCK_SIZE) {
-        terminal_write("  [FATAL] Buddy Allocator initialization failed (no free space reported)!\n");
-        return false;
+    if (buddy_free_space() == 0 && heap_size >= MIN_BLOCK_SIZE) { // Check if init likely failed
+        KERNEL_PANIC_HALT("Buddy Allocator initialization failed (no free space reported)!");
     }
     terminal_printf("  Buddy Initial Free Space: %u bytes\n", buddy_free_space());
 
-    // 2. Paging (Sets up virtual memory, uses buddy_alloc for early frames)
-    terminal_write("  Initializing Paging...\n");
-    if (paging_init((uintptr_t)&_kernel_start_phys, (uintptr_t)&_kernel_end_phys, total_memory) != 0) {
-        terminal_write("  [FATAL] Paging initialization failed!\n");
-        return false;
+    // --- Stage 4: Finalize Virtual Mappings & Activate Paging ---
+    terminal_write(" Stage 4: Finalizing mappings and activating paging...\n");
+    // Uses buddy allocator internally now to map higher-half physical memory
+    if (paging_finalize_and_activate(initial_pd_phys, total_memory) != 0) {
+        KERNEL_PANIC_HALT("Failed to finalize mappings or activate paging!");
+    }
+    // Paging is ON. Globals g_kernel_page_directory_phys/virt are set.
+
+    // --- Stage 5: Initialize Frame Allocator ---
+    terminal_write(" Stage 5: Initializing Frame Allocator...\n");
+    // Requires buddy and active paging. Reserves the initial_pd_phys frame.
+    if (frame_init(mmap_tag, kernel_phys_start, kernel_phys_end, heap_phys_start, heap_phys_start + heap_size) != 0) {
+        KERNEL_PANIC_HALT("Frame Allocator initialization failed!");
     }
 
-    // 3. Frame Allocator (Reference counting, uses buddy + paging)
-    terminal_write("  Initializing Frame Allocator...\n");
-    if (frame_init(mmap_tag, (uintptr_t)&_kernel_start_phys, (uintptr_t)&_kernel_end_phys, heap_phys_start, heap_phys_start + heap_size) != 0) {
-        terminal_write("  [FATAL] Frame Allocator initialization failed!\n");
-        return false;
-    }
-
-    // 4. Kmalloc (Kernel heap facade, uses slab/percpu -> buddy)
-    terminal_write("  Initializing Kmalloc...\n");
-    kmalloc_init();
+    // --- Stage 6: Initialize Kmalloc ---
+    terminal_write(" Stage 6: Initializing Kmalloc...\n");
+    kmalloc_init(); // Depends on frame allocator -> buddy
 
     terminal_write("[OK] Memory Subsystems Initialized.\n");
     return true;
 }
 
+
 // === Kernel Idle Task ===
 void kernel_idle_task(void) {
     terminal_write("[Idle] Kernel idle task started. Halting CPU when idle.\n");
     while(1) {
-        asm volatile("sti"); // Enable interrupts
+        asm volatile("sti"); // Enable interrupts briefly
         asm volatile("hlt"); // Halt CPU until next interrupt
         // Interrupts are automatically disabled by CPU on interrupt entry.
-        // No need for cli here unless specific race conditions exist before hlt.
+        // We loop back and re-enable them before halting again.
     }
 }
 
@@ -302,77 +370,78 @@ void kernel_idle_task(void) {
 void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     // 1. Early Initialization (Terminal, GDT, TSS, IDT)
     terminal_init();
-    terminal_write("=== UiAOS Kernel Booting ===\n\n");
+    terminal_write("=== UiAOS Kernel Booting (v3 - Map Parse Init) ===\n\n");
 
+    // Check Multiboot Magic
     if (magic != MULTIBOOT2_BOOTLOADER_MAGIC) {
-        terminal_write("[FATAL] Invalid Multiboot magic number received from bootloader.\n");
-        KERNEL_PANIC_HALT();
+        KERNEL_PANIC_HALT("Invalid Multiboot Magic.");
     }
     terminal_printf("[Boot] Multiboot magic OK (Info at phys 0x%x).\n", mb_info_phys_addr);
 
+    // Initialize GDT and TSS
     terminal_write("[Kernel] Initializing GDT & TSS...\n");
     gdt_init();
 
+    // Initialize IDT and PICs
     terminal_write("[Kernel] Initializing IDT & PIC...\n");
     idt_init();
 
-    // 2. Memory Management Initialization
+    // 2. Memory Management Initialization (Revised Order)
     if (!init_memory(mb_info_phys_addr)) {
-        terminal_write("[FATAL] Core memory system initialization failed.\n");
-        KERNEL_PANIC_HALT();
+        // Panic occurs within init_memory if it returns false
+        return; // Should not be reached
     }
 
-    // 3. Hardware Driver Initialization (Requires Memory Management)
+    // 3. Hardware Driver Initialization (Post-Memory)
     terminal_write("[Kernel] Initializing PIT...\n");
-    init_pit();
-
+    init_pit(); // Depends on IDT
     terminal_write("[Kernel] Initializing Keyboard...\n");
-    keyboard_init();
+    keyboard_init(); // Depends on IDT
     keymap_load(KEYMAP_NORWEGIAN); // Set desired layout
 
-    // 4. Filesystem Initialization (Requires Memory, Drivers potentially)
+    // 4. Filesystem Initialization (Optional)
     terminal_write("[Kernel] Initializing Filesystem...\n");
     if (fs_init() == FS_SUCCESS) {
         terminal_write("  [OK] Filesystem initialized and root mounted.\n");
-        list_mounts(); // List mounted filesystems
+        list_mounts();
     } else {
-        // Non-fatal? Depends on kernel requirements.
         terminal_write("  [Warning] Filesystem initialization failed. Continuing without FS.\n");
+        // KERNEL_PANIC_HALT("Filesystem init failed."); // Uncomment if FS is essential
     }
 
     // 5. Scheduler and Initial Process Creation
     terminal_write("[Kernel] Initializing Scheduler...\n");
-    scheduler_init();
+    scheduler_init(); // Depends on memory allocators
 
     terminal_write("[Kernel] Creating initial user process ('/hello.elf')...\n");
-    const char *user_prog_path = "/hello.elf"; // Path within the mounted filesystem
-    pcb_t *user_proc_pcb = create_user_process(user_prog_path);
-
-    if (user_proc_pcb) {
-        terminal_printf("  [OK] Process created (PID %d). Adding to scheduler.\n", user_proc_pcb->pid);
-        if (scheduler_add_task(user_proc_pcb) != 0) {
-             terminal_write("  [ERROR] Failed to add initial process to scheduler. Destroying process.\n");
-            destroy_process(user_proc_pcb);
-            terminal_write("[Kernel] Cannot proceed without an initial process.\n");
-            KERNEL_PANIC_HALT(); // If init process is essential
-        } else {
-            terminal_write("  [OK] Initial user process added to scheduler.\n");
-            // IMPORTANT: Mark scheduler as ready ONLY after adding the first task.
-            pit_set_scheduler_ready();
-            terminal_write("[Kernel] Scheduler marked as ready.\n");
-        }
+    const char *user_prog_path = "/hello.elf";
+    if (!fs_is_initialized()) { // Check if FS is actually up before trying to load
+         terminal_write("  [Info] Filesystem not initialized, cannot load initial process.\n");
     } else {
-        terminal_printf("  [ERROR] Failed to create initial user process from '%s'.\n", user_prog_path);
-        terminal_write("[Kernel] Cannot proceed without an initial process.\n");
-        KERNEL_PANIC_HALT();
+        pcb_t *user_proc_pcb = create_user_process(user_prog_path); // Requires allocators, paging, FS
+        if (user_proc_pcb) {
+            terminal_printf("  [OK] Process created (PID %d). Adding to scheduler.\n", user_proc_pcb->pid);
+            if (scheduler_add_task(user_proc_pcb) != 0) {
+                 destroy_process(user_proc_pcb); // Clean up failed process
+                 KERNEL_PANIC_HALT("Cannot add initial process to scheduler.");
+            } else {
+                 terminal_write("  [OK] Initial user process added to scheduler.\n");
+                 pit_set_scheduler_ready(); // Allow PIT handler to call schedule()
+                 terminal_write("[Kernel] Scheduler marked as ready.\n");
+            }
+        } else {
+            terminal_printf("  [ERROR] Failed to create initial user process from '%s'.\n", user_prog_path);
+            KERNEL_PANIC_HALT("Failed to create initial process.");
+        }
     }
 
-    // 6. Start Scheduling (Enter Idle Task)
+    // 6. Start Scheduling / Idle Loop
     terminal_write("\n[Kernel] Initialization complete. Enabling interrupts and entering idle task.\n");
     terminal_write("======================================================================\n");
-    kernel_idle_task(); // Enters the idle loop (sti; hlt)
+    // If no tasks were added (e.g., FS failed), this will just halt.
+    // If tasks were added, the first timer interrupt will trigger the scheduler.
+    kernel_idle_task();
 
-    // --- Code below should ideally not be reached ---
-    terminal_write("\n[KERNEL ERROR] Reached end of main() unexpectedly!\n");
-    KERNEL_PANIC_HALT();
+    // --- Should not be reached ---
+    KERNEL_PANIC_HALT("Reached end of main() unexpectedly!");
 }
