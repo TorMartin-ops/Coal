@@ -10,7 +10,7 @@
  #include "terminal.h"
  #include "types.h"
  #include "paging.h" // For PAGE_SIZE definition
- #include "<libc/stdint.h>"
+ #include <libc/stdint.h> // Corrected include path
 
  
  // *** Enable Per-CPU strategy ***
@@ -96,8 +96,13 @@
         power_of_2 <<= 1;
     }
     // *** Use buddy_size_to_order from buddy.h ***
-    if (buddy_size_to_order(power_of_2) > MAX_ORDER) {
-        return SIZE_MAX;
+    // Note: Ensure buddy_size_to_order is declared in buddy.h if used here
+    // If buddy_size_to_order is static in buddy.c, this helper needs adjustment
+    // or buddy_size_to_order needs to be made non-static or accessible.
+    // For now, assuming it's accessible or logic is duplicated/simplified here.
+    // Simple check based on MAX_ORDER instead of calling buddy_size_to_order:
+    if (power_of_2 > ((size_t)1 << MAX_ORDER)) {
+         return SIZE_MAX;
     }
     return power_of_2;
 }
@@ -179,31 +184,44 @@
             } // else fallback...
         } // else fallback...
 #else
-        // ... (Global Slab logic) ...
+        // Global Slab logic
+        slab_cache_t* global_cache = get_global_slab_cache(total_required_size);
+        if (global_cache) {
+             raw_ptr = slab_alloc(global_cache);
+             if (raw_ptr) {
+                  alloc_type = ALLOC_TYPE_SLAB;
+                  slab_cache = global_cache;
+                  actual_alloc_size = global_cache->internal_slot_size;
+                  g_kmalloc_slab_alloc_count++;
+                  goto allocation_success;
+             } // else fallback...
+        } // else fallback...
 #endif
     }
 
     // Buddy Allocator Path
     actual_alloc_size = buddy_get_expected_allocation_size(total_required_size);
-    if (actual_alloc_size == SIZE_MAX) { return NULL; } // Use SIZE_MAX
-    raw_ptr = buddy_alloc(actual_alloc_size);
+    if (actual_alloc_size == SIZE_MAX) { return NULL; } // Use SIZE_MAX check
+    raw_ptr = BUDDY_ALLOC(actual_alloc_size); // Use the macro if DEBUG_BUDDY is defined
     if (!raw_ptr) { return NULL; }
     alloc_type = ALLOC_TYPE_BUDDY;
-    slab_cache = NULL;
+    slab_cache = NULL; // Ensure slab_cache is NULL for buddy allocs
 
 allocation_success:
     if (!raw_ptr) { return NULL; }
     header = (kmalloc_header_t *)raw_ptr;
     header->allocated_size = actual_alloc_size;
     header->type = alloc_type;
-    header->cache = slab_cache;
+    header->cache = slab_cache; // Store the slab cache pointer (or NULL if buddy)
 
-    // *** Removed magic number usage ***
-    // #ifdef KMALLOC_HEADER_MAGIC
-    // header->magic = KMALLOC_HEADER_MAGIC;
-    // #endif
+    #ifdef KMALLOC_HEADER_MAGIC
+    header->magic = KMALLOC_HEADER_MAGIC;
+    #endif
 
-    return (void *)((uintptr_t)raw_ptr + KALLOC_HEADER_SIZE);
+    // Zero the user area (optional, but good practice)
+    // memset((void *)((uintptr_t)raw_ptr + KALLOC_HEADER_SIZE), 0, user_size);
+
+    return (void *)((uintptr_t)raw_ptr + KALLOC_HEADER_SIZE); // Return pointer to user area
 }
  
  
@@ -212,20 +230,38 @@ void kfree(void *ptr) {
     kmalloc_header_t *header = (kmalloc_header_t *)((uintptr_t)ptr - KALLOC_HEADER_SIZE);
     void* original_alloc_ptr = (void*)header;
 
-    // *** Removed magic number check ***
-    // #ifdef KMALLOC_HEADER_MAGIC
-    // if (header->magic != KMALLOC_HEADER_MAGIC) { return; }
-    // #endif
+    #ifdef KMALLOC_HEADER_MAGIC
+    if (header->magic != KMALLOC_HEADER_MAGIC) {
+        terminal_printf("[kfree] Error: Invalid magic number on free at 0x%x (header 0x%x)!\n", (uintptr_t)ptr, (uintptr_t)header);
+        // Optionally: Panic or log more details
+        return; // Don't proceed with free
+    }
+    #endif
 
     size_t allocated_size = header->allocated_size;
     alloc_type_e type = header->type;
     slab_cache_t *cache = header->cache;
 
-    // ... (Consistency checks) ...
-    if (type != ALLOC_TYPE_SLAB && type != ALLOC_TYPE_BUDDY) { return; }
-    if (type == ALLOC_TYPE_SLAB && !cache) { return; }
-    if (type == ALLOC_TYPE_BUDDY && allocated_size == 0) { return; }
+    // Consistency checks
+    if (type != ALLOC_TYPE_SLAB && type != ALLOC_TYPE_BUDDY) {
+        terminal_printf("[kfree] Error: Invalid alloc type %d in header at 0x%x.\n", type, (uintptr_t)header);
+        return;
+    }
+    if (type == ALLOC_TYPE_SLAB && !cache) {
+         terminal_printf("[kfree] Error: Slab alloc type but NULL cache pointer in header at 0x%x.\n", (uintptr_t)header);
+        return;
+    }
+    if (type == ALLOC_TYPE_BUDDY && allocated_size == 0) {
+         terminal_printf("[kfree] Error: Buddy alloc type but zero size in header at 0x%x.\n", (uintptr_t)header);
+        return;
+    }
+    // Optional: Add check if slab cache's slot size matches header->allocated_size?
 
+
+    // Clear magic before freeing (helps detect double frees if magic is checked)
+    #ifdef KMALLOC_HEADER_MAGIC
+    header->magic = 0; // Invalidate magic
+    #endif
 
     switch (type) {
         case ALLOC_TYPE_SLAB:
@@ -237,9 +273,17 @@ void kfree(void *ptr) {
 #endif
             break;
         case ALLOC_TYPE_BUDDY:
-            buddy_free(original_alloc_ptr, allocated_size); // Pass correct size
+             #ifdef DEBUG_BUDDY
+             // Debug buddy free macro doesn't need size
+             BUDDY_FREE(original_alloc_ptr);
+             #else
+             // Non-debug buddy free needs the allocated size
+             buddy_free(original_alloc_ptr, allocated_size);
+             #endif
             break;
-        default: break;
+        default:
+             terminal_printf("[kfree] Error: Reached default case in switch (type %d).\n", type);
+             break; // Should not happen
     }
 }
  

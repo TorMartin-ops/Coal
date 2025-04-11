@@ -1,383 +1,269 @@
-#include "syscall.h"
+#include "frame.h"
+#include "buddy.h"
+#include "paging.h"
 #include "terminal.h"
-#include "scheduler.h"
-#include "process.h"
-#include "mm.h"         // Added include for find_vma_locked, free_vma_resources, vma_struct_t, mm_struct_t
-#include "paging.h"     // Added include for PAGE_SIZE, ALIGN_UP, PTE flags, mapping functions
-#include "kmalloc.h"
-#include "string.h"
-#include "types.h"
-#include "fs_errno.h"
-#include "sys_file.h"   // For fd_table access (if validating fd in mmap)
+#include "spinlock.h"
+#include <libc/stdint.h> // Added for UINT32_MAX
+#include <string.h>
+#include <types.h>
+#include "kmalloc_internal.h"   // For memset
 
-// Max syscall number supported
-#define MAX_SYSCALL 32
+#ifndef PAGE_SIZE
+#define PAGE_SIZE 4096
+#endif
 
-// User space memory limit
-#define USER_SPACE_LIMIT  0xC0000000
+// --- Globals ---
+static volatile uint32_t *g_frame_refcounts = NULL; // Array of reference counts
+static size_t g_total_frames = 0;           // Total number of physical frames detected
+static uintptr_t g_highest_address = 0;     // Highest physical address detected
+static spinlock_t g_frame_lock;             // Lock for the refcount array
 
-// Extern kernel PD physical address (needed for validation mapping)
+// Helper to get PFN (Physical Frame Number) from address
+static inline size_t addr_to_pfn(uintptr_t addr) {
+    return addr / PAGE_SIZE;
+}
+
+// Helper to get address from PFN
+static inline uintptr_t pfn_to_addr(size_t pfn) {
+    return pfn * PAGE_SIZE;
+}
+
+
+/**
+ * Initializes the physical frame reference counting system.
+ * Needs careful placement to allocate the refcount array itself.
+ */
+ int frame_init(struct multiboot_tag_mmap *mmap_tag,
+    uintptr_t kernel_phys_start, uintptr_t kernel_phys_end,
+    uintptr_t buddy_heap_phys_start, uintptr_t buddy_heap_phys_end)
+{
+terminal_write("[Frame] Initializing physical frame manager...\n");
+spinlock_init(&g_frame_lock);
+if (!mmap_tag) { return -1; }
+
+// Pass 1: Find highest address (remains the same)
+g_highest_address = 0;
+multiboot_memory_map_t *mmap_entry = mmap_tag->entries;
+uintptr_t mmap_end = (uintptr_t)mmap_tag + mmap_tag->size;
+while ((uintptr_t)mmap_entry < mmap_end) {
+    if (mmap_tag->entry_size == 0) break; // Avoid loop if bad entry size
+    uintptr_t region_end = (uintptr_t)mmap_entry->addr + (uintptr_t)mmap_entry->len;
+    if (region_end > g_highest_address) g_highest_address = region_end;
+    mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag->entry_size);
+}
+if (g_highest_address == 0) return -1;
+
+// Use ALIGN_UP macro (ensure kmalloc_internal.h is included if needed, or define locally)
+g_highest_address = ALIGN_UP(g_highest_address, PAGE_SIZE);
+g_total_frames = addr_to_pfn(g_highest_address);
+terminal_printf("  Detected highest physical address: 0x%x (%u total frames)\n",
+         g_highest_address, g_total_frames);
+
+// Allocate refcount array using buddy
+size_t refcount_array_size = g_total_frames * sizeof(uint32_t);
+refcount_array_size = ALIGN_UP(refcount_array_size, PAGE_SIZE);
+// Use physical address for buddy_alloc
+void* refcount_array_phys = buddy_alloc(refcount_array_size);
+if (!refcount_array_phys) {
+    terminal_write("  [FATAL] Failed to allocate refcount array!\n");
+    return -1;
+}
+g_frame_refcounts = (volatile uint32_t *)refcount_array_phys; // Store phys addr for now
+terminal_printf("  Allocated refcount array at phys 0x%x (size %u bytes)\n",
+         (uintptr_t)g_frame_refcounts, refcount_array_size);
+
+// Map the refcount array into kernel virtual space *using kernel's PD*
+uintptr_t refcount_array_vaddr = KERNEL_SPACE_VIRT_START + (uintptr_t)g_frame_refcounts;
+// Use g_kernel_page_directory_phys (ensure it's accessible, e.g., via extern)
 extern uint32_t g_kernel_page_directory_phys;
-// TEMP addresses are now in paging.h
+if (paging_map_range((uint32_t*)g_kernel_page_directory_phys,
+                refcount_array_vaddr,
+                (uintptr_t)g_frame_refcounts, // Physical address
+                refcount_array_size,
+                PTE_KERNEL_DATA) != 0)
+{
+    terminal_write("  [FATAL] Failed to map refcount array into kernel space!\n");
+    buddy_free(refcount_array_phys, refcount_array_size); // Free physical memory
+    g_frame_refcounts = NULL; return -1;
+}
+volatile uint32_t* refcounts_virt = (volatile uint32_t*)refcount_array_vaddr;
+terminal_printf("  Refcount array mapped at virt 0x%x\n", refcount_array_vaddr);
 
-// --- Forward Declarations for Syscall Handlers ---
-static int sys_write(syscall_context_t *ctx);
-static int sys_exit(syscall_context_t *ctx);
-static int sys_mmap(syscall_context_t *ctx);
-static int sys_munmap(syscall_context_t *ctx);
-static int sys_brk(syscall_context_t *ctx);
-static int sys_unknown(syscall_context_t *ctx);
 
-// --- Forward Declarations for Helpers ---
-static bool validate_user_access(const void *ptr, size_t len, bool require_write);
-static bool copy_from_user(void *kernel_dest, const void *user_src, size_t len);
-static bool copy_to_user(void *user_dest, const void *kernel_src, size_t len);
-// Forward declare find_vma_locked if it's static in mm.c (or include appropriate header)
-// Assuming find_vma (public) is sufficient for now in sys_brk, or we add a static decl if needed.
-// Assuming free_vma_resources is static in mm.c and not directly needed here.
+// Pass 2 & 3: Initialize counts (remain the same, use refcounts_virt)
+// Mark all as reserved initially
+for (size_t i = 0; i < g_total_frames; ++i) refcounts_virt[i] = 1;
 
-// --- Syscall Table ---
-// Initializer elements should be constant (function pointers are constants)
-static int (*syscall_table[MAX_SYSCALL])(syscall_context_t *ctx) = {
-    [0] = sys_unknown,
-    [1] = sys_write,
-    [2] = sys_exit,
-    [3] = sys_mmap,
-    [4] = sys_munmap,
-    [5] = sys_brk,
-    // Use designated initializers for the rest
-    [6 ... MAX_SYSCALL-1] = sys_unknown,
-};
+// Mark available based on memory map
+mmap_entry = mmap_tag->entries;
+while ((uintptr_t)mmap_entry < mmap_end) {
+    if (mmap_tag->entry_size == 0) break;
+    if (mmap_entry->type == MULTIBOOT_MEMORY_AVAILABLE) {
+      uintptr_t region_start = (uintptr_t)mmap_entry->addr;
+      uintptr_t region_end = region_start + (uintptr_t)mmap_entry->len;
+      size_t first_pfn = addr_to_pfn(ALIGN_UP(region_start, PAGE_SIZE));
+      // Use PAGE_ALIGN_DOWN macro
+      size_t last_pfn = addr_to_pfn(PAGE_ALIGN_DOWN(region_end));
+      for (size_t pfn = first_pfn; pfn < last_pfn && pfn < g_total_frames; ++pfn) {
+          refcounts_virt[pfn] = 0; // Mark as free (refcount 0)
+      }
+    }
+    mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag->entry_size);
+}
 
-// --- Syscall Dispatcher ---
-// This function is called by the assembly stub
-int syscall_handler(syscall_context_t *ctx) {
-    uint32_t num = ctx->eax;
-    int ret = -FS_ERR_NOT_SUPPORTED; // Default error
+// Re-reserve specific regions (kernel, refcount array, buddy heap, first MB)
+size_t kernel_start_pfn = addr_to_pfn(PAGE_ALIGN_DOWN(kernel_phys_start));
+size_t kernel_end_pfn = addr_to_pfn(ALIGN_UP(kernel_phys_end, PAGE_SIZE));
+for (size_t pfn = kernel_start_pfn; pfn < kernel_end_pfn && pfn < g_total_frames; ++pfn) refcounts_virt[pfn] = 1;
 
-    if (num < MAX_SYSCALL && syscall_table[num]) {
-        ret = syscall_table[num](ctx);
+size_t refcount_start_pfn = addr_to_pfn((uintptr_t)g_frame_refcounts);
+size_t refcount_end_pfn = addr_to_pfn((uintptr_t)g_frame_refcounts + refcount_array_size);
+for (size_t pfn = refcount_start_pfn; pfn < refcount_end_pfn && pfn < g_total_frames; ++pfn) refcounts_virt[pfn] = 1;
+
+size_t buddy_start_pfn = addr_to_pfn(PAGE_ALIGN_DOWN(buddy_heap_phys_start));
+size_t buddy_end_pfn = addr_to_pfn(ALIGN_UP(buddy_heap_phys_end, PAGE_SIZE));
+for (size_t pfn = buddy_start_pfn; pfn < buddy_end_pfn && pfn < g_total_frames; ++pfn) refcounts_virt[pfn] = 1;
+
+size_t first_mb_pfn_limit = addr_to_pfn(0x100000);
+for (size_t pfn = 0; pfn < first_mb_pfn_limit && pfn < g_total_frames; ++pfn) refcounts_virt[pfn] = 1;
+
+
+terminal_write("[Frame] Frame manager initialized.\n");
+return 0;
+}
+
+/**
+ * Allocates a single physical page frame.
+ */
+uintptr_t frame_alloc(void) {
+    if (!g_frame_refcounts) return 0; // Not initialized
+
+    // Call buddy allocator for a PAGE_SIZE block
+    void* phys_addr_void = buddy_alloc(PAGE_SIZE);
+    uintptr_t phys_addr = (uintptr_t)phys_addr_void;
+
+    if (!phys_addr) {
+        // Don't print error here, let caller handle OOM if needed
+        // terminal_write("[Frame] frame_alloc: buddy_alloc failed!\n");
+        return 0; // Out of memory
+    }
+
+    size_t pfn = addr_to_pfn(phys_addr);
+    if (pfn >= g_total_frames) {
+        terminal_printf("[Frame] frame_alloc: buddy_alloc returned invalid address 0x%x!\n", phys_addr);
+        // We allocated it, but can't track it? Free it back.
+        buddy_free(phys_addr_void, PAGE_SIZE);
+        return 0;
+    }
+
+    // --- Set reference count to 1 ---
+    uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
+    // Use the mapped virtual address
+    volatile uint32_t* refcounts_virt = (volatile uint32_t*)(KERNEL_SPACE_VIRT_START + (uintptr_t)g_frame_refcounts);
+
+    if (refcounts_virt[pfn] != 0) {
+        // This should NOT happen if buddy only gives out free pages (refcount 0)
+        terminal_printf("[Frame] frame_alloc: WARNING! Allocated frame PFN %u (addr 0x%x) had non-zero refcount (%u)!\n",
+                       pfn, phys_addr, refcounts_virt[pfn]);
+        // Proceed, but indicate potential issue. Set count to 1 anyway.
+    }
+    refcounts_virt[pfn] = 1; // Set ref count to 1
+    spinlock_release_irqrestore(&g_frame_lock, irq_flags);
+
+    // terminal_printf("[Frame DEBUG] Allocated frame 0x%x (PFN %u), refcnt=1\n", phys_addr, pfn);
+    return phys_addr;
+}
+
+/**
+ * Increments the reference count for a frame.
+ */
+void get_frame(uintptr_t phys_addr) {
+    if (!g_frame_refcounts) return; // Not initialized
+    if (phys_addr == 0 || phys_addr >= g_highest_address) return; // Invalid address range
+
+    size_t pfn = addr_to_pfn(phys_addr);
+    if (pfn >= g_total_frames) {
+        // This check is somewhat redundant due to g_highest_address check, but safe
+        terminal_printf("[Frame] get_frame: Invalid physical address 0x%x (PFN %u >= total %u)!\n", phys_addr, pfn, g_total_frames);
+        return;
+    }
+
+    uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
+    // Use the mapped virtual address
+    volatile uint32_t* refcounts_virt = (volatile uint32_t*)(KERNEL_SPACE_VIRT_START + (uintptr_t)g_frame_refcounts);
+
+    if (refcounts_virt[pfn] == 0) {
+        // Incrementing count of a free page? This indicates a bug elsewhere.
+        terminal_printf("[Frame] get_frame: WARNING! Incrementing refcount of free frame PFN %u (addr 0x%x)!\n", pfn, phys_addr);
+        // Proceed, but this frame shouldn't have been considered free.
+    }
+    // Check for overflow before incrementing
+    if (refcounts_virt[pfn] == UINT32_MAX) {
+         terminal_printf("[Frame] get_frame: Error! Refcount overflow for PFN %u (addr 0x%x)\n", pfn, phys_addr);
+         // Panic or handle error? For now, just don't increment.
     } else {
-        ret = sys_unknown(ctx);
+         refcounts_virt[pfn]++;
     }
-    ctx->eax = ret; // Put result in EAX for user space
-    return ret; // Return value for kernel use (optional)
+    // terminal_printf("[Frame DEBUG] Incremented refcnt for 0x%x (PFN %u) to %u\n", phys_addr, pfn, refcounts_virt[pfn]);
+    spinlock_release_irqrestore(&g_frame_lock, irq_flags);
 }
 
+/**
+ * Decrements the reference count, potentially freeing the frame.
+ */
+void put_frame(uintptr_t phys_addr) {
+    if (!g_frame_refcounts) return; // Not initialized
+     if (phys_addr == 0 || phys_addr >= g_highest_address) return; // Invalid address range
 
-// --- Robust User Pointer Validation ---
-static bool validate_user_access(const void *ptr, size_t len, bool require_write) {
-    if (len == 0) return true;
-    uintptr_t start_addr = (uintptr_t)ptr;
-    uintptr_t end_addr = start_addr + len;
-
-    // Basic Range Check
-    if (start_addr >= USER_SPACE_LIMIT || end_addr > USER_SPACE_LIMIT || end_addr < start_addr) {
-        return false;
+    size_t pfn = addr_to_pfn(phys_addr);
+    if (pfn >= g_total_frames) {
+        terminal_printf("[Frame] put_frame: Invalid physical address 0x%x (PFN %u >= total %u)!\n", phys_addr, pfn, g_total_frames);
+        return;
     }
 
-    pcb_t* current_process = get_current_process();
-    if (!current_process || !current_process->page_directory_phys) { return false; }
-    uint32_t* target_pd_phys = current_process->page_directory_phys;
-    uint32_t* target_pd_virt = NULL;
-    uint32_t* pt_virt = NULL;
-    bool valid = true;
+    uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
+    // Use the mapped virtual address
+    volatile uint32_t* refcounts_virt = (volatile uint32_t*)(KERNEL_SPACE_VIRT_START + (uintptr_t)g_frame_refcounts);
 
-    // Map target PD temporarily (read-only is sufficient for checking)
-     if (paging_map_single((uint32_t*)g_kernel_page_directory_phys, TEMP_PD_MAP_ADDR, (uint32_t)target_pd_phys, PTE_KERNEL_READONLY) != 0) {
-         return false; // Cannot map target PD
-    }
-    target_pd_virt = (uint32_t*)TEMP_PD_MAP_ADDR;
-
-    uintptr_t current_vpage = PAGE_ALIGN_DOWN(start_addr);
-    while (current_vpage < end_addr) {
-        uint32_t pde_idx = PDE_INDEX(current_vpage);
-        uint32_t pde = target_pd_virt[pde_idx];
-
-        // Check PDE validity
-        if (!(pde & PAGE_PRESENT) || !(pde & PAGE_USER)) { valid = false; break; }
-        if (require_write && !(pde & PAGE_RW)) { valid = false; break; }
-
-        if (pde & PAGE_SIZE_4MB) { // Handle 4MB page
-            if (require_write && !(pde & PAGE_RW)) { valid = false; break; }
-            uintptr_t next_page = PAGE_LARGE_ALIGN_UP(current_vpage + PAGE_SIZE);
-            current_vpage = (next_page > current_vpage) ? next_page : end_addr; // Advance or finish
-            continue;
-        }
-
-        // Handle 4KB page (Check PTE)
-        uint32_t* pt_phys = (uint32_t*)(pde & ~0xFFF);
-        pt_virt = NULL;
-         if (paging_map_single((uint32_t*)g_kernel_page_directory_phys, TEMP_PT_MAP_ADDR, (uint32_t)pt_phys, PTE_KERNEL_READONLY) != 0) {
-             valid = false; break; // Failed to map PT
-         }
-         pt_virt = (uint32_t*)TEMP_PT_MAP_ADDR;
-         uint32_t pte_idx = PTE_INDEX(current_vpage);
-         uint32_t pte = pt_virt[pte_idx];
-
-         // Check PTE validity
-         if (!(pte & PAGE_PRESENT) || !(pte & PAGE_USER)) { valid = false; }
-         if (require_write && !(pte & PAGE_RW)) { valid = false; }
-
-         // Unmap temp PT
-         paging_unmap_range((uint32_t*)g_kernel_page_directory_phys, TEMP_PT_MAP_ADDR, PAGE_SIZE);
-         paging_invalidate_page((void*)TEMP_PT_MAP_ADDR); // Invalidate its temp mapping
-         pt_virt = NULL;
-
-         if (!valid) break; // Exit loop if invalid PTE found
-        current_vpage += PAGE_SIZE;
+    if (refcounts_virt[pfn] == 0) {
+        // Decrementing count of an already free page? Double free or corruption.
+        terminal_printf("[Frame] put_frame: ERROR! Double free detected for frame PFN %u (addr 0x%x)!\n", pfn, phys_addr);
+        spinlock_release_irqrestore(&g_frame_lock, irq_flags);
+        // Optionally: Trigger a kernel panic here
+        return; // Avoid decrementing below zero
     }
 
-    // Unmap temp PD
-    paging_unmap_range((uint32_t*)g_kernel_page_directory_phys, TEMP_PD_MAP_ADDR, PAGE_SIZE);
-    paging_invalidate_page((void*)TEMP_PD_MAP_ADDR);
+    refcounts_virt[pfn]--; // Decrement count
+    uint32_t current_count = refcounts_virt[pfn]; // Read count after decrement
 
-    // if (!valid) { terminal_printf("[Validate] Failed: range [0x%x-0x%x), Write=%d\n", start_addr, end_addr, require_write); }
-    return valid;
-}
+    // terminal_printf("[Frame DEBUG] Decremented refcnt for 0x%x (PFN %u) to %u\n", phys_addr, pfn, current_count);
 
-// --- Copy Helpers ---
-static bool copy_from_user(void *kernel_dest, const void *user_src, size_t len) {
-    if (!validate_user_access(user_src, len, false)) { // Validate READ access
-        return false;
-    }
-    memcpy(kernel_dest, user_src, len);
-    return true;
-}
-
-static bool copy_to_user(void *user_dest, const void *kernel_src, size_t len) {
-    if (!validate_user_access(user_dest, len, true)) { // Validate WRITE access
-        return false;
-    }
-    memcpy(user_dest, kernel_src, len);
-    return true;
-}
-
-// --- Syscall Handler Implementations ---
-// *** Make static ***
-static int sys_write(syscall_context_t *ctx) {
-    char *usr_str = (char *)ctx->ebx;
-    uint32_t usr_len= ctx->ecx;
-    if (!usr_str) return -FS_ERR_INVALID_PARAM;
-    // Avoid excessively large copies
-    if (usr_len > 4095) usr_len = 4095; // Limit to slightly less than a page
-
-    // Use a kernel buffer (stack or kmalloc for larger sizes)
-    // Stack buffer is faster for small, common sizes
-    char local_buf[256];
-    char *kbuf = local_buf;
-    bool dynamic_alloc = false;
-    if (usr_len >= sizeof(local_buf)) {
-        // If needed size > local buffer, try dynamic allocation
-        kbuf = kmalloc(usr_len + 1); // +1 for null terminator
-        if (!kbuf) return -FS_ERR_OUT_OF_MEMORY;
-        dynamic_alloc = true;
-    }
-
-    // *** Use validated copy_from_user ***
-    if (!copy_from_user(kbuf, usr_str, usr_len)) {
-        if (dynamic_alloc) kfree(kbuf);
-        return -FS_ERR_INVALID_PARAM; // Bad pointer or permissions
-    }
-    kbuf[usr_len] = '\0'; // Null terminate
-    terminal_write(kbuf); // Write to kernel console
-
-    if (dynamic_alloc) kfree(kbuf); // Free if dynamically allocated
-    return (int)usr_len;
-}
-
-static int sys_exit(syscall_context_t *ctx) {
-    uint32_t code = ctx->ebx;
-    terminal_printf("[syscall] sys_exit code=%d\n", code);
-    remove_current_task_with_code(code);
-    return 0; // Not reached
-}
-
-static int sys_mmap(syscall_context_t *ctx) {
-    uintptr_t addr   = (uintptr_t)ctx->ebx;
-    size_t    length = (size_t)ctx->ecx;
-    int       prot   = (int)ctx->edx;
-    int       flags  = (int)ctx->esi;
-    int       fd     = (int)ctx->edi;
-    off_t     offset = (off_t)ctx->ebp;
-
-    // terminal_printf("[syscall] sys_mmap(addr=0x%x, len=%u, prot=0x%x, flags=0x%x, fd=%d, off=%ld)\n",
-    //               addr, length, prot, flags, fd, offset);
-
-    if (length == 0) return -FS_ERR_INVALID_PARAM;
-    if (prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) return -FS_ERR_INVALID_PARAM;
-    if (!((flags & MAP_PRIVATE) || (flags & MAP_SHARED))) return -FS_ERR_INVALID_PARAM;
-    if ((flags & MAP_PRIVATE) && (flags & MAP_SHARED)) return -FS_ERR_INVALID_PARAM;
-
-    pcb_t* current_process = get_current_process();
-    if (!current_process || !current_process->mm) return -FS_ERR_UNKNOWN;
-    mm_struct_t *mm = current_process->mm;
-
-    uint32_t vm_flags = 0;
-    uint32_t page_prot = PAGE_PRESENT | PAGE_USER; // Base flags for VMA/PTE
-    if (prot & PROT_READ)  vm_flags |= VM_READ;
-    if (prot & PROT_WRITE) vm_flags |= VM_WRITE;
-    if (prot & PROT_EXEC)  vm_flags |= VM_EXEC;
-
-    if (flags & MAP_SHARED) {
-        vm_flags |= VM_SHARED;
-        if (vm_flags & VM_WRITE) page_prot |= PAGE_RW;
-    } else { // MAP_PRIVATE
-        vm_flags |= VM_PRIVATE;
-        // For COW: Map RW pages initially RO in PTE if VMA is writable
-        if (vm_flags & VM_WRITE) {
-             page_prot |= PAGE_RW; // PTE needs RW eventually
-             // page_prot &= ~PAGE_RW; // Uncomment this line for true COW trigger via PTE
-        }
-    }
-    if (!(prot & PROT_WRITE)) {
-        page_prot &= ~PAGE_RW; // Ensure RO if PROT_WRITE not set
-    }
-
-
-    file_t *file = NULL; size_t file_offset_aligned = 0;
-    if (flags & MAP_ANONYMOUS) {
-        vm_flags |= VM_ANONYMOUS;
-        if (fd != -1) return -FS_ERR_INVALID_PARAM;
-        offset = 0;
+    // If count dropped to zero, free the frame back to buddy
+    if (current_count == 0) {
+        // Release lock *before* calling buddy_free
+        spinlock_release_irqrestore(&g_frame_lock, irq_flags);
+        // terminal_printf("[Frame DEBUG] Refcnt hit 0, freeing frame 0x%x (PFN %u) via buddy.\n", phys_addr, pfn);
+        buddy_free((void*)phys_addr, PAGE_SIZE); // Free single page
     } else {
-        vm_flags |= VM_FILEBACKED;
-        // TODO: Full file descriptor validation and lookup needed
-        // file = get_file_from_fd(current_process, fd); if (!file) return -EBADF;
-        // check file permissions vs prot; vfs_file_dup(file);
-        if (fd < 0) return -FS_ERR_INVALID_PARAM; // Basic fd check
-        if (offset < 0 || (offset % PAGE_SIZE) != 0) return -FS_ERR_INVALID_PARAM;
-        file_offset_aligned = (size_t)offset;
-        terminal_write("  Warning: File-backed mmap FD validation/lookup needed.\n");
+        // Count > 0, just release lock
+        spinlock_release_irqrestore(&g_frame_lock, irq_flags);
     }
-
-    // *** Use ALIGN_UP from paging.h ***
-    size_t length_aligned = ALIGN_UP(length, PAGE_SIZE);
-    uintptr_t map_addr = 0;
-
-    if (flags & MAP_FIXED) {
-        if (addr == 0 || (addr % PAGE_SIZE) != 0 || addr >= USER_SPACE_LIMIT) return -FS_ERR_INVALID_PARAM;
-        map_addr = addr;
-        // TODO: Implement remove_vma_range call here before inserting
-        terminal_write("  Warning: MAP_FIXED unmapping not implemented.\n");
-        // remove_vma_range(mm, map_addr, length_aligned);
-    } else {
-        // TODO: Implement find_free_vma_range(mm, length_aligned)
-        map_addr = 0x40000000; // Placeholder address
-        terminal_printf("  Warning: Using placeholder address 0x%x for mmap.\n", map_addr);
-    }
-
-    vma_struct_t* vma = insert_vma(mm, map_addr, map_addr + length_aligned,
-                                   vm_flags, page_prot, file, file_offset_aligned);
-    if (!vma) {
-         // TODO: vfs_file_put(file); if file was dup'd
-        return -1; // Map to ENOMEM or other error
-    }
-    return (int)vma->vm_start;
 }
 
-static int sys_munmap(syscall_context_t *ctx) {
-    uintptr_t addr   = (uintptr_t)ctx->ebx;
-    size_t    length = (size_t)ctx->ecx;
+/**
+ * Gets the current reference count.
+ */
+int get_frame_refcount(uintptr_t phys_addr) {
+    if (!g_frame_refcounts) return -1; // Not initialized
+     if (phys_addr >= g_highest_address) return -1; // Invalid address
 
-    if (length == 0 || (addr % PAGE_SIZE) != 0) return -FS_ERR_INVALID_PARAM;
-    if (addr >= USER_SPACE_LIMIT || (addr + length) > USER_SPACE_LIMIT || (addr + length) < addr) return -FS_ERR_INVALID_PARAM;
+    size_t pfn = addr_to_pfn(phys_addr);
+    if (pfn >= g_total_frames) return -1; // Invalid pfn
 
-    pcb_t* current_process = get_current_process();
-    if (!current_process || !current_process->mm) return -FS_ERR_UNKNOWN;
-    mm_struct_t *mm = current_process->mm;
-
-    int result = remove_vma_range(mm, addr, length);
-    return (result == 0) ? 0 : -1; // Map internal error
-}
-
-static int sys_brk(syscall_context_t *ctx) {
-    uintptr_t new_brk = (uintptr_t)ctx->ebx;
-
-    pcb_t* current_process = get_current_process();
-    if (!current_process || !current_process->mm) return 0; // Return 0 on error?
-    mm_struct_t *mm = current_process->mm;
-
-    uintptr_t irq_flags = spinlock_acquire_irqsave(&mm->lock);
-    uintptr_t current_brk = mm->end_brk;
-
-    if (new_brk == 0) {
-        spinlock_release_irqrestore(&mm->lock, irq_flags);
-        return (int)current_brk;
-    }
-    if (new_brk < mm->start_brk) {
-         spinlock_release_irqrestore(&mm->lock, irq_flags);
-         return (int)current_brk; // Return old break on failure
-    }
-
-    // *** Use ALIGN_UP from paging.h ***
-    uintptr_t aligned_new_brk = ALIGN_UP(new_brk, PAGE_SIZE);
-    uintptr_t aligned_current_brk = ALIGN_UP(current_brk, PAGE_SIZE);
-
-    // terminal_printf("[syscall] sys_brk: Request=0x%x, Current=0x%x (Al=0x%x), NewAl=0x%x\n",
-    //               new_brk, current_brk, aligned_current_brk, aligned_new_brk);
-
-    if (aligned_new_brk == aligned_current_brk) {
-        mm->end_brk = new_brk; // Just update logical break
-    } else if (aligned_new_brk > aligned_current_brk) {
-        // Expanding
-        vma_struct_t *heap_vma = find_vma(mm, mm->start_brk); // Use public find_vma
-        if (!heap_vma || heap_vma->vm_end != aligned_current_brk) {
-            // Try finding based on end address (simpler search than previous attempt)
-            heap_vma = find_vma(mm, aligned_current_brk - 1); // Find VMA covering end
-             if (!heap_vma || heap_vma->vm_end != aligned_current_brk || heap_vma->vm_start < mm->start_brk) { // Ensure it's the right VMA
-                terminal_printf("sys_brk: Heap VMA ending at 0x%x not found/valid for expansion.\n", aligned_current_brk);
-                spinlock_release_irqrestore(&mm->lock, irq_flags); return (int)current_brk;
-             }
-        }
-
-        // Check overlap with next VMA
-        struct rb_node *next_node = rb_node_next(&heap_vma->rb_node);
-        if (next_node) {
-            vma_struct_t *next_vma = rb_entry(next_node, vma_struct_t, rb_node);
-            if (aligned_new_brk > next_vma->vm_start) { /* Overlap error */ spinlock_release_irqrestore(&mm->lock, irq_flags); return (int)current_brk; }
-        }
-        if (aligned_new_brk > USER_SPACE_LIMIT) { /* Limit error */ spinlock_release_irqrestore(&mm->lock, irq_flags); return (int)current_brk; }
-
-        heap_vma->vm_end = aligned_new_brk; // Expand VMA
-        mm->end_brk = new_brk;
-    } else { // Shrinking
-        // Find heap VMA (similar to above)
-         vma_struct_t *heap_vma = find_vma(mm, aligned_new_brk); // Find VMA covering new end
-         if (!heap_vma || heap_vma->vm_end != aligned_current_brk || heap_vma->vm_start > aligned_new_brk) { // Ensure it's the right one
-              terminal_printf("sys_brk: Heap VMA ending at 0x%x not found/valid for shrinking.\n", aligned_current_brk);
-             spinlock_release_irqrestore(&mm->lock, irq_flags); return (int)current_brk;
-         }
-
-        if (aligned_new_brk < heap_vma->vm_start) { /* Shrink below start error */ spinlock_release_irqrestore(&mm->lock, irq_flags); return (int)current_brk; }
-
-        // Unmap pages
-        if (aligned_new_brk < aligned_current_brk) {
-            if (paging_unmap_range(mm->pgd_phys, aligned_new_brk, aligned_current_brk - aligned_new_brk) != 0) {
-                 /* Unmap error */ spinlock_release_irqrestore(&mm->lock, irq_flags); return (int)current_brk;
-            }
-        }
-
-        // Adjust/Remove VMA
-        if (aligned_new_brk <= heap_vma->vm_start) { // Remove if zero size or less
-             rb_tree_remove(&mm->vma_tree, &heap_vma->rb_node);
-             mm->map_count--;
-             // Use free_vma_resources from mm.c (make it non-static or call via helper)
-             // Assuming free_vma_resources is accessible or logic moved here/called differently
-             // free_vma_resources(heap_vma); // Needs access or alternative
-             kfree(heap_vma); // Simple free if helper not available
-        } else {
-            heap_vma->vm_end = aligned_new_brk; // Shrink
-        }
-        mm->end_brk = new_brk;
-    }
-
-    // Success path
-    spinlock_release_irqrestore(&mm->lock, irq_flags);
-    return (int)new_brk; // Return NEW break on success
-}
-
-static int sys_unknown(syscall_context_t *ctx) {
-    terminal_printf("[syscall] Unknown syscall number: %d\n", ctx->eax);
-    return -FS_ERR_NOT_SUPPORTED;
+    uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
+    // Use the mapped virtual address
+    volatile uint32_t* refcounts_virt = (volatile uint32_t*)(KERNEL_SPACE_VIRT_START + (uintptr_t)g_frame_refcounts);
+    int count = (int)refcounts_virt[pfn];
+    spinlock_release_irqrestore(&g_frame_lock, irq_flags);
+    return count;
 }

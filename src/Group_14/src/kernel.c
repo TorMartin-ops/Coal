@@ -12,10 +12,11 @@
  #include "pit.h"
  #include "keyboard.h"
  #include "keymap.h"
- #include "buddy.h"      // *** Added include ***
+ #include "buddy.h"      // Added include
  #include "frame.h"
- #include "paging.h"
+ #include "paging.h"     // Includes PAGE_ALIGN_UP
  #include "kmalloc.h"
+ #include "kmalloc_internal.h" // Added include for ALIGN_UP
  #include "pc_speaker.h"
  #include "song.h"
  #include "song_player.h"
@@ -27,8 +28,8 @@
  #include "get_cpu_id.h"
  #include "fs_init.h"
  #include "read_file.h"
- #include "cpuid.h"      // *** Needs to exist (created in previous step) ***
- #include "mount.h"      // *** Added include for list_mounts ***
+ #include "cpuid.h"
+ #include "mount.h"      // Added include for list_mounts
 
 
  #define MULTIBOOT2_BOOTLOADER_MAGIC 0x36d76289
@@ -86,7 +87,8 @@
      uintptr_t best_base = 0; uint64_t best_size = 0;
      multiboot_memory_map_t *mmap_entry = mmap_tag->entries;
      uintptr_t mmap_end = (uintptr_t)mmap_tag + mmap_tag->size;
-     uintptr_t kernel_end_aligned = PAGE_ALIGN_UP((uintptr_t)&_kernel_end_phys, PAGE_SIZE); // Align up
+     // Corrected: Use PAGE_ALIGN_UP from paging.h
+     uintptr_t kernel_end_aligned = PAGE_ALIGN_UP((uintptr_t)&_kernel_end_phys); // Align up
 
      terminal_write("Memory Map (from Multiboot):\n");
      while ((uintptr_t)mmap_entry < mmap_end) {
@@ -129,7 +131,7 @@
          return true;
      }
      terminal_write("  Error: No suitable memory region found above 1MB for heap!\n");
-     return false; // *** Added return false ***
+     return false;
  }
  // --- End Multiboot Helpers ---
 
@@ -138,7 +140,7 @@
  static bool init_memory(uint32_t mb_info_phys_addr) {
      terminal_write("[Kernel] Initializing Memory Subsystems...\n");
 
-     // *** Fixed find_multiboot_tag call ***
+     // Find memory map tag
      struct multiboot_tag_mmap *mmap_tag = (struct multiboot_tag_mmap *)find_multiboot_tag(
          mb_info_phys_addr, MULTIBOOT_TAG_TYPE_MMAP);
      if (!mmap_tag) {
@@ -157,7 +159,8 @@
           if (region_end > total_memory) total_memory = region_end;
           mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag->entry_size);
       }
-     total_memory = ALIGN_UP(total_memory, PAGE_SIZE); // Use macro from paging.h
+      // Use ALIGN_UP from kmalloc_internal.h
+     total_memory = ALIGN_UP(total_memory, PAGE_SIZE); // Use ALIGN_UP now
      terminal_printf("  Detected Total Memory: %u MB\n", total_memory / (1024*1024));
 
 
@@ -171,9 +174,9 @@
      }
 
      // Align heap start UP for buddy allocator
-     // *** Use MIN_BLOCK_SIZE from buddy.h ***
+     // Use MIN_BLOCK_SIZE and DEFAULT_ALIGNMENT from buddy.h
      size_t required_alignment = (MIN_BLOCK_SIZE > DEFAULT_ALIGNMENT) ? MIN_BLOCK_SIZE : DEFAULT_ALIGNMENT;
-     uintptr_t aligned_heap_start = ALIGN_UP(heap_phys_start, required_alignment); // Use macro
+     uintptr_t aligned_heap_start = ALIGN_UP(heap_phys_start, required_alignment); // Use ALIGN_UP
      size_t adjustment = aligned_heap_start - heap_phys_start;
      if (heap_size <= adjustment) {
          terminal_write("  [FATAL] Heap size too small after alignment.\n");
@@ -192,7 +195,7 @@
      // --- Initialize Buddy Allocator ---
      terminal_write("  Initializing Buddy Allocator...\n");
      buddy_init((void *)heap_phys_start, heap_size);
-     // *** Use MIN_BLOCK_SIZE from buddy.h ***
+     // Use MIN_BLOCK_SIZE from buddy.h
      if (buddy_free_space() == 0 && heap_size >= MIN_BLOCK_SIZE) {
          terminal_write("  [FATAL] Buddy Allocator initialization failed!\n");
          return false;
@@ -249,7 +252,7 @@
      // --- Filesystem ---
      terminal_write("[Kernel] Initializing Filesystem...\n");
      if (fs_init() == FS_SUCCESS) {
-         // *** Use list_mounts (needs mount.h) ***
+         // Use list_mounts (needs mount.h)
          list_mounts();
      } else {
          terminal_write("  [Warning] Filesystem initialization failed.\n");

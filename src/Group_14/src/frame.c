@@ -3,6 +3,7 @@
 #include "paging.h"
 #include "terminal.h"
 #include "spinlock.h"
+#include <libc/stdint.h> // Added for UINT32_MAX
 #include <string.h>
 #include <types.h>
 #include "kmalloc_internal.h"   // For memset
@@ -42,17 +43,17 @@ if (!mmap_tag) { return -1; }
 
 // Pass 1: Find highest address (remains the same)
 g_highest_address = 0;
-// ... find highest address from mmap_tag ...
 multiboot_memory_map_t *mmap_entry = mmap_tag->entries;
 uintptr_t mmap_end = (uintptr_t)mmap_tag + mmap_tag->size;
 while ((uintptr_t)mmap_entry < mmap_end) {
-uintptr_t region_end = (uintptr_t)mmap_entry->addr + (uintptr_t)mmap_entry->len;
-if (region_end > g_highest_address) g_highest_address = region_end;
-mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag->entry_size);
+    if (mmap_tag->entry_size == 0) break; // Avoid loop if bad entry size
+    uintptr_t region_end = (uintptr_t)mmap_entry->addr + (uintptr_t)mmap_entry->len;
+    if (region_end > g_highest_address) g_highest_address = region_end;
+    mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag->entry_size);
 }
 if (g_highest_address == 0) return -1;
 
-// *** Use ALIGN_UP macro ***
+// Use ALIGN_UP macro (ensure kmalloc_internal.h is included if needed, or define locally)
 g_highest_address = ALIGN_UP(g_highest_address, PAGE_SIZE);
 g_total_frames = addr_to_pfn(g_highest_address);
 terminal_printf("  Detected highest physical address: 0x%x (%u total frames)\n",
@@ -61,54 +62,68 @@ terminal_printf("  Detected highest physical address: 0x%x (%u total frames)\n",
 // Allocate refcount array using buddy
 size_t refcount_array_size = g_total_frames * sizeof(uint32_t);
 refcount_array_size = ALIGN_UP(refcount_array_size, PAGE_SIZE);
-// *** Use physical address for buddy_alloc ***
+// Use physical address for buddy_alloc
 void* refcount_array_phys = buddy_alloc(refcount_array_size);
-if (!refcount_array_phys) { return -1; }
+if (!refcount_array_phys) {
+    terminal_write("  [FATAL] Failed to allocate refcount array!\n");
+    return -1;
+}
 g_frame_refcounts = (volatile uint32_t *)refcount_array_phys; // Store phys addr for now
 terminal_printf("  Allocated refcount array at phys 0x%x (size %u bytes)\n",
          (uintptr_t)g_frame_refcounts, refcount_array_size);
 
 // Map the refcount array into kernel virtual space *using kernel's PD*
 uintptr_t refcount_array_vaddr = KERNEL_SPACE_VIRT_START + (uintptr_t)g_frame_refcounts;
-// *** Use g_kernel_page_directory_phys ***
+// Use g_kernel_page_directory_phys (ensure it's accessible, e.g., via extern)
+extern uint32_t g_kernel_page_directory_phys;
 if (paging_map_range((uint32_t*)g_kernel_page_directory_phys,
                 refcount_array_vaddr,
                 (uintptr_t)g_frame_refcounts, // Physical address
                 refcount_array_size,
                 PTE_KERNEL_DATA) != 0)
 {
-buddy_free(refcount_array_phys, refcount_array_size); // Free physical memory
-g_frame_refcounts = NULL; return -1;
+    terminal_write("  [FATAL] Failed to map refcount array into kernel space!\n");
+    buddy_free(refcount_array_phys, refcount_array_size); // Free physical memory
+    g_frame_refcounts = NULL; return -1;
 }
 volatile uint32_t* refcounts_virt = (volatile uint32_t*)refcount_array_vaddr;
 terminal_printf("  Refcount array mapped at virt 0x%x\n", refcount_array_vaddr);
 
 
 // Pass 2 & 3: Initialize counts (remain the same, use refcounts_virt)
-// ... mark all reserved (1), then mark available (0) from mmap ...
+// Mark all as reserved initially
 for (size_t i = 0; i < g_total_frames; ++i) refcounts_virt[i] = 1;
+
+// Mark available based on memory map
 mmap_entry = mmap_tag->entries;
 while ((uintptr_t)mmap_entry < mmap_end) {
-if (mmap_entry->type == MULTIBOOT_MEMORY_AVAILABLE) {
-  uintptr_t region_start = (uintptr_t)mmap_entry->addr;
-  uintptr_t region_end = region_start + (uintptr_t)mmap_entry->len;
-  size_t first_pfn = addr_to_pfn(ALIGN_UP(region_start, PAGE_SIZE));
-  // *** Use PAGE_ALIGN_DOWN macro ***
-  size_t last_pfn = addr_to_pfn(PAGE_ALIGN_DOWN(region_end));
-  for (size_t pfn = first_pfn; pfn < last_pfn && pfn < g_total_frames; ++pfn) {
-      refcounts_virt[pfn] = 0;
-  }
+    if (mmap_tag->entry_size == 0) break;
+    if (mmap_entry->type == MULTIBOOT_MEMORY_AVAILABLE) {
+      uintptr_t region_start = (uintptr_t)mmap_entry->addr;
+      uintptr_t region_end = region_start + (uintptr_t)mmap_entry->len;
+      size_t first_pfn = addr_to_pfn(ALIGN_UP(region_start, PAGE_SIZE));
+      // Use PAGE_ALIGN_DOWN macro
+      size_t last_pfn = addr_to_pfn(PAGE_ALIGN_DOWN(region_end));
+      for (size_t pfn = first_pfn; pfn < last_pfn && pfn < g_total_frames; ++pfn) {
+          refcounts_virt[pfn] = 0; // Mark as free (refcount 0)
+      }
+    }
+    mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag->entry_size);
 }
-mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag->entry_size);
-}
-// ... re-reserve kernel, refcount array, buddy heap area, <1MB ...
+
+// Re-reserve specific regions (kernel, refcount array, buddy heap, first MB)
 size_t kernel_start_pfn = addr_to_pfn(PAGE_ALIGN_DOWN(kernel_phys_start));
 size_t kernel_end_pfn = addr_to_pfn(ALIGN_UP(kernel_phys_end, PAGE_SIZE));
 for (size_t pfn = kernel_start_pfn; pfn < kernel_end_pfn && pfn < g_total_frames; ++pfn) refcounts_virt[pfn] = 1;
+
 size_t refcount_start_pfn = addr_to_pfn((uintptr_t)g_frame_refcounts);
 size_t refcount_end_pfn = addr_to_pfn((uintptr_t)g_frame_refcounts + refcount_array_size);
 for (size_t pfn = refcount_start_pfn; pfn < refcount_end_pfn && pfn < g_total_frames; ++pfn) refcounts_virt[pfn] = 1;
-// Buddy area reservation depends on buddy implementation details, skip explicit reservation here
+
+size_t buddy_start_pfn = addr_to_pfn(PAGE_ALIGN_DOWN(buddy_heap_phys_start));
+size_t buddy_end_pfn = addr_to_pfn(ALIGN_UP(buddy_heap_phys_end, PAGE_SIZE));
+for (size_t pfn = buddy_start_pfn; pfn < buddy_end_pfn && pfn < g_total_frames; ++pfn) refcounts_virt[pfn] = 1;
+
 size_t first_mb_pfn_limit = addr_to_pfn(0x100000);
 for (size_t pfn = 0; pfn < first_mb_pfn_limit && pfn < g_total_frames; ++pfn) refcounts_virt[pfn] = 1;
 
@@ -128,7 +143,8 @@ uintptr_t frame_alloc(void) {
     uintptr_t phys_addr = (uintptr_t)phys_addr_void;
 
     if (!phys_addr) {
-        terminal_write("[Frame] frame_alloc: buddy_alloc failed!\n");
+        // Don't print error here, let caller handle OOM if needed
+        // terminal_write("[Frame] frame_alloc: buddy_alloc failed!\n");
         return 0; // Out of memory
     }
 
@@ -142,6 +158,7 @@ uintptr_t frame_alloc(void) {
 
     // --- Set reference count to 1 ---
     uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
+    // Use the mapped virtual address
     volatile uint32_t* refcounts_virt = (volatile uint32_t*)(KERNEL_SPACE_VIRT_START + (uintptr_t)g_frame_refcounts);
 
     if (refcounts_virt[pfn] != 0) {
@@ -162,15 +179,17 @@ uintptr_t frame_alloc(void) {
  */
 void get_frame(uintptr_t phys_addr) {
     if (!g_frame_refcounts) return; // Not initialized
-    if (phys_addr == 0) return; // Cannot refcount frame 0 typically
+    if (phys_addr == 0 || phys_addr >= g_highest_address) return; // Invalid address range
 
     size_t pfn = addr_to_pfn(phys_addr);
     if (pfn >= g_total_frames) {
-        terminal_printf("[Frame] get_frame: Invalid physical address 0x%x!\n", phys_addr);
+        // This check is somewhat redundant due to g_highest_address check, but safe
+        terminal_printf("[Frame] get_frame: Invalid physical address 0x%x (PFN %u >= total %u)!\n", phys_addr, pfn, g_total_frames);
         return;
     }
 
     uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
+    // Use the mapped virtual address
     volatile uint32_t* refcounts_virt = (volatile uint32_t*)(KERNEL_SPACE_VIRT_START + (uintptr_t)g_frame_refcounts);
 
     if (refcounts_virt[pfn] == 0) {
@@ -178,9 +197,10 @@ void get_frame(uintptr_t phys_addr) {
         terminal_printf("[Frame] get_frame: WARNING! Incrementing refcount of free frame PFN %u (addr 0x%x)!\n", pfn, phys_addr);
         // Proceed, but this frame shouldn't have been considered free.
     }
+    // Check for overflow before incrementing
     if (refcounts_virt[pfn] == UINT32_MAX) {
          terminal_printf("[Frame] get_frame: Error! Refcount overflow for PFN %u (addr 0x%x)\n", pfn, phys_addr);
-         // Panic or handle error?
+         // Panic or handle error? For now, just don't increment.
     } else {
          refcounts_virt[pfn]++;
     }
@@ -193,21 +213,23 @@ void get_frame(uintptr_t phys_addr) {
  */
 void put_frame(uintptr_t phys_addr) {
     if (!g_frame_refcounts) return; // Not initialized
-    if (phys_addr == 0) return;
+     if (phys_addr == 0 || phys_addr >= g_highest_address) return; // Invalid address range
 
     size_t pfn = addr_to_pfn(phys_addr);
     if (pfn >= g_total_frames) {
-        terminal_printf("[Frame] put_frame: Invalid physical address 0x%x!\n", phys_addr);
+        terminal_printf("[Frame] put_frame: Invalid physical address 0x%x (PFN %u >= total %u)!\n", phys_addr, pfn, g_total_frames);
         return;
     }
 
     uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
+    // Use the mapped virtual address
     volatile uint32_t* refcounts_virt = (volatile uint32_t*)(KERNEL_SPACE_VIRT_START + (uintptr_t)g_frame_refcounts);
 
     if (refcounts_virt[pfn] == 0) {
         // Decrementing count of an already free page? Double free or corruption.
         terminal_printf("[Frame] put_frame: ERROR! Double free detected for frame PFN %u (addr 0x%x)!\n", pfn, phys_addr);
         spinlock_release_irqrestore(&g_frame_lock, irq_flags);
+        // Optionally: Trigger a kernel panic here
         return; // Avoid decrementing below zero
     }
 
@@ -233,10 +255,13 @@ void put_frame(uintptr_t phys_addr) {
  */
 int get_frame_refcount(uintptr_t phys_addr) {
     if (!g_frame_refcounts) return -1; // Not initialized
+     if (phys_addr >= g_highest_address) return -1; // Invalid address
+
     size_t pfn = addr_to_pfn(phys_addr);
-    if (pfn >= g_total_frames) return -1; // Invalid address
+    if (pfn >= g_total_frames) return -1; // Invalid pfn
 
     uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
+    // Use the mapped virtual address
     volatile uint32_t* refcounts_virt = (volatile uint32_t*)(KERNEL_SPACE_VIRT_START + (uintptr_t)g_frame_refcounts);
     int count = (int)refcounts_virt[pfn];
     spinlock_release_irqrestore(&g_frame_lock, irq_flags);

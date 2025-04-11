@@ -22,6 +22,7 @@ static vnode_t *fat_open_internal(void *fs_context, const char *path, int flags)
 static int fat_read_internal(file_t *file, void *buf, size_t len);
 static int fat_write_internal(file_t *file, const void *buf, size_t len);
 static int fat_close_internal(file_t *file);
+static off_t fat_lseek_internal(file_t *file, off_t offset, int whence); // Added declaration for lseek
 
 // Internal helpers
 static int read_cluster(fat_fs_t *fs, uint32_t cluster, uint32_t offset_in_cluster, void *buf, size_t len);
@@ -30,7 +31,6 @@ static int find_directory_entry(fat_fs_t *fs, const char *path, fat_dir_entry_t 
 static int load_fat_table(fat_fs_t *fs);
 static int flush_fat_table(fat_fs_t *fs);
 static uint32_t find_free_cluster(fat_fs_t *fs);
-// NOTE: Using the external fat_set_cluster_entry from fat_utils.h/c instead of the conflicting static void one previously declared here.
 
 
 // --- FAT Table Management Helpers ---
@@ -206,7 +206,7 @@ static vfs_driver_t fat_vfs_driver = {
     .read    = fat_read_internal,
     .write   = fat_write_internal,
     .close   = fat_close_internal,
-    .lseek   = NULL, // TODO: Implement lseek if needed
+    .lseek   = fat_lseek_internal, // Assign lseek function pointer
     .next    = NULL
 };
 
@@ -331,9 +331,6 @@ static void *fat_mount_internal(const char *device) {
      if (fs->type == FAT_TYPE_FAT12) {
          terminal_write("  [WARNING] FAT12 support is limited (read-only recommended).\n");
      }
-
-     // --- FIX: Removed incorrect assignment ---
-     // fs->device = device; // Incorrect: fat_fs_t has no 'device' member; use fs->disk
 
      // Load FAT table into memory
      if (load_fat_table(fs) != FS_SUCCESS) {
@@ -477,7 +474,7 @@ static int write_cluster(fat_fs_t *fs, uint32_t cluster, uint32_t offset_in_clus
 }
 
 /**
- * find_directory_entry: Finds a directory entry in a given directory cluster chain.
+ * find_entry_in_dir: Finds a directory entry in a given directory cluster chain.
  * Handles FAT32 root directory (starting at boot_sector.root_cluster) and subdirectories.
  * Does NOT handle FAT12/16 fixed root directory area yet.
  * Does NOT handle LFNs (Long File Names).
@@ -578,39 +575,45 @@ static int find_directory_entry(fat_fs_t *fs, const char *path, fat_dir_entry_t 
     if (!fs || !path || !entry || !entry_cluster_num || !entry_offset_in_cluster) {
         return -FS_ERR_INVALID_PARAM;
     }
-    terminal_printf("[FAT DEBUG] find_directory_entry: path='%s'\n", path);
+    // terminal_printf("[FAT DEBUG] find_directory_entry: path='%s'\n", path);
 
     // --- Basic Path Handling (Needs Improvement) ---
     // This simplistic version assumes path is just a filename in the root dir.
     // A real implementation needs to parse path components like "/"
     // and traverse subdirectories.
     if (strchr(path, '/') != NULL && !(path[0] == '/' && path[1] == '\0')) {
-        terminal_write("  [ERROR] Subdirectory paths not yet supported by find_directory_entry.\n");
-        return -FS_ERR_NOT_SUPPORTED;
+        if (path[0] == '/' && strlen(path) > 1) {
+            // Assume simple root path like "/file.txt"
+             path++; // Skip leading '/'
+             if (strchr(path, '/') != NULL) { // Check again for nested slashes
+                  terminal_write("  [ERROR] Nested subdirectory paths not yet supported by find_directory_entry.\n");
+                  return -FS_ERR_NOT_SUPPORTED;
+             }
+        } else {
+            terminal_write("  [ERROR] Subdirectory paths not yet supported by find_directory_entry.\n");
+            return -FS_ERR_NOT_SUPPORTED;
+        }
     }
     // Handle root path "/" case?
-    if (strcmp(path, "/") == 0) {
-        terminal_write("  [ERROR] Searching for root '/' itself is not supported here.\n");
+    if (strcmp(path, "/") == 0 || strlen(path) == 0) { // Check empty path too
+        terminal_write("  [ERROR] Searching for root '/' itself or empty path is not supported here.\n");
         return -FS_ERR_IS_A_DIRECTORY; // Or invalid param?
     }
 
     // Extract the base filename component
-    const char *basename = strrchr(path, '/');
-    basename = basename ? basename + 1 : path; // Get pointer after last '/' or start of string
-    if (strlen(basename) == 0) { // e.g., path ends in "/"
-        return -FS_ERR_INVALID_PARAM;
-    }
+    const char *basename = path; // Use adjusted path if leading '/' was skipped
+    // terminal_printf("  Basename component: '%s'\n", basename);
 
     // Convert to 8.3 format
     char fat_filename[11];
     format_filename(basename, fat_filename);
-    terminal_printf("  Searching for 8.3 name: '%.11s'\n", fat_filename);
+    // terminal_printf("  Searching for 8.3 name: '%.11s'\n", fat_filename);
 
     // --- Determine Starting Directory Cluster ---
     uint32_t start_cluster;
     if (fs->type == FAT_TYPE_FAT32) {
         start_cluster = fs->boot_sector.root_cluster;
-        terminal_printf("  Starting search in FAT32 root cluster: %u\n", start_cluster);
+        // terminal_printf("  Starting search in FAT32 root cluster: %u\n", start_cluster);
     } else {
         // FAT12/16 fixed root area search is not implemented here yet.
         terminal_write("  [ERROR] FAT12/16 root directory search not implemented.\n");
@@ -631,14 +634,14 @@ static vnode_t *fat_open_internal(void *fs_context, const char *path, int flags)
         terminal_write("[FAT] open_internal: Invalid context or path.\n");
         return NULL;
     }
-    terminal_printf("[FAT] open_internal: path='%s', flags=0x%x\n", path, flags);
+    // terminal_printf("[FAT] open_internal: path='%s', flags=0x%x\n", path, flags);
 
     // Find the directory entry
     fat_dir_entry_t entry;
     uint32_t dir_cluster, dir_offset;
     int find_res = find_directory_entry(fs, path, &entry, &dir_cluster, &dir_offset);
 
-    // TODO: Handle O_CREAT flag - If file not found and O_CREAT is set, need to:
+    // Handle O_CREAT flag - If file not found and O_CREAT is set, need to:
     // 1. Find a free slot in the parent directory.
     // 2. Find a free cluster for the file data (if not zero size).
     // 3. Update FAT for the new cluster (mark as EOC).
@@ -648,7 +651,7 @@ static vnode_t *fat_open_internal(void *fs_context, const char *path, int flags)
          terminal_printf("[FAT] open_internal: TODO - Handle O_CREAT for path '%s'.\n", path);
          return NULL; // Creation not implemented yet
     } else if (find_res != FS_SUCCESS) {
-         terminal_printf("[FAT] open_internal: Failed to find entry for '%s'. Error: %d\n", path, find_res);
+         // terminal_printf("[FAT] open_internal: Failed to find entry for '%s'. Error: %d\n", path, find_res);
         return NULL; // Other error or not found without O_CREAT
     }
 
@@ -658,7 +661,7 @@ static vnode_t *fat_open_internal(void *fs_context, const char *path, int flags)
         return NULL;
     }
 
-    // TODO: Handle O_TRUNC flag - If file exists and O_TRUNC is set:
+    // Handle O_TRUNC flag - If file exists and O_TRUNC is set:
     // 1. Free all clusters allocated to the file (traverse FAT chain and set entries to 0).
     // 2. Update directory entry: set file size to 0, first cluster to 0.
     // 3. Flush FAT and directory buffer.
@@ -668,7 +671,7 @@ static vnode_t *fat_open_internal(void *fs_context, const char *path, int flags)
     }
 
 
-    terminal_write("  Entry found. Allocating vnode/context...\n");
+    // terminal_write("  Entry found. Allocating vnode/context...\n");
     vnode_t *vnode = (vnode_t *)kmalloc(sizeof(vnode_t));
     if (!vnode) {
         terminal_write("  [ERROR] Failed kmalloc for vnode.\n");
@@ -699,7 +702,7 @@ static vnode_t *fat_open_internal(void *fs_context, const char *path, int flags)
     vnode->fs_driver = &fat_vfs_driver;
     // TODO: Populate other vnode fields if added (type, size, etc.)
 
-    terminal_printf("  Returning vnode: 0x%x (context: 0x%x)\n", (uintptr_t)vnode, (uintptr_t)file_ctx);
+    // terminal_printf("  Returning vnode: 0x%x (context: 0x%x)\n", (uintptr_t)vnode, (uintptr_t)file_ctx);
     return vnode;
 }
 
@@ -779,7 +782,8 @@ static int fat_read_internal(file_t *file, void *buf, size_t len) {
         }
 
         total_read += cluster_read_result;
-        file->offset += cluster_read_result; // Update the file handle's offset
+        // file->offset is updated by vfs_read after this function returns.
+        // We should update it here if vfs_read doesn't. Assuming VFS handles it based on return value.
 
         // --- Move to next cluster if necessary ---
         if (total_read < len) { // Only need next cluster if more data is required
@@ -818,13 +822,6 @@ static int fat_write_internal(file_t *file, const void *buf, size_t len) {
     if (!(file->flags & (O_WRONLY | O_RDWR))) {
         return -FS_ERR_PERMISSION_DENIED; // Or EBADF
     }
-    // Check if it's a directory (directories cannot be written to like files)
-    // Need to read the dir entry attributes if not stored in vnode/fctx
-    // fat_dir_entry_t temp_entry;
-    // if (read_directory_entry(fctx->fs, fctx->dir_entry_cluster, fctx->dir_entry_offset, &temp_entry) == FS_SUCCESS) {
-    //    if (temp_entry.attr & 0x10 /* ATTR_DIRECTORY */) return -FS_ERR_IS_A_DIRECTORY;
-    // } else { return -FS_ERR_IO; } // Error reading entry
-
 
     fat_fs_t *fs = fctx->fs;
     size_t total_written = 0;
@@ -852,7 +849,7 @@ static int fat_write_internal(file_t *file, const void *buf, size_t len) {
 
     // --- Allocate first cluster if file is currently empty ---
     if (current_cluster < 2 && fctx->file_size == 0 && file->offset == 0) {
-        terminal_printf("[FAT write] Allocating first cluster for PID (offset %ld)\n", file->offset);
+        // terminal_printf("[FAT write] Allocating first cluster for file (offset %ld)\n", file->offset);
         uint32_t free_cluster = find_free_cluster(fs);
         if (free_cluster == 0) return -FS_ERR_NO_SPACE;
         if (fat_set_cluster_entry(fs, free_cluster, eoc_marker) != FS_SUCCESS) return -FS_ERR_IO;
@@ -861,7 +858,7 @@ static int fat_write_internal(file_t *file, const void *buf, size_t len) {
         fctx->dirty = true; // Mark context dirty to update dir entry later
         // The directory entry's first cluster field needs update in fat_close
         if (flush_fat_table(fs)!=FS_SUCCESS) return -FS_ERR_IO; // Flush FAT change immediately after alloc
-        terminal_printf("  Allocated cluster %u as first cluster.\n", current_cluster);
+        // terminal_printf("  Allocated cluster %u as first cluster.\n", current_cluster);
 
     } else if (current_cluster < 2 && file->offset > 0) {
          // Trying to write past end of an empty file without allocation - error
@@ -871,13 +868,13 @@ static int fat_write_internal(file_t *file, const void *buf, size_t len) {
 
 
     // --- Traverse or extend FAT chain to the starting cluster ---
-    // Need to handle extending the file if offset is beyond current size
     uint32_t last_valid_cluster_index = (fctx->file_size == 0) ? (uint32_t)-1 : (fctx->file_size - 1) / cluster_size;
     uint32_t current_cluster_index = 0;
+    uint32_t prev_cluster = 0; // Keep track of previous cluster for linking new ones
 
     // Traverse only if we need to reach a cluster > 0 and the file isn't empty
     if (target_cluster_index > 0 && current_cluster >= 2) {
-        uint32_t prev_cluster = current_cluster; // Keep track for allocation
+        prev_cluster = current_cluster; // Initialize prev_cluster
         while (current_cluster_index < target_cluster_index) {
             uint32_t next_cluster = 0;
             if (fat_get_next_cluster(fs, current_cluster, &next_cluster) != 0) return -FS_ERR_IO;
@@ -885,7 +882,7 @@ static int fat_write_internal(file_t *file, const void *buf, size_t len) {
             if (next_cluster < 2 || next_cluster >= eoc_marker) { // End of chain reached
                  if (current_cluster_index == last_valid_cluster_index) {
                      // We are at the last allocated cluster, need to extend
-                     terminal_printf("[FAT write] Extending file: end of chain at cluster %u (index %u), target index %u.\n", current_cluster, current_cluster_index, target_cluster_index);
+                     // terminal_printf("[FAT write] Extending file: end of chain at cluster %u (index %u), target index %u.\n", current_cluster, current_cluster_index, target_cluster_index);
                      uint32_t free_cluster = find_free_cluster(fs);
                      if (free_cluster == 0) { flush_fat_table(fs); return total_written > 0 ? (int)total_written : -FS_ERR_NO_SPACE; }
                      if (fat_set_cluster_entry(fs, current_cluster, free_cluster) != FS_SUCCESS) { flush_fat_table(fs); return -FS_ERR_IO; }
@@ -893,7 +890,8 @@ static int fat_write_internal(file_t *file, const void *buf, size_t len) {
                      fctx->dirty = true;
                      if (flush_fat_table(fs)!=FS_SUCCESS) return -FS_ERR_IO; // Flush FAT changes
                      next_cluster = free_cluster;
-                     terminal_printf("  Allocated new cluster %u.\n", next_cluster);
+                     last_valid_cluster_index++; // Update last valid index
+                     // terminal_printf("  Allocated new cluster %u.\n", next_cluster);
                  } else {
                      // EOC reached before the file's logical end or target offset? Corruption.
                      terminal_printf("[FAT write] Error: Premature EOC at cluster %u (index %u) file size %u, target index %u.\n", current_cluster, current_cluster_index, fctx->file_size, target_cluster_index);
@@ -927,18 +925,20 @@ static int fat_write_internal(file_t *file, const void *buf, size_t len) {
              // Handle short write? This might indicate a disk error not caught by lower layers.
              terminal_printf("[FAT write] Warning: Short write to cluster %u (wrote %d, expected %u).\n", current_cluster, cluster_write_result, bytes_to_write_in_cluster);
              total_written += cluster_write_result;
-             file->offset += cluster_write_result;
+             // VFS layer should update file->offset based on return value
              fctx->dirty = true;
              break; // Stop writing on short write
         }
 
         total_written += bytes_to_write_in_cluster;
-        file->offset += bytes_to_write_in_cluster; // Update file handle's offset
+        // VFS layer should update file->offset based on return value
         fctx->dirty = true; // Mark context dirty on successful write
 
         // Update file size in context if we wrote past the previous end
-        if ((uint64_t)file->offset > (uint64_t)fctx->file_size) {
-            fctx->file_size = (uint32_t)file->offset;
+        // Use the intended file offset *after* this write finishes
+        uint64_t intended_offset = (uint64_t)file->offset + total_written;
+        if (intended_offset > (uint64_t)fctx->file_size) {
+            fctx->file_size = (uint32_t)intended_offset; // Update internal size tracker
         }
 
         // --- Allocate next cluster if needed ---
@@ -948,14 +948,14 @@ static int fat_write_internal(file_t *file, const void *buf, size_t len) {
                   uint32_t next_cluster = 0;
                   fat_get_next_cluster(fs, current_cluster, &next_cluster); // Check current FAT entry
                   if (next_cluster < 2 || next_cluster >= eoc_marker) { // End of chain, need to allocate new
-                       terminal_printf("[FAT write] Allocating next cluster after %u...\n", current_cluster);
+                       // terminal_printf("[FAT write] Allocating next cluster after %u...\n", current_cluster);
                        uint32_t free_cluster = find_free_cluster(fs);
                        if (free_cluster == 0) { flush_fat_table(fs); return total_written > 0 ? (int)total_written : -FS_ERR_NO_SPACE; }
                        if (fat_set_cluster_entry(fs, current_cluster, free_cluster) != FS_SUCCESS) { flush_fat_table(fs); return -FS_ERR_IO; }
                        if (fat_set_cluster_entry(fs, free_cluster, eoc_marker) != FS_SUCCESS) { flush_fat_table(fs); return -FS_ERR_IO; }
                        if (flush_fat_table(fs)!=FS_SUCCESS) return -FS_ERR_IO; // Flush FAT changes
                        next_cluster = free_cluster;
-                       terminal_printf("  Allocated new cluster %u.\n", next_cluster);
+                       // terminal_printf("  Allocated new cluster %u.\n", next_cluster);
                   }
                   current_cluster = next_cluster;
                   fctx->current_cluster = current_cluster; // Update context
@@ -968,6 +968,51 @@ static int fat_write_internal(file_t *file, const void *buf, size_t len) {
     return (int)total_written;
 }
 
+
+/**
+ * fat_lseek_internal: Repositions the file offset.
+ */
+static off_t fat_lseek_internal(file_t *file, off_t offset, int whence) {
+     if (!file || !file->vnode || !file->vnode->data) return (off_t)-FS_ERR_INVALID_PARAM;
+     fat_file_context_t *fctx = (fat_file_context_t *)file->vnode->data;
+
+     off_t new_offset;
+
+     switch (whence) {
+         case SEEK_SET:
+             new_offset = offset;
+             break;
+         case SEEK_CUR:
+             new_offset = file->offset + offset;
+             break;
+         case SEEK_END:
+             new_offset = (off_t)fctx->file_size + offset;
+             break;
+         default:
+             return (off_t)-FS_ERR_INVALID_PARAM;
+     }
+
+     // Check for negative offset result
+     if (new_offset < 0) {
+         return (off_t)-FS_ERR_INVALID_PARAM;
+     }
+
+     // Optionally: Check if new_offset exceeds file size?
+     // Standard lseek allows seeking past the end, but subsequent writes would extend the file.
+     // Reads past the end should return 0 bytes.
+
+     // Update the file handle's offset (VFS might also do this)
+     file->offset = new_offset;
+
+     // Update the file context's current cluster if needed for optimization?
+     // Could traverse FAT here to find the cluster for new_offset, but might be slow.
+     // For now, let read/write handle finding the correct cluster.
+     // fctx->current_cluster = ...;
+
+     return new_offset;
+}
+
+
 /**
  * fat_close_internal: Closes the file, updating the directory entry if modified.
  */
@@ -978,9 +1023,9 @@ static int fat_close_internal(file_t *file) {
     fat_fs_t *fs = fctx->fs;
 
     if (fctx->dirty) {
-        terminal_printf("[FAT] close_internal: File is dirty (PID %d?). Updating directory entry...\n", fctx->fs->disk.blk_dev.device_name); // Using device name as proxy for which FS instance
-        terminal_printf("  Entry was at Cluster: %u, Offset: %u\n", fctx->dir_entry_cluster, fctx->dir_entry_offset);
-        terminal_printf("  New Size: %u, First Cluster: %u\n", fctx->file_size, fctx->first_cluster);
+        // terminal_printf("[FAT] close_internal: File is dirty. Updating directory entry...\n");
+        // terminal_printf("  Entry was at Cluster: %u, Offset: %u\n", fctx->dir_entry_cluster, fctx->dir_entry_offset);
+        // terminal_printf("  New Size: %u, First Cluster: %u\n", fctx->file_size, fctx->first_cluster);
 
         // --- Update Directory Entry ---
         size_t sector_size = fs->boot_sector.bytes_per_sector;
@@ -990,11 +1035,6 @@ static int fat_close_internal(file_t *file) {
         // Calculate LBA and offset within that LBA sector for the directory entry
         if (fctx->dir_entry_cluster == 0) { // FAT12/16 Root Directory (Requires Implementation)
             terminal_write("  [ERROR] Updating FAT12/16 root directory entries not implemented in fat_close!\n");
-            // Need to calculate LBA based on reserved sectors, FAT size, and entry offset
-            // uint32_t root_dir_start_sector = fs->boot_sector.reserved_sector_count + (fs->boot_sector.num_fats * fs->fat_size);
-            // lba = root_dir_start_sector + (fctx->dir_entry_offset / sector_size);
-            // offset_in_sector = fctx->dir_entry_offset % sector_size;
-            // If implementing, ensure you handle reads/writes spanning multiple root sectors.
             lba = 0; offset_in_sector = 0; // Prevent use of uninitialized vars
         } else { // FAT32 Directory Cluster (or FAT12/16 subdirectory)
             uint32_t sector_in_cluster = fctx->dir_entry_offset / sector_size;
@@ -1002,47 +1042,46 @@ static int fat_close_internal(file_t *file) {
             lba = fat_cluster_to_lba(fs, fctx->dir_entry_cluster);
             if (lba == 0) {
                  terminal_printf("  [ERROR] Invalid LBA for directory cluster %u.\n", fctx->dir_entry_cluster);
-                 // Cannot update entry, but still need to free memory
-                 goto cleanup;
+                 goto cleanup_close; // Cannot update entry, but still need to free memory
             }
             lba += sector_in_cluster;
         }
 
         // Read the directory sector using buffer cache
-        terminal_printf("  Updating entry at LBA %u, offset_in_sector %u\n", lba, (uint32_t)offset_in_sector);
-        buffer_t *dir_buf = buffer_get(fs->disk.blk_dev.device_name, lba);
-        if (!dir_buf) {
-            terminal_printf("  [ERROR] Failed to get buffer for directory entry sector LBA %u!\n", lba);
-            // Continue with close, but metadata update failed
-        } else {
-             // Modify the entry in the buffer
-             fat_dir_entry_t *entry_in_buf = (fat_dir_entry_t *)(dir_buf->data + offset_in_sector);
+        // terminal_printf("  Updating entry at LBA %u, offset_in_sector %u\n", lba, (uint32_t)offset_in_sector);
+        if (lba > 0) { // Check if LBA calculation was valid (skip if FAT12/16 root not implemented)
+            buffer_t *dir_buf = buffer_get(fs->disk.blk_dev.device_name, lba);
+            if (!dir_buf) {
+                terminal_printf("  [ERROR] Failed to get buffer for directory entry sector LBA %u!\n", lba);
+                // Continue with close, but metadata update failed
+            } else {
+                // Modify the entry in the buffer
+                fat_dir_entry_t *entry_in_buf = (fat_dir_entry_t *)(dir_buf->data + offset_in_sector);
 
-             entry_in_buf->file_size = fctx->file_size;
-             entry_in_buf->first_cluster_low = (uint16_t)(fctx->first_cluster & 0xFFFF);
-             entry_in_buf->first_cluster_high = (uint16_t)((fctx->first_cluster >> 16) & 0xFFFF);
-             // TODO: Update timestamps (write_time, write_date)
-             // Need a source of current time/date.
-             // entry_in_buf->write_time = ...;
-             // entry_in_buf->write_date = ...;
+                entry_in_buf->file_size = fctx->file_size;
+                entry_in_buf->first_cluster_low = (uint16_t)(fctx->first_cluster & 0xFFFF);
+                entry_in_buf->first_cluster_high = (uint16_t)((fctx->first_cluster >> 16) & 0xFFFF);
+                // TODO: Update timestamps (write_time, write_date)
 
-             // Mark buffer dirty and release
-             buffer_mark_dirty(dir_buf);
-             buffer_release(dir_buf);
-             terminal_write("  Directory entry buffer marked dirty.\n");
+                // Mark buffer dirty and release
+                buffer_mark_dirty(dir_buf);
+                buffer_release(dir_buf);
+                // terminal_write("  Directory entry buffer marked dirty.\n");
 
-             // Ensure FAT and the directory buffer are flushed
-             flush_fat_table(fs); // Flush any FAT changes (redundant if flushed earlier, but safe)
-             buffer_cache_sync(); // Sync data AND the updated directory entry buffer
+                // Ensure FAT and the directory buffer are flushed
+                flush_fat_table(fs); // Flush any FAT changes (redundant if flushed earlier, but safe)
+                buffer_cache_sync(); // Sync data AND the updated directory entry buffer
+            }
         }
         fctx->dirty = false; // Clear flag after attempt
     }
 
-cleanup:
+cleanup_close:
     // Free context and vnode
     kfree(file->vnode->data); // Free the fat_file_context_t
-    kfree(file->vnode,);                 // Free the vnode_t
-    file->vnode = NULL; // Important for vfs_close to know it's freed
+    // Corrected kfree call
+    kfree(file->vnode);       // Free the vnode_t
+    file->vnode = NULL;       // Important for vfs_close to know it's freed
 
     return FS_SUCCESS;
 }
