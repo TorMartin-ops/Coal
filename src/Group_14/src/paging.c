@@ -87,7 +87,6 @@
  static inline uint32_t read_cr4(void);
  static inline void write_cr4(uint32_t value);
  static uint32_t* allocate_page_table_phys_buddy(void);
- static uintptr_t paging_alloc_early_pt_frame_physical(void);
  static struct multiboot_tag *find_multiboot_tag_early(uint32_t mb_info_phys_addr, uint16_t type);
  
  // --- New Low-Level Helpers for Temporary Mappings ---
@@ -163,7 +162,8 @@
  }
  
  // --- Early Frame Allocator for Page Tables ---
- static uintptr_t paging_alloc_early_pt_frame_physical(void) {
+ 
+ uintptr_t paging_alloc_early_pt_frame_physical(void) {
      if (g_multiboot_info_phys_addr_global == 0) return 0;
      struct multiboot_tag_mmap *mmap_tag = (struct multiboot_tag_mmap *)
          find_multiboot_tag_early(g_multiboot_info_phys_addr_global, MULTIBOOT_TAG_TYPE_MMAP);
@@ -284,7 +284,7 @@
  //
  // This function maps a physical memory range into virtual space (either identity mapped or into higher half)
  // using the early allocator for PTs.
- static int paging_map_physical(uint32_t *page_directory_phys, uintptr_t phys_addr_to_map, size_t size, uint32_t flags, bool map_to_higher_half) {
+  int paging_map_physical(uint32_t *page_directory_phys, uintptr_t phys_addr_to_map, size_t size, uint32_t flags, bool map_to_higher_half) {
      if (!page_directory_phys || size == 0) return -1;
      uintptr_t current_phys = PAGE_ALIGN_DOWN(phys_addr_to_map);
      uintptr_t end_phys = PAGE_ALIGN_UP(phys_addr_to_map + size);
