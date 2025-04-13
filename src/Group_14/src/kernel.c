@@ -2,7 +2,7 @@
  * kernel.c - Main kernel entry point for UiAOS
  *
  * Author: Group 14 (UiA)
- * Version: 3.1 (Staged Init, Fixes, Enhanced Comments)
+ * Version: 3.2 (Fixes for kernel.c compilation errors)
  *
  * Description:
  * This file contains the main entry point (`main`) for the UiAOS kernel,
@@ -61,16 +61,29 @@
 #define MIN_HEAP_SIZE (1 * 1024 * 1024) // Minimum acceptable heap size (1MB)
 
 // Macro for halting the system on critical failure
+#ifndef KERNEL_PANIC_HALT // Avoid redefinition if defined elsewhere
 #define KERNEL_PANIC_HALT(msg) do { \
-    terminal_printf("\n[KERNEL PANIC] %s System Halted.\n", msg); \
+    terminal_printf("\n[KERNEL PANIC] %s at %s:%d. System Halted.\n", msg, __FILE__, __LINE__); \
     while(1) { asm volatile("cli; hlt"); } \
 } while(0)
+#endif
+
+#ifndef ARRAY_SIZE // Avoid redefinition if defined elsewhere
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
+#endif
+
 
 // === Linker Symbols ===
 // Define these in your linker script (linker.ld)
 // Use void* or uint8_t* for byte-level addresses
 extern uint8_t _kernel_start_phys;    // Physical start address of kernel code/data
 extern uint8_t _kernel_end_phys;      // Physical end address of kernel code/data
+extern uint8_t _kernel_text_start_phys;
+extern uint8_t _kernel_text_end_phys;
+extern uint8_t _kernel_rodata_start_phys;
+extern uint8_t _kernel_rodata_end_phys;
+extern uint8_t _kernel_data_start_phys;
+extern uint8_t _kernel_data_end_phys;
 extern uint8_t _kernel_virtual_base;  // Kernel's virtual base address (e.g., 0xC0000000)
 
 // === Global Variables ===
@@ -293,7 +306,7 @@ static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
     terminal_printf("  Total Physical Memory Calculated: 0x%x bytes\n", *out_total_memory);
     terminal_printf("  Selected Heap Region: Phys Addr=0x%x, Size=%u bytes\n",
                     *out_heap_base_addr, *out_heap_size);
-    return true; // <<< Added missing semicolon FIX
+    return true;
 }
 
 
@@ -319,22 +332,33 @@ static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
  * @param mb_info_phys_addr Physical address of the Multiboot 2 info structure.
  * @return true on success, false on critical failure (panics internally).
  */
-static bool init_memory(uint32_t mb_info_phys_addr) {
+ static bool init_memory(uint32_t mb_info_phys_addr) {
     terminal_write("[Kernel] Initializing Memory Subsystems...\n");
 
     // --- Stage 0: Parse Multiboot Memory Map ---
     terminal_write(" Stage 0: Parsing Multiboot Memory Map...\n");
     struct multiboot_tag_mmap *mmap_tag = (struct multiboot_tag_mmap *)find_multiboot_tag(
         mb_info_phys_addr, MULTIBOOT_TAG_TYPE_MMAP);
-    if (!mmap_tag) KERNEL_PANIC_HALT("Multiboot memory map tag not found!");
+    if (!mmap_tag) {
+        KERNEL_PANIC_HALT("Multiboot memory map tag not found!");
+        return false; // Unreachable
+    }
 
     uintptr_t total_memory = 0;
     uintptr_t heap_phys_start = 0;
     size_t heap_size = 0;
     if (!parse_memory_map(mmap_tag, &total_memory, &heap_phys_start, &heap_size)) {
         KERNEL_PANIC_HALT("Failed to parse memory map or find suitable heap region!");
+        return false; // Unreachable
     }
-    if (heap_size < MIN_HEAP_SIZE) KERNEL_PANIC_HALT("Heap region too small!");
+    if (heap_size < MIN_HEAP_SIZE) {
+        KERNEL_PANIC_HALT("Heap region too small!");
+        return false; // Unreachable
+    }
+     if (total_memory == 0) {
+        KERNEL_PANIC_HALT("Total physical memory reported as zero!");
+        return false; // Unreachable
+    }
 
     uintptr_t kernel_phys_start = (uintptr_t)&_kernel_start_phys;
     uintptr_t kernel_phys_end = (uintptr_t)&_kernel_end_phys;
@@ -344,111 +368,80 @@ static bool init_memory(uint32_t mb_info_phys_addr) {
 
     // --- Stage 1: Allocate Initial Page Directory Frame ---
     terminal_write(" Stage 1: Allocating initial Page Directory frame...\n");
-    // Uses the early mechanism built into paging.c
-    uintptr_t initial_pd_phys = paging_alloc_early_pt_frame_physical();
-    if (!initial_pd_phys) {
-        KERNEL_PANIC_HALT("Failed to allocate physical frame for the initial PD!");
+    uintptr_t initial_pd_phys;
+    // Calls paging_alloc_early_pt_frame_physical and checks CPU features
+    if (paging_initialize_directory(&initial_pd_phys) != 0) {
+        KERNEL_PANIC_HALT("Failed to allocate/initialize initial Page Directory!");
+        return false; // Unreachable
     }
     terminal_printf("   Initial PD allocated at Phys: 0x%x\n", initial_pd_phys);
-    // Zero the frame using its physical address (must be accessible before paging)
-    memset((void*)initial_pd_phys, 0, PAGE_SIZE);
 
-    // --- Stage 2: Setup Early Mappings in the Initial PD ---
+    // --- Stage 2: Setup Early Mappings (Kernel Higher-Half, Heap Identity) ---
     terminal_write(" Stage 2: Setting up early physical maps...\n");
-    uint32_t *pd_phys_ptr = (uint32_t*)initial_pd_phys;
-    check_and_enable_pse(); // Enable 4MB pages if supported
-
-    // Map Kernel Region (Identity & Higher Half)
-    terminal_printf("   Mapping Kernel ID + Higher Half...\n");
-    if (paging_map_physical_early(pd_phys_ptr, kernel_phys_start, kernel_phys_end - kernel_phys_start, PTE_KERNEL_DATA, false) != 0)
-        KERNEL_PANIC_HALT("Failed to identity map kernel region!");
-    if (paging_map_physical_early(pd_phys_ptr, kernel_phys_start, kernel_phys_end - kernel_phys_start, PTE_KERNEL_DATA, true) != 0)
-        KERNEL_PANIC_HALT("Failed to map kernel to higher half!");
-
-    // Map Buddy Heap Region (Identity)
-    terminal_printf("   Mapping Buddy Heap ID...\n");
-    if (paging_map_physical_early(pd_phys_ptr, heap_phys_start, heap_size, PTE_KERNEL_DATA, false) != 0)
-        KERNEL_PANIC_HALT("Failed to identity map buddy heap region!");
-
-    // Map VGA Memory (Higher Half)
-    terminal_printf("   Mapping VGA Memory Higher Half...\n");
-    if (paging_map_physical_early(pd_phys_ptr, 0xB8000, PAGE_SIZE, PTE_KERNEL_DATA, true) != 0)
-        KERNEL_PANIC_HALT("Failed to map VGA memory!");
-
-    // Map the Page Directory itself into the higher half (Recursive Mapping Setup)
-    terminal_printf("   Mapping Page Directory self Higher Half...\n");
-    if (paging_map_physical_early(pd_phys_ptr, initial_pd_phys, PAGE_SIZE, PTE_KERNEL_DATA, true) != 0)
-        KERNEL_PANIC_HALT("Failed to map Page Directory to higher half!");
+    // Maps kernel sections to higher half, heap identity, VGA, etc.
+    // Uses paging_map_physical_early internally.
+    if (paging_setup_early_maps(initial_pd_phys, kernel_phys_start, kernel_phys_end, heap_phys_start, heap_size) != 0) {
+        KERNEL_PANIC_HALT("Failed to setup early mappings!");
+        return false; // Unreachable
+    }
 
     // --- Stage 3: Initialize Buddy Allocator ---
     terminal_write(" Stage 3: Initializing Buddy Allocator...\n");
-    // Pass the identity-mapped physical address and size.
+    // Needs the heap region to be accessible (identity mapped in Stage 2)
     buddy_init((void *)heap_phys_start, heap_size);
     if (buddy_free_space() == 0 && heap_size >= MIN_BLOCK_SIZE) {
-        // A zero free space might be valid if heap_size was exactly MIN_BLOCK_SIZE,
-        // but generally indicates a problem if the heap was larger.
         terminal_write("  [Warning] Buddy Allocator reports zero free space after init.\n");
-        // KERNEL_PANIC_HALT("Buddy Allocator initialization failed (no free space reported)!");
+        // Might not be fatal if heap was very small, but warrants investigation.
     }
     terminal_printf("   Buddy Initial Free Space: %u bytes\n", buddy_free_space());
 
-    // --- Stage 4: Pre-map Kernel Temporary VMA Range ---
-    terminal_write(" Stage 4: Pre-mapping Kernel temporary VMA range...\n");
-    // Use revised definitions from paging.h
-    uintptr_t temp_vma_start = TEMP_MAP_ADDR_PD; // Start from the lowest defined temp address (which is TEMP_VMA_AREA_BASE)
-    uintptr_t temp_vma_end = TEMP_VMA_AREA_END; // Use the defined exclusive end
-
-    terminal_printf("   Temp Range Virt: [0x%x - 0x%x)\n", temp_vma_start, temp_vma_end);
-
-    // Basic sanity check for the temporary range definition
-    // Check if start >= end, or if start is below kernel space, or if end wrapped around or went too high.
-    if (temp_vma_start >= temp_vma_end || temp_vma_start < KERNEL_SPACE_VIRT_START || temp_vma_end <= temp_vma_start /* Handle wrap-around */) {
-        KERNEL_PANIC_HALT("Invalid temporary VMA range definition!");
-    }
-
-    // Iterate through pages in the temp range and ensure PTs are allocated
-    for (uintptr_t v_addr = temp_vma_start; v_addr < temp_vma_end; v_addr += PAGE_SIZE) {
-        uint32_t pde_index = PDE_INDEX(v_addr);
-
-        // Check if a PDE for this virtual address range already exists in our initial PD
-        if (!(pd_phys_ptr[pde_index] & PAGE_PRESENT)) {
-            // terminal_printf("   Allocating PT for Temp VMA PDE[%d] (Virt 0x%x)...\n", pde_index, v_addr); // Optional: reduce verbosity
-
-            // Allocate a physical frame for the Page Table using the Buddy Allocator
-            uintptr_t temp_pt_phys = (uintptr_t)BUDDY_ALLOC(PAGE_SIZE);
-            if (!temp_pt_phys) {
-                KERNEL_PANIC_HALT("Failed to allocate PT frame for temporary kernel mappings!");
-            }
-
-            // Zero the allocated Page Table frame via its identity mapping
-            memset((void*)temp_pt_phys, 0, PAGE_SIZE);
-
-            // Add the PDE entry pointing to the new PT. Kernel R/W, Not User accessible.
-            uint32_t pde_flags = PAGE_PRESENT | PAGE_RW; // Kernel only flags
-            pd_phys_ptr[pde_index] = (temp_pt_phys & ~0xFFF) | pde_flags;
-            // terminal_printf("     Added PDE[%d] -> PT Phys 0x%x\n", pde_index, temp_pt_phys); // Optional: reduce verbosity
-        }
-    } // End loop for pre-mapping temp VMA PTs
-
-    // --- Stage 5: Finalize Higher-Half Mappings & Activate Paging ---
-    terminal_write(" Stage 5: Finalizing mappings and activating paging...\n");
-    // This function will map all physical memory to the higher half and enable paging.
-    // It relies on the Buddy allocator (for new PTs) and the pre-mapped temp range.
+    // --- Stage 4: Finalize & Activate Paging ---
+    terminal_write(" Stage 4: Finalizing and activating paging...\n");
+    // Sets recursive entry, loads CR3, sets PG bit, sets global PD pointers
     if (paging_finalize_and_activate(initial_pd_phys, total_memory) != 0) {
-        KERNEL_PANIC_HALT("Failed to finalize mappings or activate paging!");
+        KERNEL_PANIC_HALT("Failed to finalize and activate paging!");
+        return false; // Unreachable
     }
-    // Paging is ON. g_kernel_page_directory_phys/virt are set.
+    // Paging is now ON. g_kernel_page_directory_phys/virt should be valid.
+
+    // --- Stage 5: Map Physical Memory to Higher Half ---
+    terminal_write(" Stage 5: Mapping physical memory to higher half...\n");
+    uintptr_t map_size = total_memory;
+    // Clamp mapping size if needed (e.g., for 32-bit address space limitations)
+    // const uintptr_t max_mappable_phys_addr = 0xFFFFF000; // Example limit
+    // if (map_size >= max_mappable_phys_addr) { map_size = max_mappable_phys_addr; }
+
+    // Sanity check for virtual address overflow when adding KERNEL_SPACE_VIRT_START
+    if (map_size > 0 && (KERNEL_SPACE_VIRT_START > (UINTPTR_MAX - map_size))) {
+         map_size = UINTPTR_MAX - KERNEL_SPACE_VIRT_START + 1;
+         map_size = PAGE_ALIGN_DOWN(map_size); // Align down
+         terminal_printf("   [Warning] Clamping physical map size to 0x%x to avoid VA overflow.\n", map_size);
+    }
+
+    if (map_size > 0) {
+         terminal_printf("   Mapping Phys: [0x0 - 0x%x) -> Virt: [0x%x - 0x%x) Flags: RW-NX\n",
+                         map_size, KERNEL_SPACE_VIRT_START, KERNEL_SPACE_VIRT_START + map_size);
+         // Use the globally set g_kernel_page_directory_phys obtained after activation
+         if (paging_map_range((uint32_t*)g_kernel_page_directory_phys, KERNEL_SPACE_VIRT_START, 0, map_size, PTE_KERNEL_DATA_FLAGS) != 0) {
+              KERNEL_PANIC_HALT("Failed to map physical memory to higher half (after activation)!");
+              return false; // Unreachable
+         }
+         terminal_write("   Physical memory mapped successfully.\n");
+    } else {
+        terminal_write("   Skipping physical memory mapping (map_size is zero).\n");
+    }
 
     // --- Stage 6: Initialize Frame Allocator ---
     terminal_write(" Stage 6: Initializing Frame Allocator...\n");
     // Requires active paging and the Buddy allocator.
     if (frame_init(mmap_tag, kernel_phys_start, kernel_phys_end, heap_phys_start, heap_phys_start + heap_size) != 0) {
         KERNEL_PANIC_HALT("Frame Allocator initialization failed!");
+        return false; // Unreachable
     }
 
     // --- Stage 7: Initialize Kmalloc ---
     terminal_write(" Stage 7: Initializing Kmalloc...\n");
-    // Depends on Frame Allocator -> Buddy.
+    // Depends on Frame Allocator -> Buddy / Slab.
     kmalloc_init();
 
     terminal_write("[OK] Memory Subsystems Initialized Successfully.\n");
@@ -492,7 +485,7 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     // 1. Early Initialization (Console, CPU Features, Core Tables)
     terminal_init(); // Initialize console output ASAP
     terminal_write("=== UiAOS Kernel Booting ===\n");
-    terminal_printf(" Version: %s\n\n", "3.1-StagedMem"); // Example version
+    terminal_printf(" Version: %s\n\n", "3.2-BuildFix"); // Example version
 
     // Verify Multiboot Magic
     if (magic != MULTIBOOT2_BOOTLOADER_MAGIC) {
@@ -581,4 +574,4 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
 
     // --- Code should not be reached beyond kernel_idle_task ---
     KERNEL_PANIC_HALT("Reached end of main() unexpectedly!");
-} // <<< THIS IS LIKELY LINE 421 referred to in the next error
+}

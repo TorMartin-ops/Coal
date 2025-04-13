@@ -195,8 +195,8 @@
   *
   * @param data Unused parameter.
   */
- static void keyboard_handler(void* data) {
-     (void)data;  // Unused
+  static void keyboard_handler(registers_t *regs) {
+     (void)regs;  // Unused
  
      uint8_t scancode = inb(KEYBOARD_DATA_PORT);
  

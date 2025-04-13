@@ -225,7 +225,7 @@ static uint32_t* get_pte_ptr(mm_struct_t *mm, uintptr_t vaddr, bool allocate_pt)
 
     // Map Process PD using KERNEL's page directory
     // Use g_kernel_page_directory_phys (declared extern in paging.h)
-    if (paging_map_single((uint32_t*)g_kernel_page_directory_phys, TEMP_MAP_ADDR_PD, (uint32_t)mm->pgd_phys, PTE_KERNEL_DATA) != 0) {
+    if (paging_map_single_4k((uint32_t*)g_kernel_page_directory_phys, TEMP_MAP_ADDR_PD, (uint32_t)mm->pgd_phys, PTE_KERNEL_DATA_FLAGS) != 0) {
         terminal_write("[MM get_pte_ptr] Failed to temp map process PD.\n");
         return NULL;
     }
@@ -245,7 +245,7 @@ static uint32_t* get_pte_ptr(mm_struct_t *mm, uintptr_t vaddr, bool allocate_pt)
         }
 
         // Temporarily map the new PT frame to zero it
-        if (paging_map_single((uint32_t*)g_kernel_page_directory_phys, TEMP_MAP_ADDR_PT, pt_phys_addr_val, PTE_KERNEL_DATA) != 0) {
+        if (paging_map_single_4k((uint32_t*)g_kernel_page_directory_phys, TEMP_MAP_ADDR_PT, pt_phys_addr_val, PTE_KERNEL_DATA_FLAGS) != 0) {
              terminal_printf("[MM get_pte_ptr] Failed to temp map new PT frame 0x%x for zeroing.\n", pt_phys_addr_val);
              put_frame(pt_phys_addr_val); // Free the allocated frame
              goto cleanup_pte_gpp;
@@ -266,7 +266,7 @@ static uint32_t* get_pte_ptr(mm_struct_t *mm, uintptr_t vaddr, bool allocate_pt)
     }
 
     // Map the potentially existing or newly created PT using its physical address
-    if (paging_map_single((uint32_t*)g_kernel_page_directory_phys, TEMP_MAP_ADDR_PT, pt_phys_addr_val, PTE_KERNEL_DATA) != 0) {
+    if (paging_map_single_4k((uint32_t*)g_kernel_page_directory_phys, TEMP_MAP_ADDR_PT, pt_phys_addr_val, PTE_KERNEL_DATA_FLAGS) != 0) {
         terminal_printf("[MM get_pte_ptr] Failed to temp map existing PT frame 0x%x.\n", pt_phys_addr_val);
         // If we allocated the PT earlier in this call, free it
         if (!(pde & PAGE_PRESENT)) { // Check if PT was newly allocated
@@ -359,8 +359,8 @@ int handle_vma_fault(mm_struct_t *mm, vma_struct_t *vma, uintptr_t fault_address
 
                 ret = -FS_ERR_IO; // Default error
                 // Use g_kernel_page_directory_phys for temporary kernel mappings
-                if (paging_map_single((uint32_t*)g_kernel_page_directory_phys, (uint32_t)temp_src_map, src_phys_page, PTE_KERNEL_READONLY) == 0) {
-                    if (paging_map_single((uint32_t*)g_kernel_page_directory_phys, (uint32_t)temp_dst_map, dst_phys_page, PTE_KERNEL_DATA) == 0) {
+                if (paging_map_single_4k((uint32_t*)g_kernel_page_directory_phys, (uint32_t)temp_src_map, src_phys_page, PTE_KERNEL_READONLY_FLAGS) == 0) {
+                    if (paging_map_single_4k((uint32_t*)g_kernel_page_directory_phys, (uint32_t)temp_dst_map, dst_phys_page, PTE_KERNEL_DATA_FLAGS) == 0) {
                         memcpy(temp_dst_map, temp_src_map, PAGE_SIZE);
                         paging_unmap_range((uint32_t*)g_kernel_page_directory_phys, (uint32_t)temp_dst_map, PAGE_SIZE);
                         paging_invalidate_page(temp_dst_map);
@@ -400,7 +400,7 @@ int handle_vma_fault(mm_struct_t *mm, vma_struct_t *vma, uintptr_t fault_address
     // terminal_printf("  Allocated phys frame: 0x%x\n", phys_page);
 
     // 2. Map frame temporarily into kernel to populate
-    if (paging_map_single((uint32_t*)g_kernel_page_directory_phys, (uint32_t)temp_vaddr_kernel, phys_page, PTE_KERNEL_DATA) != 0) {
+    if (paging_map_single_4k((uint32_t*)g_kernel_page_directory_phys, (uint32_t)temp_vaddr_kernel, phys_page, PTE_KERNEL_DATA_FLAGS) != 0) {
         put_frame(phys_page); return -FS_ERR_IO;
     }
 

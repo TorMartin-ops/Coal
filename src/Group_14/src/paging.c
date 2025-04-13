@@ -99,8 +99,8 @@
  #ifndef KERNEL_SPACE_VIRT_START
  #define KERNEL_SPACE_VIRT_START 0xC0000000
  #endif
- // Calculate index of first kernel PDE (useful boundary)
- #define KERNEL_PDE_INDEX PDE_INDEX(KERNEL_SPACE_VIRT_START)
+
+
  
  // Other Constants
  #ifndef VGA_PHYS_ADDR
@@ -516,106 +516,265 @@
   * @param heap_size Size of the early heap.
   * @return 0 on success, calls PAGING_PANIC on failure.
   */
- int paging_setup_early_maps(uintptr_t page_directory_phys,
-                             uintptr_t kernel_phys_start __attribute__((unused)),
-                             uintptr_t kernel_phys_end __attribute__((unused)),
-                             uintptr_t heap_phys_start, size_t heap_size)
- {
-     terminal_write("[Paging Stage 2] Setting up early physical mappings...\n");
+  int paging_setup_early_maps(uintptr_t page_directory_phys,
+    uintptr_t kernel_phys_start __attribute__((unused)),
+    uintptr_t kernel_phys_end __attribute__((unused)),
+    uintptr_t heap_phys_start, size_t heap_size)
+{
+terminal_write("[Paging Stage 2] Setting up early mappings...\n");
+
+// --- Input Validation ---
+if (page_directory_phys == 0 || (page_directory_phys % PAGE_SIZE) != 0) {
+PAGING_PANIC("Stage 2: Invalid PD physical address!");
+return -1; // Unreachable
+}
+if (heap_phys_start == 0 || heap_size == 0) {
+// Warning or Panic depending on whether heap is essential at this stage
+terminal_write("[Paging Stage 2 Warning] Heap physical start or size is zero!\n");
+// PAGING_PANIC("Stage 2: Invalid heap parameters!");
+// Allow continuation if heap isn't strictly required for *this* stage,
+// but buddy_init will likely fail later.
+}
+
+// --- Calculate Aligned Section Boundaries from Linker Symbols ---
+// Ensure symbols are linked and provide valid addresses.
+uintptr_t text_start   = PAGE_ALIGN_DOWN((uintptr_t)&_kernel_text_start_phys);
+uintptr_t text_end     = PAGE_ALIGN_UP((uintptr_t)&_kernel_text_end_phys);
+uintptr_t rodata_start = PAGE_ALIGN_DOWN((uintptr_t)&_kernel_rodata_start_phys);
+uintptr_t rodata_end   = PAGE_ALIGN_UP((uintptr_t)&_kernel_rodata_end_phys);
+uintptr_t data_start   = PAGE_ALIGN_DOWN((uintptr_t)&_kernel_data_start_phys);
+uintptr_t data_end     = PAGE_ALIGN_UP((uintptr_t)&_kernel_data_end_phys);
+
+// Calculate aligned heap boundaries
+uintptr_t heap_start   = PAGE_ALIGN_DOWN(heap_phys_start);
+uintptr_t heap_end     = PAGE_ALIGN_UP(heap_phys_start + heap_size);
+if (heap_end <= heap_start && heap_size > 0) { // Check for overflow or zero effective size
+terminal_printf("[Paging Stage 2 Warning] Heap calculation resulted in invalid range [0x%x - 0x%x).\n", heap_start, heap_end);
+heap_end = heap_start; // Prevent mapping zero/negative size
+}
+
+// --- Define Memory Regions to Map ---
+// Uses the local struct defined above. Ensures correct flags are used.
+early_memory_region_t regions_to_map[] = {
+{ // Kernel .text section (Higher Half, Executable)
+.name       = ".text",
+.phys_start = text_start,
+.phys_end   = text_end,
+.flags      = PTE_KERNEL_CODE_FLAGS, // Ensure this is RW+X for kernel
+.map_higher_half = true,
+.required   = true,
+},
+{ // Kernel .rodata section (Higher Half, Read-Only, No-Execute)
+.name       = ".rodata",
+.phys_start = rodata_start,
+.phys_end   = rodata_end,
+.flags      = PTE_KERNEL_READONLY_FLAGS, // Use non-NX version for 32-bit PTEs
+.map_higher_half = true,
+.required   = true,
+},
+{ // Kernel .data/.bss section (Higher Half, Read-Write, No-Execute)
+.name       = ".data/.bss",
+.phys_start = data_start,
+.phys_end   = data_end,
+.flags      = PTE_KERNEL_DATA_FLAGS, // Use non-NX version for 32-bit PTEs
+.map_higher_half = true,
+.required   = true,
+},
+{ // Buddy Heap Region (Identity Mapped, Read-Write, No-Execute)
+// Needs identity map for buddy_init to work before paging activation
+.name       = "BuddyHeap",
+.phys_start = heap_start,
+.phys_end   = heap_end,
+.flags      = PTE_KERNEL_DATA_FLAGS, // Kernel RW-NX
+.map_higher_half = false, // Identity map this one!
+.required   = true,        // Buddy allocator needs this.
+},
+{ // VGA Memory (Higher Half, Read-Write, No-Execute - for terminal output)
+.name       = "VGA",
+.phys_start = 0xB8000,
+.phys_end   = 0xB8000 + PAGE_SIZE,
+.flags      = PTE_KERNEL_DATA_FLAGS,
+.map_higher_half = true,
+.required   = true, // Usually required for boot messages
+},
+// Add other essential hardware mappings here if needed
+};
+
+// --- Perform Mappings ---
+uint32_t* pd_phys_ptr = (uint32_t*)page_directory_phys; // Cast for direct access
+
+terminal_write("  Starting early region mapping loop...\n");
+for (size_t i = 0; i < ARRAY_SIZE(regions_to_map); ++i) {
+// Use a pointer for cleaner access within the loop
+early_memory_region_t* r = &regions_to_map[i];
+
+// Calculate region size, handle potential end < start
+size_t region_size = (r->phys_end > r->phys_start) ? (r->phys_end - r->phys_start) : 0;
+
+if (region_size == 0) {
+if (r->required) {
+terminal_printf("  [FATAL] Required mapping region '%s' has zero calculated size! Phys=[0x%x..0x%x)\n",
+        r->name ? r->name : "<Unnamed>", r->phys_start, r->phys_end);
+PAGING_PANIC("Zero-size required region in early maps");
+return -1; // Unreachable
+} else {
+terminal_printf("  [INFO] Skipping zero-size optional region '%s'.\n", r->name ? r->name : "<Unnamed>");
+}
+continue; // Skip this region
+}
+
+terminal_printf("   Mapping %-12s: Phys=[0x%x..0x%x) Size=%u KB -> %s Flags=0x%llx\n",
+r->name ? r->name : "<Unnamed>",
+r->phys_start, r->phys_end, region_size / 1024,
+r->map_higher_half ? "HigherHalf" : "Identity", r->flags);
+
+// Call the early mapping helper function
+int ret = paging_map_physical_early(pd_phys_ptr, r->phys_start, region_size, r->flags, r->map_higher_half);
+
+if (ret != 0) {
+terminal_printf("  [FATAL] Failed mapping region '%s'! Error Code: %d\n", r->name ? r->name : "<Unnamed>", ret);
+PAGING_PANIC("paging_map_physical_early failed");
+return -1; // Unreachable
+}
+} // End mapping loop
+
+terminal_write("[Paging Stage 2] Early mappings established successfully.\n");
+return 0;
+}
+
+ static int map_page_early_unsafe(uintptr_t pd_to_modify_phys, uintptr_t vaddr, uintptr_t paddr, uint32_t flags) {
+    if (pd_to_modify_phys == 0 || (pd_to_modify_phys % PAGE_SIZE) != 0) return -1;
+
+    uintptr_t aligned_vaddr = PAGE_ALIGN_DOWN(vaddr);
+    uintptr_t aligned_paddr = PAGE_ALIGN_DOWN(paddr);
+    uint32_t pd_idx = PDE_INDEX(aligned_vaddr);
+    uint32_t pt_idx = PTE_INDEX(aligned_vaddr);
+
+    uint32_t* pd_phys_ptr = (uint32_t*)pd_to_modify_phys;
+    uint32_t pde = pd_phys_ptr[pd_idx];
+    uintptr_t pt_phys = 0;
+
+    // Ensure flags include PAGE_PRESENT
+    flags |= PAGE_PRESENT;
+
+    // Allocate PT if necessary
+    if (!(pde & PAGE_PRESENT)) {
+        pt_phys = paging_alloc_early_pt_frame_physical(); // Uses early allocator
+        if (!pt_phys) {
+            terminal_printf("[Early Unsafe Map] Failed to allocate PT frame for V=0x%x\n", vaddr);
+            return -1;
+        }
+        // Frame is already zeroed by allocator
+        uint32_t pde_flags = PDE_FLAGS_FROM_PTE(flags) | PAGE_PRESENT;
+        pd_phys_ptr[pd_idx] = (pt_phys & ~0xFFF) | pde_flags;
+    } else {
+        // Check for 4MB conflict
+        if (pde & PAGE_SIZE_4MB) {
+            terminal_printf("[Early Unsafe Map] Conflict: V=0x%x PDE[%u] is 4MB page!\n", vaddr, pd_idx);
+            return -1;
+        }
+        pt_phys = pde & ~0xFFF;
+        // Ensure PDE flags are sufficient (e.g., add RW/User if needed by PTE)
+         uint32_t needed_pde_flags = PDE_FLAGS_FROM_PTE(flags);
+         if ((pde & needed_pde_flags) != needed_pde_flags) {
+             pd_phys_ptr[pd_idx] |= (needed_pde_flags & (PAGE_RW | PAGE_USER));
+         }
+    }
+
+    // Write PTE directly using physical address of PT
+    uint32_t* pt_phys_ptr = (uint32_t*)pt_phys;
+    if (pt_phys_ptr[pt_idx] & PAGE_PRESENT) {
+        terminal_printf("[Early Unsafe Map] Conflict: V=0x%x PTE[%u] already present (0x%x) in PT 0x%x!\n",
+                       vaddr, pt_idx, pt_phys_ptr[pt_idx], pt_phys);
+        // If we allocated the PT in this call, free it
+        if (!(pde & PAGE_PRESENT)) {
+             BUDDY_FREE((void*)pt_phys); // Use BUDDY_FREE as paging_alloc_early_pt_frame_physical likely uses it now
+             pd_phys_ptr[pd_idx] = 0; // Clear the PDE we added
+        }
+        return -1;
+    }
+    pt_phys_ptr[pt_idx] = (aligned_paddr & ~0xFFF) | flags;
+
+    return 0;
+}
  
-     // --- Basic Validation ---
-     if (page_directory_phys == 0 || (page_directory_phys % PAGE_SIZE) != 0) {
-         PAGING_PANIC("Stage 2: Invalid page directory physical address provided!");
+ 
+ /**
+ * paging_finalize_and_activate
+ *
+ * Final stage before enabling paging: sets the recursive page directory entry
+ * (PDE[1023]) to point back to the page directory's physical address.
+ * Then, activates paging by loading CR3 and setting the PG bit in CR0.
+ * Finally, sets the global virtual pointer for the kernel page directory
+ * based on the now-active recursive mapping.
+ */
+ int paging_finalize_and_activate(uintptr_t page_directory_phys, uintptr_t total_memory_bytes __attribute__((unused))) {
+    terminal_write("[Paging Stage 3] Finalizing and activating paging...\n");
+
+    // --- Validate Input ---
+    if (page_directory_phys == 0 || (page_directory_phys % PAGE_SIZE) != 0) {
+        PAGING_PANIC("paging_finalize_and_activate: Invalid PD physical address!");
+        return -1; // Unreachable
+    }
+
+    // --- Set Recursive Entry using NEW Early Unsafe Mapper ---
+    // Define the recursive entry flags
+    uint32_t recursive_pde_flags = PAGE_PRESENT | PAGE_RW;
+
+    // Calculate the virtual address where the PD *will* be after recursion
+    // This is only used to calculate the *index*, not for access yet.
+    uintptr_t recursive_pd_access_vaddr = RECURSIVE_PDE_VADDR; // e.g., 0xFFC00000
+    uint32_t pd_idx_for_recursive_entry = PDE_INDEX(recursive_pd_access_vaddr); // Should be 1023
+
+    if (pd_idx_for_recursive_entry != RECURSIVE_PDE_INDEX) {
+         // Sanity check failed
+         PAGING_PANIC("Recursive PDE index calculation mismatch!");
+    }
+
+    terminal_printf("  Setting recursive entry (PDE[%d]) in PD at phys 0x%x...\n",
+                   RECURSIVE_PDE_INDEX, page_directory_phys);
+
+    // Map the physical PD address into itself at the recursive index
+    // Use the early unsafe mapper which writes directly via physical addresses
+    // Note: The 'flags' passed here are for the PDE entry itself
+    if (map_page_early_unsafe(page_directory_phys, // PD to modify (phys)
+                             (uintptr_t)pd_idx_for_recursive_entry << 22, // A dummy VAddr used only for index calculation
+                             page_directory_phys,     // Physical address PD points to (itself)
+                             recursive_pde_flags) != 0) { // Flags for the PDE
+         PAGING_PANIC("Failed to set recursive PDE entry using early unsafe mapper!");
          return -1; // Unreachable
-     }
-     uint32_t *pd_phys_ptr = (uint32_t*)page_directory_phys;
- 
-     // --- Calculate Aligned Section Boundaries from Linker Symbols ---
-     uintptr_t text_start   = PAGE_ALIGN_DOWN((uintptr_t)&_kernel_text_start_phys);
-     uintptr_t text_end     = PAGE_ALIGN_UP((uintptr_t)&_kernel_text_end_phys);
-     uintptr_t rodata_start = PAGE_ALIGN_DOWN((uintptr_t)&_kernel_rodata_start_phys);
-     uintptr_t rodata_end   = PAGE_ALIGN_UP((uintptr_t)&_kernel_rodata_end_phys);
-     uintptr_t data_start   = PAGE_ALIGN_DOWN((uintptr_t)&_kernel_data_start_phys);
-     uintptr_t data_end     = PAGE_ALIGN_UP((uintptr_t)&_kernel_data_end_phys);
- 
-     // Calculate aligned heap boundaries
-     uintptr_t heap_start   = PAGE_ALIGN_DOWN(heap_phys_start);
-     uintptr_t heap_end     = PAGE_ALIGN_UP(heap_phys_start + heap_size);
-     if (heap_end <= heap_start) { heap_end = heap_start; } // Avoid zero/negative size
- 
-     // --- Define Memory Regions to Map ---
-     memory_region_map_t regions_to_map[] = {
-         {"Buddy Heap",   heap_start,   heap_end,     PTE_KERNEL_DATA_FLAGS, false, false},
-         {".text",        text_start,   text_end,     PTE_KERNEL_CODE_FLAGS, true,  true},
-         {".rodata",      rodata_start, rodata_end,   PTE_KERNEL_READONLY_NX_FLAGS, true, true},
-         {".data/.bss",   data_start,   data_end,     PTE_KERNEL_DATA_FLAGS, true,  true},
-         {"VGA",          VGA_PHYS_ADDR, VGA_PHYS_ADDR + PAGE_SIZE, PTE_KERNEL_DATA_FLAGS, true, true},
-         {"PD Self-Map",  page_directory_phys, page_directory_phys + PAGE_SIZE, PTE_KERNEL_DATA_FLAGS, true, true},
-     };
- 
-     // --- Perform Mappings ---
-     for (size_t i = 0; i < ARRAY_SIZE(regions_to_map); ++i) {
-         memory_region_map_t* region = &regions_to_map[i];
-         size_t size = (region->phys_end > region->phys_start) ? (region->phys_end - region->phys_start) : 0;
- 
-         if (size == 0) {
-             if (region->required) {
-                 terminal_printf("KERNEL PANIC: Required region '%s' has zero size!\n", region->name ? region->name : "<NULL>");
-                 PAGING_PANIC("Zero size for required mapping region");
-                 return -1; // Unreachable
-             }
-             #ifdef PAGING_DEBUG
-             terminal_printf("  Skipping mapping for zero-size region: %s\n", region->name ? region->name : "<NULL>");
-             #endif
-             continue;
-         }
- 
-         #ifdef PAGING_DEBUG
-         uintptr_t target_vaddr_start = region->map_higher_half ? (KERNEL_SPACE_VIRT_START + region->phys_start) : region->phys_start;
-         terminal_printf("  DEBUG: Trying map %-12s: P=[0x%x-0x%x) Size=%u KB -> V=0x%x Higher=%d Flags=0x%llx\n",
-                         region->name ? region->name : "<NULL>", region->phys_start, region->phys_end, size / 1024,
-                         target_vaddr_start, region->map_higher_half, region->flags);
-         #endif
- 
-         int result = paging_map_physical_early(pd_phys_ptr, region->phys_start, size, region->flags, region->map_higher_half);
- 
-         if (result != 0) {
-              terminal_printf("KERNEL PANIC: Failed to map '%s' region! Error in paging_map_physical_early.\n", region->name ? region->name : "<NULL>");
-              PAGING_PANIC("Failed to map essential early region");
-              return -1; // Unreachable
-         }
-     }
- 
-     terminal_write("[Paging Stage 2] Early maps established successfully.\n");
-     return 0;
- }
- 
- 
- int paging_finalize_and_activate(uintptr_t page_directory_phys, uintptr_t total_memory_bytes) { /* Definition from previous version */
-     terminal_write("[Paging Stage 3] Finalizing mappings and activating...\n");
-     if (page_directory_phys == 0) return -1;
-     uintptr_t pd_virt_addr = KERNEL_SPACE_VIRT_START + page_directory_phys;
-     terminal_printf("  Setting global PD pointers: Phys=0x%x, Virt=0x%x\n", page_directory_phys, pd_virt_addr);
-     paging_set_kernel_directory((uint32_t*)pd_virt_addr, page_directory_phys);
-     if (g_kernel_page_directory_phys != page_directory_phys || g_kernel_page_directory_virt != (uint32_t*)pd_virt_addr) { PAGING_PANIC("Failed to set global PD pointers!"); return -1; }
-     uintptr_t map_size = total_memory_bytes;
-     const uintptr_t max_mappable_phys_addr = 0xFFFFF000;
-     if (total_memory_bytes == 0) { map_size = 0; } else if (total_memory_bytes >= max_mappable_phys_addr) { map_size = max_mappable_phys_addr; }
-     if (map_size > 0) {
-         uintptr_t phys_map_virt_end = KERNEL_SPACE_VIRT_START + map_size;
-         if (phys_map_virt_end < KERNEL_SPACE_VIRT_START) { map_size = PAGE_ALIGN_DOWN(UINTPTR_MAX - KERNEL_SPACE_VIRT_START + 1); if (map_size == 0) { PAGING_PANIC("Cannot map phys mem"); return -1; } }
-         terminal_printf("  Mapping Physical Memory to Higher Half [Phys: 0x0 - 0x%x) -> Virt: 0x%x - 0x%x) RW-NX\n", map_size, KERNEL_SPACE_VIRT_START, KERNEL_SPACE_VIRT_START + map_size);
-         if (paging_map_range((uint32_t*)g_kernel_page_directory_phys, KERNEL_SPACE_VIRT_START, 0, map_size, PTE_KERNEL_DATA_FLAGS) != 0) { PAGING_PANIC("Failed to map physical memory to higher half!"); return -1; }
-     }
-     terminal_write("  Activating Paging...\n");
-     paging_activate((uint32_t*)page_directory_phys);
-     terminal_write("  [OK] Paging Enabled.\n");
-     if (!g_kernel_page_directory_virt) { PAGING_PANIC("Kernel PD virtual pointer is NULL after activation!"); }
-     uint32_t test_pde_after = g_kernel_page_directory_virt[PDE_INDEX((uintptr_t)g_kernel_page_directory_virt)];
-     if ((test_pde_after & ~0xFFF) != page_directory_phys) { PAGING_PANIC("PD self-mapping check failed after activation!"); }
-     terminal_write("[Paging Stage 3] Finalization complete.\n");
-     return 0;
- }
+    }
+     terminal_printf("  Set PDE[%d] -> Phys 0x%x Flags 0x%x\n",
+                    RECURSIVE_PDE_INDEX, page_directory_phys, recursive_pde_flags);
+    // --- Recursive Entry Set ---
+
+
+    // --- Activate Paging ---
+    terminal_write("  Activating Paging (Loading CR3, Setting CR0.PG)...\n");
+    paging_activate((uint32_t*)page_directory_phys);
+    // PAGING IS NOW ON!
+
+    // --- Set Global Pointers (using the now-active recursive map) ---
+    uintptr_t kernel_pd_virt_addr = RECURSIVE_PDE_VADDR; // Virtual address based on recursion
+    terminal_printf("  Setting global PD pointers: Phys=0x%x, Virt=0x%x\n",
+                   page_directory_phys, kernel_pd_virt_addr);
+    paging_set_kernel_directory((uint32_t*)kernel_pd_virt_addr, page_directory_phys);
+
+    // --- Validation ---
+    if (!g_kernel_page_directory_virt || g_kernel_page_directory_phys != page_directory_phys) {
+        PAGING_PANIC("Failed to set global page directory pointers correctly after activation!");
+        return -1; // Unreachable
+    }
+    // Quick check: Can we read the recursive entry via the virtual pointer?
+    uint32_t test_pde_read_virt = g_kernel_page_directory_virt[RECURSIVE_PDE_INDEX];
+    if ((test_pde_read_virt & ~0xFFF) != page_directory_phys || !(test_pde_read_virt & PAGE_PRESENT)) {
+         PAGING_PANIC("Recursive PD entry check failed after activation!");
+         return -1; // Unreachable
+    }
+
+    terminal_write("[Paging Stage 3] Paging fully enabled with recursive mapping active.\n");
+    return 0;
+}
  
  
  // --- Functions That Operate AFTER Paging is Active ---
@@ -773,8 +932,14 @@
  unhandled_fault_user: terminal_write("--- Unhandled User Page Fault ---\nTerminating process.\n--------------------------\n"); remove_current_task_with_code(0xDEAD000F); PAGING_PANIC("remove_current_task");
  unhandled_fault_kernel: terminal_write("--- Unhandled Kernel Page Fault ---\n"); PAGING_PANIC("Irrecoverable Kernel Page Fault");
  }
- 
- 
+
+ int paging_map_single_4k(uint32_t* pd_phys, uintptr_t vaddr, uintptr_t paddr, uint64_t flags) {
+    // Call the internal function, explicitly stating not to use large pages
+    return map_page_internal(pd_phys, vaddr, paddr, flags, false);
+}
+
+
+
  // --- Process Management Related ---
  void paging_free_user_space(uint32_t *page_directory_phys) { /* Definition from previous version - ensure BUDDY_FREE takes 1 arg */
      if (!page_directory_phys || !g_kernel_page_directory_virt) { return; }
@@ -788,27 +953,172 @@
      } kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PD_DST);
  }
  
- uintptr_t paging_clone_directory(uint32_t *src_page_directory_phys) { /* Definition from previous version - ensure BUDDY_FREE takes 1 arg */
-     if (!src_page_directory_phys || !g_kernel_page_directory_virt) { return 0; }
-     uintptr_t dst_pd_phys = paging_alloc_frame_buddy(); if (!dst_pd_phys) { return 0; }
-     uint32_t *src_pd_virt = NULL; uint32_t *dst_pd_virt = NULL; uint32_t *src_pt_virt = NULL; uint32_t *dst_pt_virt = NULL; int error_occurred = 0;
-     if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PD_SRC, (uintptr_t)src_page_directory_phys, PTE_KERNEL_DATA_FLAGS) != 0) { error_occurred = 1; goto cleanup_clone; } src_pd_virt = (uint32_t*)TEMP_MAP_ADDR_PD_SRC;
-     if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PD_DST, dst_pd_phys, PTE_KERNEL_DATA_FLAGS) != 0) { error_occurred = 1; goto cleanup_clone; } dst_pd_virt = (uint32_t*)TEMP_MAP_ADDR_PD_DST;
-     for (size_t i = KERNEL_PDE_INDEX; i < TABLES_PER_DIR; ++i) { dst_pd_virt[i] = src_pd_virt[i]; }
-     for (size_t i = 0; i < KERNEL_PDE_INDEX; ++i) {
-         uint32_t src_pde = src_pd_virt[i]; if (!(src_pde & PAGE_PRESENT)) { dst_pd_virt[i] = 0; continue; }
-         if (src_pde & PAGE_SIZE_4MB) { dst_pd_virt[i] = src_pde; continue; } // Share 4MB pages for now
-         uintptr_t src_pt_phys = src_pde & ~0xFFF; uintptr_t dst_pt_phys = (uintptr_t)allocate_page_table_phys();
-         if (!dst_pt_phys) { error_occurred = 1; goto cleanup_clone; }
-         src_pt_virt = NULL; dst_pt_virt = NULL;
-         if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PT_SRC, src_pt_phys, PTE_KERNEL_DATA_FLAGS) != 0) { BUDDY_FREE((void*)dst_pt_phys); error_occurred = 1; goto cleanup_clone; } src_pt_virt = (uint32_t*)TEMP_MAP_ADDR_PT_SRC;
-         if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PT_DST, dst_pt_phys, PTE_KERNEL_DATA_FLAGS) != 0) { kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_SRC); BUDDY_FREE((void*)dst_pt_phys); error_occurred = 1; goto cleanup_clone; } dst_pt_virt = (uint32_t*)TEMP_MAP_ADDR_PT_DST;
-         for (int j = 0; j < PAGES_PER_TABLE; ++j) { uint32_t src_pte = src_pt_virt[j]; if (src_pte & PAGE_PRESENT) { dst_pt_virt[j] = src_pte; /* TODO: CoW */ } else { dst_pt_virt[j] = 0; } }
-         kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_SRC); src_pt_virt = NULL; kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_DST); dst_pt_virt = NULL;
-         uint32_t dst_pde = (dst_pt_phys & ~0xFFF) | (src_pde & 0xFFF); dst_pd_virt[i] = dst_pde;
+ 
+ uintptr_t paging_clone_directory(uint32_t* src_pd_phys) {
+     if (!src_pd_phys || !g_kernel_page_directory_virt) {
+         terminal_write("[ClonePD] Error: Source PD is NULL or kernel PD not set.\n");
+         return 0;
      }
+ 
+     // Allocate a new PD frame
+     uintptr_t new_pd_phys = paging_alloc_frame_buddy(); // Use buddy now
+     if (!new_pd_phys) {
+         terminal_write("[ClonePD] Error: Failed to allocate frame for new PD.\n");
+         return 0;
+     }
+     // Frame is already zeroed by paging_alloc_frame_buddy
+ 
+     // Temporarily map source and destination PDs to modify them
+     // Use the safer kernel_map helpers now that paging is active
+     extern int kernel_map_virtual_to_physical_unsafe(uintptr_t vaddr, uintptr_t paddr, uint64_t flags);
+     extern void kernel_unmap_virtual_unsafe(uintptr_t vaddr);
+ 
+     uint32_t* src_pd_virt = NULL;
+     uint32_t* dst_pd_virt = NULL;
+     int error_occurred = 0;
+     uintptr_t allocated_pt_phys[768] = {0}; // Track allocated PTs for cleanup
+     int allocated_pt_count = 0;
+ 
+     // Map Source PD
+     if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PD_SRC, (uintptr_t)src_pd_phys, PTE_KERNEL_DATA_FLAGS) != 0) {
+         error_occurred = 1;
+         terminal_write("[ClonePD] Error: Failed to map source PD.\n");
+         goto cleanup_clone;
+     }
+     src_pd_virt = (uint32_t*)TEMP_MAP_ADDR_PD_SRC;
+ 
+     // Map Destination PD
+     if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PD_DST, new_pd_phys, PTE_KERNEL_DATA_FLAGS) != 0) {
+         error_occurred = 1;
+         terminal_write("[ClonePD] Error: Failed to map destination PD.\n");
+         goto cleanup_clone;
+     }
+     dst_pd_virt = (uint32_t*)TEMP_MAP_ADDR_PD_DST;
+ 
+     // --- Copy/Share PDEs ---
+ 
+     // Share kernel PDEs (excluding recursive entry)
+     for (int i = KERNEL_PDE_INDEX; i < RECURSIVE_PDE_INDEX; i++) {
+         // Only copy if present in source (g_kernel_page_directory_virt should be same as src_pd_virt here)
+         if (src_pd_virt[i] & PAGE_PRESENT) {
+              dst_pd_virt[i] = src_pd_virt[i];
+         } else {
+              dst_pd_virt[i] = 0;
+         }
+     }
+     // Set the recursive entry for the NEW page directory
+     dst_pd_virt[RECURSIVE_PDE_INDEX] = (new_pd_phys & ~0xFFF) | PAGE_PRESENT | PAGE_RW;
+ 
+ 
+     // Handle user-space PDEs (indices 0 to KERNEL_PDE_INDEX - 1)
+     for (size_t i = 0; i < KERNEL_PDE_INDEX; i++) {
+         uint32_t src_pde = src_pd_virt[i];
+ 
+         if (!(src_pde & PAGE_PRESENT)) {
+             dst_pd_virt[i] = 0; // Not present in source, not present in dest
+             continue;
+         }
+ 
+         if (src_pde & PAGE_SIZE_4MB) {
+             // Share 4MB pages (for now). A true fork might CoW these frames later.
+             dst_pd_virt[i] = src_pde;
+             // TODO: Increment frame ref counts for the 1024 frames in the 4MB page? Requires frame allocator integration.
+             continue;
+         }
+ 
+         // --- Handle 4KiB Page Table ---
+         // We need to copy the Page Table structure, but potentially share/CoW the actual frames later.
+         uintptr_t src_pt_phys = src_pde & ~0xFFF;
+         uintptr_t dst_pt_phys = paging_alloc_frame_buddy(); // Allocate a frame for the new PT
+         if (!dst_pt_phys) {
+             error_occurred = 1;
+             terminal_write("[ClonePD] Error: Failed to allocate frame for destination PT.\n");
+             goto cleanup_clone; // Trigger cleanup
+         }
+         // Track allocated PT for potential rollback
+         if (allocated_pt_count < 768) { // Basic bounds check
+              allocated_pt_phys[allocated_pt_count++] = dst_pt_phys;
+         } else {
+              terminal_write("[ClonePD] Warning: Exceeded PT tracking array capacity.\n");
+         }
+ 
+ 
+         uint32_t* src_pt_virt = NULL;
+         uint32_t* dst_pt_virt = NULL;
+ 
+         // Map source PT
+         if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PT_SRC, src_pt_phys, PTE_KERNEL_DATA_FLAGS) != 0) {
+              error_occurred = 1; terminal_write("[ClonePD] Error: Failed map src PT.\n"); goto cleanup_clone;
+         }
+         src_pt_virt = (uint32_t*)TEMP_MAP_ADDR_PT_SRC;
+ 
+         // Map destination PT
+         if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PT_DST, dst_pt_phys, PTE_KERNEL_DATA_FLAGS) != 0) {
+              error_occurred = 1; terminal_write("[ClonePD] Error: Failed map dst PT.\n"); goto cleanup_clone;
+         }
+         dst_pt_virt = (uint32_t*)TEMP_MAP_ADDR_PT_DST;
+ 
+         // Copy PTEs (sharing frames initially, could implement CoW here)
+         for (int j = 0; j < PAGES_PER_TABLE; j++) {
+              uint32_t src_pte = src_pt_virt[j];
+              if (src_pte & PAGE_PRESENT) {
+                 // Simple sharing: Copy PTE directly.
+                 // TODO: Implement CoW: Mark PTE as read-only, clear PAGE_RW bit.
+                 // TODO: Increment ref count for the shared physical frame via get_frame().
+                  uintptr_t frame_phys = src_pte & ~0xFFF;
+                  get_frame(frame_phys); // Increment ref count for shared frame
+ 
+                  // If CoW needed:
+                  // uint32_t cow_pte = src_pte & ~PAGE_RW; // Clear RW bit
+                  // dst_pt_virt[j] = cow_pte;
+                  // src_pt_virt[j] = cow_pte; // Mark source read-only too! Requires write access to src PT map.
+                  // paging_invalidate_page(...); // Invalidate TLB for src addr
+ 
+                  // For simple sharing:
+                  dst_pt_virt[j] = src_pte;
+ 
+              } else {
+                  dst_pt_virt[j] = 0; // Not present
+              }
+         } // End PTE loop
+ 
+         // Unmap temporary PTs
+         kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_DST); dst_pt_virt = NULL;
+         kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_SRC); src_pt_virt = NULL;
+ 
+         // Set the destination PDE entry
+         // Copy original flags (P, U/S, R/W) from source PDE
+         uint32_t pde_flags = src_pde & 0xFFF;
+         dst_pd_virt[i] = (dst_pt_phys & ~0xFFF) | pde_flags;
+ 
+     } // End user PDE loop
+ 
+ 
  cleanup_clone:
-     if (src_pd_virt) kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PD_SRC); if (dst_pd_virt) kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PD_DST);
-     if (error_occurred) { paging_free_user_space((uint32_t*)dst_pd_phys); BUDDY_FREE((void*)dst_pd_phys); return 0; } // Pass 1 arg
-     return dst_pd_phys;
- }
+     // Unmap temporary PD mappings regardless of success or failure
+     if (src_pd_virt) {
+         kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PD_SRC);
+     }
+     if (dst_pd_virt) {
+         kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PD_DST);
+     }
+ 
+     if (error_occurred) {
+         terminal_write("[ClonePD] Error occurred during clone. Cleaning up...\n");
+         // Free any page tables allocated during the failed clone
+         for (int k = 0; k < allocated_pt_count; k++) {
+             if (allocated_pt_phys[k] != 0) {
+                 BUDDY_FREE((void*)allocated_pt_phys[k]);
+             }
+         }
+         // Free the destination page directory frame itself
+         if (new_pd_phys != 0) {
+             BUDDY_FREE((void*)new_pd_phys);
+         }
+         return 0; // Return 0 on failure
+     }
+ 
+     terminal_printf("[ClonePD] Successfully cloned PD 0x%x to new PD 0x%x\n", (uintptr_t)src_pd_phys, new_pd_phys);
+     return new_pd_phys; // Return physical address of the new page directory
+ } // <--- Make sure this closing brace matches the function opening brace
+ 

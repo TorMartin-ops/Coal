@@ -107,7 +107,7 @@ int load_elf_and_init_memory(const char *path, mm_struct_t *mm, uint32_t *entry_
              uintptr_t phys_page_addr = frame_alloc(); if (!phys_page_addr) { kfree(file_data); return -1; }
              // Map temp kernel, copy/zero, unmap temp kernel
              // Map process page
-             int map_res = paging_map_single(mm->pgd_phys, page_v, phys_page_addr, page_prot);
+             int map_res = paging_map_single_4k(mm->pgd_phys, page_v, phys_page_addr, page_prot);
              if (map_res != 0) { put_frame(phys_page_addr); kfree(file_data); return -1;}
          }
     }
@@ -131,7 +131,7 @@ pcb_t *create_user_process(const char *path) {
     proc->page_directory_phys = (uint32_t*)pd_phys_addr;
 
     // Temporarily map PD to clear and copy kernel entries
-    if (paging_map_single((uint32_t*)g_kernel_page_directory_phys, TEMP_PD_MAP_ADDR, (uint32_t)proc->page_directory_phys, PTE_KERNEL_DATA) != 0) {
+    if (paging_map_single_4k((uint32_t*)g_kernel_page_directory_phys, TEMP_PD_MAP_ADDR, (uint32_t)proc->page_directory_phys, PTE_KERNEL_DATA_FLAGS) != 0) {
          put_frame(pd_phys_addr); kfree(proc); return NULL;
     }
     uint32_t *proc_pd_virt = (uint32_t*)TEMP_PD_MAP_ADDR;
@@ -169,13 +169,13 @@ pcb_t *create_user_process(const char *path) {
 
     // Create Initial Heap VMA
     uint32_t heap_vm_flags = VM_READ | VM_WRITE | VM_ANONYMOUS;
-    uint32_t heap_page_prot = PTE_USER_DATA;
+    uint32_t heap_page_prot = PTE_USER_DATA_FLAGS; 
     if (!insert_vma(proc->mm, initial_brk_addr, initial_brk_addr, heap_vm_flags, heap_page_prot, NULL, 0)) { /* Warning */ }
 
     // Create User Stack VMA
     proc->user_stack_top = (void *)USER_STACK_TOP_VIRT_ADDR;
     uint32_t stack_vm_flags = VM_READ | VM_WRITE | VM_ANONYMOUS | VM_GROWS_DOWN;
-    uint32_t stack_page_prot = PTE_USER_DATA;
+    uint32_t stack_page_prot = PTE_USER_DATA_FLAGS;
     if (!insert_vma(proc->mm, USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR,
                     stack_vm_flags, stack_page_prot, NULL, 0)) {
         destroy_mm(proc->mm);

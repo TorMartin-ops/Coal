@@ -186,7 +186,7 @@ int frame_init(struct multiboot_tag_mmap *mmap_tag,
 
     if (paging_map_range((uint32_t*)g_kernel_page_directory_phys,
                          refcount_array_vaddr, g_frame_refcounts_phys,
-                         g_refcount_array_alloc_size, PTE_KERNEL_DATA) != 0)
+                         g_refcount_array_alloc_size, PTE_KERNEL_DATA_FLAGS) != 0)
     {
         terminal_write("  [FATAL] Failed to map refcount array into kernel space!\n");
         BUDDY_FREE(refcount_array_phys_ptr);
