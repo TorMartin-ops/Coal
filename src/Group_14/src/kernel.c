@@ -179,134 +179,219 @@ static struct multiboot_tag *find_multiboot_tag(uint32_t mb_info_phys_addr, uint
  * @param out_heap_size Pointer to store the size of the chosen heap region.
  * @return true on success, false if no suitable heap region is found or an error occurs.
  */
-static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
-                             uintptr_t *out_total_memory,
-                             uintptr_t *out_heap_base_addr, size_t *out_heap_size)
+ static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
+    uintptr_t *out_total_memory,
+    uintptr_t *out_heap_base_addr, size_t *out_heap_size)
 {
-    uintptr_t current_total_memory = 0;
-    uintptr_t best_heap_base = 0;
-    uint64_t best_heap_size_64 = 0; // Use 64-bit for size calculations to avoid overflow
-    multiboot_memory_map_t *mmap_entry = mmap_tag->entries;
-    uintptr_t mmap_end = (uintptr_t)mmap_tag + mmap_tag->size;
+uintptr_t current_total_memory = 0;
+uintptr_t best_heap_base = 0;
+uint64_t best_heap_size_64 = 0; // Use 64-bit for size calculations to avoid overflow
+multiboot_memory_map_t *mmap_entry = mmap_tag->entries;
+uintptr_t mmap_end = (uintptr_t)mmap_tag + mmap_tag->size;
 
-    // Get kernel physical boundaries
-    uintptr_t kernel_start_phys_addr = (uintptr_t)&_kernel_start_phys;
-    uintptr_t kernel_end_phys_addr = (uintptr_t)&_kernel_end_phys;
+// Get kernel physical boundaries
+uintptr_t kernel_start_phys_addr = (uintptr_t)&_kernel_start_phys;
+uintptr_t kernel_end_phys_addr = (uintptr_t)&_kernel_end_phys;
 
-    terminal_write(" Memory Map (from Multiboot):\n");
-    while ((uintptr_t)mmap_entry < mmap_end) {
-        // Validate entry size before use
-        if (mmap_tag->entry_size == 0 || mmap_tag->entry_size < sizeof(multiboot_memory_map_t)) {
-            terminal_printf("  [ERR] MMAP entry size (%u) invalid!\n", mmap_tag->entry_size);
-            return false;
-        }
+terminal_printf("  Kernel phys memory boundaries: Start=0x%x, End=0x%x\n", 
+kernel_start_phys_addr, kernel_end_phys_addr);
+terminal_write(" Memory Map (from Multiboot):\n");
 
-        uintptr_t region_start = (uintptr_t)mmap_entry->addr;
-        uint64_t region_len = mmap_entry->len;
-        uintptr_t region_end = region_start + (uintptr_t)region_len; // Careful with potential overflow if region_len is huge
+// First pass: Just calculate total memory from all regions
+int region_count = 0;
+uint64_t total_available_memory = 0;
 
-        // Check for overflow in region_end calculation
-        if (region_end < region_start && region_len != 0) {
-            terminal_printf("  [Warning] Memory region [0x%llx - 0x%llx) ignored due to potential overflow.\n", (unsigned long long)region_start, (unsigned long long)(region_start + region_len));
-            region_end = UINTPTR_MAX; // Assume it extends to max address for total memory calc
-        }
+multiboot_memory_map_t *temp_entry = mmap_entry;
+while ((uintptr_t)temp_entry < mmap_end) {
+// Validate entry size before use
+if (mmap_tag->entry_size == 0 || mmap_tag->entry_size < sizeof(multiboot_memory_map_t)) {
+terminal_printf("  [ERR] MMAP entry size (%u) invalid!\n", mmap_tag->entry_size);
+return false;
+}
 
-        terminal_printf("  Addr: 0x%08x Len: 0x%08llx Type: %d\n",
-                        region_start, (unsigned long long)region_len, mmap_entry->type);
+uintptr_t region_start = (uintptr_t)temp_entry->addr;
+uint64_t region_len = temp_entry->len;
+uintptr_t region_end = region_start + (uintptr_t)region_len;
 
-        // Update total physical memory detected (highest address seen)
-        if (region_end > current_total_memory) {
-            current_total_memory = region_end;
-        }
+// Safety check for overflow in region_end calculation
+if (region_end < region_start && region_len != 0) {
+terminal_printf("  [Warning] Memory region [0x%llx - ???) potential overflow.\n", 
+  (unsigned long long)region_start);
+region_end = UINTPTR_MAX;
+}
 
-        // Find the largest AVAILABLE memory region >= 1MB for the initial heap
-        if (mmap_entry->type == MULTIBOOT_MEMORY_AVAILABLE && region_start >= 0x100000) {
-            uintptr_t usable_start = region_start;
-            uint64_t usable_len = region_len;
+// Always update total memory for any valid region
+if (region_end > current_total_memory) {
+current_total_memory = region_end;
+}
 
-            // Adjust usable range to avoid overlap with the kernel image
-            uintptr_t overlap_start = (usable_start > kernel_start_phys_addr) ? usable_start : kernel_start_phys_addr;
-            uintptr_t overlap_end = (region_end < kernel_end_phys_addr) ? region_end : kernel_end_phys_addr;
+// Track available memory separately
+if (temp_entry->type == MULTIBOOT_MEMORY_AVAILABLE) {
+total_available_memory += region_len;
+}
 
-            if (overlap_start < overlap_end) { // Kernel overlaps with this region
-                // Option 1: Consider the part *before* the kernel
-                if (usable_start < kernel_start_phys_addr) {
-                    uint64_t size_before = kernel_start_phys_addr - usable_start;
-                    if (size_before > best_heap_size_64) {
-                        best_heap_size_64 = size_before;
-                        best_heap_base = usable_start;
-                    }
-                }
-                // Option 2: Consider the part *after* the kernel
-                if (region_end > kernel_end_phys_addr) {
-                    usable_start = kernel_end_phys_addr; // Start after kernel
-                    usable_len = region_end - kernel_end_phys_addr;
-                     // Check if this remaining part is the new best candidate
-                    if (usable_len > best_heap_size_64) {
-                        best_heap_size_64 = usable_len;
-                        best_heap_base = usable_start;
-                    }
-                }
-                // If kernel fully contains region, usable_len would be 0 from the second check.
-            } else { // No overlap with kernel
-                // Update best heap region if this available region is larger
-                if (usable_len > best_heap_size_64) {
-                    best_heap_size_64 = usable_len;
-                    best_heap_base = usable_start;
-                }
-            }
-        } // End if AVAILABLE and >= 1MB
+region_count++;
 
-        // Advance to the next entry safely
-        uintptr_t next_entry_addr = (uintptr_t)mmap_entry + mmap_tag->entry_size;
-        if (next_entry_addr > mmap_end) { // Check before dereferencing next entry
-             terminal_write("  [Warning] MMAP entry advancement out of bounds.\n");
-             break;
-        }
-        mmap_entry = (multiboot_memory_map_t *)next_entry_addr;
-    } // End while loop through mmap entries
+// Advance to the next entry safely
+uintptr_t next_entry_addr = (uintptr_t)temp_entry + mmap_tag->entry_size;
+if (next_entry_addr > mmap_end) { 
+terminal_write("  [Warning] MMAP entry advancement out of bounds.\n");
+break;
+}
+temp_entry = (multiboot_memory_map_t *)next_entry_addr;
+}
 
-    // Final checks and output assignment
-    if (best_heap_size_64 > 0 && best_heap_base != 0) {
-        *out_heap_base_addr = best_heap_base;
-        if (best_heap_size_64 > (uint64_t)SIZE_MAX) {
-            terminal_write("  [Warning] Largest heap region exceeds size_t! Clamping.\n");
-            *out_heap_size = SIZE_MAX;
-        } else {
-            *out_heap_size = (size_t)best_heap_size_64;
-        }
-    } else {
-        terminal_write("  [FATAL] No suitable memory region found >= 1MB for heap!\n");
-        return false;
-    }
+terminal_printf("  Found %d memory regions, total physical span: 0x%x bytes\n", 
+region_count, current_total_memory);
+terminal_printf("  Total available memory: %llu bytes (%llu MB)\n", 
+total_available_memory, total_available_memory / (1024*1024));
 
-    // Calculate and set total memory, handling potential UINTPTR_MAX overflow
-    if (current_total_memory == UINTPTR_MAX) {
-        // If the highest address is already the maximum, use it directly.
-        // Trying to align this up will result in 0.
-        *out_total_memory = UINTPTR_MAX;
-        terminal_write("  [Info] Detected physical memory up to UINTPTR_MAX.\n");
-    } else {
-        // Align total memory up to the nearest page boundary if not max.
-        *out_total_memory = ALIGN_UP(current_total_memory, PAGE_SIZE);
-         // Check if ALIGN_UP resulted in 0 due to overflow near the top.
-         if (*out_total_memory == 0 && current_total_memory > 0) {
-              terminal_printf("  [Warning] ALIGN_UP overflowed for total memory 0x%x. Setting to UINTPTR_MAX.\n", current_total_memory);
-              *out_total_memory = UINTPTR_MAX; // Treat as max address space if alignment wrapped
-         }
-    }
+// Safety check: if we found no valid memory, set a minimum
+if (current_total_memory == 0) {
+terminal_write("  [ERROR] No valid memory regions found! Assuming 16 MB minimum.\n");
+current_total_memory = 16 * 1024 * 1024; // Assume at least 16 MB
+}
 
-    // Final sanity check: If total memory ended up as 0, something is wrong.
-    if (*out_total_memory == 0 && current_total_memory > 0) {
-         terminal_printf("  [FATAL] Total memory calculation resulted in zero despite finding regions up to 0x%x.\n", current_total_memory);
-         return false;
-    }
+// Second pass: Find best heap region
+while ((uintptr_t)mmap_entry < mmap_end) {
+// Validate entry size before use (redundant but safe)
+if (mmap_tag->entry_size == 0 || mmap_tag->entry_size < sizeof(multiboot_memory_map_t)) {
+terminal_printf("  [ERR] MMAP entry size (%u) invalid!\n", mmap_tag->entry_size);
+return false;
+}
 
+uintptr_t region_start = (uintptr_t)mmap_entry->addr;
+uint64_t region_len = mmap_entry->len;
+uintptr_t region_end = region_start + (uintptr_t)region_len; 
 
-    terminal_printf("  Total Physical Memory Calculated: 0x%x bytes\n", *out_total_memory);
-    terminal_printf("  Selected Heap Region: Phys Addr=0x%x, Size=%u bytes\n",
-                    *out_heap_base_addr, *out_heap_size);
-    return true;
+terminal_printf("  MMAP Entry: Addr=0x%llx, Len=0x%llx, Type=%d\n",
+(unsigned long long)mmap_entry->addr,
+(unsigned long long)mmap_entry->len,
+mmap_entry->type);
+
+// Find the largest AVAILABLE memory region >= 1MB for the initial heap
+if (mmap_entry->type == MULTIBOOT_MEMORY_AVAILABLE && region_start >= 0x100000) {
+uintptr_t usable_start = region_start;
+uint64_t usable_len = region_len;
+
+terminal_printf("  Evaluating AVAILABLE region [0x%x - 0x%x) for heap\n", 
+   usable_start, region_end);
+
+// Adjust usable range to avoid overlap with the kernel image
+uintptr_t overlap_start = (usable_start > kernel_start_phys_addr) ? usable_start : kernel_start_phys_addr;
+uintptr_t overlap_end = (region_end < kernel_end_phys_addr) ? region_end : kernel_end_phys_addr;
+
+if (overlap_start < overlap_end) { // Kernel overlaps with this region
+terminal_printf("  Region overlaps with kernel [0x%x - 0x%x)\n", 
+       kernel_start_phys_addr, kernel_end_phys_addr);
+
+// Option 1: Consider the part *before* the kernel
+if (usable_start < kernel_start_phys_addr) {
+uint64_t size_before = kernel_start_phys_addr - usable_start;
+terminal_printf("  Segment before kernel: Size=%llu bytes\n", 
+           (unsigned long long)size_before);
+if (size_before > best_heap_size_64) {
+best_heap_size_64 = size_before;
+best_heap_base = usable_start;
+terminal_printf("  New best heap: Base=0x%x, Size=%llu bytes\n", 
+               best_heap_base, (unsigned long long)best_heap_size_64);
+}
+}
+
+// Option 2: Consider the part *after* the kernel
+if (region_end > kernel_end_phys_addr) {
+usable_start = kernel_end_phys_addr; // Start after kernel
+usable_len = region_end - kernel_end_phys_addr;
+terminal_printf("  Segment after kernel: Size=%llu bytes\n", 
+           (unsigned long long)usable_len);
+
+if (usable_len > best_heap_size_64) {
+best_heap_size_64 = usable_len;
+best_heap_base = usable_start;
+terminal_printf("  New best heap: Base=0x%x, Size=%llu bytes\n", 
+               best_heap_base, (unsigned long long)best_heap_size_64);
+}
+}
+} else { // No overlap with kernel
+terminal_printf("  No overlap with kernel, full region usable\n");
+
+if (usable_len > best_heap_size_64) {
+best_heap_size_64 = usable_len;
+best_heap_base = usable_start;
+terminal_printf("  New best heap: Base=0x%x, Size=%llu bytes\n", 
+           best_heap_base, (unsigned long long)best_heap_size_64);
+}
+}
+} // End if AVAILABLE and >= 1MB
+
+// Advance to the next entry safely
+uintptr_t next_entry_addr = (uintptr_t)mmap_entry + mmap_tag->entry_size;
+if (next_entry_addr > mmap_end) { 
+terminal_write("  [Warning] MMAP entry advancement out of bounds.\n");
+break;
+}
+mmap_entry = (multiboot_memory_map_t *)next_entry_addr;
+} // End while loop through mmap entries
+
+terminal_printf(" Parse MMAP Result: HeapBase=0x%x, HeapSize64=0x%llx\n",
+best_heap_base, (unsigned long long)best_heap_size_64);
+
+// Final checks and output assignment
+if (best_heap_size_64 > 0 && best_heap_base != 0) {
+*out_heap_base_addr = best_heap_base;
+if (best_heap_size_64 > (uint64_t)SIZE_MAX) {
+terminal_write("  [Warning] Largest heap region exceeds size_t! Clamping to SIZE_MAX.\n");
+*out_heap_size = SIZE_MAX;
+} else {
+*out_heap_size = (size_t)best_heap_size_64;
+}
+
+// Clamp heap size to reasonable limit
+size_t max_initial_heap = 256 * 1024 * 1024; // Limit to 256MB for example
+
+if (*out_heap_size > max_initial_heap) {
+terminal_printf("  [Info] Clamping initial heap size from %u MB to %u MB.\n",
+   (*out_heap_size) / (1024 * 1024), max_initial_heap / (1024 * 1024));
+*out_heap_size = max_initial_heap;
+}
+
+// Ensure clamped size still meets minimum requirement
+if (*out_heap_size < MIN_HEAP_SIZE) {
+terminal_printf("  [FATAL] Heap size (%u bytes) is less than minimum required (%u bytes)!\n", 
+    *out_heap_size, MIN_HEAP_SIZE);
+return false;
+}
+} else {
+terminal_write("  [FATAL] No suitable memory region found >= 1MB for heap!\n");
+return false;
+}
+
+// IMPORTANT: Set total physical memory from our calculation
+*out_total_memory = current_total_memory;
+
+// Final sanity check and align
+if (*out_total_memory == 0) {
+terminal_write("  [WARNING] Total memory calculation resulted in zero! Setting 16MB minimum.\n");
+*out_total_memory = 16 * 1024 * 1024;  // 16MB minimum
+} else if (*out_total_memory == UINTPTR_MAX) {
+// Leave as is
+} else {
+// Align up to page size
+uintptr_t aligned = PAGE_ALIGN_UP(*out_total_memory);
+if (aligned == 0) { // Overflow
+terminal_printf("  [Warning] ALIGN_UP overflowed for total memory 0x%x. Setting to UINTPTR_MAX.\n", 
+   *out_total_memory);
+*out_total_memory = UINTPTR_MAX;
+} else {
+*out_total_memory = aligned;
+}
+}
+
+terminal_printf("  Total Physical Memory Calculated: 0x%x bytes (%u MB)\n", 
+*out_total_memory, *out_total_memory / (1024 * 1024));
+terminal_printf("  Selected Heap Region (Final): Phys Addr=0x%x, Size=%u bytes (%u KB)\n",
+*out_heap_base_addr, *out_heap_size, *out_heap_size / 1024);
+return true;
 }
 
 
