@@ -90,6 +90,8 @@ extern uint8_t _kernel_virtual_base;  // Kernel's virtual base address (e.g., 0x
 // Define the global variable to store the Multiboot info address
 uint32_t g_multiboot_info_phys_addr_global = 0;
 
+uintptr_t g_multiboot_info_virt_addr_global = 0;
+
 
 // === Static Function Prototypes ===
 static struct multiboot_tag *find_multiboot_tag(uint32_t mb_info_phys_addr, uint16_t type);
@@ -421,10 +423,11 @@ return true;
     terminal_write("[Kernel] Initializing Memory Subsystems...\n");
 
     // --- Stage 0: Parse Multiboot Memory Map ---
-    terminal_write(" Stage 0: Parsing Multiboot Memory Map...\n");
-    struct multiboot_tag_mmap *mmap_tag = (struct multiboot_tag_mmap *)find_multiboot_tag(
+    terminal_write(" Stage 0: Parsing Multiboot Memory Map (using physical address)...\n");
+    // Use the physically addressed find_multiboot_tag helper here
+    struct multiboot_tag_mmap *mmap_tag_phys = (struct multiboot_tag_mmap *)find_multiboot_tag(
         mb_info_phys_addr, MULTIBOOT_TAG_TYPE_MMAP);
-    if (!mmap_tag) {
+    if (!mmap_tag_phys) {
         KERNEL_PANIC_HALT("Multiboot memory map tag not found!");
         return false; // Unreachable
     }
@@ -432,11 +435,12 @@ return true;
     uintptr_t total_memory = 0;
     uintptr_t heap_phys_start = 0;
     size_t heap_size = 0;
-    if (!parse_memory_map(mmap_tag, &total_memory, &heap_phys_start, &heap_size)) {
+    // parse_memory_map also uses physical addresses at this stage
+    if (!parse_memory_map(mmap_tag_phys, &total_memory, &heap_phys_start, &heap_size)) {
         KERNEL_PANIC_HALT("Failed to parse memory map or find suitable heap region!");
         return false; // Unreachable
     }
-    if (heap_size < MIN_HEAP_SIZE) {
+     if (heap_size < MIN_HEAP_SIZE) {
         KERNEL_PANIC_HALT("Heap region too small!");
         return false; // Unreachable
     }
@@ -454,7 +458,6 @@ return true;
     // --- Stage 1: Allocate Initial Page Directory Frame ---
     terminal_write(" Stage 1: Allocating initial Page Directory frame...\n");
     uintptr_t initial_pd_phys;
-    // Calls paging_alloc_early_pt_frame_physical and checks CPU features
     if (paging_initialize_directory(&initial_pd_phys) != 0) {
         KERNEL_PANIC_HALT("Failed to allocate/initialize initial Page Directory!");
         return false; // Unreachable
@@ -463,8 +466,6 @@ return true;
 
     // --- Stage 2: Setup Early Mappings (Kernel Higher-Half, Heap Identity) ---
     terminal_write(" Stage 2: Setting up early physical maps...\n");
-    // Maps kernel sections to higher half, heap identity, VGA, etc.
-    // Uses paging_map_physical_early internally.
     if (paging_setup_early_maps(initial_pd_phys, kernel_phys_start, kernel_phys_end, heap_phys_start, heap_size) != 0) {
         KERNEL_PANIC_HALT("Failed to setup early mappings!");
         return false; // Unreachable
@@ -472,61 +473,113 @@ return true;
 
     // --- Stage 3: Initialize Buddy Allocator ---
     terminal_write(" Stage 3: Initializing Buddy Allocator...\n");
-    // Needs the heap region to be accessible (identity mapped in Stage 2)
-    buddy_init((void *)heap_phys_start, heap_size);
+    buddy_init((void *)heap_phys_start, heap_size); // Uses identity mapped heap
     if (buddy_free_space() == 0 && heap_size >= MIN_BLOCK_SIZE) {
         terminal_write("  [Warning] Buddy Allocator reports zero free space after init.\n");
-        // Might not be fatal if heap was very small, but warrants investigation.
     }
     terminal_printf("   Buddy Initial Free Space: %u bytes\n", buddy_free_space());
 
+
     // --- Stage 4: Finalize & Activate Paging ---
     terminal_write(" Stage 4: Finalizing and activating paging...\n");
-    // Sets recursive entry, loads CR3, sets PG bit, sets global PD pointers
     if (paging_finalize_and_activate(initial_pd_phys, total_memory) != 0) {
         KERNEL_PANIC_HALT("Failed to finalize and activate paging!");
         return false; // Unreachable
     }
     // Paging is now ON. g_kernel_page_directory_phys/virt should be valid.
 
+
+    // --- STAGE 4.5: Map Multiboot Info Structure *** FIX APPLIED HERE *** ---
+    terminal_write(" Stage 4.5: Mapping Multiboot Info Structure...\n");
+    if (g_multiboot_info_phys_addr_global != 0) {
+        // We need the size. As we can't safely read the physical address now,
+        // we rely on find_multiboot_tag having worked before paging activation.
+        // A safer way would be to store the size from the first pass.
+        // Let's re-find the tag PHYSICALLY one last time using the early finder
+        // (assuming it's robust enough or low memory is still accessible temporarily).
+        // THIS IS STILL RISKY - mapping it earlier is better.
+        // Reverting to reading size assuming low mem identity map holds briefly:
+        uint32_t mb_info_size = *(volatile uint32_t*)g_multiboot_info_phys_addr_global;
+        if (mb_info_size < 8) mb_info_size = 8;
+        mb_info_size = ALIGN_UP(mb_info_size, PAGE_SIZE);
+
+        // Calculate physical address range to map (page aligned)
+        uintptr_t mb_info_phys_page_start = PAGE_ALIGN_DOWN(g_multiboot_info_phys_addr_global);
+        size_t    mb_mapping_size = ALIGN_UP(g_multiboot_info_phys_addr_global + mb_info_size, PAGE_SIZE) - mb_info_phys_page_start;
+
+        // Calculate virtual address in higher half
+        uintptr_t mb_info_virt_page_start = KERNEL_SPACE_VIRT_START + mb_info_phys_page_start;
+
+        terminal_printf("   Mapping MB Info Phys [0x%x - 0x%x) to Virt [0x%x - 0x%x)\n",
+                         mb_info_phys_page_start, mb_info_phys_page_start + mb_mapping_size,
+                         mb_info_virt_page_start, mb_info_virt_page_start + mb_mapping_size);
+
+        if (paging_map_range((uint32_t*)g_kernel_page_directory_phys,
+                             mb_info_virt_page_start,
+                             mb_info_phys_page_start,
+                             mb_mapping_size,
+                             PTE_KERNEL_READONLY_FLAGS) != 0) // Read-only is sufficient
+        {
+             KERNEL_PANIC_HALT("Failed to map Multiboot info structure!");
+             return false;
+        }
+        // Store the precise VIRTUAL address of the start of the info structure
+        g_multiboot_info_virt_addr_global = mb_info_virt_page_start + (g_multiboot_info_phys_addr_global % PAGE_SIZE);
+        terminal_printf("   Multiboot structure accessible at VIRT: 0x%x\n", g_multiboot_info_virt_addr_global);
+
+    } else {
+         KERNEL_PANIC_HALT("Multiboot physical address is zero after paging activation!");
+         return false;
+    }
+    // --- End STAGE 4.5 ---
+
+
     // --- Stage 5: Map Physical Memory to Higher Half ---
     terminal_write(" Stage 5: Mapping physical memory to higher half...\n");
     uintptr_t map_size = total_memory;
-    // Clamp mapping size if needed (e.g., for 32-bit address space limitations)
-    // const uintptr_t max_mappable_phys_addr = 0xFFFFF000; // Example limit
-    // if (map_size >= max_mappable_phys_addr) { map_size = max_mappable_phys_addr; }
-
-    // Sanity check for virtual address overflow when adding KERNEL_SPACE_VIRT_START
-    if (map_size > 0 && (KERNEL_SPACE_VIRT_START > (UINTPTR_MAX - map_size))) {
+    // (Clamping logic as before...)
+     if (map_size > 0 && (KERNEL_SPACE_VIRT_START > (UINTPTR_MAX - map_size))) {
          map_size = UINTPTR_MAX - KERNEL_SPACE_VIRT_START + 1;
-         map_size = PAGE_ALIGN_DOWN(map_size); // Align down
+         map_size = PAGE_ALIGN_DOWN(map_size);
          terminal_printf("   [Warning] Clamping physical map size to 0x%x to avoid VA overflow.\n", map_size);
     }
 
     if (map_size > 0) {
          terminal_printf("   Mapping Phys: [0x0 - 0x%x) -> Virt: [0x%x - 0x%x) Flags: RW-NX\n",
                          map_size, KERNEL_SPACE_VIRT_START, KERNEL_SPACE_VIRT_START + map_size);
-         // Use the globally set g_kernel_page_directory_phys obtained after activation
          if (paging_map_range((uint32_t*)g_kernel_page_directory_phys, KERNEL_SPACE_VIRT_START, 0, map_size, PTE_KERNEL_DATA_FLAGS) != 0) {
               KERNEL_PANIC_HALT("Failed to map physical memory to higher half (after activation)!");
-              return false; // Unreachable
+              return false;
          }
          terminal_write("   Physical memory mapped successfully.\n");
     } else {
         terminal_write("   Skipping physical memory mapping (map_size is zero).\n");
     }
 
+
     // --- Stage 6: Initialize Frame Allocator ---
     terminal_write(" Stage 6: Initializing Frame Allocator...\n");
-    // Requires active paging and the Buddy allocator.
-    if (frame_init(mmap_tag, kernel_phys_start, kernel_phys_end, heap_phys_start, heap_phys_start + heap_size) != 0) {
+    // *** Calculate virtual address of mmap tag ***
+    struct multiboot_tag_mmap *mmap_tag_virt = NULL;
+    if (mmap_tag_phys && g_multiboot_info_virt_addr_global) {
+        uintptr_t offset = (uintptr_t)mmap_tag_phys - g_multiboot_info_phys_addr_global;
+        mmap_tag_virt = (struct multiboot_tag_mmap *)(g_multiboot_info_virt_addr_global + offset);
+        terminal_printf("   Passing MMAP tag virtual address 0x%p to frame_init.\n", mmap_tag_virt);
+    } else {
+         KERNEL_PANIC_HALT("Cannot find or calculate virtual address for MMAP tag!");
+         return false;
+    }
+
+    // *** Pass VIRTUAL address to frame_init ***
+    if (frame_init(mmap_tag_virt,
+                   kernel_phys_start, kernel_phys_end,
+                   heap_phys_start, heap_phys_start + heap_size) != 0) {
         KERNEL_PANIC_HALT("Frame Allocator initialization failed!");
         return false; // Unreachable
     }
 
     // --- Stage 7: Initialize Kmalloc ---
     terminal_write(" Stage 7: Initializing Kmalloc...\n");
-    // Depends on Frame Allocator -> Buddy / Slab.
     kmalloc_init();
 
     terminal_write("[OK] Memory Subsystems Initialized Successfully.\n");

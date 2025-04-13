@@ -22,6 +22,7 @@
  #include "types.h"      // For uintptr_t, size_t, bool, etc.
  #include "spinlock.h"   // For spinlocks
  #include <libc/stdint.h> // For SIZE_MAX, fixed-width types (ensure path is correct)
+#include "paging.h"  
  
  // --- Configuration Checks ---
  
@@ -252,100 +253,102 @@
   * underlying physical memory before calling init.
   * @param region_size Size of the memory region in bytes.
   */
- void buddy_init(void *heap_region_start, size_t region_size) {
-     terminal_printf("[Buddy] Initializing allocator...\n");
-     terminal_printf("  Region Start Virt: 0x%p, Size: %u bytes\n", heap_region_start, region_size);
- 
-     // 1. Basic Sanity Checks
-     if (!heap_region_start || region_size < MIN_BLOCK_SIZE_INTERNAL) {
-         BUDDY_PANIC("Invalid region parameters for buddy_init.");
-         return;
-     }
-     if (MAX_ORDER >= (sizeof(size_t) * 8)) {
-          BUDDY_PANIC("MAX_ORDER is too large for size_t.");
-          return;
-     }
- 
- 
-     // 2. Initialize Free Lists and Locks
-     for (int i = 0; i <= MAX_ORDER; i++) { // Iterate up to MAX_ORDER included
-         free_lists[i] = NULL;
-     }
-     spinlock_init(&g_buddy_lock);
-     #ifdef DEBUG_BUDDY
-     init_tracker_pool();
-     #endif
- 
-     // 3. Align Heap Start and Adjust Size
-     // Ensure the base address used by the buddy system meets the alignment
-     // requirements of the largest possible block (MAX_ORDER).
-     size_t max_block_alignment = (size_t)1 << MAX_ORDER;
-     uintptr_t start_addr = (uintptr_t)heap_region_start;
-     uintptr_t aligned_start_addr = ALIGN_UP(start_addr, max_block_alignment);
-     size_t adjustment = aligned_start_addr - start_addr;
- 
-     if (adjustment >= region_size || (region_size - adjustment) < MIN_BLOCK_SIZE_INTERNAL) {
-         terminal_printf("[Buddy] Error: Not enough space after alignment (Need %u, Adj %u, Have %u).\n",
-                         MIN_BLOCK_SIZE_INTERNAL, adjustment, region_size);
-         g_heap_start_virt_addr = 0; g_heap_end_virt_addr = 0; g_buddy_total_managed_size = 0; g_buddy_free_bytes = 0;
-         return; // Not enough space
-     }
- 
-     size_t available_size = region_size - adjustment;
-     g_heap_start_virt_addr = aligned_start_addr;
-     // Calculate end based on available size, but don't exceed initial region end
-     g_heap_end_virt_addr = aligned_start_addr + available_size;
- 
-     terminal_printf("  Aligned Start Virt: 0x%x, Available Size: %u bytes\n", g_heap_start_virt_addr, available_size);
- 
-     // 4. Add Initial Blocks to Free Lists
-     // Add chunks of the largest possible power-of-two sizes that fit
-     g_buddy_total_managed_size = 0;
-     g_buddy_free_bytes = 0;
-     uintptr_t current_addr = g_heap_start_virt_addr;
- 
-     while (available_size >= MIN_BLOCK_SIZE_INTERNAL) {
-         // Find largest power-of-two block size that fits in remaining space
-         // AND starts at 'current_addr' which has alignment 'max_block_alignment'
-         int order = MAX_ORDER;
-         size_t block_size = (size_t)1 << order;
- 
-         // Ensure block_size calculation didn't wrap/overflow (shouldn't if MAX_ORDER checked)
-         if (block_size == 0 && order > 0) {
-              BUDDY_PANIC("Block size calculation resulted in zero.");
-         }
- 
-         while (block_size > available_size) {
-              if (order == MIN_INTERNAL_ORDER) break; // Cannot go smaller
-             order--;
-             block_size >>= 1;
-         }
- 
-         // We should always find at least MIN_BLOCK_SIZE_INTERNAL if loop condition holds
-         if (block_size < MIN_BLOCK_SIZE_INTERNAL) {
-             // This indicates available_size dropped below minimum, loop should have exited
-             terminal_printf("[Buddy] Warning: Remaining size %u too small in init loop.\n", available_size);
-             break;
-         }
- 
-         terminal_printf("  Adding initial block: Addr=0x%x, Size=%u (Order %d)\n", current_addr, block_size, order);
-         add_block_to_free_list((void*)current_addr, order);
- 
-         g_buddy_total_managed_size += block_size;
-         g_buddy_free_bytes += block_size;
-         current_addr += block_size;
-         available_size -= block_size;
-     }
- 
-      // Adjust heap end to reflect only the memory added to lists
-      g_heap_end_virt_addr = g_heap_start_virt_addr + g_buddy_total_managed_size;
- 
-     terminal_printf("[Buddy] Init done. Managed Addr Range Virt: [0x%x - 0x%x)\n", g_heap_start_virt_addr, g_heap_end_virt_addr);
-     terminal_printf("  Total Managed: %u bytes, Initially Free: %u bytes\n", g_buddy_total_managed_size, g_buddy_free_bytes);
-     if (available_size > 0) {
-         terminal_printf("  (Note: %u bytes potentially unused at end of provided region)\n", available_size);
-     }
- }
+  void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
+    uintptr_t heap_region_phys_start = (uintptr_t)heap_region_phys_start_ptr;
+
+    terminal_printf("[Buddy] Initializing allocator...\n");
+    terminal_printf("  Region Phys Start: 0x%x, Size: %u bytes\n", heap_region_phys_start, region_size);
+
+    // 1. Basic Sanity Checks (as before)
+    if (heap_region_phys_start == 0 || region_size < MIN_BLOCK_SIZE_INTERNAL) {
+        BUDDY_PANIC("Invalid region parameters for buddy_init.");
+        return;
+    }
+     if (MAX_ORDER >= (sizeof(size_t) * 8)) { BUDDY_PANIC("MAX_ORDER too large"); return; }
+
+    // 2. Initialize Free Lists and Locks (as before)
+    for (int i = 0; i <= MAX_ORDER; i++) free_lists[i] = NULL;
+    spinlock_init(&g_buddy_lock);
+    #ifdef DEBUG_BUDDY
+    init_tracker_pool();
+    #endif
+
+    // 3. Align Heap Start (Physical) and Calculate VIRTUAL Start/End
+    size_t max_block_alignment = (size_t)1 << MAX_ORDER;
+    uintptr_t aligned_phys_start_addr = ALIGN_UP(heap_region_phys_start, max_block_alignment);
+    size_t adjustment = aligned_phys_start_addr - heap_region_phys_start;
+
+    if (adjustment >= region_size || (region_size - adjustment) < MIN_BLOCK_SIZE_INTERNAL) {
+        terminal_printf("[Buddy] Error: Not enough space after alignment (Phys).\n");
+        // Clear globals to indicate failure
+        g_heap_start_virt_addr = 0; g_heap_end_virt_addr = 0;
+        g_buddy_total_managed_size = 0; g_buddy_free_bytes = 0;
+        return;
+    }
+
+    size_t available_size = region_size - adjustment;
+
+    // *** CRITICAL FIX: Calculate and store VIRTUAL addresses ***
+    g_heap_start_virt_addr = KERNEL_SPACE_VIRT_START + aligned_phys_start_addr;
+    // Calculate potential virtual end based on available size
+    uintptr_t potential_virt_end = g_heap_start_virt_addr + available_size;
+    // Check for virtual address wrap-around
+    if (potential_virt_end < g_heap_start_virt_addr) {
+        potential_virt_end = UINTPTR_MAX; // Clamp to max if wrapped
+    }
+    // We will adjust g_heap_end_virt_addr later based on actual blocks added
+    g_heap_end_virt_addr = g_heap_start_virt_addr; // Initialize end to start
+
+    terminal_printf("  Aligned Phys Start: 0x%x\n", aligned_phys_start_addr);
+    terminal_printf("  Calculated Virt Start: 0x%x, Available Size: %u bytes\n", g_heap_start_virt_addr, available_size);
+
+    // 4. Add Initial Blocks to Free Lists using VIRTUAL addresses
+    g_buddy_total_managed_size = 0;
+    g_buddy_free_bytes = 0;
+    uintptr_t current_virt_addr = g_heap_start_virt_addr; // Start iterating with VIRTUAL addr
+    size_t remaining_size = available_size;
+
+    while (remaining_size >= MIN_BLOCK_SIZE_INTERNAL) {
+        int order = MAX_ORDER;
+        size_t block_size = (size_t)1 << order;
+        if (block_size == 0 && order > 0) { BUDDY_PANIC("Block size calculation zero."); }
+
+        // Find largest block that fits AND respects alignment relative to VIRTUAL base
+        while ((block_size > remaining_size) ||
+               ((current_virt_addr - g_heap_start_virt_addr) % block_size != 0)) // Alignment check
+        {
+            if (order == MIN_INTERNAL_ORDER) break;
+            order--;
+            block_size >>= 1;
+        }
+
+        if (block_size < MIN_BLOCK_SIZE_INTERNAL) break; // Cannot fit even smallest block
+
+        terminal_printf("  Adding initial block: VirtAddr=0x%x, Size=%u (Order %d)\n", current_virt_addr, block_size, order);
+        // *** Add the VIRTUAL address to the free list ***
+        add_block_to_free_list((void*)current_virt_addr, order);
+
+        g_buddy_total_managed_size += block_size;
+        g_buddy_free_bytes += block_size;
+        current_virt_addr += block_size;
+        remaining_size -= block_size;
+
+        // Check for virtual address wrap on increment
+        if (current_virt_addr < (g_heap_start_virt_addr + g_buddy_total_managed_size)) {
+            terminal_printf("[Buddy] Warning: Virtual address wrapped during init loop.\n");
+            break;
+        }
+    }
+
+    // Set the final virtual end address based on added blocks
+    g_heap_end_virt_addr = g_heap_start_virt_addr + g_buddy_total_managed_size;
+
+    terminal_printf("[Buddy] Init done. Managed Addr Range Virt: [0x%x - 0x%x)\n", g_heap_start_virt_addr, g_heap_end_virt_addr);
+    terminal_printf("  Total Managed: %u bytes, Initially Free: %u bytes\n", g_buddy_total_managed_size, g_buddy_free_bytes);
+    if (remaining_size > 0) {
+         terminal_printf("  (Note: %u bytes potentially unused at end of region due to alignment/size)\n", remaining_size);
+    }
+}
  
  
  // --- Allocation Implementation ---

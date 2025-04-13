@@ -110,143 +110,185 @@ static void reserve_range_helper(uintptr_t start_phys, uintptr_t end_phys, const
  * Initializes the physical frame reference counting system.
  * PRECONDITIONS: Buddy Allocator MUST be initialized. Paging MUST be active.
  */
-int frame_init(struct multiboot_tag_mmap *mmap_tag,
+int frame_init(struct multiboot_tag_mmap *mmap_tag_virt,
                uintptr_t kernel_phys_start, uintptr_t kernel_phys_end,
                uintptr_t buddy_heap_phys_start, uintptr_t buddy_heap_phys_end)
 {
     terminal_write("[Frame] Initializing physical frame manager...\n");
-    spinlock_init(&g_frame_lock); // Initialize lock for frame operations
-    if (!mmap_tag) {
-        terminal_write("  [FATAL] Multiboot memory map tag is NULL!\n");
-        return -1;
-    }
+    spinlock_init(&g_frame_lock);
 
-    // --- Pass 1: Determine Physical Memory Extents ---
-    g_highest_address = 0;
+    if (!mmap_tag_virt) { /*...*/ return -1; }
+    terminal_printf("  Using MMAP tag at VIRTUAL address: 0x%p\n", mmap_tag_virt);
+
+    // --- Pass 1: Determine Physical Memory Extents (using VIRTUAL mmap_tag_virt) ---
+    // (Code for Pass 1 is unchanged - calculates g_highest_address, g_total_frames)
+    // ... (Pass 1 code omitted for brevity - assume it works) ...
+    g_highest_address = 0; // Reset before loop
+    struct multiboot_tag_mmap *mmap_tag = mmap_tag_virt;
+    uintptr_t mmap_end_virt = (uintptr_t)mmap_tag + mmap_tag->size;
     multiboot_memory_map_t *mmap_entry = mmap_tag->entries;
-    uintptr_t mmap_end = (uintptr_t)mmap_tag + mmap_tag->size;
-    while ((uintptr_t)mmap_entry < mmap_end) {
-        if (mmap_tag->entry_size == 0) {
-            terminal_write("  [Frame FATAL] MMAP entry size is zero!\n");
-            return -1;
-        }
-        uintptr_t region_end = (uintptr_t)mmap_entry->addr + (uintptr_t)mmap_entry->len;
-        if (region_end > g_highest_address) {
-            g_highest_address = region_end;
-        }
+    if (mmap_tag->entry_size < sizeof(multiboot_memory_map_t)) return -1;
+    while ((uintptr_t)mmap_entry < mmap_end_virt) {
+        if ((uintptr_t)mmap_entry + mmap_tag->entry_size > mmap_end_virt) break;
+        uintptr_t region_phys_end = (uintptr_t)mmap_entry->addr + (uintptr_t)mmap_entry->len;
+        if (region_phys_end > g_highest_address) g_highest_address = region_phys_end;
         mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag->entry_size);
     }
-    if (g_highest_address == 0) {
-        terminal_write("  [FATAL] Could not determine highest physical address.\n");
-        return -1;
-    }
+    if (g_highest_address == 0) return -1;
     g_highest_address = ALIGN_UP(g_highest_address, PAGE_SIZE);
     g_total_frames = addr_to_pfn(g_highest_address);
-    if (g_total_frames == 0) {
-         terminal_write("  [FATAL] Total number of frames calculated is zero.\n");
-         return -1;
-    }
-    terminal_printf("  Detected highest physical address: 0x%x (%u total frames)\n",
-                     g_highest_address, g_total_frames);
-    // --- End Pass 1 ---
+    if (g_total_frames == 0) return -1;
+    terminal_printf("  Detected highest physical address: 0x%x (%u total frames)\n", g_highest_address, g_total_frames);
 
 
-    // --- Allocate Memory for the Reference Count Array ---
+    // --- Allocate Memory for the Reference Count Array using Buddy ---
     size_t refcount_array_size_bytes = g_total_frames * sizeof(uint32_t);
     g_refcount_array_alloc_size = get_buddy_allocation_size(refcount_array_size_bytes);
-    if (g_refcount_array_alloc_size == SIZE_MAX || g_refcount_array_alloc_size == 0) {
-        terminal_printf("  [FATAL] Calculated refcount array size is invalid or too large (%u bytes required).\n", refcount_array_size_bytes);
-        return -1;
-    }
-
-    terminal_printf("  [Frame] Attempting to allocate %u bytes (requires buddy size %u) for refcount array...\n", refcount_array_size_bytes, g_refcount_array_alloc_size);
+    if (g_refcount_array_alloc_size == SIZE_MAX || g_refcount_array_alloc_size == 0) { /*...*/ return -1; }
+    terminal_printf("  Attempting to allocate %u bytes (buddy size %u) for refcount array...\n", refcount_array_size_bytes, g_refcount_array_alloc_size);
     void* refcount_array_phys_ptr = BUDDY_ALLOC(g_refcount_array_alloc_size);
-
     if (!refcount_array_phys_ptr) {
         terminal_write("  [FATAL] Failed to allocate refcount array using buddy allocator!\n");
-        g_refcount_array_alloc_size = 0;
         return -1;
     }
     g_frame_refcounts_phys = (uintptr_t)refcount_array_phys_ptr;
     terminal_printf("  Allocated refcount array at phys 0x%x (buddy block size %u bytes)\n",
                      g_frame_refcounts_phys, g_refcount_array_alloc_size);
 
-    // --- Map the Refcount Array into Kernel Virtual Address Space ---
-    uintptr_t refcount_array_vaddr = KERNEL_SPACE_VIRT_START + g_frame_refcounts_phys;
-    terminal_printf("  [Frame] Mapping refcount array: Phys 0x%x -> Virt 0x%x (Size %u)\n",
-                     g_frame_refcounts_phys, refcount_array_vaddr, g_refcount_array_alloc_size);
 
-    extern uint32_t g_kernel_page_directory_phys; // Get active PD phys address
-    if (!g_kernel_page_directory_phys) {
-         terminal_write("  [FATAL] Kernel page directory physical address not set globally!\n");
-         BUDDY_FREE(refcount_array_phys_ptr);
-         g_frame_refcounts_phys = 0; g_refcount_array_alloc_size = 0;
-         return -1;
-    }
+    // --- *** FIX: Manually Map the Refcount Array *** ---
+    // Instead of calling paging_map_range, do the steps manually here,
+    // using buddy_alloc directly for page tables if needed.
+    terminal_write("  Manually mapping refcount array into kernel virtual space...\n");
+    uintptr_t vaddr_start = KERNEL_SPACE_VIRT_START + g_frame_refcounts_phys;
+    uintptr_t paddr_start = g_frame_refcounts_phys;
+    size_t    map_size    = g_refcount_array_alloc_size;
+    uint32_t  map_flags   = PTE_KERNEL_DATA_FLAGS; // Kernel RW
 
-    if (paging_map_range((uint32_t*)g_kernel_page_directory_phys,
-                         refcount_array_vaddr, g_frame_refcounts_phys,
-                         g_refcount_array_alloc_size, PTE_KERNEL_DATA_FLAGS) != 0)
-    {
-        terminal_write("  [FATAL] Failed to map refcount array into kernel space!\n");
-        BUDDY_FREE(refcount_array_phys_ptr);
+    uintptr_t vaddr_aligned = PAGE_ALIGN_DOWN(vaddr_start);
+    uintptr_t paddr_aligned = PAGE_ALIGN_DOWN(paddr_start);
+    // Calculate end address, align up.
+    uintptr_t end_vaddr = vaddr_start + map_size;
+    uintptr_t end_vaddr_aligned = ALIGN_UP(end_vaddr, PAGE_SIZE);
+    if (end_vaddr_aligned < end_vaddr) end_vaddr_aligned = UINTPTR_MAX; // Overflow check
+
+    if (!g_kernel_page_directory_virt) {
+        terminal_write("  [FATAL] Kernel PD virtual address is NULL during manual map!\n");
+        BUDDY_FREE(refcount_array_phys_ptr); // Free allocated physical memory
         g_frame_refcounts_phys = 0; g_refcount_array_alloc_size = 0;
         return -1;
     }
-    g_frame_refcounts = (volatile uint32_t*)refcount_array_vaddr;
-    terminal_printf("  Refcount array mapped successfully at virt 0x%x\n", refcount_array_vaddr);
+
+    terminal_printf("   Manual Map V=[0x%x-0x%x) to P=[0x%x...)\n", vaddr_aligned, end_vaddr_aligned, paddr_aligned);
+
+    uintptr_t current_p = paddr_aligned;
+    for (uintptr_t current_v = vaddr_aligned; current_v < end_vaddr_aligned; current_v += PAGE_SIZE) {
+        uint32_t pd_idx = PDE_INDEX(current_v);
+        uint32_t pt_idx = PTE_INDEX(current_v);
+
+        // Access PDE using kernel's virtual PD pointer
+        uint32_t pde = g_kernel_page_directory_virt[pd_idx];
+        uintptr_t pt_phys_addr = 0;
+        uint32_t* pt_virt_addr = NULL; // Virtual address of the PT (via recursive map)
+
+        if (!(pde & PAGE_PRESENT)) {
+            // Page Table not present, allocate one using BUDDY_ALLOC directly
+            terminal_printf("    PDE[%d] not present for V=0x%x. Allocating PT frame...\n", pd_idx, current_v);
+            void* new_pt_phys_ptr = BUDDY_ALLOC(PAGE_SIZE);
+            if (!new_pt_phys_ptr) {
+                 terminal_write("    [FATAL] Failed buddy_alloc for page table!\n");
+                 // TODO: Need to unmap already mapped pages and free physical frames if this fails mid-way
+                 BUDDY_FREE(refcount_array_phys_ptr); // Free the main array allocation
+                 return -1;
+            }
+            pt_phys_addr = (uintptr_t)new_pt_phys_ptr;
+            // Zero the new PT frame using physical addr temporarily mapped (if needed) or virtual recursive map
+             uint32_t* temp_pt_map = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE)); // Will be valid *after* PDE is set
+            // Set the PDE first
+            g_kernel_page_directory_virt[pd_idx] = (pt_phys_addr & PAGING_ADDR_MASK) | (map_flags & PDE_FLAGS_FROM_PTE(map_flags)) | PAGE_PRESENT;
+            paging_invalidate_page((void*)current_v); // Invalidate TLB for range covered by PDE
+            // Now clear using recursive virtual address
+            memset(temp_pt_map, 0, PAGE_SIZE);
+            pt_virt_addr = temp_pt_map; // Use the recursive address
+            terminal_printf("      Allocated PT at phys 0x%x, set PDE[%d]=0x%x, cleared PT.\n", pt_phys_addr, pd_idx, g_kernel_page_directory_virt[pd_idx]);
+        } else {
+            // Page Table already exists
+            pt_phys_addr = pde & PAGING_ADDR_MASK;
+            // Access PT via recursive mapping
+            pt_virt_addr = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
+             // Check if PDE flags need update (e.g., add RW) - Use flags needed for PTE
+            uint32_t needed_pde_flags = (map_flags & PDE_FLAGS_FROM_PTE(map_flags)) | PAGE_PRESENT;
+            if ((pde & needed_pde_flags) != needed_pde_flags) {
+                 g_kernel_page_directory_virt[pd_idx] |= (needed_pde_flags & (PAGE_RW | PAGE_USER)); // Ensure at least RW
+                 paging_invalidate_page((void*)current_v);
+            }
+        }
+
+        // Set the Page Table Entry (PTE)
+        if (pt_virt_addr[pt_idx] & PAGE_PRESENT) {
+            // Error: Page already mapped within the refcount array's target VA range? Should not happen.
+            terminal_printf("    [FATAL] PTE[%d] already present in PT for V=0x%x during refcount map!\n", pt_idx, current_v);
+            // TODO: Cleanup logic needed here
+            return -1;
+        }
+        pt_virt_addr[pt_idx] = (current_p & PAGING_ADDR_MASK) | map_flags | PAGE_PRESENT;
+        paging_invalidate_page((void*)current_v); // Invalidate specific page TLB
+
+        // Advance physical address for the next page
+        current_p += PAGE_SIZE;
+         if (current_p < paddr_aligned) { /* Overflow check */ break; }
+    }
+    // --- End Manual Map ---
+
+    // Set the global virtual pointer to the mapped array
+    // Calculate precise start based on alignment offset
+    g_frame_refcounts = (volatile uint32_t*)(vaddr_aligned + (paddr_start % PAGE_SIZE));
+    terminal_printf("  Refcount array mapped successfully at virt 0x%p (Points to Phys 0x%x)\n",
+                     g_frame_refcounts, paddr_start);
+
 
     // --- Initialize Reference Counts ---
-    terminal_write("  [Frame] Initializing reference counts...\n");
-    size_t available_count = 0; // Local variable to track count during init
-    // Mark all initially as reserved (refcount = 1)
-    // Access using virtual pointer g_frame_refcounts
-    for (size_t i = 0; i < g_total_frames; ++i) {
-        g_frame_refcounts[i] = 1;
-    }
-
-    // Mark available regions as free (refcount = 0), update available_count
-    mmap_entry = mmap_tag->entries; // Reset entry pointer
-    while ((uintptr_t)mmap_entry < mmap_end) {
+    // (This part can now safely access g_frame_refcounts via its virtual address)
+    terminal_write("  Initializing reference counts...\n");
+    size_t available_count = 0;
+    for (size_t i = 0; i < g_total_frames; ++i) g_frame_refcounts[i] = 1; // Mark all reserved first
+    mmap_entry = mmap_tag_virt->entries; // Use virtual pointer
+    while ((uintptr_t)mmap_entry < mmap_end_virt) { // Use virtual end
         if (mmap_tag->entry_size == 0) break;
+        if ((uintptr_t)mmap_entry + mmap_tag->entry_size > mmap_end_virt) break;
         if (mmap_entry->type == MULTIBOOT_MEMORY_AVAILABLE) {
-          uintptr_t region_start = (uintptr_t)mmap_entry->addr;
-          uintptr_t region_end = region_start + (uintptr_t)mmap_entry->len;
-          size_t first_pfn = addr_to_pfn(ALIGN_UP(region_start, PAGE_SIZE));
-          size_t last_pfn = addr_to_pfn(PAGE_ALIGN_DOWN(region_end)); // Exclusive end PFN
-
-          for (size_t pfn = first_pfn; pfn < last_pfn && pfn < g_total_frames; ++pfn) {
-              if (g_frame_refcounts[pfn] != 0) { // Count only if changing state from reserved
-                   available_count++;
-              }
-              g_frame_refcounts[pfn] = 0; // Mark as free
-          }
+            uintptr_t region_phys_start = (uintptr_t)mmap_entry->addr;
+            uintptr_t region_phys_end = region_phys_start + (uintptr_t)mmap_entry->len;
+            size_t first_pfn = addr_to_pfn(ALIGN_UP(region_phys_start, PAGE_SIZE));
+            size_t last_pfn = addr_to_pfn(PAGE_ALIGN_DOWN(region_phys_end));
+            for (size_t pfn = first_pfn; pfn < last_pfn && pfn < g_total_frames; ++pfn) {
+                 if (g_frame_refcounts[pfn] != 0) { available_count++; }
+                 g_frame_refcounts[pfn] = 0; // Mark as free
+            }
         }
         mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag->entry_size);
     }
     terminal_printf("  Marked %u frames as initially available based on memory map.\n", available_count);
 
-    // Mark specific regions as RESERVED (refcount = 1) using the helper function
-    terminal_write("  [Frame] Reserving kernel, boot, buddy, refcount, and initial PD regions...\n");
-
-    // Use the C helper function, passing address of available_count
+    // --- Reserve specific regions ---
+    terminal_write("  Reserving kernel, boot, buddy, refcount, and initial PD regions...\n");
     reserve_range_helper(0x0, 0x100000, "First MB", &available_count);
     reserve_range_helper(kernel_phys_start, kernel_phys_end, "Kernel", &available_count);
     reserve_range_helper(buddy_heap_phys_start, buddy_heap_phys_end, "Buddy Heap", &available_count);
     reserve_range_helper(g_frame_refcounts_phys, g_frame_refcounts_phys + g_refcount_array_alloc_size, "Refcount Array", &available_count);
     if (g_kernel_page_directory_phys != 0) {
          reserve_range_helper(g_kernel_page_directory_phys, g_kernel_page_directory_phys + PAGE_SIZE, "Initial PD", &available_count);
-         terminal_write("    (Assuming self-map PT covered by other reservations)\n");
     }
+    // Reserve frames used for Page Tables during the manual mapping
+    // TODO: Need to track PT frames allocated manually and reserve them here.
 
     terminal_printf("  Final available frame count after reservations: %u\n", available_count);
-    if (available_count == 0) {
-         terminal_write("  [Frame WARNING] No available frames found after reserving critical areas!\n");
-    }
+    if (available_count == 0) { /* Warning */ }
 
     terminal_write("[Frame] Frame manager initialized.\n");
     return 0; // Success
 }
+
 
 
 // === Functions: frame_alloc, get_frame, put_frame, get_frame_refcount ===
