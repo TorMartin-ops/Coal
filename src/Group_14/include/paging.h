@@ -49,8 +49,8 @@ extern "C" {
 #define PTE_KERNEL_DATA_FLAGS     (PAGE_PRESENT | PAGE_RW | PAGE_NX_BIT)      // Kernel RW-, NX
 #define PTE_KERNEL_CODE_FLAGS     (PAGE_PRESENT | PAGE_RW)                  // Kernel RWX (Implicit NX doesn't block kernel, allow RW for now)
 #define PTE_KERNEL_READONLY_FLAGS (PAGE_PRESENT | PAGE_NX_BIT)              // Kernel R--, NX
-#define PTE_USER_DATA_FLAGS       (PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX_BIT) // User RW-, NX
-#define PTE_USER_CODE_FLAGS       (PAGE_PRESENT | PAGE_USER)                // User R-X (No PAGE_RW, No PAGE_NX_BIT)
+#define PTE_USER_DATA_FLAGS (PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX_BIT) // User RW-, NX
+#define PTE_USER_CODE_FLAGS (PAGE_PRESENT | PAGE_USER)               // User R-X (No PAGE_RW, No PAGE_NX_BIT)
 
 #define PDE_FLAGS_FROM_PTE(pte_flags) ((pte_flags) & (PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_PWT | PAGE_PCD))
 

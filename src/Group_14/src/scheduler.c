@@ -50,16 +50,22 @@ int scheduler_add_task(pcb_t *pcb) {
     uint32_t *kstack_vtop = pcb->kernel_stack_vaddr_top; // Use the VIRTUAL top address
 
     // Stack frame for iret (bottom to top on stack):
-    // 1. User SS (Data Segment Selector)
-    *(--kstack_vtop) = USER_DATA_SELECTOR;
+    // 1. User SS (Data Segment Selector) - *** FIX HERE ***
+    *(--kstack_vtop) = 0x23; // USER_DATA_SELECTOR (GDT Index 4 + RPL 3)
+
     // 2. User ESP (Initial User Stack Pointer)
     *(--kstack_vtop) = (uint32_t)pcb->user_stack_top;
-    // 3. EFLAGS (Enable interrupts IF=1, IOPL=0)
-    *(--kstack_vtop) = 0x00000202;
-    // 4. User CS (Code Segment Selector)
-    *(--kstack_vtop) = USER_CODE_SELECTOR;
+
+    // 3. EFLAGS (Enable interrupts IF=1, IOPL=0 for user)
+    *(--kstack_vtop) = 0x00000202; // Ensure IF (bit 9) is 1, IOPL (bits 12-13) is 0
+
+    // 4. User CS (Code Segment Selector) - *** FIX HERE ***
+    *(--kstack_vtop) = 0x1B; // USER_CODE_SELECTOR (GDT Index 3 + RPL 3)
+
     // 5. User EIP (Entry Point of the process)
     *(--kstack_vtop) = pcb->entry_point;
+
+    // ... (rest of the stack setup for context_switch: pushad, segments, etc.) ...
 
     // Stack frame for context_switch restoration (popad, segments)
     // 6. General Purpose Registers (pushad order: EDI, ESI, EBP, ESP_ignore, EBX, EDX, ECX, EAX) - Initialize to 0
@@ -73,10 +79,10 @@ int scheduler_add_task(pcb_t *pcb) {
     *(--kstack_vtop) = 0; // EAX
 
     // 7. Segment Registers (order matching context_switch pushes: GS, FS, ES, DS) - Initialize to user data segment
-    *(--kstack_vtop) = USER_DATA_SELECTOR; // GS
-    *(--kstack_vtop) = USER_DATA_SELECTOR; // FS
-    *(--kstack_vtop) = USER_DATA_SELECTOR; // ES
-    *(--kstack_vtop) = USER_DATA_SELECTOR; // DS
+    *(--kstack_vtop) = 0x23; // GS -> User Data
+    *(--kstack_vtop) = 0x23; // FS -> User Data
+    *(--kstack_vtop) = 0x23; // ES -> User Data
+    *(--kstack_vtop) = 0x23; // DS -> User Data
 
     // 8. EFLAGS (pushed by pushfd in context_switch) - initialize state
     *(--kstack_vtop) = 0x00000202; // Initial flags for kernel mode before switch

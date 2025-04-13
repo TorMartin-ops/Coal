@@ -673,43 +673,49 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     terminal_write("[Kernel] Creating initial user process...\n");
     const char *user_prog_path = "/hello.elf"; // Default user program to load
 
+    // *** START FIX ***
+    bool task_added = false; // Flag to track if a task was successfully added
+
     if (!fs_is_initialized()) {
          terminal_write("  [Info] Filesystem not available, cannot load initial user process.\n");
-         // Without an initial process, the system will just idle.
     } else {
-        // Attempt to create and schedule the initial process
         pcb_t *user_proc_pcb = create_user_process(user_prog_path);
         if (user_proc_pcb) {
             terminal_printf("  [OK] Process created (PID %d) from '%s'. Adding to scheduler.\n", user_proc_pcb->pid, user_prog_path);
-            if (scheduler_add_task(user_proc_pcb) != 0) {
+            // *** Call scheduler_add_task here ***
+            if (scheduler_add_task(user_proc_pcb) == 0) {
+                 terminal_write("  [OK] Initial user process scheduled.\n");
+                 task_added = true; // Mark task as added successfully
+            } else {
                  terminal_printf("  [ERROR] Failed to add initial process (PID %d) to scheduler.\n", user_proc_pcb->pid);
                  destroy_process(user_proc_pcb); // Clean up failed process
-                 KERNEL_PANIC_HALT("Cannot schedule initial process.");
-            } else {
-                 terminal_write("  [OK] Initial user process scheduled.\n");
+                 // Decide whether to panic or continue without a user process
+                 // KERNEL_PANIC_HALT("Cannot schedule initial process.");
             }
         } else {
             terminal_printf("  [ERROR] Failed to create initial user process from '%s'.\n", user_prog_path);
-            // Depending on requirements, this might be a panic:
-            KERNEL_PANIC_HALT("Failed to create initial process.");
+            // Decide whether to panic or continue
+            // KERNEL_PANIC_HALT("Failed to create initial process.");
         }
     }
 
     // 6. Enable Preemption and Start Idle Loop
-    if (get_current_task() != NULL) { // Check if any task was actually added
+   // *** Check the flag before enabling scheduler readiness ***
+    if (task_added) {
         terminal_write("[Kernel] Enabling preemptive scheduling via PIT...\n");
-        pit_set_scheduler_ready(); // Allow PIT handler to call schedule()
+        pit_set_scheduler_ready(); // Now it's safe to call this
     } else {
         terminal_write("[Kernel] No tasks scheduled. Entering simple idle loop.\n");
     }
+    // *** END FIX ***
 
     terminal_write("\n[Kernel] Initialization complete. Enabling interrupts and entering idle task.\n");
     terminal_write("======================================================================\n");
 
-    // The idle task will enable interrupts and halt, waiting for the PIT
-    // or other interrupts to trigger scheduling or handling.
-    kernel_idle_task();
+    // Enable interrupts (usually done just before jumping to idle/first task)
+    asm volatile ("sti");
 
+    kernel_idle_task();
     // --- Code should not be reached beyond kernel_idle_task ---
     KERNEL_PANIC_HALT("Reached end of main() unexpectedly!");
 }
