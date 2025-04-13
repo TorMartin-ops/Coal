@@ -52,6 +52,8 @@ extern "C" {
 #define PTE_USER_DATA_FLAGS       (PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX_BIT) // User RW-, NX
 #define PTE_USER_CODE_FLAGS       (PAGE_PRESENT | PAGE_USER)                // User R-X (No PAGE_RW, No PAGE_NX_BIT)
 
+#define PDE_FLAGS_FROM_PTE(pte_flags) ((pte_flags) & (PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_PWT | PAGE_PCD))
+
 
 // --- Page Table Entry Address Masks (32-bit non-PAE) ---
 #define PAGING_FLAG_MASK          0xFFF   // Lower 12 bits are flags/available
@@ -175,7 +177,6 @@ extern uint32_t g_kernel_page_directory_phys; // Physical address of the kernel'
 
 
 // --- Public Paging Function Prototypes ---
-// (Declarations from previous version - keep them as they were)
 
 bool check_and_enable_pse(void);
 void paging_set_kernel_directory(uint32_t* pd_virt, uint32_t pd_phys);
