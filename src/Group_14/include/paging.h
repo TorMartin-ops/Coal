@@ -61,15 +61,18 @@ extern "C" {
 #define PAGE_LARGE_ALIGN_UP(addr)   (((uintptr_t)(addr) + PAGE_SIZE_LARGE - 1) & ~(PAGE_SIZE_LARGE - 1))
 
 
-// --- Kernel Temporary Mapping Addresses ---
-// Placed high in the virtual address space, within kernel space (> 0xC0000000)
-// Ensure this range doesn't conflict with other high kernel mappings.
-#define TEMP_VMA_AREA_END       0xFFFFFFFF // Top of address space (exclusive)
-#define TEMP_MAP_ADDR_PD        (TEMP_VMA_AREA_END - PAGE_SIZE + 1)         // e.g., 0xFFFF_F000
-#define TEMP_MAP_ADDR_PT        (TEMP_MAP_ADDR_PD - PAGE_SIZE)              // e.g., 0xFFFF_E000
-#define TEMP_MAP_ADDR_PF        (TEMP_MAP_ADDR_PT - PAGE_SIZE)              // e.g., 0xFFFF_D000 (Used in mm.c for page faults)
-#define TEMP_MAP_ADDR_COW_SRC   (TEMP_MAP_ADDR_PF - PAGE_SIZE)              // e.g., 0xFFFF_C000 (Used in mm.c for COW)
-#define TEMP_MAP_ADDR_COW_DST   (TEMP_MAP_ADDR_COW_SRC - PAGE_SIZE)         // e.g., 0xFFFF_B000 (Used in mm.c for COW)
+// --- Kernel Temporary Mapping Addresses (UPDATED) ---
+// Placed high in the virtual address space, but leave room at the top.
+// Example: Use the 0xFFBxxxxx range.
+#define TEMP_VMA_AREA_BASE      0xFFB00000 // Base for temporary VMA addresses
+
+#define TEMP_MAP_ADDR_PD        (TEMP_VMA_AREA_BASE)                // 0xFFB00000
+#define TEMP_MAP_ADDR_PT        (TEMP_VMA_AREA_BASE + PAGE_SIZE)    // 0xFFB01000
+#define TEMP_MAP_ADDR_PF        (TEMP_VMA_AREA_BASE + 2*PAGE_SIZE)  // 0xFFB02000
+#define TEMP_MAP_ADDR_COW_SRC   (TEMP_VMA_AREA_BASE + 3*PAGE_SIZE)  // 0xFFB03000
+#define TEMP_MAP_ADDR_COW_DST   (TEMP_VMA_AREA_BASE + 4*PAGE_SIZE)  // 0xFFB04000
+// Define the exclusive end of the entire temporary area
+#define TEMP_VMA_AREA_END       (TEMP_MAP_ADDR_COW_DST + PAGE_SIZE) // 0xFFB05000
 
 
 // --- CPU State Structure (Used by Page Fault Handler) ---
@@ -142,7 +145,8 @@ int paging_finalize_and_activate(uintptr_t page_directory_phys, uintptr_t total_
  * @param flags Page Table Entry flags (PAGE_PRESENT, PAGE_RW, PAGE_USER).
  * @return 0 on success, negative error code on failure.
  */
-int paging_map_single(uint32_t *page_directory_phys, uint32_t vaddr, uint32_t paddr, uint32_t flags);
+ int paging_map_single(uint32_t *page_directory_phys, uint32_t vaddr, uint32_t paddr, uint64_t flags);
+
 
 /**
  * @brief Maps a range of virtual addresses to a contiguous physical memory range.
@@ -154,7 +158,7 @@ int paging_map_single(uint32_t *page_directory_phys, uint32_t vaddr, uint32_t pa
  * @param flags Page Table Entry flags to apply.
  * @return 0 on success, negative error code on failure.
  */
-int paging_map_range(uint32_t *page_directory_phys, uint32_t virt_start_addr, uint32_t phys_start_addr, uint32_t memsz, uint32_t flags);
+ int paging_map_range(uint32_t *page_directory_phys, uint32_t virt_start_addr, uint32_t phys_start_addr, size_t memsz, uint64_t flags);
 
 /**
  * @brief Creates identity mappings (virtual address = physical address) for a given range.
@@ -164,8 +168,7 @@ int paging_map_range(uint32_t *page_directory_phys, uint32_t virt_start_addr, ui
  * @param flags Page Table Entry flags to apply.
  * @return 0 on success, negative error code on failure.
  */
-int paging_identity_map_range(uint32_t *page_directory_phys, uint32_t start_addr, uint32_t size, uint32_t flags);
-
+ int paging_identity_map_range(uint32_t *page_directory_phys, uint32_t start_addr, size_t size, uint64_t flags); 
 /**
  * @brief Unmaps a range of virtual addresses.
  * Frees associated physical frames using the Frame Allocator (`put_frame`).

@@ -1,106 +1,94 @@
 #ifndef BUDDY_H
 #define BUDDY_H
 
-#include "types.h" // Includes size_t, bool, uintptr_t, etc.
+#include "types.h" // Or stdint.h etc. - This should define size_t
+// #include <stddef.h> // For size_t <-- REMOVE THIS LINE
 
-// Define configuration constants here
-#define MIN_ORDER 5  // Smallest block order (2^5 = 32 bytes) - Ensure (1 << MIN_ORDER) >= DEFAULT_ALIGNMENT
-#define MAX_ORDER 22 // Largest block order (2^22 = 4MB) - ADJUST AS NEEDED
-
-// Define default alignment requirement for the architecture
-#define DEFAULT_ALIGNMENT 8 // e.g., 8 bytes for 32/64-bit systems
+// --- Configuration ---
+#define MIN_ORDER 4   // Smallest block is 2^4 = 16 bytes (adjust as needed)
+#define MAX_ORDER 18  // Largest block is 2^18 = 256 KiB (adjust based on expected max alloc & PAGE_SIZE)
+// Example: If PAGE_SIZE is 4KB (2^12), max order might relate to page allocations.
 #define MIN_BLOCK_SIZE (1 << MIN_ORDER)
+// --- API ---
 
-// --- Optional Debug Feature ---
-// Define DEBUG_BUDDY (e.g., via build flags -DDEBUG_BUDDY) to enable tracking
-// #define DEBUG_BUDDY 1
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
- * @brief Initializes the buddy memory allocator.
+ * @brief Initializes the buddy allocator system.
+ * Must be called once before any allocations.
+ * Assumes the provided memory region is virtually mapped and accessible.
  *
- * Sets up the free lists for the buddy system within the provided memory region.
- * The region must be large enough to hold at least one block of the smallest order.
- *
- * @param heap Pointer to the start of the memory region to manage.
- * @param size The total size of the memory region in bytes.
+ * @param heap_region_start Virtual address of the start of the memory region.
+ * @param region_size Size of the memory region in bytes.
  */
-void buddy_init(void *heap, size_t size);
-
-#ifdef DEBUG_BUDDY
-/**
- * @brief Allocates a block of memory of at least 'size' bytes (Debug Version).
- * Records allocation details for leak detection. Use the BUDDY_ALLOC macro.
- *
- * @param size The minimum number of bytes required.
- * @param file The source file where the allocation is requested.
- * @param line The line number where the allocation is requested.
- * @return Pointer to the allocated memory block (aligned), or NULL if allocation fails.
- */
-void *buddy_alloc_internal(size_t size, const char* file, int line);
-
-/**
- * @brief Frees a block of memory previously allocated by buddy_alloc (Debug Version).
- * Verifies the pointer against the tracking list before freeing. Use the BUDDY_FREE macro.
- *
- * @param ptr Pointer to the memory block to free.
- * @param file The source file where the free is requested.
- * @param line The line number where the free is requested.
- */
-void buddy_free_internal(void *ptr, const char* file, int line);
-
-/**
- * @brief Dumps information about currently tracked (potentially leaked) allocations.
- * Only available when DEBUG_BUDDY is defined.
- */
-void buddy_dump_leaks(void);
-
-// Macros to automatically capture file/line for debugging
-#define BUDDY_ALLOC(size) buddy_alloc_internal(size, __FILE__, __LINE__)
-#define BUDDY_FREE(ptr)   buddy_free_internal(ptr, __FILE__, __LINE__)
-
-#else // !DEBUG_BUDDY
+void buddy_init(void *heap_region_start, size_t region_size);
 
 /**
  * @brief Allocates a block of memory of at least 'size' bytes.
- *
- * The actual allocated block will be a power of two size.
+ * The actual allocated block size will be a power of two.
  *
  * @param size The minimum number of bytes required.
- * @return Pointer to the allocated memory block (aligned), or NULL if allocation fails.
+ * @return Pointer to the allocated memory block, or NULL if allocation fails.
+ * The returned pointer is aligned to DEFAULT_ALIGNMENT.
  */
 void *buddy_alloc(size_t size);
 
 /**
- * @brief Frees a block of memory previously allocated by buddy_alloc.
+ * @brief Frees a previously allocated memory block.
  *
- * @param ptr Pointer to the memory block to free.
- * @param size The original size requested for allocation (used to determine the block order).
- * IMPORTANT: This MUST match the size used for allocation to ensure correct coalescing.
- * Using the debug version (BUDDY_FREE macro) is safer as it tracks the actual size.
+ * @param ptr Pointer to the memory block previously returned by buddy_alloc.
+ * If ptr is NULL, the function does nothing.
  */
-void buddy_free(void *ptr, size_t size); // Non-debug version still needs size for now
+void buddy_free(void *ptr);
 
-// Macros map directly to non-debug functions
-#define BUDDY_ALLOC(size) buddy_alloc(size)
-#define BUDDY_FREE(ptr, size) buddy_free(ptr, size) // Non-debug free requires size
+
+// --- Macros for Debug/Release ---
+#ifdef DEBUG_BUDDY
+    // Internal functions used by macros (or directly for tracker nodes)
+    void *buddy_alloc_internal(size_t size, const char* file, int line);
+    void buddy_free_internal(void *ptr, const char* file, int line);
+    void buddy_dump_leaks(void); // Dumps unfreed allocations
+
+    #define BUDDY_ALLOC(size) buddy_alloc_internal(size, __FILE__, __LINE__)
+    #define BUDDY_FREE(ptr)   buddy_free_internal(ptr, __FILE__, __LINE__)
+    #define BUDDY_DUMP_LEAKS() buddy_dump_leaks()
+
+#else // Release version
+    // Macros map directly to public API
+    #define BUDDY_ALLOC(size) buddy_alloc(size)
+    #define BUDDY_FREE(ptr)   buddy_free(ptr)
+    #define BUDDY_DUMP_LEAKS() do { /* No-op in release */ } while(0)
 
 #endif // DEBUG_BUDDY
 
 
+// --- Statistics ---
+
+typedef struct {
+    size_t total_bytes;       // Total bytes managed by the allocator
+    size_t free_bytes;        // Currently free bytes
+    uint64_t alloc_count;     // Total successful allocations
+    uint64_t free_count;      // Total frees
+    uint64_t failed_alloc_count; // Total failed allocations
+    // Add more detailed stats if needed (e.g., per-order counts)
+} buddy_stats_t;
+
 /**
- * @brief Returns the amount of free memory currently available in the buddy system.
- *
- * @return Total free bytes.
+ * @brief Gets the current amount of free space in the buddy allocator.
+ * @return Number of free bytes.
  */
 size_t buddy_free_space(void);
 
+/**
+ * @brief Gets the total amount of space managed by the buddy allocator.
+ * @return Total number of managed bytes.
+ */
+size_t buddy_total_space(void);
 
-#ifdef __cplusplus
-}
-#endif
+/**
+ * @brief Retrieves current statistics about the buddy allocator.
+ * @param stats Pointer to a buddy_stats_t structure to fill.
+ */
+void buddy_get_stats(buddy_stats_t *stats);
+
 
 #endif // BUDDY_H

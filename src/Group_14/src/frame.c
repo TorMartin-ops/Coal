@@ -1,5 +1,6 @@
 // src/frame.c
 
+#include "kmalloc_internal.h"
 #include "frame.h"
 #include "buddy.h"      // Needs buddy_alloc, buddy_free, MIN_BLOCK_SIZE, MAX_ORDER, DEFAULT_ALIGNMENT
 #include "paging.h"     // Needs paging_map_range, PAGE_SIZE, KERNEL_SPACE_VIRT_START, PTE_KERNEL_DATA
@@ -8,7 +9,6 @@
 #include <libc/stdint.h> // Needs UINT32_MAX, SIZE_MAX
 #include <string.h>      // Needs memset
 #include "types.h"      // Needs uintptr_t, size_t, bool
-#include "kmalloc_internal.h" // Needs ALIGN_UP, PAGE_ALIGN_DOWN
 
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
@@ -179,7 +179,7 @@ int frame_init(struct multiboot_tag_mmap *mmap_tag,
     extern uint32_t g_kernel_page_directory_phys; // Get active PD phys address
     if (!g_kernel_page_directory_phys) {
          terminal_write("  [FATAL] Kernel page directory physical address not set globally!\n");
-         BUDDY_FREE(refcount_array_phys_ptr, g_refcount_array_alloc_size);
+         BUDDY_FREE(refcount_array_phys_ptr);
          g_frame_refcounts_phys = 0; g_refcount_array_alloc_size = 0;
          return -1;
     }
@@ -189,7 +189,7 @@ int frame_init(struct multiboot_tag_mmap *mmap_tag,
                          g_refcount_array_alloc_size, PTE_KERNEL_DATA) != 0)
     {
         terminal_write("  [FATAL] Failed to map refcount array into kernel space!\n");
-        BUDDY_FREE(refcount_array_phys_ptr, g_refcount_array_alloc_size);
+        BUDDY_FREE(refcount_array_phys_ptr);
         g_frame_refcounts_phys = 0; g_refcount_array_alloc_size = 0;
         return -1;
     }
@@ -266,7 +266,7 @@ uintptr_t frame_alloc(void) {
     size_t pfn = addr_to_pfn(phys_addr);
     if (pfn >= g_total_frames) {
         terminal_printf("[Frame] frame_alloc: buddy_alloc returned invalid address 0x%x (PFN %u)!\n", phys_addr, pfn);
-        BUDDY_FREE(phys_addr_void, alloc_size);
+        BUDDY_FREE(phys_addr_void);
         return 0;
     }
     uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
@@ -314,7 +314,7 @@ void put_frame(uintptr_t phys_addr) {
     uint32_t current_count = g_frame_refcounts[pfn];
     if (current_count == 0) {
         spinlock_release_irqrestore(&g_frame_lock, irq_flags);
-        BUDDY_FREE((void*)phys_addr, PAGE_SIZE); // Use macro
+        BUDDY_FREE((void*)phys_addr); // Use macro
     } else {
         spinlock_release_irqrestore(&g_frame_lock, irq_flags);
     }

@@ -119,6 +119,10 @@ typedef unsigned int gid_t;
 #define _GID_T_DEFINED
 #endif
 
+#ifndef DEFAULT_ALIGNMENT
+#define DEFAULT_ALIGNMENT 8 // Define default memory alignment (e.g., 8 bytes)
+#endif
+
 #ifdef __cplusplus
 }
 #endif

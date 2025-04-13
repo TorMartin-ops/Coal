@@ -278,7 +278,7 @@ void kfree(void *ptr) {
              BUDDY_FREE(original_alloc_ptr);
              #else
              // Non-debug buddy free needs the allocated size
-             buddy_free(original_alloc_ptr, allocated_size);
+             buddy_free(original_alloc_ptr);
              #endif
             break;
         default:

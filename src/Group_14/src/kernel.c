@@ -256,7 +256,6 @@ static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
     // Final checks and output assignment
     if (best_heap_size_64 > 0 && best_heap_base != 0) {
         *out_heap_base_addr = best_heap_base;
-        // Clamp heap size to SIZE_MAX if it exceeds the representable range
         if (best_heap_size_64 > (uint64_t)SIZE_MAX) {
             terminal_write("  [Warning] Largest heap region exceeds size_t! Clamping.\n");
             *out_heap_size = SIZE_MAX;
@@ -268,13 +267,33 @@ static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
         return false;
     }
 
-    // Align total memory up to the nearest page boundary
-    *out_total_memory = ALIGN_UP(current_total_memory, PAGE_SIZE);
+    // Calculate and set total memory, handling potential UINTPTR_MAX overflow
+    if (current_total_memory == UINTPTR_MAX) {
+        // If the highest address is already the maximum, use it directly.
+        // Trying to align this up will result in 0.
+        *out_total_memory = UINTPTR_MAX;
+        terminal_write("  [Info] Detected physical memory up to UINTPTR_MAX.\n");
+    } else {
+        // Align total memory up to the nearest page boundary if not max.
+        *out_total_memory = ALIGN_UP(current_total_memory, PAGE_SIZE);
+         // Check if ALIGN_UP resulted in 0 due to overflow near the top.
+         if (*out_total_memory == 0 && current_total_memory > 0) {
+              terminal_printf("  [Warning] ALIGN_UP overflowed for total memory 0x%x. Setting to UINTPTR_MAX.\n", current_total_memory);
+              *out_total_memory = UINTPTR_MAX; // Treat as max address space if alignment wrapped
+         }
+    }
 
-    terminal_printf("  Total Physical Memory Detected: %u MB\n", *out_total_memory / (1024*1024));
+    // Final sanity check: If total memory ended up as 0, something is wrong.
+    if (*out_total_memory == 0 && current_total_memory > 0) {
+         terminal_printf("  [FATAL] Total memory calculation resulted in zero despite finding regions up to 0x%x.\n", current_total_memory);
+         return false;
+    }
+
+
+    terminal_printf("  Total Physical Memory Calculated: 0x%x bytes\n", *out_total_memory);
     terminal_printf("  Selected Heap Region: Phys Addr=0x%x, Size=%u bytes\n",
                     *out_heap_base_addr, *out_heap_size);
-    return true;
+    return true; // <<< Added missing semicolon FIX
 }
 
 
@@ -341,24 +360,24 @@ static bool init_memory(uint32_t mb_info_phys_addr) {
 
     // Map Kernel Region (Identity & Higher Half)
     terminal_printf("   Mapping Kernel ID + Higher Half...\n");
-    if (paging_map_physical(pd_phys_ptr, kernel_phys_start, kernel_phys_end - kernel_phys_start, PTE_KERNEL_DATA, false) != 0)
+    if (paging_map_physical_early(pd_phys_ptr, kernel_phys_start, kernel_phys_end - kernel_phys_start, PTE_KERNEL_DATA, false) != 0)
         KERNEL_PANIC_HALT("Failed to identity map kernel region!");
-    if (paging_map_physical(pd_phys_ptr, kernel_phys_start, kernel_phys_end - kernel_phys_start, PTE_KERNEL_DATA, true) != 0)
+    if (paging_map_physical_early(pd_phys_ptr, kernel_phys_start, kernel_phys_end - kernel_phys_start, PTE_KERNEL_DATA, true) != 0)
         KERNEL_PANIC_HALT("Failed to map kernel to higher half!");
 
     // Map Buddy Heap Region (Identity)
     terminal_printf("   Mapping Buddy Heap ID...\n");
-    if (paging_map_physical(pd_phys_ptr, heap_phys_start, heap_size, PTE_KERNEL_DATA, false) != 0)
+    if (paging_map_physical_early(pd_phys_ptr, heap_phys_start, heap_size, PTE_KERNEL_DATA, false) != 0)
         KERNEL_PANIC_HALT("Failed to identity map buddy heap region!");
 
     // Map VGA Memory (Higher Half)
     terminal_printf("   Mapping VGA Memory Higher Half...\n");
-    if (paging_map_physical(pd_phys_ptr, 0xB8000, PAGE_SIZE, PTE_KERNEL_DATA, true) != 0)
+    if (paging_map_physical_early(pd_phys_ptr, 0xB8000, PAGE_SIZE, PTE_KERNEL_DATA, true) != 0)
         KERNEL_PANIC_HALT("Failed to map VGA memory!");
 
     // Map the Page Directory itself into the higher half (Recursive Mapping Setup)
     terminal_printf("   Mapping Page Directory self Higher Half...\n");
-    if (paging_map_physical(pd_phys_ptr, initial_pd_phys, PAGE_SIZE, PTE_KERNEL_DATA, true) != 0)
+    if (paging_map_physical_early(pd_phys_ptr, initial_pd_phys, PAGE_SIZE, PTE_KERNEL_DATA, true) != 0)
         KERNEL_PANIC_HALT("Failed to map Page Directory to higher half!");
 
     // --- Stage 3: Initialize Buddy Allocator ---
@@ -376,30 +395,24 @@ static bool init_memory(uint32_t mb_info_phys_addr) {
     // --- Stage 4: Pre-map Kernel Temporary VMA Range ---
     terminal_write(" Stage 4: Pre-mapping Kernel temporary VMA range...\n");
     // Use revised definitions from paging.h
-    uintptr_t temp_vma_start = PAGE_ALIGN_DOWN(TEMP_MAP_ADDR_COW_DST); // Lowest temp address used
-    // Calculate end address carefully - it's the start of the PD mapping + PAGE_SIZE
-    uintptr_t temp_vma_end = TEMP_MAP_ADDR_PD + PAGE_SIZE; // End address is exclusive
+    uintptr_t temp_vma_start = TEMP_MAP_ADDR_PD; // Start from the lowest defined temp address (which is TEMP_VMA_AREA_BASE)
+    uintptr_t temp_vma_end = TEMP_VMA_AREA_END; // Use the defined exclusive end
+
     terminal_printf("   Temp Range Virt: [0x%x - 0x%x)\n", temp_vma_start, temp_vma_end);
 
-    // Basic sanity check for the revised temporary range definition
-    if (temp_vma_start >= temp_vma_end || temp_vma_start < KERNEL_SPACE_VIRT_START) {
-        KERNEL_PANIC_HALT("Invalid temporary VMA range definition after revision!");
+    // Basic sanity check for the temporary range definition
+    // Check if start >= end, or if start is below kernel space, or if end wrapped around or went too high.
+    if (temp_vma_start >= temp_vma_end || temp_vma_start < KERNEL_SPACE_VIRT_START || temp_vma_end <= temp_vma_start /* Handle wrap-around */) {
+        KERNEL_PANIC_HALT("Invalid temporary VMA range definition!");
     }
-
-    // --- REMOVED the panic check that was here ---
-    // // Check if start address is below kernel base <-- REMOVED THIS CHECK
-    // if (temp_vma_start < KERNEL_SPACE_VIRT_START) {
-    //     KERNEL_PANIC_HALT("Temporary VMA range starts below kernel base!");
-    // }
 
     // Iterate through pages in the temp range and ensure PTs are allocated
     for (uintptr_t v_addr = temp_vma_start; v_addr < temp_vma_end; v_addr += PAGE_SIZE) {
         uint32_t pde_index = PDE_INDEX(v_addr);
-        // uint32_t pte_index = PTE_INDEX(v_addr); // For logging if needed
 
         // Check if a PDE for this virtual address range already exists in our initial PD
         if (!(pd_phys_ptr[pde_index] & PAGE_PRESENT)) {
-            terminal_printf("   Allocating PT for Temp VMA PDE[%d] (Virt 0x%x)...\n", pde_index, v_addr);
+            // terminal_printf("   Allocating PT for Temp VMA PDE[%d] (Virt 0x%x)...\n", pde_index, v_addr); // Optional: reduce verbosity
 
             // Allocate a physical frame for the Page Table using the Buddy Allocator
             uintptr_t temp_pt_phys = (uintptr_t)BUDDY_ALLOC(PAGE_SIZE);
@@ -411,11 +424,10 @@ static bool init_memory(uint32_t mb_info_phys_addr) {
             memset((void*)temp_pt_phys, 0, PAGE_SIZE);
 
             // Add the PDE entry pointing to the new PT. Kernel R/W, Not User accessible.
-            uint32_t pde_flags = PAGE_PRESENT | PAGE_RW;
+            uint32_t pde_flags = PAGE_PRESENT | PAGE_RW; // Kernel only flags
             pd_phys_ptr[pde_index] = (temp_pt_phys & ~0xFFF) | pde_flags;
-            terminal_printf("     Added PDE[%d] -> PT Phys 0x%x\n", pde_index, temp_pt_phys);
+            // terminal_printf("     Added PDE[%d] -> PT Phys 0x%x\n", pde_index, temp_pt_phys); // Optional: reduce verbosity
         }
-        // If PDE was already present, assume the PT is valid and proceed.
     } // End loop for pre-mapping temp VMA PTs
 
     // --- Stage 5: Finalize Higher-Half Mappings & Activate Paging ---
@@ -569,4 +581,4 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
 
     // --- Code should not be reached beyond kernel_idle_task ---
     KERNEL_PANIC_HALT("Reached end of main() unexpectedly!");
-}
+} // <<< THIS IS LIKELY LINE 421 referred to in the next error

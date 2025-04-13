@@ -143,7 +143,7 @@
      if (SLAB_HEADER_SIZE + cache->internal_slot_size > PAGE_SIZE) {
          terminal_printf("[Slab] Cache '%s': Page size too small for header + one slot (%d + %d > %d).\n",
                         name, (int)SLAB_HEADER_SIZE, (int)cache->internal_slot_size, (int)PAGE_SIZE);
-         buddy_free(cache, sizeof(slab_cache_t));
+         buddy_free(cache);
          return NULL;
      }
  
@@ -192,7 +192,7 @@
      if (slab->objs_this_slab == 0) {
          terminal_printf("[Slab] Cache '%s': Error - Zero objects fit slab after coloring (offset %d, slot size %d).\n",
                         cache->name, slab->color_offset, (int)cache->internal_slot_size);
-         buddy_free(page, PAGE_SIZE); // Free the page
+         buddy_free(page); // Free the page
          return NULL; // Indicate failure
      }
      slab->free_count = slab->objs_this_slab;
@@ -349,7 +349,7 @@
          #ifdef ENABLE_SLAB_RECLAIM
          if (list_changed) {
              spinlock_release_irqrestore(&cache->lock, irq_flags); // Release before buddy_free
-             buddy_free((void*)slab_base, PAGE_SIZE);
+             buddy_free((void*)slab_base);
              return; // Slab memory is gone
          }
          #else
@@ -387,7 +387,7 @@
          while (curr) {
              next = curr->next;
              if (!is_valid_slab(curr)) { /* Log warning */ }
-             else { buddy_free((void *)curr, PAGE_SIZE); freed_count++; }
+             else { buddy_free((void *)curr); freed_count++; }
              curr = next;
          }
          if (i < 2) { irq_flags = spinlock_acquire_irqsave(&cache->lock); } // Re-acquire for next list/final free
@@ -396,7 +396,7 @@
  
      // Re-acquire lock one last time if necessary before freeing cache struct
       irq_flags = spinlock_acquire_irqsave(&cache->lock);
-     buddy_free(cache, sizeof(slab_cache_t));
+     buddy_free(cache);
      local_irq_restore(irq_flags); // Restore IRQs after lock struct is gone
      terminal_printf("[Slab] Cache '%s' destroyed.\n", cache_name_copy);
  }
