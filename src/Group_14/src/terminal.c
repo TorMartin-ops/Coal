@@ -16,7 +16,8 @@
  #include "types.h"
  #include <libc/stdarg.h>       // For va_list, va_start, va_end
  #include <string.h>            // For memset, memcpy, memmove, strlen, strcat
- #include "serial.h"           // <--- Added Include for serial output
+ #include "serial.h"
+ #include <libc/stdint.h> // Ensure uint64_t, int64_t are defined 
 
  /* Fixed tab width (number of spaces per tab) */
  #define TAB_WIDTH   4
@@ -51,6 +52,10 @@
  static void insert_character(char c);
  static int mini_vsnprintf(char *str, size_t size, const char *format, va_list args);
  static int vsnprintf(char *str, size_t size, const char *format, va_list args);
+ static void _reverse(char* str, int len);
+ static int _utoa(uint32_t num, char* str, int base, bool uppercase_hex);
+ static int _itoa(int num, char* str);
+ static int _ulltoa_hex(uint64_t num, char* str, bool uppercase_hex);
 
  /* Internal function that writes a character without affecting interactive input */
  static void terminal_write_char_internal(char c);
@@ -61,83 +66,260 @@
   */
  void terminal_write_char(char c);
 
+
+/* --- Static Helper Function Definitions --- */
+
+// Helper to reverse a string in place
+static void _reverse(char* str, int len) {
+    int i = 0, j = len - 1;
+    while (i < j) {
+        char temp = str[i];
+        str[i] = str[j];
+        str[j] = temp;
+        i++; j--;
+    }
+}
+
+// Helper for 32-bit unsigned integer to ASCII (supports different bases)
+// Returns the number of characters written (excluding null terminator)
+static int _utoa(uint32_t num, char* str, int base, bool uppercase_hex) {
+    int i = 0;
+    const char* digits = uppercase_hex ? "0123456789ABCDEF" : "0123456789abcdef";
+
+    if (base < 2 || base > 16) {
+        str[0] = '\0';
+        return 0;
+    }
+
+    if (num == 0) {
+        str[i++] = '0';
+        str[i] = '\0';
+        return 1;
+    }
+
+    while (num != 0) {
+        int rem = num % base; // Standard 32-bit division/modulo
+        str[i++] = digits[rem];
+        num = num / base;
+    }
+
+    str[i] = '\0';
+    _reverse(str, i);
+    return i;
+}
+// Helper for 32-bit signed integer to ASCII (base 10 only)
+// Returns the number of characters written (excluding null terminator)
+static int _itoa(int num, char* str) {
+    int i = 0;
+    bool is_negative = false;
+    uint32_t unsigned_num;
+
+    if (num == 0) {
+        str[i++] = '0';
+        str[i] = '\0';
+        return 1;
+    }
+
+    if (num < 0) {
+        is_negative = true;
+        // Correctly handle INT_MIN for 32-bit
+        unsigned_num = (num == (-2147483647 - 1)) ? 2147483648U : (uint32_t)(-num);
+    } else {
+        unsigned_num = (uint32_t)num;
+    }
+
+    // Convert the unsigned number to base 10
+    while (unsigned_num != 0) {
+        int rem = unsigned_num % 10;
+        str[i++] = rem + '0';
+        unsigned_num = unsigned_num / 10;
+    }
+
+    if (is_negative) {
+        str[i++] = '-';
+    }
+
+    str[i] = '\0';
+    _reverse(str, i);
+    return i;
+}
+
+// Helper for 64-bit unsigned integer to Hex ASCII
+// Returns the number of characters written (excluding null terminator)
+// **NOTE:** Relies on the compiler providing 64-bit integer division/modulo support.
+static int _ulltoa_hex(uint64_t num, char* str, bool uppercase_hex) {
+    int i = 0;
+    const char* digits = uppercase_hex ? "0123456789ABCDEF" : "0123456789abcdef";
+
+    if (num == 0) {
+        str[i++] = '0';
+        str[i] = '\0';
+        return 1;
+    }
+
+    // Extract hex digits from low to high
+    while (num != 0) {
+        // Use standard C % and / which should invoke compiler helpers for uint64_t
+        int rem = (int)(num % 16);
+        str[i++] = digits[rem];
+        num = num / 16;
+    }
+
+    str[i] = '\0';
+    _reverse(str, i);
+    return i;
+}
+
+static int vsnprintf(char *str, size_t size, const char *format, va_list args) {
+    return mini_vsnprintf(str, size, format, args);
+}
+
+
  /* --- Minimal vsnprintf Implementation --- */
- static int mini_vsnprintf(char *str, size_t size, const char *format, va_list args) {
-     size_t i = 0, j = 0;
-     char temp[32];
-     while (format[i] && j < size - 1) {
-         if (format[i] != '%') {
-             str[j++] = format[i++];
-         } else {
-             i++;
-             if (format[i] == 's') {
-                 char *s = va_arg(args, char*);
-                 // Safety check for null pointer
-                 if (!s) s = "(null)";
-                 while (*s && j < size - 1) {
-                     str[j++] = *s++;
-                 }
-                 i++;
-             } else if (format[i] == 'd') {
-                 int d = va_arg(args, int);
-                 int k = 0;
-                 // Handle negative numbers, including INT_MIN potentially
-                 unsigned int ud = (unsigned int)d;
-                 if (d < 0) {
-                    if (j < size - 1) str[j++] = '-';
-                     // Careful with negation of INT_MIN
-                     ud = (d == (-2147483647 - 1)) ? (unsigned int)2147483648U : (unsigned int)(-d);
-                 }
+/* --- Revised Minimal vsnprintf Implementation (with %llx) --- */
+// Supports: %s, %d, %u, %x, %X, %p, %%, %llx, %llX
+// Does NOT support width, precision, other flags, other length modifiers.
+// NOTE: %lld / %llu are NOT fully supported due to 64-bit decimal complexity.
+static int mini_vsnprintf(char *str, size_t size, const char *format, va_list args) {
+    if (!str || size == 0) return 0;
 
-                 if (ud == 0) {
-                     temp[k++] = '0';
-                 } else {
-                     while (ud) {
-                         temp[k++] = '0' + (ud % 10);
-                         ud /= 10;
-                     }
-                 }
-                 while (k-- > 0 && j < size - 1) {
-                     str[j++] = temp[k];
-                 }
-                 i++;
-             } else if (format[i] == 'x') {
-                 unsigned int x = va_arg(args, unsigned int);
-                 int k = 0;
-                 if (x == 0) {
-                     temp[k++] = '0';
-                 } else {
-                     while (x) {
-                         int rem = x % 16;
-                         temp[k++] = (rem < 10) ? ('0' + rem) : ('a' + rem - 10);
-                         x /= 16;
-                     }
-                 }
-                 // Add "0x" prefix if space allows
-                 if (j < size - 3) { str[j++] = '0'; str[j++] = 'x';}
-                 while (k-- > 0 && j < size - 1) {
-                     str[j++] = temp[k];
-                 }
-                 i++;
-             } else if (format[i] == '%') {
-                 str[j++] = '%';
-                 i++;
-             } else { // Unknown format specifier
-                 str[j++] = '%';
-                 if (format[i] && j < size - 1) { // Print the unknown char too
-                      str[j++] = format[i];
-                 }
-                 if (format[i]) i++;
-             }
-         }
-     }
-     str[j] = '\0';
-     return j;
- }
+    size_t written = 0;
+    char temp_buf[65]; // Buffer for number conversions (64 bits hex + null)
+    bool is_long_long = false; // Track 'll' modifier
 
- static int vsnprintf(char *str, size_t size, const char *format, va_list args) {
-     return mini_vsnprintf(str, size, format, args);
- }
+    while (*format && written < size - 1) {
+        if (*format != '%') {
+            str[written++] = *format++;
+            continue;
+        }
+
+        // --- Process flags after '%' ---
+        format++; // Skip '%'
+        is_long_long = false;
+
+        // Check for 'll' modifier (basic check)
+        if (format[0] == 'l' && format[1] == 'l') {
+            is_long_long = true;
+            format += 2;
+        }
+        // Add checks for other modifiers (l, h, hh, etc.) here if needed
+
+        // --- Process specifier ---
+        switch (*format) {
+            case 's': {
+                // Ignore 'll' for strings
+                const char *s_arg = va_arg(args, const char *);
+                if (!s_arg) s_arg = "(null)";
+                while (*s_arg && written < size - 1) {
+                    str[written++] = *s_arg++;
+                }
+                break;
+            }
+            case 'd': {
+                if (is_long_long) {
+                    // --- 64-bit Signed Decimal (%lld) ---
+                    // NOT IMPLEMENTED - Complex 64-bit division/modulo required.
+                    // Fallback: Print as hex or placeholder
+                    long long lld_arg = va_arg(args, long long); // Get 64-bit arg
+                    const char* msg = "[lld NI]"; // Not Implemented placeholder
+                    for(int k=0; msg[k] && written < size -1; ++k) str[written++] = msg[k];
+                    // Alternative: Print as hex
+                    // int len = _ulltoa_hex((uint64_t)lld_arg, temp_buf, false); // Print as hex
+                    // if (lld_arg < 0 && written < size -1) str[written++] = '-'; // Basic sign handling
+                    // for (int k = 0; k < len && written < size - 1; k++) str[written++] = temp_buf[k];
+                } else {
+                    // 32-bit Signed Decimal (%d)
+                    int d_arg = va_arg(args, int);
+                    int len = _itoa(d_arg, temp_buf);
+                    for (int k = 0; k < len && written < size - 1; k++) {
+                        str[written++] = temp_buf[k];
+                    }
+                }
+                break;
+            }
+            case 'u': {
+                if (is_long_long) {
+                    // --- 64-bit Unsigned Decimal (%llu) ---
+                    // NOT IMPLEMENTED - Complex 64-bit division/modulo required.
+                    // Fallback: Print as hex or placeholder
+                    unsigned long long llu_arg = va_arg(args, unsigned long long); // Get 64-bit arg
+                    const char* msg = "[llu NI]"; // Not Implemented placeholder
+                    for(int k=0; msg[k] && written < size -1; ++k) str[written++] = msg[k];
+                    // Alternative: Print as hex
+                    // int len = _ulltoa_hex(llu_arg, temp_buf, false);
+                    // for (int k = 0; k < len && written < size - 1; k++) str[written++] = temp_buf[k];
+                } else {
+                    // 32-bit Unsigned Decimal (%u)
+                    unsigned int u_arg = va_arg(args, unsigned int);
+                    int len = _utoa(u_arg, temp_buf, 10, false);
+                    for (int k = 0; k < len && written < size - 1; k++) {
+                        str[written++] = temp_buf[k];
+                    }
+                }
+                break;
+            }
+            case 'x': // Lowercase hex
+            case 'X': { // Uppercase hex
+                bool uppercase = (*format == 'X');
+                if (is_long_long) {
+                    // --- 64-bit Hex (%llx, %llX) ---
+                    unsigned long long llx_arg = va_arg(args, unsigned long long);
+                    int len = _ulltoa_hex(llx_arg, temp_buf, uppercase);
+                    // Optional "0x" prefix
+                    // if (written < size - 3) { str[written++] = '0'; str[written++] = 'x'; }
+                    for (int k = 0; k < len && written < size - 1; k++) {
+                        str[written++] = temp_buf[k];
+                    }
+                } else {
+                    // 32-bit Hex (%x, %X)
+                    unsigned int x_arg = va_arg(args, unsigned int);
+                    int len = _utoa(x_arg, temp_buf, 16, uppercase);
+                    // Optional "0x" prefix
+                    // if (written < size - 3) { str[written++] = '0'; str[written++] = 'x'; }
+                    for (int k = 0; k < len && written < size - 1; k++) {
+                        str[written++] = temp_buf[k];
+                    }
+                }
+                break;
+            }
+            case 'p': { // Pointer (%p) - Ignore 'll' modifier
+                void* p_arg = va_arg(args, void*);
+                uintptr_t ptr_val = (uintptr_t)p_arg;
+                if (written < size - 3) { str[written++] = '0'; str[written++] = 'x'; }
+                int len = _utoa(ptr_val, temp_buf, 16, false);
+                int padding = 8 - len; // Pad 32-bit pointers to 8 digits
+                for (int p = 0; p < padding && written < size - 1; ++p) str[written++] = '0';
+                for (int k = 0; k < len && written < size - 1; k++) str[written++] = temp_buf[k];
+                break;
+            }
+            case '%': { // Literal '%%'
+                str[written++] = '%';
+                break;
+            }
+            default: // Unknown format specifier
+                str[written++] = '%';
+                // Print modifier if present
+                if (is_long_long) {
+                     if (written < size - 1) str[written++] = 'l';
+                     if (written < size - 1) str[written++] = 'l';
+                }
+                // Print the unknown specifier char itself
+                if (*format && written < size - 1) {
+                    str[written++] = *format;
+                }
+                break;
+        } // End switch(*format)
+
+        // Ensure we advance format pointer past the specifier
+        if (*format) {
+             format++;
+        }
+
+    } // End while loop
+
+    str[written] = '\0'; // Null-terminate
+    return written;
+}
 
  /* --- Terminal Output Global State --- */
  static uint8_t terminal_color = 0x07;    // Light gray on black.
@@ -391,14 +573,15 @@
  /**
   * terminal_printf - Formatted printing.
   */
- void terminal_printf(const char* format, ...) {
-     va_list args;
-     va_start(args, format);
-     char buf[128]; // Use a static buffer for simplicity
-     vsnprintf(buf, sizeof(buf), format, args);
-     terminal_write(buf); // terminal_write handles dual output
-     va_end(args);
- }
+  void terminal_printf(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    char buf[128]; // Static buffer size might still be limiting
+    // Use the internal vsnprintf wrapper which calls mini_vsnprintf
+    vsnprintf(buf, sizeof(buf), format, args);
+    terminal_write(buf); // terminal_write handles dual output (VGA + Serial)
+    va_end(args);
+}
 
  /**
   * terminal_print_key_event - Prints a formatted key event (for debugging).

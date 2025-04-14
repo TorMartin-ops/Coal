@@ -848,28 +848,38 @@
      if (end_idx > TABLES_PER_DIR) end_idx = TABLES_PER_DIR;
  
      for (uint32_t idx = start_idx; idx < end_idx; ++idx) {
-         uint32_t pde = pd_ptr[idx];
-         uintptr_t va = (uintptr_t)idx << PAGING_PDE_SHIFT; // Virtual address range covered by this PDE
- 
-         if (pde & PAGE_PRESENT) {
-             terminal_printf(" PDE[%4u] (V~0x%08x): 0x%08x (P=%d RW=%d US=%d PS=%d",
-                             idx,
-                             va,
-                             pde,
-                             (pde & PAGE_PRESENT) ? 1 : 0,
-                             (pde & PAGE_RW) ? 1 : 0,
-                             (pde & PAGE_USER) ? 1 : 0,
-                             (pde & PAGE_SIZE_4MB) ? 1 : 0);
-             if (pde & PAGE_SIZE_4MB) {
-                  terminal_printf(" Frame=0x%x)\n", pde & PAGING_PDE_ADDR_MASK_4MB);
-             } else {
-                  terminal_printf(" PT=0x%x)\n", pde & PAGING_PDE_ADDR_MASK_4KB);
-             }
-         } else {
-             // Optionally print non-present entries too
-             // terminal_printf(" PDE[%4u] (V~0x%08x): 0x%08x (Not Present)\n", idx, va, pde);
-         }
-     }
+        uint32_t pde = pd_ptr[idx];
+        uintptr_t va = (uintptr_t)idx << PAGING_PDE_SHIFT;
+   
+        if (pde & PAGE_PRESENT) {
+            // *** CORRECTED PRINTF ***
+            terminal_printf(" PDE[%4u] (V~0x%08x): 0x%08x (P=%d RW=%d US=%d PS=%d",
+                            idx,
+                            va,
+                            pde,
+                            (pde & PAGE_PRESENT) ? 1 : 0,  // Print 1 or 0
+                            (pde & PAGE_RW) ? 1 : 0,       // Print 1 or 0
+                            (pde & PAGE_USER) ? 1 : 0,      // Print 1 or 0
+                            (pde & PAGE_SIZE_4MB) ? 1 : 0); // Print 1 or 0
+            // Add prints for other flags (PWT, PCD, A, D, G, NX) if needed, using the same pattern
+            // terminal_printf(" PWT=%d PCD=%d A=%d D=%d G=%d NX=%d",
+            //                 (pde & PAGE_PWT) ? 1 : 0,
+            //                 (pde & PAGE_PCD) ? 1 : 0,
+            //                 (pde & PAGE_ACCESSED) ? 1 : 0,
+            //                 (pde & PAGE_DIRTY) ? 1 : 0,    // Note: Dirty bit only meaningful in PTE for 4KB pages
+            //                 (pde & PAGE_GLOBAL) ? 1 : 0,
+            //                 (pde & PAGE_NX_BIT) ? 1 : 0); // Note: NX bit only meaningful in PTE
+   
+            if (pde & PAGE_SIZE_4MB) {
+                 terminal_printf(" Frame=0x%x)\n", pde & PAGING_PDE_ADDR_MASK_4MB);
+            } else {
+                 terminal_printf(" PT=0x%x)\n", pde & PAGING_PDE_ADDR_MASK_4KB);
+            }
+        } else {
+            // Optionally print non-present entries too
+            // terminal_printf(" PDE[%4u] (V~0x%08x): 0x%08x (Not Present)\n", idx, va, pde);
+        }
+    }
      terminal_write("------------------------\n");
  }
  
@@ -891,7 +901,7 @@
      // RECURSIVE_PDE_INDEX is typically 1023 (0x3FF)
      // RECURSIVE_PDE_VADDR is typically 0xFFC00000 (base address for accessing page tables)
      // RECURSIVE_PD_VADDR is typically 0xFFFFF000 (base address for accessing page directory itself)
-     uint32_t recursive_pde_flags = PAGE_PRESENT | PAGE_RW; // Kernel RW access
+     uint32_t recursive_pde_flags = PAGE_PRESENT | PAGE_RW| PAGE_NX_BIT; // Kernel RW access
      pd_phys_ptr[RECURSIVE_PDE_INDEX] = (page_directory_phys & ~0xFFF) | recursive_pde_flags;
  
      terminal_printf("  Set recursive PDE[%d] to point to PD Phys=0x%x (Value=0x%x)\n",
@@ -1507,7 +1517,7 @@ int paging_map_range(uint32_t *page_directory_phys,
          // terminal_printf("[GetPhys] 4KB PTE Found: V=0x%x -> P=0x%x\n", vaddr, *paddr_out);
      }
  
- cleanup_get_phys:
+     cleanup_get_phys:
      // 7. Unmap temporary PT and PD
      if (target_pt_virt_temp) {
          kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_SRC);
