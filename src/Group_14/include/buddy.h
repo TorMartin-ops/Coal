@@ -6,7 +6,7 @@
 
 // --- Configuration ---
 #define MIN_ORDER 4   // Smallest block is 2^4 = 16 bytes (adjust as needed)
-#define MAX_ORDER 18  // Largest block is 2^18 = 256 KiB (adjust based on expected max alloc & PAGE_SIZE)
+#define MAX_ORDER 23
 // Example: If PAGE_SIZE is 4KB (2^12), max order might relate to page allocations.
 #define MIN_BLOCK_SIZE (1 << MIN_ORDER)
 // --- API ---

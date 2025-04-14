@@ -14,7 +14,7 @@
 static bool fs_initialized = false;
 
 /* Default filesystem type for the root mount */
-static const char *default_fs = "FAT32"; // Or "FAT16" if your disk image is FAT16
+static const char *default_fs = "FAT"; // Or "FAT16" if your disk image is FAT16
 
 /**
  * fs_init:

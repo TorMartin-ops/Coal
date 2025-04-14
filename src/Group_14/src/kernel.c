@@ -55,6 +55,7 @@
 #include "get_cpu_id.h"     // Function to get current CPU ID
 #include "cpuid.h"          // CPUID instruction helper
 #include "kmalloc_internal.h" // For ALIGN_UP, potentially others
+#include "serial.h"
 
 // === Constants ===
 #define MULTIBOOT2_BOOTLOADER_MAGIC 0x36d76289
@@ -620,6 +621,8 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     // Store Multiboot info address globally FIRST - needed by early memory init
     g_multiboot_info_phys_addr_global = mb_info_phys_addr;
 
+    serial_init();
+
     // 1. Early Initialization (Console, CPU Features, Core Tables)
     terminal_init(); // Initialize console output ASAP
     terminal_write("=== UiAOS Kernel Booting ===\n");
@@ -675,7 +678,7 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
 
     // *** START FIX ***
     bool task_added = false; // Flag to track if a task was successfully added
-
+    terminal_printf(" [Debug] FS Check before loading user process: fs_is_initialized() returns %d\n", fs_is_initialized());
     if (!fs_is_initialized()) {
          terminal_write("  [Info] Filesystem not available, cannot load initial user process.\n");
     } else {

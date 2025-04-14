@@ -715,8 +715,6 @@
                  return -1; // Overwriting a different mapping is not allowed here
              }
          }
-         terminal_printf("EARLY_MAP DEBUG: V=0x%x -> P=0x%x | Setting PTE[%d] in PT@Phys=0x%x = 0x%08x\n",
-            target_vaddr, current_phys, pt_idx, pt_phys_addr, new_pte);
      
  
          // Set the PTE in the physically accessed Page Table
@@ -1061,8 +1059,8 @@ static int map_page_internal(uint32_t *target_page_directory_phys, // Physical a
     }
 
     // *** START DEBUG LOGGING ***
-    terminal_printf("MAP_INT PRE-CHECK: V=0x%x->P=0x%x UseLarge=%d | InputFlags=0x%x EffFlags=0x%x BaseFlags=0x%x PDEFlags=0x%x PTEFlags=0x%x\n",
-                    aligned_vaddr, aligned_paddr, use_large_page, flags, effective_flags, base_flags, pde_final_flags, pte_final_flags);
+    //terminal_printf("MAP_INT PRE-CHECK: V=0x%x->P=0x%x UseLarge=%d | InputFlags=0x%x EffFlags=0x%x BaseFlags=0x%x PDEFlags=0x%x PTEFlags=0x%x\n",
+                    //aligned_vaddr, aligned_paddr, use_large_page, flags, effective_flags, base_flags, pde_final_flags, pte_final_flags);
     // *** END DEBUG LOGGING ***
 
     // --- Modify Page Directory / Page Table ---
@@ -1082,8 +1080,8 @@ static int map_page_internal(uint32_t *target_page_directory_phys, // Physical a
                 return -1;
             }
             // *** DEBUG LOGGING ***
-            terminal_printf("MAP_INT DEBUG 4MB: V=0x%x -> P=0x%x | Setting PDE[%d] = 0x%08x\n",
-                            aligned_vaddr, aligned_paddr, pd_idx, new_pde_val_4mb);
+            //terminal_printf("MAP_INT DEBUG 4MB: V=0x%x -> P=0x%x | Setting PDE[%d] = 0x%08x\n",
+                            //aligned_vaddr, aligned_paddr, pd_idx, new_pde_val_4mb);
             // *** END DEBUG LOGGING ***
             g_kernel_page_directory_virt[pd_idx] = new_pde_val_4mb;
             paging_invalidate_page((void*)aligned_vaddr);

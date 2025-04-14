@@ -13,6 +13,7 @@
 
 
 // --- Virtual Memory Area (VMA) Flags ---
+#define VM_USER         0x0080
 #define VM_READ         0x0001
 #define VM_WRITE        0x0002
 #define VM_EXEC         0x0004
