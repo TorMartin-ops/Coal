@@ -187,49 +187,80 @@
   * @param path The absolute path to resolve.
   * @return Pointer to the best matching mount_t, or NULL if no suitable mount point found.
   */
- static mount_t *find_best_mount_for_path(const char *path) {
-     if (!path || path[0] != '/') {
-         VFS_ERROR("Invalid or non-absolute path passed to find_best_mount_for_path: '%s'", path ? path : "NULL");
-         return NULL;
-     }
- 
-     mount_t *best_match = NULL;
-     size_t best_len = 0;
- 
-     // Get the head of the global list (requires modification to mount_table.c or uses a trick)
-     mount_t *curr = get_mount_list_head(); // Assumes this returns the head
- 
-     while (curr) {
-         // Pre-calculate or get length if mount_t stores it
-         size_t current_mount_point_len = strlen(curr->mount_point);
- 
-         // Check if path starts with the mount point
-         if (strncmp(path, curr->mount_point, current_mount_point_len) == 0) {
-             // Check for valid matches: exact, subdirectory, or root '/'
-             bool is_exact_match = (path[current_mount_point_len] == '\0');
-             bool is_subdir_match = (path[current_mount_point_len] == '/');
-             bool is_root_mount = (current_mount_point_len == 1 && curr->mount_point[0] == '/');
- 
-             if (is_exact_match || is_subdir_match || is_root_mount) {
-                 // This is a valid match. Is it the best (longest) one so far?
-                 if (current_mount_point_len > best_len) {
-                     best_match = curr;
-                     best_len = current_mount_point_len;
-                 }
-                 // Optional refinement: if lengths are equal, prefer non-root mount? (Can be complex)
-             }
-         }
-         curr = curr->next; // Move to the next node in the global list
-     }
- 
-     if (best_match) {
-         VFS_DEBUG_LOG("Path '%s' matched to mount point '%s'", path, best_match->mount_point);
-     } else {
-         VFS_ERROR("No mount point found for path '%s'", path);
-     }
- 
-     return best_match;
- }
+  static mount_t *find_best_mount_for_path(const char *path) {
+    if (!path || path[0] != '/') {
+        terminal_printf("[VFS find_best_mount] Error: Invalid path '%s'\n", path ? path : "NULL");
+        return NULL;
+    }
+
+    terminal_printf("[VFS find_best_mount] Searching for path: '%s'\n", path); // DEBUG
+
+    mount_t *best_match = NULL;
+    size_t best_len = 0;
+    mount_t *curr = get_mount_list_head();
+
+    if (!curr) {
+        terminal_printf("[VFS find_best_mount] Mount list is empty!\n"); // DEBUG
+        return NULL;
+    }
+
+    while (curr) {
+        // --- Add Debugging ---
+        terminal_printf("  Checking mount point: '%s' (len %u)\n",
+                        curr->mount_point ? curr->mount_point : "<NULL>",
+                        curr->mount_point ? strlen(curr->mount_point) : 0);
+        // --- End Debugging ---
+
+        if (!curr->mount_point) { // Safety check
+             terminal_printf("  Skipping mount entry with NULL mount_point.\n");
+             curr = curr->next;
+             continue;
+        }
+
+        size_t current_mount_point_len = strlen(curr->mount_point);
+        int cmp_result = strncmp(path, curr->mount_point, current_mount_point_len);
+
+        terminal_printf("    strncmp result: %d\n", cmp_result); // DEBUG
+
+        if (cmp_result == 0) {
+            bool is_exact_match = (path[current_mount_point_len] == '\0');
+            // Handle root mount point "/" carefully for subdirectory match
+            bool is_subdir_match = (current_mount_point_len == 1 && curr->mount_point[0] == '/')
+                                     ? (path[1] == '/' || path[1] != '\0') // For root, any non-empty path matches subdir conceptually
+                                     : (path[current_mount_point_len] == '/');
+            bool is_root_mount = (current_mount_point_len == 1 && curr->mount_point[0] == '/');
+
+            // --- Add Debugging ---
+            terminal_printf("    Match Check: exact=%d, subdir=%d, root_mount=%d\n",
+                            is_exact_match, is_subdir_match, is_root_mount);
+            // --- End Debugging ---
+
+            if (is_exact_match || is_subdir_match || is_root_mount) {
+                 terminal_printf("    Potential Match Found!\n"); // DEBUG
+                if (current_mount_point_len > best_len) {
+                    terminal_printf("    Updating best_match (len %u > %u)\n",
+                                    current_mount_point_len, best_len); // DEBUG
+                    best_match = curr;
+                    best_len = current_mount_point_len;
+                } else {
+                     terminal_printf("    Not updating best_match (len %u <= %u)\n",
+                                     current_mount_point_len, best_len); // DEBUG
+                }
+            } else {
+                 terminal_printf("    strncmp matched, but not exact/subdir/root.\n"); // DEBUG
+            }
+        }
+        curr = curr->next;
+    }
+
+    if (best_match) {
+        terminal_printf("[VFS find_best_mount] Found best match: '%s'\n", best_match->mount_point);
+    } else {
+        terminal_printf("[VFS find_best_mount] No suitable mount point found for path '%s'.\n", path); // Changed from ERROR to INFO
+    }
+
+    return best_match;
+}
  
  
  /**

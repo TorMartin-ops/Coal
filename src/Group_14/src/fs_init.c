@@ -23,61 +23,48 @@ static const char *default_fs = "FAT"; // Or "FAT16" if your disk image is FAT16
  * - Registering available filesystem drivers.
  * - Mounting the root filesystem.
  */
-int fs_init(void)
-{
-    if (fs_initialized) {
-        terminal_write("[FS_INIT] Warning: File system already initialized.\n");
-        return FS_SUCCESS; // Return success instead of error if already initialized
-    }
-
-    terminal_write("[FS_INIT] Starting file system initialization...\n");
-
-    /* Initialize the VFS layer */
-    terminal_write("[FS_INIT] Initializing VFS layer...\n");
-    vfs_init();
-
-    /* Register filesystem drivers. */
-    terminal_write("[FS_INIT] Registering FAT filesystem driver...\n");
-    int reg_result = fat_register_driver();
-    if (reg_result != 0) {
-        terminal_printf("[FS_INIT] Error: FAT driver registration failed with code %d.\n", reg_result);
-        // This is fatal - if we can't register filesystem drivers, we can't proceed
-        return FS_ERR_UNKNOWN;
-    }
-    terminal_write("[FS_INIT] FAT driver registered successfully.\n");
-    
-    // Register other drivers (e.g., ext2_register_driver()) here if needed.
-
-    /* Determine the root device.
-     * In production, this would be obtained from boot configuration.
-     */
-    const char *root_device = "hdb"; // Primary slave as connected via -hdb in QEMU
-
-    terminal_printf("[FS_INIT] Attempting to mount root FS (%s) on device '%s' at '/'\n", default_fs, root_device);
-
-    /* Mount the root filesystem. */
-    int mount_result = vfs_mount_root("/", default_fs, root_device);
-    if (mount_result != 0) {
-        terminal_printf("[FS_INIT] Error: Root file system mount failed for device '%s' with code %d.\n", 
-                      root_device, mount_result);
-        
-        // Try to perform a clean shutdown of the VFS layer
-        terminal_write("[FS_INIT] Attempting to clean up after mount failure...\n");
-        vfs_shutdown();
-        
-        return FS_ERR_MOUNT;
-    }
-
-    fs_initialized = true;
-    terminal_write("[FS_INIT] File system initialization complete.\n");
-    
-    // Print mount table for debugging
-    terminal_write("[FS_INIT] Current mount points:\n");
-    list_mounts();
-    
-    return FS_SUCCESS;
-}
-
+ int fs_init(void)
+ {
+     if (fs_initialized) {
+         terminal_write("[FS_INIT] Warning: File system already initialized.\n");
+         return FS_SUCCESS;
+     }
+     terminal_write("[FS_INIT] Starting file system initialization...\n");
+     terminal_write("[FS_INIT] Initializing VFS layer...\n");
+     vfs_init();
+     terminal_write("[FS_INIT] Registering FAT filesystem driver...\n");
+     int reg_result = fat_register_driver();
+     if (reg_result != 0) {
+         terminal_printf("[FS_INIT] Error: FAT driver registration failed with code %d.\n", reg_result);
+         return FS_ERR_UNKNOWN;
+     }
+     terminal_write("[FS_INIT] FAT driver registered successfully.\n");
+ 
+     const char *root_device = "hdb";
+ 
+     // --- FIX: Check default_fs before printing and using ---
+     terminal_printf("[FS_INIT] Attempting to mount root FS (%s) on device '%s' at '/'\n",
+                     default_fs ? default_fs : "<NULL>", // Use ternary for safety
+                     root_device);
+ 
+     int mount_result = vfs_mount_root("/", default_fs, root_device); // Pass default_fs
+     // --- End Fix ---
+ 
+     if (mount_result != 0) {
+         terminal_printf("[FS_INIT] Error: Root file system mount failed for device '%s' with code %d.\n",
+                       root_device, mount_result);
+         terminal_write("[FS_INIT] Attempting to clean up after mount failure...\n");
+         vfs_shutdown();
+         return FS_ERR_MOUNT;
+     }
+ 
+     fs_initialized = true;
+     terminal_write("[FS_INIT] File system initialization complete.\n");
+     terminal_write("[FS_INIT] Current mount points:\n");
+     list_mounts();
+     return FS_SUCCESS;
+ }
+ 
 /**
  * fs_is_initialized:
  * Returns whether the filesystem layer has been initialized.

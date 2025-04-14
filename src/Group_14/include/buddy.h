@@ -91,4 +91,11 @@ size_t buddy_total_space(void);
 void buddy_get_stats(buddy_stats_t *stats);
 
 
+void* buddy_alloc_raw(int order);
+
+void buddy_free_raw(void* block_addr_virt, int order);
+
+
+
+
 #endif // BUDDY_H

@@ -86,15 +86,24 @@ int strcmp(const char *s1, const char *s2) {
 
 int strncmp(const char *s1, const char *s2, size_t n) {
     if (n == 0) {
-        return 0;
+        return 0; // Comparing zero characters always results in equality
     }
-    
+
+    // Iterate while characters match, n > 0, and neither string ends
     while (n-- > 0 && *s1 && (*s1 == *s2)) {
         s1++;
         s2++;
     }
-    
-    return *(const unsigned char *)s1 - *(const unsigned char *)s2;
+
+    // If n reached 0 or we hit the end of s1 simultaneously with s2 ending or matching, they are equal up to n
+    // Otherwise, return the difference of the first non-matching characters (or terminating null).
+    // The subtraction handles the case where one string ends before n characters are compared.
+    // Note: We cast to unsigned char before subtraction, as per the C standard, to handle potential negative char values correctly.
+    if (n == (size_t)-1) { // Check if n wrapped around due to n-- on the last iteration when they matched
+        return 0; // Matched exactly n characters
+    } else {
+        return *(const unsigned char *)s1 - *(const unsigned char *)s2;
+    }
 }
 
 char *strcpy(char *dest, const char *src) {
