@@ -1765,9 +1765,11 @@ cleanup_clone_err:
  
      // --- User Mode Fault ---
      terminal_printf(" Reason: Fault occurred in User Mode.\n");
+
+     // *** ADD THIS CHECK ***
      if (!current_process || !current_process->mm) {
-         terminal_printf("  Error: No current process or mm_struct available for user fault!\n");
-         goto kill_process; // Cannot handle without process context
+         terminal_printf("  Error: No current process or mm_struct available for user fault! Addr=0x%x\n", fault_addr);
+         PAGING_PANIC("User Page Fault without process context!"); // Halt directly
      }
      mm_struct_t *mm = current_process->mm;
      if (!mm->pgd_phys) {

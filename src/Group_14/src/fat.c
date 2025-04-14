@@ -1150,43 +1150,131 @@ buffer_release(bs);
      return FS_SUCCESS;
  }
  
- static int load_fat_table(fat_fs_t *fs)
- {
-     if (!fs) return -FS_ERR_INVALID_PARAM;
-     if (fs->fat_size == 0 || fs->bytes_per_sector == 0) return -FS_ERR_INVALID_FORMAT;
-     size_t table_size = fs->fat_size * fs->bytes_per_sector;
-     if (table_size == 0) return -FS_ERR_INVALID_FORMAT;
+ static int load_fat_table(fat_fs_t *fs) {
+    if (!fs) {
+        terminal_write("[FAT load_v2] Error: NULL fs provided.\n");
+        return -FS_ERR_INVALID_PARAM;
+    }
+    if (fs->fat_size == 0 || fs->bytes_per_sector == 0) {
+        terminal_printf("[FAT load_v2] Error: Invalid geometry (fat_size=%u, sector_size=%u).\n",
+                        fs->fat_size, fs->bytes_per_sector);
+        return -FS_ERR_INVALID_FORMAT;
+    }
+
+    // --- Robust Size Calculation with Overflow Check ---
+    size_t bytes_per_sector_sz = fs->bytes_per_sector; // Cast to size_t if needed
+    size_t fat_size_sectors_sz = fs->fat_size;         // Cast to size_t if needed
+
+    // Check for potential overflow before multiplication
+    if (bytes_per_sector_sz > 0 && fat_size_sectors_sz > SIZE_MAX / bytes_per_sector_sz) {
+        terminal_printf("[FAT load_v2] Error: FAT table size calculation overflows size_t (%u sectors * %u bytes/sector).\n",
+                        fs->fat_size, fs->bytes_per_sector);
+        return -FS_ERR_OVERFLOW; // Use a specific overflow error if available
+    }
+    size_t table_size_bytes = fat_size_sectors_sz * bytes_per_sector_sz;
+
+    // If the calculation legitimately results in 0 (should be caught by initial checks), handle it.
+    if (table_size_bytes == 0) {
+         terminal_printf("[FAT load_v2] Error: Calculated FAT table size is zero.\n");
+        return -FS_ERR_INVALID_FORMAT;
+    }
+
+    terminal_printf("[FAT load_v2] Calculated FAT table size: %u bytes (%u sectors).\n",
+                    table_size_bytes, fs->fat_size);
+
+    // --- Allocate Buffer ---
+    fs->fat_table = kmalloc(table_size_bytes);
+    if (!fs->fat_table) {
+        terminal_printf("[FAT load_v2] Error: Failed to kmalloc %u bytes for FAT table.\n", table_size_bytes);
+        return -FS_ERR_OUT_OF_MEMORY;
+    }
+    terminal_printf("[FAT load_v2] Allocated FAT table buffer at virtual address: 0x%p\n", fs->fat_table);
+
+    // --- Direct Disk Read ---
+    // Read the entire FAT table in one go using the disk layer function.
+    // Assumes disk_read_sectors can handle reading fs->fat_size sectors.
+    terminal_printf("[FAT load_v2] Reading %u sectors from LBA %u into buffer...\n",
+                    fs->fat_size, fs->fat_start_lba);
+
+    int read_result = disk_read_sectors(&fs->disk,         // Disk structure
+                                        fs->fat_start_lba, // Starting LBA of FAT1
+                                        fs->fat_table,     // Destination buffer
+                                        fs->fat_size);     // Number of sectors to read
+
+    if (read_result != FS_SUCCESS) {
+        terminal_printf("[FAT load_v2] Error: disk_read_sectors failed (code %d) while reading FAT.\n", read_result);
+        kfree(fs->fat_table); // Free the buffer on error
+        fs->fat_table = NULL;
+        return -FS_ERR_IO; // Return I/O error
+    }
+
+    terminal_printf("[FAT] FAT table loaded successfully (%u sectors).\n", fs->fat_size);
+    return FS_SUCCESS;
+}
  
-     fs->fat_table = kmalloc(table_size);
-     if (!fs->fat_table) return -FS_ERR_OUT_OF_MEMORY;
- 
-     uint8_t *current_ptr = (uint8_t *)fs->fat_table;
-     for (uint32_t i = 0; i < fs->fat_size; i++) {
-         if (read_fat_sector(fs, i, current_ptr) != FS_SUCCESS) {
-             kfree(fs->fat_table);
-             fs->fat_table = NULL;
-             return -FS_ERR_IO;
-         }
-         current_ptr += fs->bytes_per_sector;
-     }
-     terminal_printf("[FAT] FAT table loaded (%u sectors).\n", fs->fat_size);
-     return FS_SUCCESS;
- }
- 
- static int flush_fat_table(fat_fs_t *fs)
- {
-     if (!fs || !fs->fat_table) return FS_SUCCESS; // Nothing to flush
-     if (fs->fat_size == 0 || fs->bytes_per_sector == 0) return -FS_ERR_INVALID_FORMAT;
- 
-     const uint8_t *current_ptr = (const uint8_t*)fs->fat_table;
-     for (uint32_t i = 0; i < fs->fat_size; i++) {
-         if (write_fat_sector(fs, i, current_ptr) != FS_SUCCESS) {
-             return -FS_ERR_IO;
-         }
-         current_ptr += fs->bytes_per_sector;
-     }
-     return FS_SUCCESS;
- }
+static int flush_fat_table(fat_fs_t *fs) {
+    if (!fs || !fs->fat_table) {
+        // Nothing allocated or nothing to flush
+        return FS_SUCCESS;
+    }
+    if (fs->fat_size == 0 || fs->bytes_per_sector == 0) {
+        terminal_printf("[FAT flush_v2] Error: Invalid geometry (fat_size=%u, sector_size=%u).\n",
+                        fs->fat_size, fs->bytes_per_sector);
+        return -FS_ERR_INVALID_FORMAT;
+    }
+    if (!fs->disk.blk_dev.device_name) {
+         terminal_printf("[FAT flush_v2] Error: Invalid disk device name.\n");
+         return -FS_ERR_INVALID_PARAM; // Need device name for buffer_get
+    }
+
+    terminal_printf("[FAT flush_v2] Flushing potentially modified FAT sectors (%u) via buffer cache...\n", fs->fat_size);
+    int sectors_marked_dirty = 0;
+    int errors_encountered = 0;
+
+    // Pointer to the start of the in-memory FAT table data
+    const uint8_t *fat_table_ptr = (const uint8_t *)fs->fat_table;
+
+    for (uint32_t i = 0; i < fs->fat_size; i++) {
+        uint32_t target_lba = fs->fat_start_lba + i;
+        const uint8_t *current_fat_sector_data = fat_table_ptr + (i * fs->bytes_per_sector);
+
+        // Get the buffer from the cache (this might read from disk if not cached)
+        buffer_t *cached_buf = buffer_get(fs->disk.blk_dev.device_name, target_lba);
+        if (!cached_buf) {
+            terminal_printf("[FAT flush_v2] Error: Failed to get buffer for LBA %u (FAT sector %u).\n", target_lba, i);
+            errors_encountered++;
+            // Decide whether to continue or abort on buffer get failure.
+            // Continuing might leave FAT partially flushed. Aborting might be safer.
+            continue; // Continue trying other sectors for now
+        }
+
+        // --- Optimization: Compare before writing ---
+        // Check if the cached data is different from our in-memory FAT sector data.
+        // memcmp returns 0 if they are identical.
+        if (memcmp(cached_buf->data, current_fat_sector_data, fs->bytes_per_sector) != 0) {
+            // --- Content Differs: Copy and Mark Dirty ---
+            // terminal_printf("  [FAT flush_v2] Sector %u (LBA %u) differs. Updating cache buffer.\n", i, target_lba); // Debug log
+            memcpy(cached_buf->data, current_fat_sector_data, fs->bytes_per_sector);
+            buffer_mark_dirty(cached_buf);
+            sectors_marked_dirty++;
+        } else {
+            // Content is the same, no need to copy or mark dirty.
+            // terminal_printf("  [FAT flush_v2] Sector %u (LBA %u) unchanged. Skipping write.\n", i, target_lba); // Debug log
+        }
+
+        // Release the buffer (decrement ref count)
+        buffer_release(cached_buf);
+    }
+
+    terminal_printf("[FAT flush_v2] Flush processed. Marked %d sectors as dirty. Encountered %d errors.\n",
+                    sectors_marked_dirty, errors_encountered);
+
+    // Optionally trigger a full buffer cache sync immediately if required,
+    // otherwise the writes will happen later.
+    // buffer_cache_sync();
+
+    return (errors_encountered > 0) ? -FS_ERR_IO : FS_SUCCESS;
+}
  
  /****************************************************************************
   * find_free_cluster, fat_allocate_cluster, fat_free_cluster_chain

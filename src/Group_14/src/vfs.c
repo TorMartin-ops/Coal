@@ -524,3 +524,13 @@
      }
      VFS_LOG("==========================================");
   }
+  
+  int readdir(file_t *dir_file, struct dirent *d_entry_out, size_t entry_index) {
+    // ... your code (if any) ...
+    return -FS_ERR_NOT_SUPPORTED; // Add this line
+}
+
+int unlink(void *fs_context, const char *path) {
+    // ... your code (if any) ...
+    return -FS_ERR_NOT_SUPPORTED; // Add this line
+}

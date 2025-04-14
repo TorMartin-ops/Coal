@@ -159,14 +159,16 @@ tcb_t *get_current_task(void) {
 // Removes the current task and schedules the next one
 void remove_current_task_with_code(uint32_t code) {
     // Disable interrupts for safety while modifying scheduler structures
-     asm volatile("cli");
+    asm volatile("cli");
 
-      if (!task_list || !current_task) {
-        terminal_write("[Scheduler] Error: No task to remove.\n");
-        asm volatile("sti");
-        return;
+    // *** ADD THIS CHECK ***
+    if (!current_task) {
+        terminal_printf("[Scheduler] Error: remove_current_task called when current_task is NULL (code %d). System Halted.\n", code);
+        // Cannot schedule next task, so halt.
+        while (1) { __asm__ volatile("hlt"); }
     }
-
+    
+    
     tcb_t *to_remove = current_task;
     pcb_t *proc_to_remove = to_remove->process; // Get PCB associated with the TCB
     terminal_printf("[Scheduler] Removing task for PID %d (exit code %d).\n", proc_to_remove ? proc_to_remove->pid : 0, code);
