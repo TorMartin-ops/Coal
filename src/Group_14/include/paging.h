@@ -186,7 +186,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
                             uintptr_t heap_phys_start, size_t heap_size);
 int paging_finalize_and_activate(uintptr_t page_directory_phys, uintptr_t total_memory_bytes);
 int paging_map_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr, uintptr_t phys_start_addr, size_t memsz, uint32_t flags);
-// int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr, size_t memsz); // Add if implemented
+int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr, size_t memsz); // Add if implemented
 void paging_invalidate_page(void *vaddr); // Implemented in ASM
 void tlb_flush_range(void* start, size_t size);
 void paging_activate(uint32_t *page_directory_phys); // Implemented in ASM

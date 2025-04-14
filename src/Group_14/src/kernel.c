@@ -218,7 +218,7 @@ uintptr_t region_end = region_start + (uintptr_t)region_len;
 
 // Safety check for overflow in region_end calculation
 if (region_end < region_start && region_len != 0) {
-terminal_printf("  [Warning] Memory region [0x%llx - ???) potential overflow.\n", 
+    terminal_printf("  [Warning] Memory region [0x%llx - <overflow>) potential overflow.\n",
   (unsigned long long)region_start);
 region_end = UINTPTR_MAX;
 }

@@ -8,7 +8,6 @@
 #include "terminal.h"
 #include "spinlock.h"
 #include <libc/stdint.h>
-#include <stdint.h>
 #include <string.h>
 #include "types.h"
 
