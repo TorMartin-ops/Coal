@@ -52,8 +52,10 @@ typedef struct vfs_driver {
     int (*close)(file_t *file);
     /* Lseek: returns new file offset or negative error code. */
     off_t (*lseek)(file_t *file, off_t offset, int whence);
-    struct vfs_driver *next; // Linked list pointer for registered drivers
-} vfs_driver_t;
+    int (*readdir)(file_t *dir_file, struct dirent *d_entry_out, size_t entry_index); // Add this
+    int (*unlink)(void *fs_context, const char *path); // Add this
+    struct vfs_driver *next;
+} vfs_driver_t;;
 
 /* Abstract vnode structure */
 struct vnode {
@@ -74,6 +76,9 @@ int vfs_close(file_t *file);
 int vfs_read(file_t *file, void *buf, size_t len);
 int vfs_write(file_t *file, const void *buf, size_t len);
 off_t vfs_lseek(file_t *file, off_t offset, int whence);
+
+int (*readdir)(file_t *dir_file, struct dirent *d_entry_out, size_t entry_index); // Function pointer for readdir
+int (*unlink)(void *fs_context, const char *path); // Function pointer for unlink
 
 #ifdef __cplusplus
 }

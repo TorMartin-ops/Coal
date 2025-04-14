@@ -34,6 +34,9 @@ typedef enum fs_error {
     FS_ERR_NOT_INIT         = -16,  /* File system not initialized */
     FS_ERR_BUSY             = -17,  /* Resource is busy */
     FS_ERR_INTERNAL         = -18, 
+    FS_ERR_NAMETOOLONG      = -19,
+    FS_ERR_OVERFLOW         = -20,
+    FS_ERR_EOF              = -21,
     // Add additional error codes as needed.
 } fs_error_t;
 
@@ -66,7 +69,11 @@ static inline const char *fs_strerror(fs_error_t err) {
         case FS_ERR_NOT_INIT:           return "File system not initialized";
         case FS_ERR_BUSY:               return "Resource is busy";
         case FS_ERR_INTERNAL:           return "Internal error";
+        case FS_ERR_NAMETOOLONG:        return "Name too long";
+        case FS_ERR_OVERFLOW:           return "Overflow error";
+        case FS_ERR_EOF:                return "End of file";
         default:                        return "Unrecognized error";
+        
     }
 }
 

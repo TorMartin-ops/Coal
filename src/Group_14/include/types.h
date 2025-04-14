@@ -16,6 +16,20 @@ extern "C" {
 /*---------------------------------------------------------------------------
  * 64-bit Integer Types (if not already in libc/stdint.h)
  *--------------------------------------------------------------------------*/
+// Add this definition before struct vfs_driver in vfs.h (if not defined elsewhere)
+
+
+#ifndef MAX_FILENAME_LEN // Define if not already present
+#define MAX_FILENAME_LEN 255
+#endif
+struct dirent {
+    char     d_name[MAX_FILENAME_LEN + 1];
+    uint32_t d_ino;       // Use cluster number or another unique ID
+    uint8_t  d_type;      // File type (DT_REG, DT_DIR, etc.)
+    // Add other fields like d_reclen if needed by userspace
+};
+
+
 #ifndef _UINT64_T_DEFINED // Add guards if these might be defined elsewhere later
 typedef unsigned long long uint64_t;
 #define _UINT64_T_DEFINED

@@ -10,6 +10,7 @@
  * - For FAT32, each FAT entry occupies 4 bytes, but only the lower 28 bits are used.
  * - FAT12 is not fully implemented in this demo.
  */
+ #define FAT32_EOC 0x0FFFFFF8
 
 uint32_t fat_cluster_to_lba(fat_fs_t *fs, uint32_t cluster) {
     if (!fs || cluster < 2) {
