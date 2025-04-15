@@ -1,5 +1,6 @@
 #include "serial.h"
 #include "port_io.h" // For inb/outb
+#include "terminal.h"
 
 // LSR (Line Status Register) flags
 #define LSR_TX_EMPTY 0x20 // Transmitter Holding Register Empty
