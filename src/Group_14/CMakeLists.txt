@@ -1,3 +1,5 @@
+# CMakeLists.txt - Use mcopy + FAT16
+
 ########################################
 # The University of Agder Operating System: UiAOS
 # Languages: C, C++, and NASM Assembly
@@ -20,7 +22,7 @@ file(LOCK ${CMAKE_SOURCE_DIR} DIRECTORY GUARD FILE)
 ########################################
 # CMake: Import Plugins
 ########################################
-include(FetchContent) # Not used yet
+# include(FetchContent) # Not used currently
 
 ########################################
 # UiAOS: Variables
@@ -30,6 +32,7 @@ set(OS_NAME "UiA Operating System")
 set(OS_KERNEL_NAME "uiaos")
 set(OS_KERNEL_BINARY "kernel.bin")
 set(OS_KERNEL_IMAGE "kernel.iso")
+set(OS_HELLO_ELF_BINARY "hello.elf") # Define output name for hello
 
 ########################################
 # Compiler Configuration
@@ -47,60 +50,45 @@ elseif(OS_ARCH_TARGET STREQUAL "x86_64")
     set(CMAKE_ASM_NASM_OBJECT_FORMAT "elf64")
 endif()
 
-# Command to compile NASM files (As per your working example)
+# Command to compile NASM files
 set(CMAKE_ASM_NASM_COMPILE_OBJECT
-    "<CMAKE_ASM_NASM_COMPILER> <DEFINES> <INCLUDES> <FLAGS> -f ${CMAKE_ASM_NASM_OBJECT_FORMAT} -o <OBJECT> <SOURCE>")
+    "<CMAKE_ASM_NASM_COMPILER> <DEFINES> <INCLUDES> <FLAGS> -f ${CMAKE_ASM_NASM_OBJECT_FORMAT} -g -o <OBJECT> <SOURCE>")
 
 ########################################
-# OS Target
+# OS Target (Kernel)
 ########################################
-set(OS_KERNEL_LINKER "${CMAKE_CURRENT_SOURCE_DIR}/src/arch/${OS_ARCH_TARGET}/linker.ld")
-# --- Ensure the linker script exists at the path above, or adjust the path ---
+set(OS_KERNEL_LINKER "${CMAKE_CURRENT_SOURCE_DIR}/src/arch/${OS_ARCH_TARGET}/linker.ld") # Make sure this linker script exists and is correct
 
-# Create a variable containing all source files in the src directory (As per your working example)
-file(GLOB SOURCES
-    "src/*.c"   "src/*.cpp"   "src/*.asm"
-    "src/Group_14/src/*.c" # Note: This nested path might be incorrect
-    "src/Group_14/src/*.asm" # Note: This nested path might be incorrect
-    "src/library/stdio_impl.c"
-    "src/Group_14/src/paging_asm.asm" # Note: This nested path might be incorrect
+# Use GLOB_RECURSE to find all source files in src directory relative to CMakeLists.txt
+file(GLOB_RECURSE KERNEL_SOURCES
+    "src/*.c"
+    "src/*.cpp"
+    "src/*.asm"
 )
-# --- Verify these GLOB patterns match your source file locations ---
+
+# Filter out user-space sources (using relative paths from CMakeLists.txt)
+list(FILTER KERNEL_SOURCES EXCLUDE REGEX ".*/hello\\.c$")
+list(FILTER KERNEL_SOURCES EXCLUDE REGEX ".*/entry\\.asm$")
+list(FILTER KERNEL_SOURCES EXCLUDE REGEX ".*/user\\.ld$")
 
 # Add the executable using the gathered source files
-add_executable(uiaos-kernel ${SOURCES})
+add_executable(uiaos-kernel ${KERNEL_SOURCES})
 
 # Include directories for the kernel target
 target_include_directories(uiaos-kernel PUBLIC
-     "${CMAKE_SOURCE_DIR}/include" # Use absolute path
-     # Add include/libc path if needed by sources:
-     # "${CMAKE_SOURCE_DIR}/include/libc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include" # Relative path from CMakeLists.txt
 )
 
-
-# Specify compile options for C and C++ (No -Werror)
+# Specify compile options for C and C++ (Kernel)
 target_compile_options(uiaos-kernel PRIVATE
     $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -nostdinc -nostdlib -fno-builtin -fno-stack-protector -fno-stack-check -fno-lto -fPIE -m32 -march=i386 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -Wno-main -g>
     $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -nostdinc -nostdlib -fno-builtin -fno-stack-protector -fno-stack-check -fno-lto -fPIE -m32 -march=i386 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -g>
     $<$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>:-m32 -march=i386 -Wno-unused-variable -Wno-unused-parameter -g> # Added -g here
 )
 
-
-# Specify link options for C and C++ (Using structure from your example)
+# Specify link options for C and C++ (Kernel) - Simplified, removed redundancy
 target_link_options(uiaos-kernel PUBLIC
-    $<$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>:-ffreestanding -nostdlib -fno-builtin -static -pie -O0 -T${OS_KERNEL_LINKER} -g -lgcc> # Added -lgcc
-)
-
-# Duplicate link options section (As per your working example - though redundant)
-target_link_options(
-    uiaos-kernel
-    PUBLIC "-ffreestanding"
-    PUBLIC "-nostdlib"
-    PUBLIC "-static"
-    PUBLIC "-pie"
-    PUBLIC "-T${OS_KERNEL_LINKER}"
-    PUBLIC "-g" # Added -g
-    PUBLIC "-lgcc" # Added -lgcc
+    -ffreestanding -nostdlib -fno-builtin -static -pie -O0 -T${OS_KERNEL_LINKER} -g -lgcc # Added -lgcc
 )
 
 # Set properties for the kernel target
@@ -109,16 +97,47 @@ set_target_properties(uiaos-kernel PROPERTIES
 )
 
 ########################################
-# Create Empty Fat32 Disk Image
+# User Space Program Target (hello.elf)
+########################################
+# Use correct relative paths from CMakeLists.txt
+add_executable(hello_elf
+    hello.c     # Assuming hello.c is in the same directory as CMakeLists.txt
+    entry.asm   # Assuming entry.asm is in the same directory as CMakeLists.txt
+)
+
+set(OS_USER_LINKER "${CMAKE_CURRENT_SOURCE_DIR}/src/arch/${OS_ARCH_TARGET}/user.ld") # Path relative to CMakeLists.txt
+
+# Link Options for hello_elf using user.ld
+target_link_options(hello_elf PUBLIC
+    -m32
+    -nostdlib
+    -static
+    -T${OS_USER_LINKER} # <-- Use the user linker script!
+    -g
+    -lgcc
+)
+
+# Compile Options for hello_elf
+target_compile_options(hello_elf PRIVATE
+    $<$<COMPILE_LANGUAGE:C>:-m32 -Wall -Wextra -nostdlib -fno-builtin -fno-stack-protector -g>
+)
+
+set_target_properties(hello_elf PROPERTIES
+    OUTPUT_NAME "${OS_HELLO_ELF_BINARY}"
+)
+
+########################################
+# Create Empty Fat16 Disk Image
 ########################################
 set(DISK_IMAGE "${CMAKE_CURRENT_BINARY_DIR}/disk.iso")
 
-# Custom target to create an empty FAT32 disk image of 32MB
+# Custom target to create an empty FAT16 disk image of 32MB
 add_custom_target(
-    create-fat32-disk
+    create-fat16-disk # Renamed target slightly for clarity
     COMMAND dd if=/dev/zero of=${DISK_IMAGE} bs=1M count=32
-    COMMAND mkfs.fat -F 32 ${DISK_IMAGE}
-    COMMENT "Creating 32MB FAT32 disk image: ${DISK_IMAGE}" # Added comment
+    # --- Changed: Use -F 16 for FAT16 ---
+    COMMAND mkfs.fat -F 16 ${DISK_IMAGE}
+    COMMENT "Creating 32MB FAT16 disk image: ${DISK_IMAGE}" # Changed comment
     VERBATIM
 )
 
@@ -126,34 +145,51 @@ add_custom_target(
 # OS-Image Target
 ########################################
 set(ISO_DIR ${CMAKE_CURRENT_BINARY_DIR}/iso)
-set(LIMINE_CONFIG_DIR ${CMAKE_SOURCE_DIR}) # Assumes limine.cfg is in Group_14 root
-set(LIMINE_DIR /usr/local/limine) # Keep hardcoded path as per your example
+set(LIMINE_CONFIG_DIR ${CMAKE_SOURCE_DIR}) # Assumes limine.cfg is in the same dir as CMakeLists.txt
+set(LIMINE_DIR /usr/local/limine) # Assuming this path is correct on your system
 
+# Step 1: Copy hello.elf to the disk image using mcopy
+add_custom_command(
+    OUTPUT ${DISK_IMAGE}.stamp # A dummy file to track completion
+    # --- Changed: Reverted back to mcopy ---
+    COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:hello_elf> ::/hello.elf
+    # --- Make sure mtools package is installed ---
+    DEPENDS create-fat16-disk hello_elf # Depends on FAT16 disk creation and hello_elf build
+    COMMENT "Copying hello.elf to disk image (using mcopy)..."
+    VERBATIM
+)
+
+# Step 2: Create the ISO image (depends on kernel and the copy step)
 add_custom_target(
-    uiaos-create-image ALL # Add ALL to make this build by default
-    COMMAND rm -rf ${ISO_DIR}
-    COMMAND mkdir -p ${ISO_DIR}
-    # Use cp -v as per your example
-    COMMAND cp -v $<TARGET_FILE:uiaos-kernel> ${ISO_DIR}/
-    COMMAND cp -v ${LIMINE_CONFIG_DIR}/limine.cfg ${LIMINE_DIR}/limine-bios.sys ${LIMINE_DIR}/limine-bios-cd.bin ${LIMINE_DIR}/limine-uefi-cd.bin ${ISO_DIR}/
-    COMMAND mkdir -p ${ISO_DIR}/EFI/BOOT
-    COMMAND cp -v ${LIMINE_DIR}/BOOTX64.EFI ${ISO_DIR}/EFI/BOOT/
-    COMMAND cp -v ${LIMINE_DIR}/BOOTIA32.EFI ${ISO_DIR}/EFI/BOOT/
-    # Note: This version does NOT copy the disk.iso into the ISO structure
+    uiaos-create-image ALL # Build this target by default
 
-    # Create ISO (Assumes xorriso is in PATH)
+    # Setup ISO directory
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${ISO_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${ISO_DIR}
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:uiaos-kernel> ${ISO_DIR}/
+    COMMAND ${CMAKE_COMMAND} -E copy
+        ${LIMINE_CONFIG_DIR}/limine.cfg
+        ${LIMINE_DIR}/limine-bios.sys
+        ${LIMINE_DIR}/limine-bios-cd.bin
+        ${LIMINE_DIR}/limine-uefi-cd.bin
+        ${ISO_DIR}/
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${ISO_DIR}/EFI/BOOT
+    COMMAND ${CMAKE_COMMAND} -E copy ${LIMINE_DIR}/BOOTX64.EFI ${ISO_DIR}/EFI/BOOT/
+    COMMAND ${CMAKE_COMMAND} -E copy ${LIMINE_DIR}/BOOTIA32.EFI ${ISO_DIR}/EFI/BOOT/
+
+    # Create ISO command
     COMMAND xorriso -as mkisofs -b limine-bios-cd.bin
         -no-emul-boot -boot-load-size 4 -boot-info-table
         --efi-boot limine-uefi-cd.bin
         -efi-boot-part --efi-boot-image --protective-msdos-label
-        ${ISO_DIR} -o ${CMAKE_CURRENT_BINARY_DIR}/${OS_KERNEL_IMAGE} # Use variable
+        ${ISO_DIR} -o ${CMAKE_CURRENT_BINARY_DIR}/${OS_KERNEL_IMAGE}
 
-    # Install bootloader (Assumes limine executable is in LIMINE_DIR)
-    COMMAND ${LIMINE_DIR}/limine bios-install ${CMAKE_CURRENT_BINARY_DIR}/${OS_KERNEL_IMAGE} # Use variable
+    # Install bootloader command
+    COMMAND ${LIMINE_DIR}/limine bios-install ${CMAKE_CURRENT_BINARY_DIR}/${OS_KERNEL_IMAGE}
 
-    # Dependencies (No hello_elf/copy-hello in this version)
-    DEPENDS create-fat32-disk uiaos-kernel
-    COMMENT "Creating Limine ISO image: ${OS_KERNEL_IMAGE}" # Added comment
+    # Dependencies
+    DEPENDS uiaos-kernel ${DISK_IMAGE}.stamp # Depends on kernel and the stamp file from the copy command
+    COMMENT "Creating Limine ISO image: ${OS_KERNEL_IMAGE} and populating disk"
     VERBATIM
     USES_TERMINAL
 )
