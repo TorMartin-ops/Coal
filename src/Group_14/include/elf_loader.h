@@ -1,56 +1,30 @@
-#pragma once
 #ifndef ELF_LOADER_H
 #define ELF_LOADER_H
 
-#include "types.h" 
+#include "elf.h"   // so we know what Elf32_Ehdr, Elf32_Phdr are
+#include "mm.h"    // for mm_struct_t, if needed
+#include "types.h" // for uint32_t, uintptr_t if not in mm.h
 
-#define EI_NIDENT 16
-
-typedef uint16_t Elf32_Half;
-typedef uint32_t Elf32_Word;
-typedef int32_t  Elf32_Sword;
-typedef uint32_t Elf32_Addr;
-typedef uint32_t Elf32_Off;
-
-typedef struct {
-    unsigned char e_ident[EI_NIDENT];
-    Elf32_Half    e_type;
-    Elf32_Half    e_machine;
-    Elf32_Word    e_version;
-    Elf32_Addr    e_entry;
-    Elf32_Off     e_phoff;
-    Elf32_Off     e_shoff;
-    Elf32_Word    e_flags;
-    Elf32_Half    e_ehsize;
-    Elf32_Half    e_phentsize;
-    Elf32_Half    e_phnum;
-    Elf32_Half    e_shentsize;
-    Elf32_Half    e_shnum;
-    Elf32_Half    e_shstrndx;
-} Elf32_Ehdr;
-
-typedef struct {
-    Elf32_Word p_type;
-    Elf32_Off  p_offset;
-    Elf32_Addr p_vaddr;
-    Elf32_Addr p_paddr;
-    Elf32_Word p_filesz;
-    Elf32_Word p_memsz;
-    Elf32_Word p_flags;
-    Elf32_Word p_align;
-} Elf32_Phdr;
-
-#define PT_NULL    0
-#define PT_LOAD    1
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
- * Loads an ELF binary from a file into a new address space.
+ * @brief Loads a 32-bit ELF file into the given process address space.
  *
- * @param path         Path to the ELF binary.
- * @param page_directory Pointer to the process's page directory to update.
- * @param entry_point  Output parameter to receive the ELF entry point.
- * @return 0 on success, -1 on failure.
+ * @param path          Path to the ELF file in your filesystem
+ * @param mm            Pointer to the process memory manager (page directory, etc.)
+ * @param entry_point   [out] Receives the ELF's entry point
+ * @param initial_brk   [out] Receives the initial brk (heap start)
+ * @return 0 on success, negative on failure
  */
-int load_elf_binary(const char *path, uint32_t *page_directory, uint32_t *entry_point);
+int load_elf_and_init_memory(const char *path,
+                             mm_struct_t *mm,
+                             uint32_t *entry_point,
+                             uintptr_t *initial_brk);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // ELF_LOADER_H

@@ -170,6 +170,14 @@ void terminal_complete_input(void);
  */
 void terminal_putchar(char c);
 
+
+#ifndef KERNEL_PANIC_HALT // Prevent multiple definitions
+#define KERNEL_PANIC_HALT(msg) do { \
+    terminal_printf("\n[KERNEL PANIC] %s at %s:%d. System Halted.\n", msg, __FILE__, __LINE__); \
+    while(1) { asm volatile("cli; hlt"); } \
+} while(0)
+#endif
+
 #ifdef __cplusplus
 }
 #endif

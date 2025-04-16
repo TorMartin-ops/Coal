@@ -9,7 +9,7 @@
 struct mm_struct;
 
 // Define the size for the kernel stack allocated per process
-#define PROCESS_KSTACK_SIZE PAGE_SIZE
+#define PROCESS_KSTACK_SIZE (PAGE_SIZE*4) // Increased from 1 page to 4 pages (16KB)
 
 // *** Moved User Stack Defines Here ***
 #define USER_STACK_PAGES        4

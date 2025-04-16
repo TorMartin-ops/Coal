@@ -1,23 +1,23 @@
 #include "process.h"
 #include "mm.h"
 #include "kmalloc.h"
-#include "elf_loader.h"
 #include "paging.h"     // Includes paging_free_user_space, flags, etc.
 #include "terminal.h"
 #include "types.h"
 #include "string.h"
 #include "scheduler.h"
 #include "read_file.h"
-#include "buddy.h"      // Needed for underlying frame allocator
+#include "buddy.h"      // Needed for underlying frame allocator and BUDDY_PANIC/ASSERT
 #include "frame.h"
 #include "kmalloc_internal.h" // For ALIGN_UP
+#include "elf.h"
 
 // --- Definitions ---
-extern uint32_t* g_kernel_page_directory_virt; // Use globals from paging.c
-extern uint32_t g_kernel_page_directory_phys;
-extern bool g_nx_supported; // From paging.c
+extern uint32_t* g_kernel_page_directory_virt; // From paging.c
+extern uint32_t  g_kernel_page_directory_phys;
+extern bool      g_nx_supported;               // From paging.c
 
-// Define temporary mapping address directly if not already defined
+// Define temporary mapping address if not already defined
 #ifndef TEMP_PD_MAP_ADDR
 #define TEMP_PD_MAP_ADDR (KERNEL_SPACE_VIRT_START - 1 * PAGE_SIZE)
 #endif
@@ -25,14 +25,25 @@ extern bool g_nx_supported; // From paging.c
 #define TEMP_MAP_ADDR_PF (KERNEL_SPACE_VIRT_START - 3 * PAGE_SIZE)
 #endif
 
-// Ensure PROCESS_KSTACK_SIZE is defined (it's undef'd and redf'd in your original)
-#undef PROCESS_KSTACK_SIZE
-#define PROCESS_KSTACK_SIZE PAGE_SIZE
+// --- Kernel Assertion Macro ---
+#ifndef KERNEL_ASSERT
+#define KERNEL_ASSERT(condition, msg) do { \
+    if (!(condition)) { \
+        terminal_printf("\n[ASSERT FAILED] %s at %s:%d\n", msg, __FILE__, __LINE__); \
+        terminal_printf("System Halted.\n"); \
+        while (1) { asm volatile("cli; hlt"); } \
+    } \
+} while (0)
+#endif
+// --- End Assertion Macro ---
 
+// By default, ensure your process.h has something like:
+// #define PROCESS_KSTACK_SIZE (PAGE_SIZE * 4)
 
 static uint32_t next_pid = 1;
 
-pcb_t* get_current_process(void) {
+pcb_t* get_current_process(void)
+{
     tcb_t* current_tcb = get_current_task();
     if (current_tcb && current_tcb->process) {
         return current_tcb->process;
@@ -41,16 +52,17 @@ pcb_t* get_current_process(void) {
 }
 
 // Copies kernel entries (PDEs for indices >= KERNEL_PDE_INDEX)
-static void copy_kernel_pde_entries(uint32_t *new_pd_virt) {
+static void copy_kernel_pde_entries(uint32_t *new_pd_virt)
+{
     if (!g_kernel_page_directory_virt) {
-        terminal_write("[Process] Error: copy_kernel_pde_entries called when kernel PD virtual addr is NULL!\n");
+        terminal_write("[Process] Error: copy_kernel_pde_entries called when kernel PD is NULL!\n");
         return;
     }
-    for (size_t i = KERNEL_PDE_INDEX; i < TABLES_PER_DIR; i++) { // Use size_t for loop
-        // Skip recursive entry, let caller handle it for the new PD.
+    for (size_t i = KERNEL_PDE_INDEX; i < TABLES_PER_DIR; i++) {
+        // Skip the recursive entry; let the caller handle it for the new PD.
         if (i == RECURSIVE_PDE_INDEX) {
-             new_pd_virt[i] = 0;
-             continue;
+            new_pd_virt[i] = 0;
+            continue;
         }
         if (g_kernel_page_directory_virt[i] & PAGE_PRESENT) {
             // Copy kernel PDE, ensuring USER flag is cleared
@@ -62,86 +74,142 @@ static void copy_kernel_pde_entries(uint32_t *new_pd_virt) {
 }
 
 // Allocates kernel stack using frame_alloc
-static bool allocate_kernel_stack(pcb_t *proc) {
-     uintptr_t kstack_phys_base = frame_alloc();
-     if (!kstack_phys_base) {
-         terminal_write("[Process] Failed to allocate kernel stack frame.\n");
-         return false;
-     }
-     proc->kernel_stack_phys_base = (uint32_t)kstack_phys_base;
+static bool allocate_kernel_stack(pcb_t *proc)
+{
+    // For simplicity, we assume PROCESS_KSTACK_SIZE == PAGE_SIZE.
+    // If you want multi-page kernel stacks, you’ll need to revise this.
+    size_t stack_alloc_size = PROCESS_KSTACK_SIZE;
+    if (stack_alloc_size != PAGE_SIZE) {
+        terminal_printf("[Process] Error: allocate_kernel_stack only supports stack = 1 page.\n");
+        return false;
+    }
 
-     uintptr_t kstack_virt_base = KERNEL_SPACE_VIRT_START + kstack_phys_base;
-     uintptr_t kstack_virt_top = kstack_virt_base + PROCESS_KSTACK_SIZE;
-     proc->kernel_stack_vaddr_top = (uint32_t *)kstack_virt_top;
+    uintptr_t kstack_phys_base = frame_alloc();
+    if (!kstack_phys_base) {
+        terminal_write("[Process] Failed to allocate kernel stack frame.\n");
+        return false;
+    }
 
-     terminal_printf("  Allocated kernel stack: Phys=0x%x, Expected VirtTop=0x%x\n",
-                     kstack_phys_base, kstack_virt_top);
-     return true;
+    proc->kernel_stack_phys_base = (uint32_t)kstack_phys_base;
+
+    // In this design, kernel virtual space is a direct offset from the physical:
+    uintptr_t kstack_virt_base = KERNEL_SPACE_VIRT_START + kstack_phys_base;
+    uintptr_t kstack_virt_top  = kstack_virt_base + stack_alloc_size;
+    proc->kernel_stack_vaddr_top = (uint32_t *)kstack_virt_top;
+
+    terminal_printf("  Allocated kernel stack: Phys=0x%x, VirtTop=0x%x, Size=%u KB\n",
+                    kstack_phys_base, kstack_virt_top, stack_alloc_size / 1024);
+    return true;
 }
 
 // Helper to map, copy, and unmap temporarily for ELF loading
 static int copy_elf_segment_data(uintptr_t frame_paddr,
-                                 const uint8_t* file_data_buffer, size_t file_buffer_offset,
-                                 size_t size_to_copy, size_t zero_padding)
+                                 const uint8_t* file_data_buffer,
+                                 size_t file_buffer_offset,
+                                 size_t size_to_copy,
+                                 size_t zero_padding)
 {
     void* temp_map_addr = (void*)TEMP_MAP_ADDR_PF;
 
-    // Map the physical frame into kernel space temporarily
-    if (paging_map_single_4k((uint32_t*)g_kernel_page_directory_phys, (uintptr_t)temp_map_addr, frame_paddr, PTE_KERNEL_DATA_FLAGS) != 0) {
-        terminal_printf("[Process] Failed to temp map frame 0x%x to V=0x%p for ELF copy.\n", frame_paddr, temp_map_addr);
+    // Temporarily map the physical frame into kernel space
+    if (paging_map_single_4k((uint32_t*)g_kernel_page_directory_phys,
+                             (uintptr_t)temp_map_addr,
+                             frame_paddr,
+                             PTE_KERNEL_DATA_FLAGS) != 0)
+    {
+        terminal_printf("[Process] Failed to temp map frame 0x%x to V=0x%p.\n",
+                        frame_paddr, temp_map_addr);
         return -1;
     }
 
-    // Copy data from ELF file buffer
+    // Calculate offset for zero padding
+    size_t offset_after_copy = size_to_copy;
+    size_t zero_clamped      = 0;
+    if (zero_padding > 0 && offset_after_copy < PAGE_SIZE) {
+        zero_clamped = (offset_after_copy + zero_padding > PAGE_SIZE)
+                        ? (PAGE_SIZE - offset_after_copy)
+                        : zero_padding;
+    }
+
+    // Assertions to ensure we do not overwrite beyond 4KB
+    KERNEL_ASSERT(size_to_copy <= PAGE_SIZE, "ELF segment copy exceeds page size");
+    KERNEL_ASSERT(zero_clamped <= PAGE_SIZE, "ELF segment zero fill exceeds page size");
+    KERNEL_ASSERT(offset_after_copy + zero_clamped <= PAGE_SIZE, "ELF copy+zero exceeds page boundary");
+
+    // Copy data from ELF buffer
     if (size_to_copy > 0) {
         memcpy(temp_map_addr, file_data_buffer + file_buffer_offset, size_to_copy);
     }
-    // Zero out padding (BSS section)
-    if (zero_padding > 0) {
-        // Ensure we don't write past the end of the temp mapped page
-        size_t offset_after_copy = size_to_copy;
-        if (offset_after_copy < PAGE_SIZE) {
-             size_t zero_clamped = (offset_after_copy + zero_padding > PAGE_SIZE) ? (PAGE_SIZE - offset_after_copy) : zero_padding;
-             memset((uint8_t*)temp_map_addr + offset_after_copy, 0, zero_clamped);
-        }
+
+    // Zero the BSS area
+    if (zero_clamped > 0) {
+        memset((uint8_t*)temp_map_addr + offset_after_copy, 0, zero_clamped);
     }
 
-    // Unmap the temporary kernel mapping
-    paging_unmap_range((uint32_t*)g_kernel_page_directory_phys, (uintptr_t)temp_map_addr, PAGE_SIZE);
-    paging_invalidate_page(temp_map_addr); // Flush TLB for the temp address
+    // Unmap and flush TLB
+    paging_unmap_range((uint32_t*)g_kernel_page_directory_phys,
+                       (uintptr_t)temp_map_addr, PAGE_SIZE);
+    paging_invalidate_page(temp_map_addr);
 
     return 0; // Success
 }
-
 
 /**
  * @brief Loads ELF segments into the process address space.
  * Allocates physical frames, maps them to user virtual addresses,
  * and copies/zeroes data from the ELF file buffer.
  *
- * @param path Path to the ELF file (for logging).
- * @param mm Process memory manager struct.
- * @param entry_point Output pointer for ELF entry point.
- * @param initial_brk Output pointer for initial program break address.
- * @return 0 on success, negative error code on failure.
+ * @param path          Path to the ELF file (for logging).
+ * @param mm            Process memory manager struct.
+ * @param entry_point   [out] ELF entry point.
+ * @param initial_brk   [out] initial program break address.
+ * @return 0 on success, negative on failure.
  */
-int load_elf_and_init_memory(const char *path, mm_struct_t *mm, uint32_t *entry_point, uintptr_t *initial_brk) {
-    size_t file_size = 0;
-    uint8_t *file_data = (uint8_t*)read_file(path, &file_size); // Read as bytes
+int load_elf_and_init_memory(const char *path,
+                             mm_struct_t *mm,
+                             uint32_t *entry_point,
+                             uintptr_t *initial_brk)
+{
+    size_t file_size       = 0;
+    uint8_t *file_data     = NULL;
+    vma_struct_t* vma      = NULL;
+    uintptr_t phys_page    = 0;
+    int result             = -1;
+
+    file_data = (uint8_t*)read_file(path, &file_size);
     if (!file_data) {
-         terminal_printf("[Process] load_elf: read_file failed for '%s'.\n", path);
-        return -1;
+        terminal_printf("[Process] load_elf: read_file failed for '%s'.\n", path);
+        goto cleanup_load_elf;
     }
 
     Elf32_Ehdr *ehdr = (Elf32_Ehdr *)file_data;
 
     // Validate ELF header
-    if (memcmp(ehdr->e_ident, "\x7F" "ELF", 4) != 0) { terminal_printf("[Process] load_elf: Invalid ELF magic.\n"); kfree(file_data); return -1; }
-    if (ehdr->e_type != 2 /* ET_EXEC */ || ehdr->e_machine != 3 /* EM_386 */ || ehdr->e_version != 1 /* EV_CURRENT */) {
-         terminal_printf("[Process] load_elf: Invalid ELF type/machine/version.\n"); kfree(file_data); return -1;
+    if (memcmp(ehdr->e_ident, "\x7F" "ELF", 4) != 0) {
+        terminal_printf("[Process] load_elf: Invalid ELF magic.\n");
+        goto cleanup_load_elf;
     }
-    if (ehdr->e_phentsize != sizeof(Elf32_Phdr)) { terminal_printf("[Process] load_elf: Invalid program header size.\n"); kfree(file_data); return -1; }
-    if (ehdr->e_phoff == 0 || ehdr->e_phnum == 0) { terminal_printf("[Process] load_elf: No program headers found.\n"); kfree(file_data); return -1; }
+    if (ehdr->e_type != ET_EXEC || ehdr->e_machine != EM_386
+        || ehdr->e_version != EV_CURRENT)
+    {
+        terminal_printf("[Process] load_elf: Invalid ELF type/machine/version.\n");
+        goto cleanup_load_elf;
+    }
+    if (ehdr->e_phentsize != sizeof(Elf32_Phdr)) {
+        terminal_printf("[Process] load_elf: Invalid program header size.\n");
+        goto cleanup_load_elf;
+    }
+    if (ehdr->e_phoff == 0 || ehdr->e_phnum == 0) {
+        terminal_printf("[Process] load_elf: No program headers found.\n");
+        goto cleanup_load_elf;
+    }
+    // Check that the program header table fits in the file
+    if (ehdr->e_phoff > file_size
+        || (ehdr->e_phoff + (uint64_t)ehdr->e_phnum * ehdr->e_phentsize) > file_size)
+    {
+        terminal_printf("[Process] load_elf: Program header table out of bounds.\n");
+        goto cleanup_load_elf;
+    }
 
     *entry_point = ehdr->e_entry;
     terminal_printf("  ELF Entry Point: 0x%x\n", *entry_point);
@@ -153,263 +221,343 @@ int load_elf_and_init_memory(const char *path, mm_struct_t *mm, uint32_t *entry_
     for (Elf32_Half i = 0; i < ehdr->e_phnum; i++) {
         Elf32_Phdr *phdr = &phdr_table[i];
 
-        if (phdr->p_type != PT_LOAD) { continue; } // Skip non-loadable
+        if (phdr->p_type != PT_LOAD) {
+            continue; // Skip non-loadable
+        }
 
-        terminal_printf("  Processing Segment %d: VAddr=0x%x, MemSz=%u, FileSz=%u, Offset=0x%x, Flags=%c%c%c\n",
-                       i, phdr->p_vaddr, phdr->p_memsz, phdr->p_filesz, phdr->p_offset,
-                       (phdr->p_flags & 1) ? 'X' : '-', // PF_X
-                       (phdr->p_flags & 2) ? 'W' : '-', // PF_W
-                       (phdr->p_flags & 4) ? 'R' : '-'); // PF_R
+        terminal_printf("  Segment %d: VAddr=0x%x, MemSz=%u, FileSz=%u, Offset=0x%x, Flags=%c%c%c\n",
+            i, phdr->p_vaddr, phdr->p_memsz, phdr->p_filesz, phdr->p_offset,
+            (phdr->p_flags & PF_X) ? 'X' : '-',
+            (phdr->p_flags & PF_W) ? 'W' : '-',
+            (phdr->p_flags & PF_R) ? 'R' : '-');
 
-        if (phdr->p_memsz == 0) { continue; } // Skip empty
-        if (phdr->p_filesz > phdr->p_memsz) { terminal_printf("   -> Error: FileSz > MemSz.\n"); kfree(file_data); return -1; }
-        if (phdr->p_offset > file_size || (phdr->p_offset + phdr->p_filesz) > file_size) { terminal_printf("   -> Error: Segment file range OOB.\n"); kfree(file_data); return -1; }
+        if (phdr->p_memsz == 0) {
+            continue;
+        }
+        if (phdr->p_filesz > phdr->p_memsz) {
+            terminal_printf("   -> Error: FileSz > MemSz.\n");
+            goto cleanup_load_elf;
+        }
+        // Check segment range in file
+        if (phdr->p_offset > file_size
+            || phdr->p_filesz > (file_size - phdr->p_offset))
+        {
+            terminal_printf("   -> Error: Segment range OOB.\n");
+            goto cleanup_load_elf;
+        }
 
-        // Determine VMA range
+        // Align segment start/end
         uintptr_t vm_start = PAGE_ALIGN_DOWN(phdr->p_vaddr);
         uintptr_t seg_end_addr = phdr->p_vaddr + phdr->p_memsz;
-        if (seg_end_addr < phdr->p_vaddr) seg_end_addr = UINTPTR_MAX;
+        if (seg_end_addr < phdr->p_vaddr) seg_end_addr = UINTPTR_MAX; // Overflow guard
         uintptr_t vm_end = PAGE_ALIGN_UP(seg_end_addr);
-        if (vm_end == 0 && seg_end_addr > 0) vm_end = UINTPTR_MAX;
-        if (vm_start >= vm_end) { continue; } // Skip zero-size after alignment
+        if (vm_end == 0 && seg_end_addr > 0) vm_end = UINTPTR_MAX; // Overflow guard
+        if (vm_start >= vm_end) {
+            continue;
+        }
 
-        // Determine VMA flags and Page Protection flags
-        uint32_t vm_flags = VM_READ | VM_USER | VM_ANONYMOUS; // Base flags
-        uint32_t page_prot = PAGE_PRESENT | PAGE_USER;        // Base page flags
+        // Determine flags
+        uint32_t vm_flags  = VM_READ | VM_USER | VM_ANONYMOUS;
+        uint32_t page_prot = PAGE_PRESENT | PAGE_USER;
 
-        bool is_writable = (phdr->p_flags & 2); // PF_W
-        bool is_executable = (phdr->p_flags & 1); // PF_X
+        bool is_writable   = (phdr->p_flags & PF_W);
+        bool is_executable = (phdr->p_flags & PF_X);
 
         if (is_writable) {
-            vm_flags |= VM_WRITE;
+            vm_flags  |= VM_WRITE;
             page_prot |= PAGE_RW;
         }
         if (is_executable) {
             vm_flags |= VM_EXEC;
-            // Leave page executable (don't add PAGE_NX_BIT)
+            // Keep pages executable.
         } else {
-            // Not executable, add NX bit if supported
+            // If NX is supported, set NX on non-executable segments
             if (g_nx_supported) {
                 page_prot |= PAGE_NX_BIT;
             }
         }
-        // We assume readable (PF_R) implicitly for PT_LOAD
 
-        terminal_printf("   -> VMA Range [0x%x - 0x%x), VMA Flags=0x%x, PageProt=0x%x\n",
-                       vm_start, vm_end, vm_flags, page_prot);
+        terminal_printf("   -> VMA [0x%x - 0x%x), VMA Flags=0x%x, PageProt=0x%x\n",
+                        vm_start, vm_end, vm_flags, page_prot);
 
-        // Insert VMA for the segment
-        vma_struct_t* vma = insert_vma(mm, vm_start, vm_end, vm_flags, page_prot, NULL, 0);
+        // Insert the VMA
+        vma = insert_vma(mm, vm_start, vm_end, vm_flags, page_prot, NULL, 0);
         if (!vma) {
-             terminal_printf("   -> Error: Failed to insert VMA.\n"); kfree(file_data); return -1;
+            terminal_printf("   -> Error: Failed to insert VMA.\n");
+            goto cleanup_load_elf;
         }
+        vma = NULL; // Not used after insertion
 
-        // Allocate Frames, Map Pages, and Copy/Zero Data
+        // Allocate frames + map pages
         terminal_printf("   -> Mapping and populating pages...\n");
         for (uintptr_t page_v = vm_start; page_v < vm_end; page_v += PAGE_SIZE) {
-            // 1. Allocate Physical Frame
-            uintptr_t phys_page_addr = frame_alloc();
-            if (!phys_page_addr) {
-                 terminal_printf("   -> Error: Out of physical frames at V=0x%x.\n", page_v);
-                 // TODO: Robust cleanup needed
-                 destroy_mm(mm); kfree(file_data); return -1;
+            // 1. Allocate physical frame
+            phys_page = frame_alloc();
+            if (!phys_page) {
+                terminal_printf("   -> Error: Out of frames at V=0x%x.\n", page_v);
+                goto cleanup_load_elf;
             }
 
-            // 2. Calculate data source for this page
-            uintptr_t file_offset_in_segment = 0;
-            size_t copy_size = 0;
-            size_t zero_size = 0;
+            // 2. Determine ELF copy overlap
+            uintptr_t file_offset_in_seg = 0;
+            size_t copy_size            = 0;
+            size_t zero_size            = 0;
 
-            // Find overlap between current page [page_v, page_v+PAGE_SIZE)
-            // and segment's file data [p_vaddr, p_vaddr+p_filesz)
-            uintptr_t copy_start_v = (page_v > phdr->p_vaddr) ? page_v : phdr->p_vaddr;
-            uintptr_t copy_end_v = ((page_v + PAGE_SIZE) < (phdr->p_vaddr + phdr->p_filesz)) ? (page_v + PAGE_SIZE) : (phdr->p_vaddr + phdr->p_filesz);
+            uintptr_t copy_start_v = (page_v > phdr->p_vaddr)
+                                    ? page_v
+                                    : phdr->p_vaddr;
+            uintptr_t copy_end_v   = ((page_v + PAGE_SIZE) < (phdr->p_vaddr + phdr->p_filesz))
+                                    ? (page_v + PAGE_SIZE)
+                                    : (phdr->p_vaddr + phdr->p_filesz);
 
-            if (copy_start_v < copy_end_v) { // Does this page contain data from the file?
-                 file_offset_in_segment = phdr->p_offset + (copy_start_v - phdr->p_vaddr);
-                 copy_size = copy_end_v - copy_start_v;
+            if (copy_start_v < copy_end_v) {
+                file_offset_in_seg = phdr->p_offset + (copy_start_v - phdr->p_vaddr);
+                copy_size          = copy_end_v - copy_start_v;
             }
 
-            // Calculate zero fill size for the rest of the page up to segment end or page end
-            uintptr_t zero_start_v = (copy_start_v + copy_size); // Address after copied data
-            uintptr_t segment_end_v = phdr->p_vaddr + phdr->p_memsz; // Virtual end of segment in memory
-            uintptr_t zero_end_v = ((page_v + PAGE_SIZE) < segment_end_v) ? (page_v + PAGE_SIZE) : segment_end_v;
+            uintptr_t zero_start_v = copy_start_v + copy_size;
+            uintptr_t seg_end_v    = phdr->p_vaddr + phdr->p_memsz;
+            if (seg_end_v < phdr->p_vaddr) seg_end_v = UINTPTR_MAX; // Overflow check
+            uintptr_t zero_end_v   = ((page_v + PAGE_SIZE) < seg_end_v)
+                                     ? (page_v + PAGE_SIZE)
+                                     : seg_end_v;
+            if (zero_end_v < zero_start_v) zero_end_v = zero_start_v;
 
             if (zero_start_v < zero_end_v) {
-                 zero_size = zero_end_v - zero_start_v;
+                zero_size = zero_end_v - zero_start_v;
             }
 
-            // Ensure total doesn't exceed page size
-            if (copy_size + zero_size > PAGE_SIZE) {
-                 terminal_printf("   -> Internal Error: copy+zero size > PAGE_SIZE for V=0x%x\n", page_v);
-                 put_frame(phys_page_addr); destroy_mm(mm); kfree(file_data); return -1;
+            // 3. Copy ELF data + zero BSS
+            if (copy_elf_segment_data(phys_page,
+                                      file_data,
+                                      file_offset_in_seg,
+                                      copy_size,
+                                      zero_size) != 0)
+            {
+                terminal_printf("   -> Error: copy_elf_segment_data failed at V=0x%x.\n", page_v);
+                put_frame(phys_page);
+                phys_page = 0;
+                goto cleanup_load_elf;
             }
 
-            // 3. Copy/Zero data into the allocated frame using helper
-             if (copy_elf_segment_data(phys_page_addr, file_data, file_offset_in_segment, copy_size, zero_size) != 0)
-             {
-                  terminal_printf("   -> Error: Failed to copy/zero segment data for V=0x%x.\n", page_v);
-                  put_frame(phys_page_addr); destroy_mm(mm); kfree(file_data); return -1;
-             }
-
-            // 4. Map the page into the process address space
-            terminal_printf("USER_MAP DEBUG: Mapping ELF V=0x%x -> P=0x%x Flags=0x%x (Segment %d)\n",
-                            page_v, phys_page_addr, page_prot, i); // Added logging
-            int map_res = paging_map_single_4k(mm->pgd_phys, page_v, phys_page_addr, page_prot);
+            // 4. Map the page
+            int map_res = paging_map_single_4k(mm->pgd_phys,
+                                               page_v,
+                                               phys_page,
+                                               page_prot);
             if (map_res != 0) {
-                 terminal_printf("   -> Error: paging_map_single_4k failed for V=0x%x (code %d)\n", page_v, map_res);
-                 put_frame(phys_page_addr); destroy_mm(mm); kfree(file_data); return -1;
+                terminal_printf("   -> Error: paging_map_single_4k for V=0x%x, code=%d.\n",
+                                page_v, map_res);
+                put_frame(phys_page);
+                phys_page = 0;
+                goto cleanup_load_elf;
             }
-        } // End loop through pages
+            // Reset phys_page after ownership transferred
+            phys_page = 0;
+        }
 
-        // Update highest address loaded by ANY segment
         if (seg_end_addr > highest_addr_loaded) {
             highest_addr_loaded = seg_end_addr;
         }
-    } // End loop through program headers
+    }
 
-    // Set initial program break (heap start)
+    // Initialize brk to the next page boundary
     *initial_brk = PAGE_ALIGN_UP(highest_addr_loaded);
-    terminal_printf("  ELF Loading complete. Initial Brk set to: 0x%x\n", *initial_brk);
+    terminal_printf("  ELF load complete. initial_brk=0x%x\n", *initial_brk);
+    result = 0; // success
 
-    kfree(file_data); // Free the buffer holding the ELF file
-    return 0; // Success
+cleanup_load_elf:
+    if (file_data) {
+        kfree(file_data);
+        file_data = NULL;
+    }
+    // If we bailed mid-way, destroy_mm will free/unmap everything, so we leave that to the caller.
+    if (phys_page != 0) {
+        put_frame(phys_page);
+    }
+    return result;
 }
 
-
-/* Creates a user process */
-pcb_t *create_user_process(const char *path) {
+// Creates a user process
+pcb_t *create_user_process(const char *path)
+{
     terminal_printf("[Process] Creating user process from '%s'.\n", path);
+    pcb_t *proc           = NULL;
+    uintptr_t pd_phys     = 0;
+    uintptr_t kstack_phys = 0;
+    int result            = -1;
 
-    pcb_t *proc = (pcb_t *)kmalloc(sizeof(pcb_t));
-    if (!proc) { terminal_write("[Process] kmalloc PCB failed.\n"); return NULL; }
+    proc = (pcb_t *)kmalloc(sizeof(pcb_t));
+    if (!proc) {
+        terminal_write("[Process] kmalloc PCB failed.\n");
+        goto cleanup_create;
+    }
     memset(proc, 0, sizeof(pcb_t));
     proc->pid = next_pid++;
 
-    // Allocate Page Directory frame
-    uintptr_t pd_phys_addr = frame_alloc();
-    if (!pd_phys_addr) { terminal_write("[Process] frame_alloc PD failed.\n"); kfree(proc); return NULL; }
-    proc->page_directory_phys = (uint32_t*)pd_phys_addr;
+    // Allocate Page Directory
+    pd_phys = frame_alloc();
+    if (!pd_phys) {
+        terminal_write("[Process] frame_alloc PD failed.\n");
+        goto cleanup_create;
+    }
+    proc->page_directory_phys = (uint32_t*)pd_phys;
+    terminal_printf("  Allocated PD Phys: 0x%x\n", pd_phys);
 
-    // Temporarily map NEW PD to copy kernel entries and set recursive mapping
-    if (paging_map_single_4k((uint32_t*)g_kernel_page_directory_phys, TEMP_PD_MAP_ADDR, pd_phys_addr, PTE_KERNEL_DATA_FLAGS) != 0) {
+    // Temporarily map the new PD to copy kernel entries + set recursive mapping
+    if (paging_map_single_4k((uint32_t*)g_kernel_page_directory_phys,
+                             TEMP_PD_MAP_ADDR,
+                             pd_phys,
+                             PTE_KERNEL_DATA_FLAGS) != 0)
+    {
         terminal_write("[Process] Failed to temp map new PD.\n");
-        put_frame(pd_phys_addr); kfree(proc); return NULL;
+        goto cleanup_create;
     }
     uint32_t *proc_pd_virt = (uint32_t*)TEMP_PD_MAP_ADDR;
-    // Frame alloc should have zeroed it, but clear again for safety? Not strictly needed.
-    // memset(proc_pd_virt, 0, PAGE_SIZE);
     copy_kernel_pde_entries(proc_pd_virt);
-    proc_pd_virt[RECURSIVE_PDE_INDEX] = (pd_phys_addr & PAGING_ADDR_MASK) | PAGE_PRESENT | PAGE_RW;
-    paging_unmap_range((uint32_t*)g_kernel_page_directory_phys, TEMP_PD_MAP_ADDR, PAGE_SIZE);
+
+    // Set the recursive PDE
+    proc_pd_virt[RECURSIVE_PDE_INDEX] = (pd_phys & PAGING_ADDR_MASK)
+                                        | PAGE_PRESENT
+                                        | PAGE_RW;
+
+    // Unmap it from kernel to avoid conflicts
+    paging_unmap_range((uint32_t*)g_kernel_page_directory_phys,
+                       TEMP_PD_MAP_ADDR,
+                       PAGE_SIZE);
     paging_invalidate_page((void*)TEMP_PD_MAP_ADDR);
 
-    // Allocate Kernel Stack
+    // Allocate kernel stack
     if (!allocate_kernel_stack(proc)) {
-        put_frame(pd_phys_addr); kfree(proc); return NULL;
+        goto cleanup_create;
     }
+    kstack_phys = proc->kernel_stack_phys_base;
 
-    // Create MM Structure
+    // Create mm structure
     proc->mm = create_mm(proc->page_directory_phys);
     if (!proc->mm) {
-        put_frame(proc->kernel_stack_phys_base);
-        put_frame(pd_phys_addr);
-        kfree(proc);
-        return NULL;
+        terminal_write("[Process] create_mm failed.\n");
+        goto cleanup_create;
     }
 
-    // Load ELF, Create VMAs, Map pages, Set Initial Break
+    // Load the ELF, create VMAs, map pages
     uintptr_t initial_brk_addr = 0;
-    if (load_elf_and_init_memory(path, proc->mm, &proc->entry_point, &initial_brk_addr) != 0) {
-        terminal_printf("[Process] Error: load_elf_and_init_memory failed for '%s'. Cleaning up.\n", path);
-        // Cleanup sequence: destroy_mm handles VMAs and unmaps pages via paging_unmap_range->put_frame
-        destroy_mm(proc->mm);
-        put_frame(proc->kernel_stack_phys_base);
-        // paging_free_user_space is not strictly needed if destroy_mm does its job via VMA traversal.
-        // It might double-free page table frames if called here.
-        // However, it ensures user PDE slots are cleared if destroy_mm fails partially.
-        // Let's call it for extra safety, assuming put_frame handles double-free checks.
-        paging_free_user_space(proc->page_directory_phys);
-        put_frame(pd_phys_addr); // Free PD frame itself
-        kfree(proc);
-        return NULL;
+    if (load_elf_and_init_memory(path,
+                                 proc->mm,
+                                 &proc->entry_point,
+                                 &initial_brk_addr) != 0)
+    {
+        terminal_printf("[Process] Error: ELF load failed for '%s'.\n", path);
+        goto cleanup_create;
     }
     proc->mm->start_brk = initial_brk_addr;
-    proc->mm->end_brk = initial_brk_addr;
+    proc->mm->end_brk   = initial_brk_addr;
 
-    // Create Initial Heap VMA (zero size initially)
-    uint32_t heap_vm_flags = VM_READ | VM_WRITE | VM_USER | VM_ANONYMOUS;
-    // ** VERIFY THIS FLAG in paging.h does not contain 0x8 (PAGE_PWT) **
-    uint32_t heap_page_prot = PTE_USER_DATA_FLAGS;
-    // Log flags being used for heap VMA insertion
-    terminal_printf("USER_MAP DEBUG: Inserting Initial Heap VMA V=[0x%x-0x%x) PageProt=0x%x\n",
-                   initial_brk_addr, initial_brk_addr, heap_page_prot);
-    if (!insert_vma(proc->mm, initial_brk_addr, initial_brk_addr, heap_vm_flags, heap_page_prot, NULL, 0)) {
-         terminal_write("[Process] Warning: Failed to insert initial (zero-size) heap VMA.\n");
+    // Insert an initial (empty) heap VMA
+    {
+        uint32_t heap_flags     = VM_READ | VM_WRITE | VM_USER | VM_ANONYMOUS;
+        uint32_t heap_page_prot = PTE_USER_DATA_FLAGS;
+        // Optionally mark heap NX if supported
+        if (g_nx_supported) {
+            heap_page_prot |= PAGE_NX_BIT;
+        }
+        terminal_printf("USER_MAP DEBUG: Inserting Heap VMA [0x%x - 0x%x)\n",
+                        initial_brk_addr, initial_brk_addr);
+        if (!insert_vma(proc->mm, initial_brk_addr, initial_brk_addr,
+                        heap_flags, heap_page_prot, NULL, 0))
+        {
+            terminal_write("[Process] Warning: failed to insert zero-size heap VMA.\n");
+        }
     }
 
-    // Create User Stack VMA
-    proc->user_stack_top = (void *)USER_STACK_TOP_VIRT_ADDR;
-    uint32_t stack_vm_flags = VM_READ | VM_WRITE | VM_USER | VM_ANONYMOUS | VM_GROWS_DOWN;
-    // ** VERIFY THIS FLAG in paging.h does not contain 0x8 (PAGE_PWT) **
-    uint32_t stack_page_prot = PTE_USER_DATA_FLAGS;
-    // Add NX bit to stack pages if supported
-    if (g_nx_supported) {
-        stack_page_prot |= PAGE_NX_BIT;
+    // Create user stack VMA
+    {
+        proc->user_stack_top = (void *)USER_STACK_TOP_VIRT_ADDR;
+        uint32_t stk_flags   = VM_READ | VM_WRITE | VM_USER | VM_ANONYMOUS | VM_GROWS_DOWN;
+        uint32_t stk_prot    = PTE_USER_DATA_FLAGS;
+        if (g_nx_supported) {
+            stk_prot |= PAGE_NX_BIT; // Mark stack non-executable
+        }
+        terminal_printf("USER_MAP DEBUG: Inserting User Stack VMA [0x%x - 0x%x)\n",
+                        USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR);
+        if (!insert_vma(proc->mm,
+                        USER_STACK_BOTTOM_VIRT,
+                        USER_STACK_TOP_VIRT_ADDR,
+                        stk_flags,
+                        stk_prot,
+                        NULL, 0))
+        {
+            terminal_printf("[Process] Error: Failed to insert stack VMA.\n");
+            goto cleanup_create;
+        }
     }
-    // Log flags being used for stack VMA insertion
-    terminal_printf("USER_MAP DEBUG: Inserting User Stack VMA V=[0x%x-0x%x) PageProt=0x%x\n",
-                    USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR, stack_page_prot);
-    if (!insert_vma(proc->mm, USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR,
-                    stack_vm_flags, stack_page_prot, NULL, 0)) {
-        terminal_printf("[Process] Error: Failed to insert stack VMA. Cleaning up.\n");
-        destroy_mm(proc->mm);
-        put_frame(proc->kernel_stack_phys_base);
-        paging_free_user_space(proc->page_directory_phys);
-        put_frame(pd_phys_addr);
+
+    terminal_printf("[Process] Successfully created PCB PID %d for '%s'.\n",
+                    proc->pid, path);
+    return proc; // Success
+
+cleanup_create:
+    terminal_printf("[Process] Cleaning up failed process creation (PID %d).\n",
+                    (proc ? proc->pid : 0));
+
+    // Clean up in reverse order
+    if (proc) {
+        if (proc->mm) {
+            destroy_mm(proc->mm);
+            proc->mm = NULL;
+        }
+        if (proc->kernel_stack_phys_base) {
+            put_frame(proc->kernel_stack_phys_base);
+            proc->kernel_stack_phys_base = 0;
+        }
+        if (proc->page_directory_phys) {
+            paging_free_user_space(proc->page_directory_phys);
+            put_frame((uintptr_t)proc->page_directory_phys);
+            proc->page_directory_phys = NULL;
+        }
         kfree(proc);
-        return NULL;
+    } else {
+        if (pd_phys) {
+            put_frame(pd_phys);
+        }
     }
-
-    terminal_printf("[Process] Successfully created PCB PID %d for '%s'\n", proc->pid, path);
-    return proc;
+    return NULL;
 }
 
-
-/* Destroys a process and frees its resources */
-void destroy_process(pcb_t *pcb) {
+// Destroys a process and frees its resources
+void destroy_process(pcb_t *pcb)
+{
     if (!pcb) return;
+
     uint32_t pid = pcb->pid;
     terminal_printf("[Process] Destroying process PID %d.\n", pid);
 
-    // 1. Destroy Memory Management structures (VMAs)
-    //    This calls destroy_vma_node_callback -> paging_unmap_range -> put_frame
+    // 1. Destroy Memory Management (unmaps pages, frees VMAs)
     if (pcb->mm) {
-        destroy_mm(pcb->mm); // This handles unmapping pages and freeing VMA structs
+        destroy_mm(pcb->mm);
         pcb->mm = NULL;
     } else {
-         terminal_printf("[Process] Warning: Process PID %d has no mm_struct during destroy.\n", pid);
+        terminal_printf("[Process] Warning: PID %d had no mm_struct.\n", pid);
     }
 
-    // 2. Free User-Space Page Tables
-    //    Frees the PT frames themselves after destroy_mm freed the data frames.
+    // 2. Free user-space page tables
     if (pcb->page_directory_phys) {
         paging_free_user_space(pcb->page_directory_phys);
     }
 
-    // 3. Free Kernel Stack Frame
+    // 3. Free kernel stack
     if (pcb->kernel_stack_phys_base) {
         put_frame(pcb->kernel_stack_phys_base);
         pcb->kernel_stack_phys_base = 0;
     }
 
-    // 4. Free Page Directory Frame
+    // 4. Free the page directory frame
     if (pcb->page_directory_phys) {
         put_frame((uintptr_t)pcb->page_directory_phys);
         pcb->page_directory_phys = NULL;
     }
 
-    // 5. Free the PCB structure itself
+    // 5. Free PCB
     kfree(pcb);
     terminal_printf("[Process] PCB PID %d resources freed.\n", pid);
 }
