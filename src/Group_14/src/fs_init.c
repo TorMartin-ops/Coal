@@ -1,166 +1,296 @@
-#include "fs_init.h"
-#include "vfs.h"          // VFS API (vfs_init, vfs_mount_root, vfs_shutdown, etc.)
-#include "mount.h"        // Mount operations (potentially used by vfs internals)
-#include "fat.h"          // FAT driver registration routines
-#include "terminal.h"     // For logging/debug output
-#include "kmalloc.h"      // Potentially used by VFS internals
-#include "fs_errno.h"     // Defines FS_ERR_* error codes
-#include "types.h"        // Centralized type definitions
-#include "sys_file.h"
-
-#include <string.h>       // For string functions if needed
-
-/* Global flag to track whether the file system layer has been initialized. */
-static bool fs_initialized = false;
-
-/* Default filesystem type for the root mount */
-static const char *default_fs = "FAT"; // Or "FAT16" if your disk image is FAT16
-
 /**
- * fs_init:
- * Initializes the file system layer by:
- * - Initializing the VFS layer.
- * - Registering available filesystem drivers.
- * - Mounting the root filesystem.
+ * @file fs_init.c
+ * @brief Filesystem Layer Initialization and Management
+ *
+ * Orchestrates the setup and teardown of the Virtual File System (VFS),
+ * including driver registration, device initialization, root filesystem mounting,
+ * and shutdown procedures.
  */
+
+ #include "fs_init.h"
+ #include "vfs.h"            // VFS core API
+ #include "fat.h"            // FAT filesystem driver
+ #include "disk.h"           // Disk device abstraction
+ #include "buffer_cache.h"   // Buffer cache registration/API
+ #include "terminal.h"       // Kernel logging/debugging
+ #include "fs_errno.h"       // Filesystem error codes
+ // #include "fs_config.h"   // Not including as ROOT_* defines are missing
+ #include "types.h"          // Standard types (bool, etc.)
+ #include "sys_file.h"       // For O_RDONLY used in test function
+ #include "kmalloc.h"        // For memory allocation (used in test function)
+ #include "mount_table.h"    // For list_mounts()
+ 
+ #include <string.h>         // For strcmp, etc.
+ 
+ // --- FIX: Define Root Device Configuration Locally (at top level) ---
+ // TODO: Move these to a proper configuration system (e.g., kernel cmdline or fs_config.h)
+ #define ROOT_DEVICE_NAME "hdb"
+ #define ROOT_FS_TYPE     "FAT"
+ // --- END FIX ---
+ 
+ /* Global flag to prevent double initialization/shutdown */
+ static bool s_fs_initialized = false;
+ 
+ /* Statically allocated structure for the root disk device.
+  * In a more dynamic system, this might be allocated or part of a list. */
+ static disk_t s_root_disk;
+ 
+ /**
+  * @brief Initializes the core filesystem components.
+  *
+  * Sets up the VFS, registers filesystem drivers (FAT), initializes the
+  * root block device, registers it with the buffer cache, and mounts
+  * the root filesystem.
+  *
+  * @return FS_SUCCESS (0) on success, or a negative FS_ERR_* code on failure.
+  */
  int fs_init(void)
  {
-     if (fs_initialized) {
+     if (s_fs_initialized) {
          terminal_write("[FS_INIT] Warning: File system already initialized.\n");
          return FS_SUCCESS;
      }
+ 
      terminal_write("[FS_INIT] Starting file system initialization...\n");
+     int ret = FS_SUCCESS;
+ 
+     // 1. Initialize Buffer Cache (Should happen before disk registration)
+     //    Assuming buffer_cache_init() is called elsewhere during kernel boot.
+     //    If not, add: buffer_cache_init();
+ 
+     // 2. Initialize VFS Layer
      terminal_write("[FS_INIT] Initializing VFS layer...\n");
-     vfs_init();
+     vfs_init(); // Initialize mount table, file descriptor table etc.
+ 
+     // 3. Register Filesystem Drivers
      terminal_write("[FS_INIT] Registering FAT filesystem driver...\n");
-     int reg_result = fat_register_driver();
-     if (reg_result != 0) {
-         terminal_printf("[FS_INIT] Error: FAT driver registration failed with code %d.\n", reg_result);
-         return FS_ERR_UNKNOWN;
+     ret = fat_register_driver();
+     if (ret != FS_SUCCESS) {
+         terminal_printf("[FS_INIT] Error: FAT driver registration failed (code %d).\n", ret);
+         vfs_shutdown(); // Attempt cleanup
+         return ret;
      }
      terminal_write("[FS_INIT] FAT driver registered successfully.\n");
  
-     const char *root_device = "hdb";
+     // Add registration for other potential FS drivers here...
  
-     // --- FIX: Check default_fs before printing and using ---
-     terminal_printf("[FS_INIT] Attempting to mount root FS (%s) on device '%s' at '/'\n",
-                     default_fs ? default_fs : "<NULL>", // Use ternary for safety
-                     root_device);
+     // 4. Initialize and Register the Root Disk Device
+     const char *root_device_name = ROOT_DEVICE_NAME; // Using local define
+     const char *root_fs_type = ROOT_FS_TYPE;         // Using local define
  
-     int mount_result = vfs_mount_root("/", default_fs, root_device); // Pass default_fs
-     // --- End Fix ---
- 
-     if (mount_result != 0) {
-         terminal_printf("[FS_INIT] Error: Root file system mount failed for device '%s' with code %d.\n",
-                       root_device, mount_result);
-         terminal_write("[FS_INIT] Attempting to clean up after mount failure...\n");
-         vfs_shutdown();
-         return FS_ERR_MOUNT;
+     // Basic null check (less critical now with local defines, but good practice)
+     if (!root_device_name || !root_fs_type) {
+          terminal_write("[FS_INIT] Error: Root device name or FS type configuration is invalid (NULL).\n");
+          fat_unregister_driver();
+          vfs_shutdown();
+          return -FS_ERR_INVALID_PARAM; // Use existing error code
      }
  
-     fs_initialized = true;
+     terminal_printf("[FS_INIT] Initializing root block device '%s'...\n", root_device_name);
+     ret = disk_init(&s_root_disk, root_device_name);
+     if (ret != FS_SUCCESS) {
+         terminal_printf("[FS_INIT] Error: Failed to initialize root disk device '%s' (code %d).\n",
+                         root_device_name, ret);
+         fat_unregister_driver();
+         vfs_shutdown();
+         return ret; // Propagate disk error
+     }
+ 
+     terminal_printf("[FS_INIT] Registering root disk '%s' with buffer cache...\n", root_device_name);
+     ret = buffer_register_disk(&s_root_disk);
+     if (ret != FS_SUCCESS) {
+          terminal_printf("[FS_INIT] Error: Failed to register root disk '%s' with buffer cache (code %d).\n",
+                          root_device_name, ret);
+          // Note: disk is initialized, but we can't use it via cache. Should we cleanup disk?
+          // For now, just unregister driver and shutdown VFS.
+          fat_unregister_driver();
+          vfs_shutdown();
+          return ret; // Propagate buffer cache registration error
+     }
+     terminal_printf("[FS_INIT] Root disk '%s' registered successfully.\n", root_device_name);
+ 
+ 
+     // 5. Mount the Root Filesystem via VFS
+     terminal_printf("[FS_INIT] Attempting to mount root FS (%s) on device '%s' at '/'\n",
+                     root_fs_type,
+                     root_device_name);
+ 
+     ret = vfs_mount_root("/", root_fs_type, root_device_name);
+     if (ret != FS_SUCCESS) {
+         terminal_printf("[FS_INIT] Error: Root filesystem mount failed for device '%s' (code %d).\n",
+                         root_device_name, ret);
+         terminal_write("[FS_INIT] Attempting cleanup after mount failure...\n");
+         // Consider unregistering disk from buffer cache if an unregister function exists
+         // buffer_unregister_disk(&s_root_disk); // If available
+         fat_unregister_driver();
+         vfs_shutdown();
+         return ret; // Propagate mount error
+     }
+ 
+     s_fs_initialized = true;
      terminal_write("[FS_INIT] File system initialization complete.\n");
      terminal_write("[FS_INIT] Current mount points:\n");
-     list_mounts();
+     list_mounts(); // Display the active mounts
+ 
      return FS_SUCCESS;
  }
  
-/**
- * fs_is_initialized:
- * Returns whether the filesystem layer has been initialized.
- */
-bool fs_is_initialized(void)
-{
-    return fs_initialized;
-}
-
-/**
- * fs_shutdown:
- * Shuts down the file system layer.
- */
-int fs_shutdown(void)
-{
-    if (!fs_initialized) {
-        terminal_write("[FS_SHUTDOWN] Warning: File system not initialized, nothing to shut down.\n");
-        return FS_SUCCESS;
-    }
-    
-    terminal_write("[FS_SHUTDOWN] Shutting down file system...\n");
-
-    /* Unmount the root filesystem. */
-    int unmount_result = vfs_unmount_root();
-    if (unmount_result != 0) {
-        // This might fail if files are still open, etc.
-        terminal_printf("[FS_SHUTDOWN] Warning: Root file system unmount failed with code %d.\n", 
-                       unmount_result);
-        // Continue with shutdown anyway
-    }
-
-    /* Unregister FAT driver */
-    terminal_write("[FS_SHUTDOWN] Unregistering FAT driver...\n");
-    fat_unregister_driver();
-    // Unregister other drivers here...
-
-    /* Shutdown the VFS layer. */
-    terminal_write("[FS_SHUTDOWN] Shutting down VFS layer...\n");
-    int vfs_result = vfs_shutdown();
-    if (vfs_result != 0) {
-        terminal_printf("[FS_SHUTDOWN] Warning: VFS shutdown returned code %d.\n", vfs_result);
-    }
-
-    fs_initialized = false;
-    terminal_write("[FS_SHUTDOWN] File system shutdown complete.\n");
-    return FS_SUCCESS;
-}
-
-/**
- * fs_test_file_access:
- * Simple helper function to test file access.
- * Attempts to open, read, and close a file to verify filesystem functionality.
- *
- * @param path Path to the file to test
- * @return 0 on success, negative error code on failure
- */
-int fs_test_file_access(const char *path)
-{
-    if (!fs_initialized) {
-        terminal_write("[FS_TEST] Error: File system not initialized.\n");
-        return -FS_ERR_NOT_INIT;
-    }
-
-    terminal_printf("[FS_TEST] Testing file access: '%s'\n", path);
-    
-    // Try to open the file for reading
-    file_t *file = vfs_open(path, O_RDONLY);
-    if (!file) {
-        terminal_printf("[FS_TEST] Error: Could not open file '%s'\n", path);
-        return -FS_ERR_NOT_FOUND;
-    }
-    
-    // Try to read some data
-    char buffer[128];
-    int bytes_read = vfs_read(file, buffer, sizeof(buffer) - 1);
-    if (bytes_read < 0) {
-        terminal_printf("[FS_TEST] Error: Failed to read from file '%s' (code %d)\n", 
-                       path, bytes_read);
-        vfs_close(file);
-        return bytes_read;
-    }
-    
-    // Null-terminate and display the data
-    buffer[bytes_read] = '\0';
-    terminal_printf("[FS_TEST] Successfully read %d bytes from '%s':\n", bytes_read, path);
-    terminal_write(buffer);
-    terminal_write("\n");
-    
-    // Close the file
-    int close_result = vfs_close(file);
-    if (close_result != 0) {
-        terminal_printf("[FS_TEST] Warning: Failed to close file '%s' (code %d)\n", 
-                       path, close_result);
-        return close_result;
-    }
-    
-    terminal_printf("[FS_TEST] File access test successful for '%s'\n", path);
-    return FS_SUCCESS;
-}
+ /**
+  * @brief Checks if the filesystem layer is currently initialized.
+  * @return True if initialized, false otherwise.
+  */
+ bool fs_is_initialized(void)
+ {
+     return s_fs_initialized;
+ }
+ 
+ /**
+  * @brief Shuts down the filesystem layer gracefully.
+  *
+  * Unmounts filesystems, unregisters drivers, and shuts down the VFS.
+  *
+  * @return FS_SUCCESS (0) on success, or a negative FS_ERR_* code on failure
+  * (currently always returns FS_SUCCESS, but logs warnings).
+  */
+ int fs_shutdown(void)
+ {
+     if (!s_fs_initialized) {
+         terminal_write("[FS_SHUTDOWN] Warning: File system not initialized, nothing to shut down.\n");
+         return FS_SUCCESS;
+     }
+ 
+     terminal_write("[FS_SHUTDOWN] Shutting down file system...\n");
+     int final_ret = FS_SUCCESS; // Track if any step fails
+ 
+     // 1. Unmount Root Filesystem (and implicitly any others via VFS shutdown)
+     //    A more robust shutdown might unmount all non-root first.
+     terminal_write("[FS_SHUTDOWN] Unmounting root filesystem...\n");
+     int unmount_result = vfs_unmount_root(); // Should handle unmounting "/"
+     if (unmount_result != FS_SUCCESS) {
+         // This might fail if files are still open. Critical issue in real OS.
+         terminal_printf("[FS_SHUTDOWN] Warning: Root file system unmount failed (code %d). Force continuing shutdown.\n",
+                         unmount_result);
+         final_ret = unmount_result; // Report the error but continue
+     }
+ 
+     // 2. Unregister Filesystem Drivers
+     terminal_write("[FS_SHUTDOWN] Unregistering FAT driver...\n");
+     fat_unregister_driver(); // Assuming this exists and cleans up FAT resources
+     // Unregister other drivers here...
+ 
+     // 3. Unregister Disks from Buffer Cache (Optional but good practice)
+     // if (buffer_unregister_disk) { // Check if function exists
+     //     terminal_printf("[FS_SHUTDOWN] Unregistering disk '%s' from buffer cache...\n", s_root_disk.blk_dev.device_name);
+     //     buffer_unregister_disk(&s_root_disk);
+     // }
+ 
+     // 4. Shutdown VFS Layer (cleans up mount points, file descriptors)
+     terminal_write("[FS_SHUTDOWN] Shutting down VFS layer...\n");
+     int vfs_result = vfs_shutdown();
+     if (vfs_result != FS_SUCCESS) {
+         terminal_printf("[FS_SHUTDOWN] Warning: VFS shutdown failed (code %d).\n", vfs_result);
+         if (final_ret == FS_SUCCESS) final_ret = vfs_result; // Report first error encountered
+     }
+ 
+     // 5. Sync Buffer Cache (Flush remaining dirty buffers)
+     terminal_write("[FS_SHUTDOWN] Syncing buffer cache...\n");
+     buffer_cache_sync(); // Ensure all data is written
+ 
+     // Consider low-level disk cleanup if necessary (e.g., power down commands)
+     // disk_shutdown(&s_root_disk); // If available
+ 
+ 
+     s_fs_initialized = false;
+     terminal_write("[FS_SHUTDOWN] File system shutdown complete.\n");
+     return final_ret; // Return success or the first error encountered
+ }
+ 
+ 
+ /**
+  * @brief Simple test function for verifying basic file read access.
+  *
+  * Attempts to open, read a small chunk, and close a file using VFS calls.
+  * Logs results to the terminal.
+  *
+  * @param path The absolute path to the file to test.
+  * @return FS_SUCCESS (0) on success, negative error code on failure.
+  */
+ int fs_test_file_access(const char *path)
+ {
+     if (!s_fs_initialized) {
+         terminal_write("[FS_TEST] Error: File system not initialized.\n");
+         return -FS_ERR_NOT_INIT;
+     }
+     if (!path) {
+         terminal_write("[FS_TEST] Error: NULL path provided.\n");
+         return -FS_ERR_INVALID_PARAM;
+     }
+ 
+     terminal_printf("[FS_TEST] Testing file access: '%s'\n", path);
+ 
+     file_t *file = NULL;
+     char *buffer = NULL;
+     int ret = FS_SUCCESS;
+ 
+     // Try to open the file for reading
+     file = vfs_open(path, O_RDONLY);
+     if (!file) {
+         // Note: vfs_open currently returns NULL on error, not error code.
+         // Need to rely on logging within vfs_open or assume FS_ERR_NOT_FOUND.
+         terminal_printf("[FS_TEST] Error: vfs_open failed for file '%s'.\n", path);
+         // --- FIX: Use existing error code ---
+         return -FS_ERR_UNKNOWN; // Use FS_ERR_UNKNOWN instead of FS_ERR_GENERIC
+         // --- END FIX ---
+     }
+ 
+     // Allocate a buffer for reading
+     buffer = kmalloc(128); // Allocate a reasonable size buffer
+     if (!buffer) {
+          terminal_printf("[FS_TEST] Error: Failed to allocate read buffer for '%s'.n", path);
+          ret = -FS_ERR_OUT_OF_MEMORY;
+          goto cleanup;
+     }
+ 
+     // Try to read some data
+     ssize_t bytes_read = vfs_read(file, buffer, 128 - 1); // Read up to buffer size - 1
+     if (bytes_read < 0) {
+         terminal_printf("[FS_TEST] Error: Failed to read from file '%s' (code %d)\n",
+                         path, (int)bytes_read);
+         ret = bytes_read; // vfs_read returns negative FS_ERR_* code
+         goto cleanup;
+     }
+ 
+     // Null-terminate and display the data
+     buffer[bytes_read] = '\0';
+     terminal_printf("[FS_TEST] Successfully read %d bytes from '%s':\n", (int)bytes_read, path);
+     terminal_write(">>>\n");
+     terminal_write(buffer); // Assumes buffer contains printable text
+     terminal_write("\n<<<\n");
+ 
+     ret = FS_SUCCESS; // Mark as success before closing
+ 
+ cleanup:
+     // Close the file (must happen even on read error)
+     if (file) {
+         int close_result = vfs_close(file);
+         if (close_result != FS_SUCCESS) {
+             terminal_printf("[FS_TEST] Warning: Failed to close file '%s' (code %d)\n",
+                             path, close_result);
+             // Report close error only if read succeeded
+             if (ret == FS_SUCCESS) ret = close_result;
+         }
+     }
+ 
+     // Free the buffer
+     if (buffer) {
+         kfree(buffer);
+     }
+ 
+     if (ret == FS_SUCCESS) {
+        terminal_printf("[FS_TEST] File access test successful for '%s'\n", path);
+     } else {
+        terminal_printf("[FS_TEST] File access test failed for '%s' (Final code: %d)\n", path, ret);
+     }
+ 
+     return ret;
+ }

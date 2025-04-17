@@ -248,119 +248,171 @@
  /****************************************************************************
   * MOUNT
   ****************************************************************************/
- static void *fat_mount_internal(const char *device)
- {
-     terminal_printf("[FAT] Mounting device '%s'...\n", device ? device : "(null)");
-     if (!device) return NULL;
- 
-     // Allocate our fs struct (fat_fs_t is declared in fat.h)
-     fat_fs_t *fs = kmalloc(sizeof(fat_fs_t));
-     if (!fs) {
-         terminal_write("[FAT] OOM in mount.\n");
-         return NULL;
-     }
-     memset(fs, 0, sizeof(*fs));
-     spinlock_init(&fs->lock);
- 
-     // Initialize disk
-     if (disk_init(&fs->disk, device) != 0) {
-         terminal_printf("[FAT] disk_init failed for %s.\n", device);
-         kfree(fs);
-         return NULL;
-     }
- 
-     // Read boot sector
-     buffer_t *bs = buffer_get(device, 0);
-if (!bs) {
-    terminal_printf("[FAT] Could not read sector 0 on %s.\n", device);
-    kfree(fs);
-    return NULL;
-}
-memcpy(&fs->boot_sector, bs->data, sizeof(fat_boot_sector_t));
+ /**
+ * @brief Mounts a FAT filesystem on a given device.
+ *
+ * Reads the boot sector, determines FAT type and geometry, allocates
+ * the filesystem structure, and loads the FAT table into memory.
+ * Assumes the underlying block device is already initialized and registered
+ * with the buffer cache.
+ *
+ * @param device The name of the block device (e.g., "hda", "hdb") to mount.
+ * @return A pointer to the allocated fat_fs_t context on success, NULL on failure.
+ */
+static void *fat_mount_internal(const char *device)
+{
+    terminal_printf("[FAT] Attempting mount for device '%s'...\n", device ? device : "<NULL>");
+    if (!device || device[0] == '\0') {
+        terminal_write("[FAT Mount] Error: Invalid device name provided.\n");
+        return NULL;
+    }
 
-// Check signature using the EXISTING bs->data buffer
-uint8_t* boot_sector_raw = (uint8_t*)bs->data;
-if (boot_sector_raw[510] != 0x55 || boot_sector_raw[511] != 0xAA) {
-     terminal_printf("[FAT] Invalid boot sector sig (0xAA55 not found at offset 510) on %s.\n", device);
-     buffer_release(bs); // Release buffer before freeing fs
-     kfree(fs);
-     return NULL;
+    fat_fs_t *fs = NULL;
+    buffer_t *bs_buf = NULL;
+    int ret = FS_SUCCESS; // Use for tracking errors
+
+    // 1. Retrieve the disk_t structure using the buffer cache's registry
+    //    (buffer_get will handle the lookup via get_disk_by_name)
+    //    We just need to trigger a lookup to get the disk pointer later.
+    //    Reading sector 0 is the first step anyway.
+    bs_buf = buffer_get(device, 0); // Read Boot Sector (LBA 0)
+    if (!bs_buf) {
+        terminal_printf("[FAT Mount] Error: Failed to read boot sector (LBA 0) for device '%s' via buffer cache.\n", device);
+        ret = -FS_ERR_IO;
+        goto mount_fail;
+    }
+    // Check if buffer_get found a valid disk struct
+    if (!bs_buf->disk) {
+         terminal_printf("[FAT Mount] Error: Buffer cache returned buffer for '%s' but disk_t is NULL.\n", device);
+         ret = -FS_ERR_INTERNAL; // Should not happen if registered
+         goto mount_fail;
+    }
+
+    // 2. Allocate and Initialize the Filesystem Structure
+    fs = kmalloc(sizeof(fat_fs_t));
+    if (!fs) {
+        terminal_write("[FAT Mount] Error: Failed to allocate memory for fat_fs_t.\n");
+        ret = -FS_ERR_OUT_OF_MEMORY;
+        goto mount_fail;
+    }
+    memset(fs, 0, sizeof(*fs));
+    spinlock_init(&fs->lock);
+
+    // --- Store the disk_t pointer obtained from the buffer ---
+    // NOTE: This assumes buffer_get correctly sets buf->disk from the registry
+    fs->disk_ptr = bs_buf->disk; // Store pointer to the registered disk_t
+    // --- (Removed redundant disk_init call here) ---
+
+
+    // 3. Parse Boot Sector (using data from the buffer)
+    // Use a temporary structure to avoid potential alignment issues if memcpying directly
+    fat_boot_sector_t bpb;
+    memcpy(&bpb, bs_buf->data, sizeof(fat_boot_sector_t));
+
+    // Check boot sector signature
+    uint8_t* boot_sector_raw = (uint8_t*)bs_buf->data;
+    if (boot_sector_raw[510] != 0x55 || boot_sector_raw[511] != 0xAA) {
+        terminal_printf("[FAT Mount] Error: Invalid boot sector signature (0xAA55) on device '%s'.\n", device);
+        ret = -FS_ERR_INVALID_FORMAT;
+        goto mount_fail;
+    }
+    buffer_release(bs_buf); // Release buffer now that we've copied BPB
+    bs_buf = NULL; // Avoid double release
+
+    // 4. Validate and Store Geometry
+    fs->bytes_per_sector = bpb.bytes_per_sector;
+    fs->sectors_per_cluster = bpb.sectors_per_cluster;
+    // Sanity check geometry values
+    if (fs->bytes_per_sector < 512 || fs->bytes_per_sector > 4096 || (fs->bytes_per_sector & (fs->bytes_per_sector - 1)) != 0 || // Power of 2 check
+        fs->sectors_per_cluster == 0 || (fs->sectors_per_cluster & (fs->sectors_per_cluster - 1)) != 0) // Power of 2 check
+    {
+        terminal_printf("[FAT Mount] Error: Invalid geometry on device '%s' (BPB=%u, SPC=%u).\n",
+                        device, fs->bytes_per_sector, fs->sectors_per_cluster);
+        ret = -FS_ERR_INVALID_FORMAT;
+        goto mount_fail;
+    }
+    fs->cluster_size_bytes = fs->bytes_per_sector * fs->sectors_per_cluster;
+
+    fs->total_sectors = (bpb.total_sectors_short != 0) ? bpb.total_sectors_short : bpb.total_sectors_long;
+    fs->fat_size = (bpb.fat_size_16 != 0) ? bpb.fat_size_16 : bpb.fat_size_32;
+    fs->num_fats = bpb.num_fats;
+
+    if (fs->total_sectors == 0 || fs->fat_size == 0 || fs->num_fats == 0 || bpb.reserved_sector_count == 0) {
+        terminal_printf("[FAT Mount] Error: Invalid BPB values on device '%s' (TotalSect=%u, FATSize=%u, NumFATs=%u, Resvd=%u).\n",
+                        device, fs->total_sectors, fs->fat_size, fs->num_fats, bpb.reserved_sector_count);
+        ret = -FS_ERR_INVALID_FORMAT;
+        goto mount_fail;
+    }
+    fs->fat_start_lba = bpb.reserved_sector_count;
+
+    // Calculate Root Directory info (FAT12/16 specific)
+    uint32_t root_dir_sectors = ((bpb.root_entry_count * 32) + (fs->bytes_per_sector - 1)) / fs->bytes_per_sector;
+    fs->root_dir_sectors = root_dir_sectors;
+    fs->root_dir_start_lba = fs->fat_start_lba + (fs->num_fats * fs->fat_size);
+
+    // Calculate Data Area start and Cluster Count
+    fs->first_data_sector = fs->root_dir_start_lba + root_dir_sectors;
+    if (fs->first_data_sector >= fs->total_sectors) {
+         terminal_printf("[FAT Mount] Error: Calculated data sector start (%u) beyond total sectors (%u).\n",
+                         fs->first_data_sector, fs->total_sectors);
+         ret = -FS_ERR_INVALID_FORMAT;
+         goto mount_fail;
+    }
+    uint32_t data_sectors = fs->total_sectors - fs->first_data_sector;
+    fs->cluster_count = data_sectors / fs->sectors_per_cluster; // Integer division is correct
+
+    // 5. Determine FAT Type
+    if (fs->cluster_count < 4085) {
+        fs->type = FAT_TYPE_FAT12;
+        fs->root_cluster = 0; // Not used for FAT12 root directory
+        fs->eoc_marker = 0xFF8; // Typical FAT12 EOC marker (range 0xFF8-0xFFF)
+        terminal_write("[FAT Mount] Detected FAT12.\n");
+        // FAT12 support might be incomplete, add warning if necessary
+         terminal_write("[FAT Mount] Warning: FAT12 support may be limited.\n");
+    } else if (fs->cluster_count < 65525) {
+        fs->type = FAT_TYPE_FAT16;
+        fs->root_cluster = 0; // Not used for FAT16 root directory
+        fs->eoc_marker = 0xFFF8; // Typical FAT16 EOC marker (range 0xFFF8-0xFFFF)
+        terminal_write("[FAT Mount] Detected FAT16.\n");
+    } else {
+        fs->type = FAT_TYPE_FAT32;
+        fs->root_cluster = bpb.root_cluster; // FAT32 uses a cluster for the root directory
+        fs->eoc_marker = 0x0FFFFFF8; // Typical FAT32 EOC marker (range 0x0FFFFFF8 - 0x0FFFFFFF)
+        if (fs->root_cluster < 2) {
+             terminal_printf("[FAT Mount] Error: Invalid root cluster value (%u) for FAT32.\n", fs->root_cluster);
+             ret = -FS_ERR_INVALID_FORMAT;
+             goto mount_fail;
+        }
+        // Recalculate data area start for FAT32 (no fixed root dir area)
+        fs->first_data_sector = fs->fat_start_lba + (fs->num_fats * fs->fat_size);
+        // Recheck cluster count calculation consistency if needed, but BPB should be primary source
+        terminal_write("[FAT Mount] Detected FAT32.\n");
+    }
+
+    // 6. Load FAT Table into Memory
+    ret = load_fat_table(fs);
+    if (ret != FS_SUCCESS) {
+        terminal_printf("[FAT Mount] Error: Failed to load FAT table for device '%s' (code %d).\n", device, ret);
+        goto mount_fail;
+    }
+
+    terminal_printf("[FAT Mount] Mount successful for device '%s'.\n", device);
+    return fs; // Return the allocated and initialized context
+
+mount_fail:
+    terminal_printf("[FAT Mount] Mount failed for device '%s' (Error code: %d).\n", device, ret);
+    if (bs_buf) {
+        buffer_release(bs_buf); // Release buffer if held
+    }
+    if (fs) {
+        // If FAT table was partially loaded, free it
+        if (fs->fat_table) {
+            kfree(fs->fat_table);
+        }
+        kfree(fs); // Free the main fs structure
+    }
+    return NULL; // Indicate failure
 }
-buffer_release(bs);
- 
-     // Basic geometry
-     fs->bytes_per_sector    = fs->boot_sector.bytes_per_sector;
-     fs->sectors_per_cluster = fs->boot_sector.sectors_per_cluster;
-     if (fs->bytes_per_sector == 0 || fs->sectors_per_cluster == 0) {
-         terminal_printf("[FAT] Invalid geometry on %s (0 spc?).\n", device);
-         kfree(fs);
-         return NULL;
-     }
-     fs->cluster_size_bytes  = fs->bytes_per_sector * fs->sectors_per_cluster;
- 
-     uint32_t total_sectors = (fs->boot_sector.total_sectors_short != 0)
-                            ? fs->boot_sector.total_sectors_short
-                            : fs->boot_sector.total_sectors_long;
-     fs->fat_size = (fs->boot_sector.fat_size_16 != 0)
-                  ? fs->boot_sector.fat_size_16
-                  : fs->boot_sector.fat_size_32;
-     if (total_sectors == 0 || fs->fat_size == 0 || fs->boot_sector.num_fats == 0) {
-         terminal_printf("[FAT] Invalid geometry on %s.\n", device);
-         kfree(fs);
-         return NULL;
-     }
-     fs->total_sectors  = total_sectors;
-     fs->fat_start_lba  = fs->boot_sector.reserved_sector_count;
- 
-     // Root dir for FAT12/16
-     uint32_t root_dir_sectors = ((fs->boot_sector.root_entry_count * 32)
-                                  + (fs->bytes_per_sector - 1))
-                                 / fs->bytes_per_sector;
-     fs->root_dir_sectors = root_dir_sectors;
-     fs->root_dir_start_lba = fs->fat_start_lba
-                            + (fs->boot_sector.num_fats * fs->fat_size);
- 
-     // Data area
-     fs->first_data_sector = fs->root_dir_start_lba + root_dir_sectors;
- 
-     // Cluster count
-     {
-         uint32_t data_sectors = fs->total_sectors - fs->first_data_sector;
-         fs->cluster_count = (fs->sectors_per_cluster > 0)
-                           ? data_sectors / fs->sectors_per_cluster
-                           : 0;
-     }
- 
-     // Determine FAT type
-     if (fs->cluster_count < 4085) {
-         fs->type = FAT_TYPE_FAT12;
-         fs->root_cluster = 0;    // not used for FAT12
-         fs->eoc_marker   = 0xFF8; // typical FAT12 EOC range 0xFF8..0xFFF
-         terminal_write("[FAT] Detected FAT12.\n");
-     }
-     else if (fs->cluster_count < 65525) {
-         fs->type = FAT_TYPE_FAT16;
-         fs->root_cluster = 0;
-         fs->eoc_marker   = 0xFFF8; // typical FAT16 EOC range 0xFFF8..0xFFFF
-         terminal_write("[FAT] Detected FAT16.\n");
-     }
-     else {
-         fs->type = FAT_TYPE_FAT32;
-         fs->root_cluster = fs->boot_sector.root_cluster;
-         fs->eoc_marker   = 0x0FFFFFF8; // typical FAT32 EOC range
-         terminal_write("[FAT] Detected FAT32.\n");
-     }
- 
-     // Load the FAT
-     if (load_fat_table(fs) != FS_SUCCESS) {
-         terminal_printf("[FAT] Failed to load FAT for %s.\n", device);
-         kfree(fs);
-         return NULL;
-     }
- 
-     terminal_printf("[FAT] Mounted '%s' as FAT.\n", device);
-     return fs;
- }
  
  /****************************************************************************
   * UNMOUNT
@@ -1150,66 +1202,131 @@ buffer_release(bs);
      return FS_SUCCESS;
  }
  
- static int load_fat_table(fat_fs_t *fs) {
-    if (!fs) {
-        terminal_write("[FAT load_v2] Error: NULL fs provided.\n");
+ /**
+ * @brief Loads the entire FAT table from disk into memory.
+ *
+ * Allocates memory for the FAT table and reads the relevant sectors from disk
+ * using the buffer cache.
+ *
+ * @param fs Pointer to the fat_fs_t structure containing filesystem info.
+ * @return FS_SUCCESS (0) on success, or a negative FS_ERR_* code on failure.
+ */
+static int load_fat_table(fat_fs_t *fs)
+{
+    terminal_write("[FAT Load] Attempting to load FAT table...\n");
+    if (!fs || !fs->disk_ptr || !fs->disk_ptr->blk_dev.device_name) {
+        terminal_write("[FAT Load] Error: Invalid fat_fs_t or disk pointer/name provided.\n");
         return -FS_ERR_INVALID_PARAM;
     }
-    
+
     if (fs->fat_size == 0 || fs->bytes_per_sector == 0) {
-        terminal_printf("[FAT load_v2] Error: Invalid geometry (fat_size=%u, sector_size=%u).\n",
+        terminal_printf("[FAT Load] Error: Invalid geometry (fat_size=%u, sector_size=%u).\n",
                         fs->fat_size, fs->bytes_per_sector);
         return -FS_ERR_INVALID_FORMAT;
     }
 
-    // Calculate FAT table size
+    // Calculate FAT table size in bytes
     size_t bytes_per_sector_sz = fs->bytes_per_sector;
     size_t fat_size_sectors_sz = fs->fat_size;
-    
+
     // Check for potential overflow before multiplication
     if (bytes_per_sector_sz > 0 && fat_size_sectors_sz > SIZE_MAX / bytes_per_sector_sz) {
-        terminal_printf("[FAT load_v2] Error: FAT table size calculation overflows size_t.\n");
+        terminal_write("[FAT Load] Error: FAT table size calculation overflows size_t.\n");
         return -FS_ERR_OVERFLOW;
     }
-    
     size_t table_size_bytes = fat_size_sectors_sz * bytes_per_sector_sz;
-    
-    terminal_printf("[FAT load_v2] Calculated FAT table size: %u bytes (%u sectors).\n",
-                   table_size_bytes, fs->fat_size);
-    
-    // Allocate buffer with extra padding to be safe
-    fs->fat_table = kmalloc(table_size_bytes + 64); // Add some padding just in case
+
+    terminal_printf("[FAT Load] Calculated FAT table size: %u bytes (%u sectors).\n",
+                    table_size_bytes, fs->fat_size);
+
+    // --- Allocation with Debugging Focus ---
+    // Allocate slightly more for safety margin / canary (optional)
+    size_t alloc_padding = 64; // Added padding
+    size_t alloc_total_size = table_size_bytes + alloc_padding;
+    if (table_size_bytes > SIZE_MAX - alloc_padding) { // Check overflow for padding add
+         terminal_write("[FAT Load] Error: Adding padding causes allocation size overflow.\n");
+         return -FS_ERR_OVERFLOW;
+    }
+
+    terminal_printf("[FAT Load] Attempting to allocate %u bytes for FAT table (includes %u padding)...\n",
+                    alloc_total_size, alloc_padding);
+
+    // --- Option 1: Use kmalloc (as before) ---
+    fs->fat_table = kmalloc(alloc_total_size);
+
+    // --- Option 2: Try direct Buddy Allocation for debugging ---
+    // size_t buddy_alloc_size = buddy_get_expected_allocation_size(alloc_total_size);
+    // if (buddy_alloc_size == SIZE_MAX) {
+    //      terminal_write("[FAT Load] Error: Required FAT size exceeds buddy allocator limits.\n");
+    //      return -FS_ERR_OUT_OF_MEMORY;
+    // }
+    // fs->fat_table = BUDDY_ALLOC(buddy_alloc_size);
+    // terminal_printf("[FAT Load] (Debug) Using Buddy Allocator, requested %u, got block size %u.\n",
+    //                 alloc_total_size, buddy_alloc_size);
+    // alloc_total_size = buddy_alloc_size; // Update total size to reflect actual block size
+    // --- End Option 2 ---
+
     if (!fs->fat_table) {
-        terminal_printf("[FAT load_v2] Error: Failed to kmalloc %u bytes for FAT table.\n", 
-                       table_size_bytes);
+        terminal_printf("[FAT Load] Error: Failed to allocate memory (requested %u bytes).\n",
+                        alloc_total_size);
         return -FS_ERR_OUT_OF_MEMORY;
     }
-    
-    // Zero the entire buffer first
-    memset(fs->fat_table, 0, table_size_bytes + 64);
-    
-    terminal_printf("[FAT load_v2] Allocated FAT table buffer at virtual address: 0x%p\n", 
-                   fs->fat_table);
-                   
-    // Read sectors one by one instead of all at once
-    uint8_t* buffer_pos = (uint8_t*)fs->fat_table;
+
+    // Zero the entire allocated buffer, including padding
+    memset(fs->fat_table, 0, alloc_total_size);
+    terminal_printf("[FAT Load] Allocated FAT buffer at VAddr: 0x%p, Size: %u bytes.\n",
+                    fs->fat_table, alloc_total_size);
+
+
+    // --- Read FAT sectors ---
+    terminal_write("[FAT Load] Reading FAT sectors from disk via buffer cache...\n");
+    uint8_t* buffer_pos = (uint8_t*)fs->fat_table; // Current position in our allocated buffer
+    uintptr_t buffer_end = (uintptr_t)fs->fat_table + table_size_bytes; // End of *usable* FAT data area
+
     for (uint32_t sector = 0; sector < fs->fat_size; sector++) {
         uint32_t lba = fs->fat_start_lba + sector;
-        buffer_t* buf = buffer_get(fs->disk.blk_dev.device_name, lba);
-        if (!buf) {
-            terminal_printf("[FAT load_v2] Error: Failed to read sector %u.\n", lba);
-            kfree(fs->fat_table);
+        // Debug log for each sector read attempt
+        // terminal_printf("[FAT Load] Reading Sector: %u (LBA: %u), Target VAddr: 0x%p\n",
+        //                 sector, lba, buffer_pos);
+
+        buffer_t* sector_buf = buffer_get(fs->disk_ptr->blk_dev.device_name, lba);
+        if (!sector_buf) {
+            terminal_printf("[FAT Load] Error: Failed to get buffer for FAT sector %u (LBA %u).\n", sector, lba);
+            kfree(fs->fat_table); // Clean up allocation
             fs->fat_table = NULL;
             return -FS_ERR_IO;
         }
-        
-        // Copy sector data to our buffer
-        memcpy(buffer_pos, buf->data, fs->bytes_per_sector);
+        if (!sector_buf->data) {
+             terminal_printf("[FAT Load] Error: Buffer cache returned buffer for LBA %u with NULL data pointer!\n", lba);
+             buffer_release(sector_buf);
+             kfree(fs->fat_table);
+             fs->fat_table = NULL;
+             return -FS_ERR_INTERNAL; // Buffer cache error
+        }
+
+        // --- Bounds Check before memcpy ---
+        uintptr_t copy_end_addr = (uintptr_t)buffer_pos + fs->bytes_per_sector;
+        if (copy_end_addr > buffer_end) {
+             // This should NOT happen if calculations are correct, but check anyway
+             terminal_printf("[FAT Load] Error: Potential overflow! Trying to copy %u bytes from sector %u to 0x%p, which exceeds buffer end 0x%p.\n",
+                             fs->bytes_per_sector, sector, buffer_pos, (void*)buffer_end);
+             buffer_release(sector_buf);
+             kfree(fs->fat_table);
+             fs->fat_table = NULL;
+             return -FS_ERR_INTERNAL; // Indicates calculation error
+        }
+
+        // Perform the copy
+        memcpy(buffer_pos, sector_buf->data, fs->bytes_per_sector);
+
+        // Release the sector buffer obtained from cache
+        buffer_release(sector_buf);
+
+        // Advance the position in our FAT table buffer
         buffer_pos += fs->bytes_per_sector;
-        buffer_release(buf);
     }
 
-    terminal_printf("[FAT] FAT table loaded successfully (%u sectors).\n", fs->fat_size);
+    terminal_printf("[FAT Load] FAT table loaded successfully into memory (%u sectors read).\n", fs->fat_size);
     return FS_SUCCESS;
 }
  

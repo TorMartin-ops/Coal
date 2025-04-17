@@ -59,6 +59,7 @@ extern "C" {
 #define FS_MOUNT_OPTION_SYNCHRONOUS 0x02
 #define FS_MOUNT_OPTION_NOEXEC      0x04
 
+
 /**
  * fs_config_t
  *

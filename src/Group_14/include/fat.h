@@ -130,30 +130,33 @@ typedef struct {
  * @brief In-memory representation of a mounted FAT filesystem instance.
  */
 typedef struct fat_fs {
-    disk_t disk;                   // Underlying disk device structure
-    fat_boot_sector_t boot_sector; // Copy of boot sector data
-
+    /* Core Disk Information */
+    disk_t *disk_ptr;              // Pointer to underlying disk device structure
+    
+    /* BPB Derived Values */
     uint32_t fat_size;             // Size (in sectors) of ONE FAT
     uint32_t total_sectors;        // Total sectors on the volume
     uint32_t first_data_sector;    // LBA of the first data sector (cluster 2)
     uint32_t root_dir_sectors;     // Number of sectors for root directory (FAT12/16 only)
     uint32_t cluster_count;        // Total number of data clusters
     uint8_t  type;                 // FAT type: FAT_TYPE_FAT12, FAT_TYPE_FAT16, or FAT_TYPE_FAT32
-
+    uint8_t  num_fats;             // Number of FAT copies on the disk
+    
+    /* In-Memory FAT Table */
     void *fat_table;               // Pointer to the in-memory FAT table (size = fat_size * bytes_per_sector)
 
-    // Cached geometry info derived from boot sector
+    /* Cached geometry info derived from boot sector */
     uint32_t root_cluster;         // Starting cluster of root dir (FAT32 only)
-    uint32_t sectors_per_cluster;
-    uint32_t bytes_per_sector;
+    uint32_t sectors_per_cluster;  // Number of sectors per cluster
+    uint32_t bytes_per_sector;     // Number of bytes per sector
     uint32_t cluster_size_bytes;   // bytes_per_sector * sectors_per_cluster
     uint32_t fat_start_lba;        // LBA where the first FAT starts
     uint32_t root_dir_start_lba;   // LBA where the fixed root dir starts (FAT12/16 only)
-
-    // Standardized End-of-Chain marker value used by the driver internally
+    
+    /* Standardized End-of-Chain marker value used by the driver internally */
     uint32_t eoc_marker;
 
-    // Concurrency Control (Placeholder - requires proper implementation)
+    /* Concurrency Control */
     spinlock_t lock;
 
 } fat_fs_t;
