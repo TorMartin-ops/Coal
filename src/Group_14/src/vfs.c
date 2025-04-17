@@ -266,36 +266,36 @@
  /**
   * @brief Calculates the path relative to a mount point.
   */
- static const char *get_relative_path(const char *path, mount_t *mnt) { // Use mount_t
-     if (!path || !mnt) {
-         return NULL;
-     }
- 
-     size_t mount_point_len = strlen(mnt->mount_point); // Calculate length
-     const char *relative_path = path + mount_point_len;
- 
-     // Handle special cases
-     if (*relative_path == '\0') { // Path is identical to mount point
-         // Special case for root mount point "/"
-         if (mount_point_len == 1 && mnt->mount_point[0] == '/') {
-              return "/"; // Relative path is root itself
-         } else {
-              // For other mount points exact match -> relative path is "" or "/"?
-              // Let's return "/" for consistency with drivers expecting a path.
-              return "/";
-         }
-     } else if (mount_point_len == 1 && mnt->mount_point[0] == '/') { // Root mount
-         // Relative path IS the original path if root is mounted
-         return path;
-     } else if (*relative_path == '/') { // Path is like /mnt/point/sub/dir
-         // The relative path starts AFTER the mount point, including the leading '/'
-         return relative_path;
-     } else {
-          // Should not happen if mount point matched correctly with trailing / or exact
-          VFS_ERROR("Unexpected relative path calculation for '%s' on mount '%s'", path, mnt->mount_point);
-          return NULL;
-     }
- }
+  static const char *get_relative_path(const char *path, mount_t *mnt) {
+    if (!path || !mnt) {
+        return NULL;
+    }
+    
+    size_t mount_point_len = strlen(mnt->mount_point); // Calculate length
+    const char *relative_path = path + mount_point_len;
+    
+    // Handle special cases
+    if (*relative_path == '\0') { // Path is identical to mount point
+        // Special case for root mount point "/"
+        if (mount_point_len == 1 && mnt->mount_point[0] == '/') {
+            return "/"; // Relative path is root itself
+        } else {
+            // For other mount points exact match -> relative path is "" or "/"?
+            // Let's return "/" for consistency with drivers expecting a path.
+            return "/";
+        }
+    } else if (mount_point_len == 1 && mnt->mount_point[0] == '/') { // Root mount
+        // For root mount, skip the leading slash for filesystem drivers
+        return (path[0] == '/') ? path + 1 : path;
+    } else if (*relative_path == '/') { // Path is like /mnt/point/sub/dir
+        // The relative path starts AFTER the mount point, including the leading '/'
+        return relative_path;
+    } else {
+        // Should not happen if mount point matched correctly with trailing / or exact
+        VFS_ERROR("Unexpected relative path calculation for '%s' on mount '%s'", path, mnt->mount_point);
+        return NULL;
+    }
+}
  
  /*---------------------------------------------------------------------------
   * Mount / Unmount Operations (Revised)
