@@ -1,185 +1,166 @@
 #ifndef TERMINAL_H
 #define TERMINAL_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include "types.h"
-#include "keyboard.h"   // Needed for KeyEvent type
+#include <libc/stddef.h> // For size_t
+#include "keyboard.h" // For KeyEvent
 
-
-// <<< ADD THESE DEFINES HERE >>>
-#define VGA_ADDRESS 0xB8000
+/* --- Configuration --- */
+#define VGA_ADDRESS 0xC00B8000 // Ensure this matches the mapped virtual address
 #define VGA_COLS    80
 #define VGA_ROWS    25
-// <<< END OF ADDED DEFINES >>>
 
-#define MAX_INPUT_LENGTH 256
+// Ensure this matches the value used in terminal.c or remove definition from .c file
+#define MAX_INPUT_LENGTH 256 // Maximum characters per interactive input line (including null)
+
+
+/* --- VGA Colors --- */
+// ... (color definitions remain the same) ...
+enum VGA_Color {
+    VGA_COLOR_BLACK = 0,
+    VGA_COLOR_BLUE = 1,
+    VGA_COLOR_GREEN = 2,
+    VGA_COLOR_CYAN = 3,
+    VGA_COLOR_RED = 4,
+    VGA_COLOR_MAGENTA = 5,
+    VGA_COLOR_BROWN = 6,
+    VGA_COLOR_LIGHT_GREY = 7,
+    VGA_COLOR_DARK_GREY = 8,
+    VGA_COLOR_LIGHT_BLUE = 9,
+    VGA_COLOR_LIGHT_GREEN = 10,
+    VGA_COLOR_LIGHT_CYAN = 11,
+    VGA_COLOR_LIGHT_RED = 12,
+    VGA_COLOR_LIGHT_MAGENTA = 13,
+    VGA_COLOR_LIGHT_BROWN = 14, // Often displays as yellow
+    VGA_COLOR_WHITE = 15,
+};
+
+/* --- Public Functions --- */
 
 /**
- * @brief Initializes the VGA text-mode terminal.
- *
- * Clears the screen, sets the default text color (light gray on black),
- * and enables the hardware cursor.
+ * @brief Initializes the terminal, clears the screen, sets up cursor.
  */
 void terminal_init(void);
 
 /**
- * @brief Clears the entire terminal screen and resets the cursor position.
+ * @brief Clears the entire terminal screen and resets cursor. Thread-safe.
  */
 void terminal_clear(void);
 
 /**
- * @brief Clears a specific row of the terminal.
- *
- * @param row The 0-based row index to clear.
- */
-void terminal_clear_row(int row);
-
-/**
- * @brief Sets the overall text color.
- *
- * The color is represented as a byte where the lower 4 bits are the foreground
- * and the upper 4 bits are the background color.
- *
- * @param color Color value.
+ * @brief Sets the VGA text color attribute.
+ * @param color VGA color byte (Background << 4 | Foreground).
  */
 void terminal_set_color(uint8_t color);
 
-/**
- * @brief Sets only the foreground (text) color.
- *
- * @param fg Foreground color (0–15).
- */
-void terminal_set_foreground(uint8_t fg);
+// /**
+//  * @brief Sets the foreground color component.
+//  * @param fg VGA foreground color (0-15).
+//  */
+// void terminal_set_foreground(uint8_t fg); // Example if you add these helpers
+
+// /**
+//  * @brief Sets the background color component.
+//  * @param bg VGA background color (0-7).
+//  */
+// void terminal_set_background(uint8_t bg); // Example if you add these helpers
 
 /**
- * @brief Sets only the background color.
- *
- * @param bg Background color (0–15).
- */
-void terminal_set_background(uint8_t bg);
-
-/**
- * @brief Retrieves the current cursor position.
- *
- * @param x Pointer to store the horizontal position.
- * @param y Pointer to store the vertical position.
- */
-void terminal_get_cursor_pos(int* x, int* y);
-
-/**
- * @brief Moves the cursor to a specified position.
- *
- * Coordinates are clamped to terminal dimensions.
- *
- * @param x New horizontal coordinate.
- * @param y New vertical coordinate.
+ * @brief Moves the hardware cursor to the specified position. Thread-safe.
+ * @param x Column (0-based).
+ * @param y Row (0-based).
  */
 void terminal_set_cursor_pos(int x, int y);
 
 /**
- * @brief Enables or disables the hardware cursor.
- *
- * @param visible 1 to show the cursor; 0 to hide it.
+ * @brief Gets the current cursor position. Thread-safe.
+ * @param x Pointer to store column.
+ * @param y Pointer to store row.
+ */
+void terminal_get_cursor_pos(int* x, int* y);
+
+/**
+ * @brief Sets the visibility of the hardware cursor. Thread-safe.
+ * @param visible 0 to hide, non-zero to show.
  */
 void terminal_set_cursor_visibility(uint8_t visible);
 
-/**
- * @brief Outputs a single character to the terminal.
- *
- * Interprets control characters such as newline (\n), carriage return (\r),
- * backspace (\b), and tab (\t). This function is used when interactive input
- * is not active.
- *
- * @param c Character to output.
- */
-void terminal_write_char(char c);
 
 /**
- * @brief Outputs a null-terminated string to the terminal.
- *
- * @param str String to output.
- */
-void terminal_write(const char* str);
-
-/**
- * @brief Prints a formatted representation of a keyboard event.
- *
- * Displays the key code, action (PRESS, RELEASE, or REPEAT), modifiers (in hex),
- * and timestamp.
- *
- * @param event Pointer to the KeyEvent structure.
- */
-void terminal_print_key_event(const void* event);
-
-/**
- * @brief A basic formatted print function.
- *
- * Supports %s (string), %d (decimal), %x (hexadecimal), and %% (literal '%').
- *
- * @param format Format string.
- * @param ... Additional arguments.
- */
-void terminal_printf(const char* format, ...);
-
-/**
- * @brief Processes keyboard events for interactive multi-line editing.
- *
- * Handles editing operations such as inserting and deleting characters,
- * splitting lines (Enter), merging lines (Backspace/Delete), and navigation using
- * arrow keys. In addition to left/right/home/end, UP and DOWN keys move between lines
- * with smooth column preservation.
- *
- * @param event The KeyEvent representing the key action.
- */
-void terminal_handle_key_event(const KeyEvent event);
-
-/**
- * @brief Begins an interactive multi-line input session with an optional prompt.
- *
- * After calling this function, the terminal accepts interactive input with
- * full multi-line editing support (including smooth vertical navigation).
- *
- * @param prompt Optional prompt string.
- */
-void terminal_start_input(const char* prompt);
-
-/**
- * @brief Returns the current interactive input as a single concatenated string.
- *
- * The multi-line input is combined with newline characters separating lines.
- *
- * @return Pointer to the concatenated input buffer.
- */
-const char* terminal_get_input(void);
-
-/**
- * @brief Completes the current interactive input session.
- *
- * Finalizes input, echoes a newline, and advances the output cursor to below the input.
- */
-void terminal_complete_input(void);
-
-/**
- * @brief Outputs a single character (non-interactive).
- *
- * This function is provided as an alias for terminal_write_char and is
- * used when interactive input is not active.
+ * @brief Writes a single character to the terminal (VGA and Serial).
+ * Handles newline, backspace, tab, scrolling, and basic ANSI codes.
+ * This function is thread-safe.
+ * @param c Character to write.
  */
 void terminal_putchar(char c);
 
 
-#ifndef KERNEL_PANIC_HALT // Prevent multiple definitions
-#define KERNEL_PANIC_HALT(msg) do { \
-    terminal_printf("\n[KERNEL PANIC] %s at %s:%d. System Halted.\n", msg, __FILE__, __LINE__); \
-    while(1) { asm volatile("cli; hlt"); } \
-} while(0)
-#endif
+/**
+ * @brief Writes a null-terminated string to the terminal (VGA and Serial).
+ * This function is thread-safe.
+ * @param str The string to write.
+ */
+void terminal_write(const char* str);
 
-#ifdef __cplusplus
-}
-#endif
+/**
+ * @brief Writes raw data of a specific length to the terminal.
+ * Useful for writing data that might contain null bytes.
+ * This function is thread-safe.
+ * @param data Pointer to the data.
+ * @param size Number of bytes to write.
+ */
+void terminal_write_len(const char* data, size_t size);
+
+
+/**
+ * @brief Formatted printing to the terminal (thread-safe).
+ * Supports standard formats including %lld, %llu, %llx, %p, %c, %s, %d, %u, %x.
+ * Supports basic width/padding like %08x.
+ * @param format The format string.
+ * @param ... Variable arguments.
+ */
+void terminal_printf(const char* format, ...) __attribute__((format(printf, 1, 2)));
+
+
+/* --- Interactive Input Functions --- */
+
+/**
+ * @brief Processes a key event for interactive input editing.
+ * @param event The keyboard event.
+ */
+void terminal_handle_key_event(const KeyEvent event);
+
+
+/**
+ * @brief Starts an interactive multi-line input session. Thread-safe.
+ * @param prompt Optional prompt string to display.
+ */
+void terminal_start_input(const char* prompt);
+
+/**
+ * @brief Concatenates all input lines into a provided buffer.
+ * Lines are separated by newline characters. Thread-safe.
+ * @param buffer Destination buffer.
+ * @param size Size of the destination buffer.
+ * @return Number of bytes written to the buffer (excluding null terminator),
+ * or -1 if buffer is too small (output might be truncated).
+ */
+int terminal_get_input(char* buffer, size_t size); // <--- Updated signature
+
+/**
+ * @brief Completes the interactive input session, moving cursor below input.
+ * Thread-safe.
+ */
+void terminal_complete_input(void);
+
+
+/* --- Deprecated/Internal Use (or specific callbacks) --- */
+/**
+ * @brief Legacy function name used by keyboard driver default callback.
+ * Simply calls terminal_putchar.
+ * @param c Character to write.
+ */
+void terminal_write_char(char c); // Keep this if keyboard.c specifically uses it
+
 
 #endif // TERMINAL_H
