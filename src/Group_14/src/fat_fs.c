@@ -8,7 +8,7 @@
  #include "fat_fs.h"     // Our function declarations
  #include "fat_core.h"   // Core FAT structures and constants
  #include "fat_utils.h"  // fat_cluster_to_lba (needed for geometry checks?) - maybe not needed here directly
- #include "assert.h"// For reading boot sector, FAT sectors
+ #include "disk.h"       // For reading boot sector, FAT sectors
  #include "buffer_cache.h" // Buffer cache for disk I/O
  #include "kmalloc.h"    // Kernel memory allocation
  #include "terminal.h"   // Logging
@@ -256,7 +256,9 @@
      // 2. Optionally sync the entire buffer cache for the device. Good practice.
      //    This ensures directory entries, data blocks etc. are written out.
      if (fs->disk_ptr && fs->disk_ptr->blk_dev.device_name) {
-         buffer_cache_sync_device(fs->disk_ptr->blk_dev.device_name);
+         // Corrected: Replace missing buffer_cache_sync_device with buffer_cache_sync
+         buffer_cache_sync(); // Sync all dirty buffers across all devices
+         terminal_printf("[FAT Unmount] Called buffer_cache_sync().\n");
      }
  
      // 3. Release the lock before freeing the context structure itself
@@ -278,9 +280,12 @@
   */
  static int load_fat_table(fat_fs_t *fs)
  {
-     KERNEL_ASSERT(fs != NULL && fs->disk_ptr != NULL && fs->disk_ptr->blk_dev.device_name != NULL);
-     KERNEL_ASSERT(fs->fat_table == NULL); // Should not be called if table already loaded
-     KERNEL_ASSERT(fs->fat_size_sectors > 0 && fs->bytes_per_sector > 0);
+     // Corrected: Added message strings to KERNEL_ASSERTs
+     KERNEL_ASSERT(fs != NULL && fs->disk_ptr != NULL && fs->disk_ptr->blk_dev.device_name != NULL,
+                   "FS context, disk pointer, and device name must be valid in load_fat_table");
+     KERNEL_ASSERT(fs->fat_table == NULL, "FAT table already loaded, should not call load_fat_table again");
+     KERNEL_ASSERT(fs->fat_size_sectors > 0 && fs->bytes_per_sector > 0,
+                   "FAT size in sectors and bytes per sector must be positive");
  
      terminal_write("[FAT Load FAT] Loading FAT table...\n");
  
@@ -295,13 +300,13 @@
      fs->fat_table_size_bytes = fat_size_sectors_sz * bytes_per_sector_sz;
  
      terminal_printf("[FAT Load FAT] Calculated FAT table size: %u bytes (%u sectors).\n",
-                      fs->fat_table_size_bytes, fs->fat_size_sectors);
+                      (unsigned int)fs->fat_table_size_bytes, fs->fat_size_sectors);
  
      // Allocate memory for the FAT table
      fs->fat_table = kmalloc(fs->fat_table_size_bytes);
      if (!fs->fat_table) {
          terminal_printf("[FAT Load FAT] Error: Failed to allocate %u bytes for FAT table.\n",
-                          fs->fat_table_size_bytes);
+                          (unsigned int)fs->fat_table_size_bytes);
          fs->fat_table_size_bytes = 0; // Reset size
          return -FS_ERR_OUT_OF_MEMORY;
      }
@@ -343,7 +348,8 @@
   */
  static int flush_fat_table(fat_fs_t *fs)
  {
-     KERNEL_ASSERT(fs != NULL);
+     // Corrected: Added message string to KERNEL_ASSERT
+     KERNEL_ASSERT(fs != NULL, "FS context cannot be NULL in flush_fat_table");
      // Assumes caller holds lock if concurrent modification is possible
  
      if (!fs->fat_table || !fs->fat_dirty) {

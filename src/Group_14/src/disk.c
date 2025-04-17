@@ -1,9 +1,10 @@
 #include "disk.h"
 #include "block_device.h"   // Underlying device operations
 #include "terminal.h"       // Logging
-#include "fs_errno.h"       // Error codes
+#include "fs_errno.h"       // Error codes (includes the new FS_ERR_OUT_OF_BOUNDS)
 #include "kmalloc.h"        // For temporary buffer allocation
 #include "types.h"          // Standard types
+#include "assert.h"         // For KERNEL_ASSERT
 
 #include <string.h>         // For memset, memcpy
 
@@ -28,7 +29,8 @@ typedef struct __attribute__((packed)) {
 } master_boot_record_t;
 
 // Ensure MBR structure size is correct (should be 512)
-// KERNEL_ASSERT(sizeof(master_boot_record_t) == 512); // Add if assert.h included
+// Can uncomment after adding assert.h include
+// KERNEL_ASSERT(sizeof(master_boot_record_t) == 512, "MBR struct size mismatch");
 
 
 // --- Static Helper Prototypes ---
@@ -45,7 +47,7 @@ static int parse_mbr(disk_t *disk);
 int disk_init(disk_t *disk, const char *device_name) {
     if (!disk || !device_name) {
         terminal_printf("[Disk] disk_init: Error - Invalid parameters (disk=%p, name=%s).\n", disk, device_name ? device_name : "NULL");
-        return -FS_ERR_INVALID_PARAM;
+        return FS_ERR_INVALID_PARAM; // Use enum value directly
     }
 
     // Zero initialize the entire disk structure
@@ -100,14 +102,15 @@ int disk_read_raw_sectors(disk_t *disk, uint64_t lba, void *buffer, size_t count
     if (!disk || !disk->initialized || !buffer || count == 0) {
         terminal_printf("[Disk] read_raw: Error - Invalid parameters (disk=%p, init=%d, buf=%p, count=%u).\n",
                        disk, disk ? disk->initialized : 0, buffer, count);
-        return -FS_ERR_INVALID_PARAM;
+        return FS_ERR_INVALID_PARAM; // Use enum value directly
     }
 
     // Bounds check against the whole disk size
     if (lba >= disk->blk_dev.total_sectors || count > disk->blk_dev.total_sectors - lba) {
          terminal_printf("[Disk] read_raw: Error - Read out of bounds (LBA=%llu, Count=%u, Total=%llu).\n",
                         lba, count, disk->blk_dev.total_sectors);
-         return -FS_ERR_OUT_OF_BOUNDS;
+         // Corrected: Use the defined error code
+         return FS_ERR_OUT_OF_BOUNDS;
     }
 
     // Delegate directly to the block device function
@@ -132,14 +135,15 @@ int disk_write_raw_sectors(disk_t *disk, uint64_t lba, const void *buffer, size_
     if (!disk || !disk->initialized || !buffer || count == 0) {
         terminal_printf("[Disk] write_raw: Error - Invalid parameters (disk=%p, init=%d, buf=%p, count=%u).\n",
                        disk, disk ? disk->initialized : 0, buffer, count);
-        return -FS_ERR_INVALID_PARAM;
+        return FS_ERR_INVALID_PARAM; // Use enum value directly
     }
 
     // Bounds check against the whole disk size
     if (lba >= disk->blk_dev.total_sectors || count > disk->blk_dev.total_sectors - lba) {
          terminal_printf("[Disk] write_raw: Error - Write out of bounds (LBA=%llu, Count=%u, Total=%llu).\n",
                         lba, count, disk->blk_dev.total_sectors);
-         return -FS_ERR_OUT_OF_BOUNDS;
+         // Corrected: Use the defined error code
+         return FS_ERR_OUT_OF_BOUNDS;
     }
 
     // Delegate directly to the block device function
@@ -165,14 +169,15 @@ int partition_read_sectors(partition_t *partition, uint64_t lba, void *buffer, s
      if (!partition || !partition->is_valid || !partition->parent_disk || !buffer || count == 0) {
           terminal_printf("[Disk] part_read: Error - Invalid parameters (part=%p, valid=%d, disk=%p, buf=%p, count=%u).\n",
                          partition, partition ? partition->is_valid : 0, partition ? partition->parent_disk : NULL, buffer, count);
-         return -FS_ERR_INVALID_PARAM;
+         return FS_ERR_INVALID_PARAM; // Use enum value directly
      }
 
      // Bounds check against the partition size
      if (lba >= partition->total_sectors || count > partition->total_sectors - lba) {
          terminal_printf("[Disk] part_read: Error - Read out of partition bounds (Part LBA=%llu, Count=%u, Part Size=%llu).\n",
                         lba, count, partition->total_sectors);
-         return -FS_ERR_OUT_OF_BOUNDS;
+         // Corrected: Use the defined error code
+         return FS_ERR_OUT_OF_BOUNDS;
      }
 
      // Translate partition LBA to absolute disk LBA
@@ -197,14 +202,15 @@ int partition_write_sectors(partition_t *partition, uint64_t lba, const void *bu
      if (!partition || !partition->is_valid || !partition->parent_disk || !buffer || count == 0) {
           terminal_printf("[Disk] part_write: Error - Invalid parameters (part=%p, valid=%d, disk=%p, buf=%p, count=%u).\n",
                          partition, partition ? partition->is_valid : 0, partition ? partition->parent_disk : NULL, buffer, count);
-         return -FS_ERR_INVALID_PARAM;
+         return FS_ERR_INVALID_PARAM; // Use enum value directly
      }
 
      // Bounds check against the partition size
      if (lba >= partition->total_sectors || count > partition->total_sectors - lba) {
          terminal_printf("[Disk] part_write: Error - Write out of partition bounds (Part LBA=%llu, Count=%u, Part Size=%llu).\n",
                         lba, count, partition->total_sectors);
-         return -FS_ERR_OUT_OF_BOUNDS;
+         // Corrected: Use the defined error code
+         return FS_ERR_OUT_OF_BOUNDS;
      }
 
      // Translate partition LBA to absolute disk LBA
@@ -250,19 +256,20 @@ uint64_t disk_get_total_sectors(disk_t *disk) {
  * @return FS_SUCCESS on success (valid MBR found and parsed), negative error code otherwise.
  */
 static int parse_mbr(disk_t *disk) {
-    KERNEL_ASSERT(disk != NULL && disk->initialized);
+    // Corrected: Added message string to KERNEL_ASSERT
+    KERNEL_ASSERT(disk != NULL && disk->initialized, "Disk pointer must be non-NULL and initialized for MBR parsing");
 
     // Allocate a temporary buffer for the MBR sector
     // Use kmalloc as sector size might be > stack limits
     uint32_t sector_size = disk->blk_dev.sector_size;
     if (sector_size < 512) { // MBR requires at least 512 bytes
          terminal_printf("[Disk MBR] Error: Disk sector size %u is less than required 512 bytes.\n", sector_size);
-         return -FS_ERR_INVALID_FORMAT;
+         return FS_ERR_INVALID_FORMAT; // Use enum value directly
     }
     uint8_t *mbr_buffer = kmalloc(sector_size);
     if (!mbr_buffer) {
         terminal_printf("[Disk MBR] Error: Failed to allocate buffer for MBR read.\n");
-        return -FS_ERR_OUT_OF_MEMORY;
+        return FS_ERR_OUT_OF_MEMORY; // Use enum value directly
     }
 
     // Read the first sector (LBA 0)
@@ -281,7 +288,7 @@ static int parse_mbr(disk_t *disk) {
         terminal_printf("[Disk MBR] Warning: Invalid MBR signature (0x%04X) found on '%s'. No partitions parsed.\n",
                        mbr->signature, disk->blk_dev.device_name);
         kfree(mbr_buffer);
-        return -FS_ERR_INVALID_FORMAT; // Indicate invalid MBR format
+        return FS_ERR_INVALID_FORMAT; // Indicate invalid MBR format, use enum value directly
     }
 
     terminal_printf("[Disk MBR] Valid MBR signature found. Parsing partitions...\n");

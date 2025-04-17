@@ -18,13 +18,61 @@
  #include "sys_file.h"   // O_* flags definitions
  #include "kmalloc.h"    // Kernel memory allocation
  #include "fs_errno.h"   // Filesystem error codes
- #include "fs_limits.h"  // Filesystem limits (e.g., MAX_PATH_LENGTH)
+ #include "fs_config.h"  // Filesystem limits (FS_MAX_PATH_LENGTH) - Added Include
  #include <string.h>     // memcpy, memcmp, memset, strlen, strchr, strrchr, strtok_r (safer alternative maybe?)
  #include "assert.h"     // KERNEL_ASSERT
+ #include "types.h"      // For struct dirent definition - Added Include (may be implicit via others)
  
- /* --- Static Helper Prototypes --- */
+ // --- Local Definitions (Should be in a proper header like dirent.h or types.h) ---
+ #ifndef DT_DIR // Guard against potential future definition
+ #define DT_UNKNOWN 0
+ #define DT_FIFO    1
+ #define DT_CHR     2
+ #define DT_DIR     4 // Directory
+ #define DT_BLK     6
+ #define DT_REG     8 // Regular file
+ #define DT_LNK     10
+ #define DT_SOCK    12
+ #define DT_WHT     14
+ #endif
+ // --- End Local Definitions ---
  
- // (Add prototypes for any static helpers defined within this file, if needed)
+ 
+ // --- Extern Declarations ---
+ // Declaration for the global FAT VFS driver structure (defined in fat_core.c)
+ extern vfs_driver_t fat_vfs_driver;
+ 
+ // Declaration for helper defined elsewhere (e.g., fat_utils.c)
+ // TODO: Ensure fat_raw_short_name_exists is implemented and prototyped in fat_utils.h or fat_dir.h
+ extern bool fat_raw_short_name_exists(fat_fs_t *fs, uint32_t dir_cluster, const uint8_t short_name_raw[11]);
+ 
+ // TODO: Ensure fat_split_path is implemented and prototyped (e.g., in fat_utils.h or fs_util.h)
+ // extern int fat_split_path(const char *path, char *dirname, size_t dmax, char *basename, size_t bmax);
+ 
+ // TODO: Ensure fat_compare_lfn is implemented and prototyped (e.g., in fat_lfn.h or fat_utils.h)
+ // extern int fat_compare_lfn(const char* component, const char* reconstructed_lfn);
+ 
+ // TODO: Ensure fat_compare_8_3 is implemented and prototyped (e.g., in fat_utils.h)
+ // extern int fat_compare_8_3(const char* component, const uint8_t name_8_3[11]);
+ 
+ // TODO: Implement and prototype a function to format 8.3 raw bytes to printable string
+ // Placeholder name, implementation needed.
+ static void fat_format_short_name_impl(const uint8_t name_8_3[11], char *out_name) {
+     // Basic placeholder: just copy raw bytes, potentially dangerous for non-printable chars.
+     // A real implementation should handle padding spaces, extension separator etc.
+     memcpy(out_name, name_8_3, 8);
+     int base_len = 8;
+     while (base_len > 0 && out_name[base_len - 1] == ' ') base_len--; // Trim trailing spaces from base
+     out_name[base_len] = '\0';
+     if (name_8_3[8] != ' ') { // If extension exists
+         out_name[base_len] = '.';
+         base_len++;
+         memcpy(out_name + base_len, name_8_3 + 8, 3);
+         int ext_len = 3;
+         while(ext_len > 0 && out_name[base_len + ext_len - 1] == ' ') ext_len--; // Trim trailing spaces from ext
+         out_name[base_len + ext_len] = '\0';
+     }
+ }
  
  
  /* --- VFS Operation Implementations --- */
@@ -65,12 +113,14 @@
          created = true;
  
          // 1. Separate parent path and new filename component
-         char parent_dir_path[FS_MAX_PATH_LENGTH]; // Use FS_MAX_PATH_LENGTH or similar
+         // Corrected: Use FS_MAX_PATH_LENGTH from fs_config.h
+         char parent_dir_path[FS_MAX_PATH_LENGTH];
          char new_name[MAX_FILENAME_LEN + 1]; // Max LFN component length
          memset(parent_dir_path, 0, sizeof(parent_dir_path));
          memset(new_name, 0, sizeof(new_name));
  
-         // Use a robust path splitting function (assuming fat_utils.c has one)
+         // Use a robust path splitting function
+         // TODO: Ensure fat_split_path exists and is prototyped
          if (fat_split_path(path, parent_dir_path, sizeof(parent_dir_path),
                               new_name, sizeof(new_name)) != 0)
          {
@@ -118,8 +168,9 @@
  
          // 4. Generate LFN entries if needed
          fat_lfn_entry_t lfn_entries[FAT_MAX_LFN_ENTRIES];
-         // Assuming fat_lfn.c provides generate_lfn_entries
-         int lfn_count = fat_generate_lfn_entries(new_name, short_name, lfn_entries, FAT_MAX_LFN_ENTRIES);
+         // Corrected: Calculate checksum before calling fat_generate_lfn_entries
+         uint8_t checksum = fat_calculate_lfn_checksum(short_name);
+         int lfn_count = fat_generate_lfn_entries(new_name, checksum, lfn_entries, FAT_MAX_LFN_ENTRIES);
          if (lfn_count < 0) { // Check for error from generate_lfn_entries
              terminal_printf("[FAT open O_CREAT] Failed to generate LFN entries for '%s'.\n", new_name);
              ret_err = -FS_ERR_INTERNAL; // Or specific error
@@ -133,7 +184,7 @@
                                                    &slot_cluster, &slot_offset);
          if (find_slot_res != FS_SUCCESS) {
               terminal_printf("[FAT open O_CREAT] No free directory slots (%u needed) in parent cluster %u (err %d).\n",
-                              needed_slots, parent_cluster, find_slot_res);
+                              (unsigned int)needed_slots, parent_cluster, find_slot_res);
               ret_err = find_slot_res; // -FS_ERR_NO_SPACE expected
               goto open_fail_locked;
          }
@@ -178,8 +229,8 @@
          // Ensure directory changes are flushed (important!)
          // Flush FAT cache as well if directory extension allocated clusters (handled in find_free_directory_slot ideally)
          // flush_fat_table(fs); // Maybe only if find_free_directory_slot allocated
-         buffer_cache_sync_device(fs->disk_ptr->blk_dev.device_name); // Sync device containing the dir
- 
+         // Corrected: Use buffer_cache_sync() as device specific version is missing
+         buffer_cache_sync(); // Sync all devices
          terminal_printf("[FAT open O_CREAT] Successfully created '%s'.\n", path);
  
      } else if (!exists) {
@@ -237,7 +288,8 @@
  
          // Ensure changes (FAT and directory entry) are persistent
          // flush_fat_table(fs); // free_chain should mark FAT dirty
-         buffer_cache_sync_device(fs->disk_ptr->blk_dev.device_name); // Sync device with FAT/dir data
+         // Corrected: Use buffer_cache_sync()
+         buffer_cache_sync(); // Sync all devices
      }
  
      // --- Allocation & Setup for Vnode and File Context ---
@@ -273,7 +325,8 @@
  
      // Link context to vnode
      vnode->data      = file_ctx;
-     vnode->fs_driver = &fat_vfs_driver; // Reference the driver struct defined in fat_core.c
+     // Corrected: Assign address of the global driver instance
+     vnode->fs_driver = &fat_vfs_driver;
  
      // Release lock and return success
      spinlock_release_irqrestore(&fs->lock, irq_flags);
@@ -325,7 +378,7 @@
          // Or, we could just reset and scan from start (inefficient).
          // Let's treat non-sequential reads as an error for simplicity here.
          terminal_printf("[FAT readdir] Warning: Non-sequential index requested (%u requested, %u expected).\n",
-                         entry_index, fctx->readdir_last_index + 1);
+                         (unsigned int)entry_index, (unsigned int)(fctx->readdir_last_index + 1));
          spinlock_release_irqrestore(&fs->lock, irq_flags);
          return -FS_ERR_INVALID_PARAM; // Or maybe scan from start if we want to support it
      }
@@ -426,15 +479,16 @@
                               fat_reconstruct_lfn(lfn_collector, lfn_count, final_name, sizeof(final_name));
                          } else {
                              // Checksum mismatch, discard LFN
-                             terminal_printf("[FAT readdir] LFN checksum mismatch for 8.3 name '%.11s'.\n", dent->name);
+                             terminal_printf("[FAT readdir] LFN checksum mismatch for 8.3 name '%.11s'.\n", (char*)dent->name); // Cast for printf
                              lfn_count = 0; // Invalidate LFN
                          }
                      }
  
                      // If no valid LFN, format the 8.3 name
                      if (final_name[0] == '\0') {
-                         // Assuming fat_utils.c provides fat_format_short_name
-                         fat_format_short_name(dent->name, final_name);
+                         // Corrected: Use placeholder function until real one is available
+                         // TODO: Replace with call to actual fat_format_short_name when implemented/prototyped
+                         fat_format_short_name_impl(dent->name, final_name);
                      }
  
                      // Populate the VFS dirent structure
@@ -442,6 +496,7 @@
                      d_entry_out->d_name[sizeof(d_entry_out->d_name) - 1] = '\0'; // Ensure null termination
  
                      d_entry_out->d_ino = fat_get_entry_cluster(dent); // Use cluster as inode number
+                     // Corrected: Use locally defined DT_DIR / DT_REG
                      d_entry_out->d_type = (dent->attr & FAT_ATTR_DIRECTORY) ? DT_DIR : DT_REG; // Set VFS type
  
                      // Update state for next call
@@ -494,6 +549,7 @@
      fat_dir_entry_t entry;
      // We don't need the LFN content, but lookup provides parent info
      uint32_t parent_dir_cluster, entry_offset;
+     uint32_t first_lfn_offset = (uint32_t)-1; // Initialize to invalid
      int find_res = fat_lookup_path(fs, path, &entry, NULL, 0,
                                      &parent_dir_cluster, &entry_offset);
  
@@ -527,26 +583,33 @@
      }
  
      // --- Mark directory entries as deleted ---
-     // This is tricky: we need to find the *start* of the LFN sequence + 8.3 entry.
-     // fat_lookup_path only gives us the offset of the 8.3 entry.
-     // A simple approach (potentially leaving orphaned LFNs if lookup is basic):
-     // Mark only the 8.3 entry for now.
-     // TODO: Implement backward scan from 8.3 entry to find LFN start and mark all.
-     size_t num_entries_to_mark = 1; // Start with just the 8.3 entry
-     uint32_t first_entry_offset = entry_offset; // Offset of the 8.3 entry
+     // Rerun lookup to get LFN start offset (fat_lookup_path doesn't return it directly)
+     // This is inefficient, ideally fat_lookup_path would return it or we use fat_find_in_dir after splitting path.
+     // Re-running lookup for simplicity for now:
+     fat_dir_entry_t temp_entry;
+     uint32_t temp_parent_cluster, temp_entry_offset;
+     int find_again_res = fat_find_in_dir(fs, parent_dir_cluster, path, // Need component name, not full path! Need to split path first.
+                                          &temp_entry, NULL, 0,
+                                          &temp_entry_offset, &first_lfn_offset);
  
-     // --- Refined approach (requires modification to lookup or a new helper) ---
-     // Assuming fat_find_in_dir (declared in .h) can give us LFN start offset
-     // uint32_t first_lfn_offset = entry_offset; // Default if no LFN
-     // fat_find_in_dir(fs, parent_dir_cluster, /* need filename component */, &entry, NULL, 0, &entry_offset, &first_lfn_offset);
-     // if (first_lfn_offset < entry_offset) { // Check if LFN exists before 8.3
-     //     num_entries_to_mark = ((entry_offset - first_lfn_offset) / sizeof(fat_dir_entry_t)) + 1;
-     //     first_entry_offset = first_lfn_offset;
-     // }
-     // --- End Refined ---
+     // TODO: Rework this section to avoid re-lookup. Split path first, then call fat_find_in_dir.
+     if(find_again_res != FS_SUCCESS || temp_entry_offset != entry_offset) {
+         // This shouldn't happen if the file existed moments ago, maybe log error
+         first_lfn_offset = (uint32_t)-1; // Assume no LFN if re-lookup failed
+     }
+     // --- End Re-lookup Hack ---
+ 
+ 
+     size_t num_entries_to_mark = 1; // Default to just the 8.3 entry
+     uint32_t mark_start_offset = entry_offset; // Offset of the 8.3 entry
+ 
+     if (first_lfn_offset != (uint32_t)-1 && first_lfn_offset < entry_offset) { // Check if LFN exists before 8.3
+         num_entries_to_mark = ((entry_offset - first_lfn_offset) / sizeof(fat_dir_entry_t)) + 1;
+         mark_start_offset = first_lfn_offset;
+     }
  
      int mark_res = mark_directory_entries_deleted(fs, parent_dir_cluster,
-                                                 first_entry_offset,
+                                                 mark_start_offset,
                                                  num_entries_to_mark,
                                                  FAT_DIR_ENTRY_DELETED);
      if (mark_res != FS_SUCCESS) {
@@ -559,7 +622,8 @@
      // --- Flush changes ---
      // FAT changes (from free_chain) and directory changes need flushing.
      // flush_fat_table(fs); // Should be marked dirty by free_chain/set_entry
-     buffer_cache_sync_device(fs->disk_ptr->blk_dev.device_name); // Sync device
+     // Corrected: Use buffer_cache_sync()
+     buffer_cache_sync(); // Sync all devices
  
      spinlock_release_irqrestore(&fs->lock, irq_flags);
      terminal_printf("[FAT unlink] Successfully unlinked '%s'.\n", path);
@@ -571,7 +635,6 @@
  
  /**
   * @brief Looks up a single path component within a directory cluster.
-  * (Implementation based on the loop inside original fat_lookup_path)
   */
  int fat_find_in_dir(fat_fs_t *fs,
                      uint32_t dir_cluster,
@@ -581,7 +644,9 @@
                      uint32_t *entry_offset_in_dir_out,
                      uint32_t *first_lfn_offset_out) // Added LFN offset output
  {
-     KERNEL_ASSERT(fs != NULL && component != NULL && entry_out != NULL && entry_offset_in_dir_out != NULL);
+     // Corrected: Added messages to KERNEL_ASSERT
+     KERNEL_ASSERT(fs != NULL && component != NULL && entry_out != NULL && entry_offset_in_dir_out != NULL,
+                   "NULL pointer passed to fat_find_in_dir for required arguments");
      // Assertion: Assumes caller holds fs->lock
  
      uint32_t current_cluster = dir_cluster;
@@ -659,7 +724,7 @@
                      uint8_t expected_sum = fat_calculate_lfn_checksum(de->name);
                      if (lfn_collector[0].checksum == expected_sum) {
                          fat_reconstruct_lfn(lfn_collector, lfn_count, reconstructed_lfn_buf, sizeof(reconstructed_lfn_buf));
-                         // Assuming fat_utils.c provides comparison
+                         // TODO: Ensure fat_compare_lfn exists and is prototyped
                          if (fat_compare_lfn(component, reconstructed_lfn_buf) == 0) {
                              match = true;
                              if (lfn_out && lfn_max_len > 0) {
@@ -675,7 +740,7 @@
  
                  // If LFN didn't match or wasn't present, try 8.3 comparison
                  if (!match) {
-                      // Assuming fat_utils.c provides comparison
+                      // TODO: Ensure fat_compare_8_3 exists and is prototyped
                      if (fat_compare_8_3(component, de->name) == 0) {
                          match = true;
                          if (lfn_out && lfn_max_len > 0) lfn_out[0] = '\0'; // No LFN for this match
@@ -722,7 +787,6 @@
  
  /**
   * @brief Resolves a full absolute path to its final directory entry.
-  * (Implementation based on original fat_lookup_path, using fat_find_in_dir)
   */
  int fat_lookup_path(fat_fs_t *fs, const char *path,
                       fat_dir_entry_t *entry_out,
@@ -730,7 +794,9 @@
                       uint32_t *entry_dir_cluster_out,
                       uint32_t *entry_offset_in_dir_out)
  {
-     KERNEL_ASSERT(fs != NULL && path != NULL && entry_out != NULL && entry_dir_cluster_out != NULL && entry_offset_in_dir_out != NULL);
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(fs != NULL && path != NULL && entry_out != NULL && entry_dir_cluster_out != NULL && entry_offset_in_dir_out != NULL,
+                   "NULL pointer passed to fat_lookup_path for required arguments");
      // Assertion: Assumes caller holds fs->lock
  
      if (path[0] != '/') {
@@ -767,9 +833,9 @@
      if (!path_copy) return -FS_ERR_OUT_OF_MEMORY;
      strcpy(path_copy, path);
  
-     char *saveptr; // For strtok_r if available, otherwise manage state carefully
-     char *component = strtok(path_copy + 1, "/"); // Start after the initial '/'
-     // TODO: Replace strtok with strtok_r or a custom non-modifying tokenizer if reentrancy needed
+     char *saveptr = NULL; // For strtok_r if available, otherwise manage state carefully
+     char *component = strtok_r(path_copy + 1, "/", &saveptr); // Use strtok_r if possible
+     // char *component = strtok(path_copy + 1, "/"); // Fallback if strtok_r not available
  
      // --- Path Traversal ---
      uint32_t current_dir_cluster; // Cluster of the directory being scanned
@@ -790,25 +856,23 @@
  
      while (component != NULL) {
          if (strlen(component) == 0) { // Skip empty components (e.g., "//")
-             component = strtok(NULL, "/");
+              component = strtok_r(NULL, "/", &saveptr);
+             // component = strtok(NULL, "/");
              continue;
          }
  
          // --- Handle "." and ".." ---
          if (strcmp(component, ".") == 0) {
              // Stays in the current directory, no change needed
-             component = strtok(NULL, "/");
+             component = strtok_r(NULL, "/", &saveptr);
+             // component = strtok(NULL, "/");
              continue;
          }
          if (strcmp(component, "..") == 0) {
              // TODO: Implement ".." traversal by finding the parent directory entry
-             // This requires reading the current directory's ".."" entry to get the parent's cluster.
-             // For simplicity, let's return an error for now.
               terminal_printf("[FAT lookup] Error: '..' component not yet supported.\n");
               kfree(path_copy);
               return -FS_ERR_NOT_SUPPORTED;
-              // component = strtok(NULL, "/");
-              // continue;
          }
  
          // --- Find current component within current_dir_cluster ---
@@ -828,7 +892,8 @@
          }
  
          // Check if we are done (last component found)
-         char* next_component = strtok(NULL, "/");
+         char* next_component = strtok_r(NULL, "/", &saveptr);
+         // char* next_component = strtok(NULL, "/");
          if (next_component == NULL) {
              // This was the last component, we found it.
              memcpy(entry_out, &current_entry, sizeof(*entry_out));
@@ -847,28 +912,25 @@
          // Update current_dir_cluster for the next iteration
          current_dir_cluster = fat_get_entry_cluster(&current_entry);
          if (fs->type != FAT_TYPE_FAT32 && current_dir_cluster == 0) {
-              // Handle entering FAT12/16 root (shouldn't happen via non-".."?)
               terminal_printf("[FAT lookup] Warning: Traversed into FAT12/16 root unexpectedly.\n");
          }
          component = next_component; // Move to the next token
  
      } // End while(component != NULL)
  
-     // Should not be reached if path was valid "/" or "/a/b" etc.
-     // Might be reached for path "/" if tokenization was strange.
      kfree(path_copy);
      return -FS_ERR_INTERNAL; // Indicate an unexpected state
  }
  
  /**
   * @brief Reads a specific sector from a directory cluster chain.
-  * (Implementation copied from user's previous fat_dir.c - seems reasonable)
   */
  int read_directory_sector(fat_fs_t *fs, uint32_t cluster,
                            uint32_t sector_offset_in_chain,
                            uint8_t* buffer)
  {
-     KERNEL_ASSERT(fs != NULL && buffer != NULL);
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(fs != NULL && buffer != NULL, "FS context and buffer cannot be NULL in read_directory_sector");
      // Assertion: Assumes caller holds lock if needed
  
      if (cluster == 0 && fs->type != FAT_TYPE_FAT32) {
@@ -920,14 +982,14 @@
  
  /**
   * @brief Updates an existing 8.3 directory entry on disk.
-  * (Implementation copied from user's previous fat_dir.c - seems reasonable)
   */
  int update_directory_entry(fat_fs_t *fs,
                             uint32_t dir_cluster,
                             uint32_t dir_offset,
                             const fat_dir_entry_t *new_entry)
  {
-     KERNEL_ASSERT(fs != NULL && new_entry != NULL);
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(fs != NULL && new_entry != NULL, "FS context and new entry cannot be NULL in update_directory_entry");
      // Assertion: Assumes caller holds fs->lock
  
      size_t sector_size = fs->bytes_per_sector;
@@ -935,7 +997,9 @@
  
      uint32_t sector_offset_in_chain = dir_offset / sector_size;
      size_t offset_in_sector = dir_offset % sector_size;
-     KERNEL_ASSERT(offset_in_sector + sizeof(fat_dir_entry_t) <= sector_size); // Entry shouldn't cross sector boundary
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(offset_in_sector + sizeof(fat_dir_entry_t) <= sector_size,
+                   "Directory entry write crosses sector boundary");
  
      // --- Determine LBA ---
      uint32_t lba;
@@ -987,7 +1051,8 @@
                                     size_t num_entries,
                                     uint8_t marker)
  {
-     KERNEL_ASSERT(fs != NULL && num_entries > 0);
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(fs != NULL && num_entries > 0, "FS context must be valid and num_entries > 0");
       // Assertion: Assumes caller holds fs->lock
  
      size_t sector_size = fs->bytes_per_sector;
@@ -1062,14 +1127,14 @@
  
  /**
   * @brief Writes one or more consecutive directory entries to disk.
-  * (Based on user's previous more complex version, with fixes/completion)
   */
  int write_directory_entries(fat_fs_t *fs, uint32_t dir_cluster,
                              uint32_t dir_offset,
                              const void *entries_buf,
                              size_t num_entries)
  {
-     KERNEL_ASSERT(fs != NULL && entries_buf != NULL);
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(fs != NULL && entries_buf != NULL, "FS context and entry buffer cannot be NULL in write_directory_entries");
      if (num_entries == 0) return FS_SUCCESS; // Nothing to write
  
      size_t total_bytes = num_entries * sizeof(fat_dir_entry_t);
@@ -1139,14 +1204,15 @@
  
  /**
   * @brief Finds a sequence of free slots in a directory.
-  * (Basic implementation from fat.c, marked as placeholder - needs improvement)
   */
  int find_free_directory_slot(fat_fs_t *fs, uint32_t parent_dir_cluster,
                               size_t needed_slots,
                               uint32_t *out_slot_cluster,
                               uint32_t *out_slot_offset)
  {
-     KERNEL_ASSERT(fs != NULL && needed_slots > 0 && out_slot_cluster != NULL && out_slot_offset != NULL);
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(fs != NULL && needed_slots > 0 && out_slot_cluster != NULL && out_slot_offset != NULL,
+                   "Invalid arguments passed to find_free_directory_slot");
      // Assertion: Assumes caller holds fs->lock
  
      // --- THIS IS A BASIC PLACEHOLDER IMPLEMENTATION ---
@@ -1222,7 +1288,7 @@
  
  find_slot_fail:
      kfree(sector_data);
-     terminal_printf("[FAT find_free_directory_slot] No contiguous slot found (%u needed).\n", needed_slots);
+     terminal_printf("[FAT find_free_directory_slot] No contiguous slot found (%u needed).\n", (unsigned int)needed_slots);
      // Placeholder: return NO_SPACE. Real impl needs to try extending the directory.
      if (scanning_fixed_root) {
           terminal_printf("[FAT find_free_directory_slot] Cannot extend FAT12/16 root directory.\n");

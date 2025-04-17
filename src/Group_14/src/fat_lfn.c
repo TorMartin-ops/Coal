@@ -9,7 +9,7 @@
  #include "fat_lfn.h"
  #include "fat_core.h"
  #include "fat_dir.h"  // Might need internal dir scanning functions if raw_short_name_exists isn't separate
- #include "fat_utils.h"  // Needs fat_format_filename_raw and potentially fat_raw_short_name_exists prototype
+ #include "fat_utils.h"  // Needs format_filename and potentially fat_raw_short_name_exists prototype
  #include "terminal.h"   // For logging
  #include <string.h>     // For strlen, memcpy, memset
  #include "fs_errno.h"   // Error codes
@@ -34,7 +34,8 @@
   */
  uint8_t fat_calculate_lfn_checksum(const uint8_t name_8_3[11])
  {
-     KERNEL_ASSERT(name_8_3 != NULL);
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(name_8_3 != NULL, "Input 8.3 name cannot be NULL for checksum calculation");
      uint8_t sum = 0;
      for (int i = 0; i < 11; i++) {
          // Rotate right 1 bit, add next byte
@@ -50,15 +51,17 @@
  void fat_reconstruct_lfn(fat_lfn_entry_t lfn_entries[], int lfn_count,
                           char *lfn_buf, size_t lfn_buf_size)
  {
-     KERNEL_ASSERT(lfn_buf != NULL);
-     KERNEL_ASSERT(lfn_buf_size > 0);
-     KERNEL_ASSERT(lfn_count >= 0); // Allow 0 count
+     // Corrected: Added messages to KERNEL_ASSERTs
+     KERNEL_ASSERT(lfn_buf != NULL, "LFN output buffer cannot be NULL");
+     KERNEL_ASSERT(lfn_buf_size > 0, "LFN output buffer size must be > 0");
+     KERNEL_ASSERT(lfn_count >= 0, "LFN entry count cannot be negative"); // Allow 0 count
  
      if (lfn_count == 0) {
           lfn_buf[0] = '\0';
           return;
      }
-     KERNEL_ASSERT(lfn_entries != NULL); // Only assert non-NULL if count > 0
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(lfn_entries != NULL, "LFN entry array cannot be NULL if count > 0"); // Only assert non-NULL if count > 0
  
      lfn_buf[0] = '\0';
      int buf_idx = 0;
@@ -68,17 +71,21 @@
      // Assuming lfn_entries[0] holds the entry with the highest sequence number (last on disk).
      for (int i = 0; i < lfn_count; i++) {
          // Optional: Validate sequence number and LAST_FLAG consistency
+         fat_lfn_entry_t* current_entry = &lfn_entries[i];
  
-         // Define the parts of the LFN entry containing name characters
-         const uint16_t *parts[] = { lfn_entries[i].name1,
-                                     lfn_entries[i].name2,
-                                     lfn_entries[i].name3 };
+         // Define the parts and their character counts
+         // Corrected: Use memcpy to avoid potential unaligned access warnings/errors
+         uint16_t name_parts[3][6]; // Max 6 chars in name2
+         memcpy(name_parts[0], current_entry->name1, sizeof(current_entry->name1));
+         memcpy(name_parts[1], current_entry->name2, sizeof(current_entry->name2));
+         memcpy(name_parts[2], current_entry->name3, sizeof(current_entry->name3));
+ 
          const size_t counts[] = {5, 6, 2}; // Number of chars in each part
  
          bool sequence_terminated = false;
          for (int p = 0; p < 3 && !sequence_terminated; p++) { // Iterate through name1, name2, name3
              for (size_t c = 0; c < counts[p]; c++) { // Iterate through chars in the part
-                 uint16_t wide_char = parts[p][c];
+                 uint16_t wide_char = name_parts[p][c];
  
                  // Check for null terminator (0x0000) or padding (0xFFFF)
                  if (wide_char == 0x0000) {
@@ -121,12 +128,13 @@
                               fat_lfn_entry_t* lfn_buf,
                               int max_lfn_entries)
  {
-     KERNEL_ASSERT(long_name != NULL && lfn_buf != NULL);
-     KERNEL_ASSERT(max_lfn_entries > 0);
+     // Corrected: Added messages to KERNEL_ASSERTs
+     KERNEL_ASSERT(long_name != NULL && lfn_buf != NULL, "Long name and LFN buffer cannot be NULL");
+     KERNEL_ASSERT(max_lfn_entries > 0, "Max LFN entries must be positive");
  
      size_t lfn_len = strlen(long_name);
      if (lfn_len == 0 || lfn_len > FAT_MAX_LFN_CHARS) { // Check max LFN length supported
-          terminal_printf("[FAT LFN Generate] Error: Invalid long name length (%u).\n", lfn_len);
+          terminal_printf("[FAT LFN Generate] Error: Invalid long name length (%u).\n", (unsigned int)lfn_len);
           return -1;
      }
  
@@ -165,43 +173,43 @@
          int name_start_index = (seq - 1) * 13;
          bool name_terminated = false;
  
-         // Helper lambda/function could simplify this, but plain C approach:
-         uint16_t *target_part;
+         // Helper variables for memcpy approach
+         uint16_t current_char;
          int char_index_in_lfn = 0;
  
          // Part 1: name1 (5 chars)
-         target_part = entry->name1;
+         // Corrected: Use memcpy to set target packed members
          for (int i = 0; i < 5; i++, char_index_in_lfn++) {
              int source_idx = name_start_index + char_index_in_lfn;
              if (source_idx < (int)lfn_len) {
-                  // Simple ASCII to UTF-16 conversion
-                  target_part[i] = (uint16_t)(unsigned char)long_name[source_idx];
+                  current_char = (uint16_t)(unsigned char)long_name[source_idx];
              } else {
-                  target_part[i] = name_terminated ? 0xFFFF : 0x0000; // Null terminate, then pad
+                  current_char = name_terminated ? 0xFFFF : 0x0000; // Null terminate, then pad
                   name_terminated = true;
              }
+             memcpy(&entry->name1[i], &current_char, sizeof(uint16_t));
          }
          // Part 2: name2 (6 chars)
-         target_part = entry->name2;
           for (int i = 0; i < 6; i++, char_index_in_lfn++) {
               int source_idx = name_start_index + char_index_in_lfn;
               if (source_idx < (int)lfn_len) {
-                  target_part[i] = (uint16_t)(unsigned char)long_name[source_idx];
+                  current_char = (uint16_t)(unsigned char)long_name[source_idx];
               } else {
-                  target_part[i] = name_terminated ? 0xFFFF : 0x0000;
+                  current_char = name_terminated ? 0xFFFF : 0x0000;
                   name_terminated = true;
               }
+              memcpy(&entry->name2[i], &current_char, sizeof(uint16_t));
           }
          // Part 3: name3 (2 chars)
-         target_part = entry->name3;
           for (int i = 0; i < 2; i++, char_index_in_lfn++) {
               int source_idx = name_start_index + char_index_in_lfn;
               if (source_idx < (int)lfn_len) {
-                  target_part[i] = (uint16_t)(unsigned char)long_name[source_idx];
+                  current_char = (uint16_t)(unsigned char)long_name[source_idx];
               } else {
-                  target_part[i] = name_terminated ? 0xFFFF : 0x0000;
+                  current_char = name_terminated ? 0xFFFF : 0x0000;
                   name_terminated = true;
               }
+              memcpy(&entry->name3[i], &current_char, sizeof(uint16_t));
           }
      } // End loop through needed entries
  
@@ -229,19 +237,24 @@
                                     const char* long_name,
                                     uint8_t short_name_out[11])
  {
-     KERNEL_ASSERT(fs != NULL && long_name != NULL && short_name_out != NULL);
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(fs != NULL && long_name != NULL && short_name_out != NULL,
+                   "FS context, long name, and output buffer cannot be NULL for short name generation");
      // Assumes caller holds fs->lock if necessary for fat_raw_short_name_exists
  
-     uint8_t base_name[11];
+     // Corrected: Changed base_name type to char[11] to match format_filename
+     char base_name[11];
      uint8_t trial_name[11];
      char num_suffix[8]; // Buffer for "~N" string (~ + 6 digits + null)
  
      // 1. Generate the initial base 8.3 name using the helper from fat_utils.c
      // This handles uppercasing, padding, invalid char replacement, extension separation.
-     fat_format_filename_raw(long_name, base_name);
+     // Corrected: Call format_filename instead of fat_format_filename_raw
+     format_filename(long_name, base_name);
  
      // 2. Check if the base name itself is unique
-     if (!fat_raw_short_name_exists(fs, parent_dir_cluster, base_name)) {
+     // Note: We still compare using the uint8_t representation expected by fat_raw_short_name_exists
+     if (!fat_raw_short_name_exists(fs, parent_dir_cluster, (uint8_t*)base_name)) {
          memcpy(short_name_out, base_name, 11);
          terminal_printf("[FAT ShortGen] Base name '%.11s' is unique for '%s'.\n", base_name, long_name);
          return FS_SUCCESS;
@@ -270,7 +283,7 @@
               base_chars_to_keep = 1;
          }
  
-         // Construct the trial name
+         // Construct the trial name (using uint8_t to match output and comparison func)
          memset(trial_name, ' ', 11); // Start with spaces
          memcpy(trial_name, base_name, base_chars_to_keep); // Copy truncated base part
          memcpy(trial_name + base_chars_to_keep, num_suffix, suffix_len); // Copy suffix
@@ -280,11 +293,11 @@
          if (!fat_raw_short_name_exists(fs, parent_dir_cluster, trial_name)) {
              // Found a unique name!
              memcpy(short_name_out, trial_name, 11);
-             terminal_printf("[FAT ShortGen] Unique name '%.11s' found for '%s'.\n", trial_name, long_name);
+             terminal_printf("[FAT ShortGen] Unique name '%.11s' found for '%s'.\n", (char*)trial_name, long_name); // Cast for printf
              return FS_SUCCESS;
          }
           // Debug log for collision on trial name
-          // terminal_printf("[FAT ShortGen] Trial name '%.11s' collides (N=%d).\n", trial_name, n);
+          // terminal_printf("[FAT ShortGen] Trial name '%.11s' collides (N=%d).\n", (char*)trial_name, n);
  
      } // End for loop (N=1 to 999999)
  

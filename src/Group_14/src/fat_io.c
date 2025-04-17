@@ -30,7 +30,8 @@
                          uint32_t offset_in_cluster,
                          void *buf, size_t len)
  {
-     KERNEL_ASSERT(fs != NULL && buf != NULL);
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(fs != NULL && buf != NULL, "FS context and buffer must not be NULL in read_cluster_cached");
      if (cluster < 2) {
          terminal_printf("[FAT Read Cluster] Error: Attempt to read invalid cluster %u\n", cluster);
          return -FS_ERR_INVALID_PARAM;
@@ -42,7 +43,7 @@
      }
      if (offset_in_cluster >= fs->cluster_size_bytes || len > fs->cluster_size_bytes - offset_in_cluster) {
          terminal_printf("[FAT Read Cluster] Error: Invalid read params (offset=%u, len=%u, cluster_size=%u)\n",
-                          offset_in_cluster, len, fs->cluster_size_bytes);
+                          offset_in_cluster, (unsigned int)len, fs->cluster_size_bytes);
          return -FS_ERR_INVALID_PARAM; // Read would go past cluster boundary
      }
      if (len == 0) return 0; // Nothing to read
@@ -88,7 +89,8 @@
          bytes_read_total += bytes_to_copy_from_this_sector;
      }
  
-     KERNEL_ASSERT(bytes_read_total == len); // Should have read exactly len bytes if parameters were valid
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(bytes_read_total == len, "Total bytes read did not match requested length in read_cluster_cached");
      return (int)bytes_read_total;
  }
  
@@ -100,7 +102,8 @@
                           uint32_t offset_in_cluster,
                           const void *buf, size_t len)
  {
-     KERNEL_ASSERT(fs != NULL && buf != NULL);
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(fs != NULL && buf != NULL, "FS context and buffer must not be NULL in write_cluster_cached");
       if (cluster < 2) {
          terminal_printf("[FAT Write Cluster] Error: Attempt to write invalid cluster %u\n", cluster);
          return -FS_ERR_INVALID_PARAM;
@@ -112,7 +115,7 @@
       }
      if (offset_in_cluster >= fs->cluster_size_bytes || len > fs->cluster_size_bytes - offset_in_cluster) {
          terminal_printf("[FAT Write Cluster] Error: Invalid write params (offset=%u, len=%u, cluster_size=%u)\n",
-                          offset_in_cluster, len, fs->cluster_size_bytes);
+                          offset_in_cluster, (unsigned int)len, fs->cluster_size_bytes);
          return -FS_ERR_INVALID_PARAM; // Write would go past cluster boundary
      }
       if (len == 0) return 0; // Nothing to write
@@ -159,7 +162,8 @@
          bytes_written_total += bytes_to_copy_to_this_sector;
      }
  
-     KERNEL_ASSERT(bytes_written_total == len); // Should have written exactly len bytes
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(bytes_written_total == len, "Total bytes written did not match requested length in write_cluster_cached");
      return (int)bytes_written_total;
  }
  
@@ -175,7 +179,8 @@
          return -FS_ERR_INVALID_PARAM;
      }
      fat_file_context_t *fctx = (fat_file_context_t*)file->vnode->data;
-     KERNEL_ASSERT(fctx->fs != NULL); // Context should always have valid fs pointer
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(fctx->fs != NULL, "File context must have a valid FS pointer in fat_read_internal");
      fat_fs_t *fs = fctx->fs;
  
      if (fctx->is_directory) {
@@ -248,7 +253,7 @@
              return -FS_ERR_IO; // Error reading FAT
          }
          if (next_cluster >= fs->eoc_marker) {
-             terminal_printf("[FAT Read] Error: Reached EOC prematurely while seeking to offset %ld (cluster index %u).\n", current_offset, i + 1);
+             terminal_printf("[FAT Read] Error: Reached EOC prematurely while seeking to offset %ld (cluster index %u).\n", (long)current_offset, i + 1);
              return -FS_ERR_CORRUPT; // Offset indicates data beyond allocated chain
          }
          current_cluster = next_cluster;
@@ -268,14 +273,14 @@
                                       bytes_to_read_this_cluster);
  
          if (rc < 0) {
-              terminal_printf("[FAT Read] Error: Failed to read %u bytes from cluster %u (err %d).\n", bytes_to_read_this_cluster, current_cluster, rc);
+              terminal_printf("[FAT Read] Error: Failed to read %u bytes from cluster %u (err %d).\n", (unsigned int)bytes_to_read_this_cluster, current_cluster, rc);
              // Update file offset based on potentially partial read before error? Difficult.
              // Let's return the error code directly. The actual bytes read might be partial.
              return rc;
          }
          if ((size_t)rc != bytes_to_read_this_cluster) {
              // Should not happen if read_cluster_cached works correctly and params were valid
-             terminal_printf("[FAT Read] Warning: read_cluster_cached returned %d bytes, expected %u.\n", rc, bytes_to_read_this_cluster);
+             terminal_printf("[FAT Read] Warning: read_cluster_cached returned %d bytes, expected %u.\n", rc, (unsigned int)bytes_to_read_this_cluster);
              // Treat as partial read completed
              total_bytes_read += rc;
              break; // Stop reading
@@ -319,7 +324,8 @@
          return -FS_ERR_INVALID_PARAM;
      }
      fat_file_context_t *fctx = (fat_file_context_t*)file->vnode->data;
-     KERNEL_ASSERT(fctx->fs != NULL);
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(fctx->fs != NULL, "File context must have a valid FS pointer in fat_write_internal");
      fat_fs_t *fs = fctx->fs;
  
      if (fctx->is_directory) {
@@ -438,13 +444,13 @@
                                        bytes_to_write_this_cluster);
  
          if (wc < 0) {
-              terminal_printf("[FAT Write] Error: Failed to write %u bytes to cluster %u (err %d).\n", bytes_to_write_this_cluster, current_cluster, wc);
+              terminal_printf("[FAT Write] Error: Failed to write %u bytes to cluster %u (err %d).\n", (unsigned int)bytes_to_write_this_cluster, current_cluster, wc);
               // Return error, partial write occurred. Update size?
               return wc;
          }
           if ((size_t)wc != bytes_to_write_this_cluster) {
               // Disk full during write? Or other buffer cache error?
-              terminal_printf("[FAT Write] Warning: write_cluster_cached wrote %d bytes, expected %u.\n", wc, bytes_to_write_this_cluster);
+              terminal_printf("[FAT Write] Warning: write_cluster_cached wrote %d bytes, expected %u.\n", wc, (unsigned int)bytes_to_write_this_cluster);
               // Treat as partial write completed
               total_bytes_written += wc;
               break; // Stop writing
@@ -520,7 +526,8 @@
          return (off_t)-1; // Or set errno to EBADF
      }
      fat_file_context_t *fctx = (fat_file_context_t*)file->vnode->data;
-     KERNEL_ASSERT(fctx->fs != NULL);
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(fctx->fs != NULL, "File context must have a valid FS pointer in fat_lseek_internal");
      fat_fs_t *fs = fctx->fs;
  
      off_t new_offset;
@@ -585,7 +592,8 @@
          return -FS_ERR_INVALID_PARAM;
      }
      fat_file_context_t *fctx = (fat_file_context_t*)file->vnode->data;
-     KERNEL_ASSERT(fctx->fs != NULL);
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(fctx->fs != NULL, "File context must have a valid FS pointer in fat_close_internal");
      fat_fs_t *fs = fctx->fs;
  
      int result = FS_SUCCESS;

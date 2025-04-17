@@ -9,17 +9,41 @@
  #include "kmalloc.h"      // kmalloc, kfree
  #include "read_file.h"    // read_file
  #include "frame.h"        // frame_alloc, frame_free
- #include "paging.h"       // paging_map_page, paging_get_phys_addr, temp map/unmap, PAGE_* flags, PAGE_SIZE
+ #include "paging.h"       // Paging functions and constants
  #include "fs_errno.h"     // Filesystem error codes (used implicitly by read_file)
  #include "assert.h"       // KERNEL_ASSERT
+ #include "types.h"        // size_t, uintptr_t, etc. (Needs MIN macro added)
  
  #include <string.h>       // memcpy, memset
  #include <libc/stdbool.h> // bool type
  
+ // TODO: Define MIN macro in a suitable header (e.g., include/types.h or include/utils.h)
+ // #define MIN(a, b) (((a) < (b)) ? (a) : (b))
+ #ifndef MIN
+ #warning "MIN macro is not defined. Please define it (e.g., in types.h)."
+ #define MIN(a, b) (((a) < (b)) ? (a) : (b)) // Temporary definition
+ #endif
+ 
+ // TODO: Define missing ELF identifier indices in include/elf.h
+ /* Example definitions to add to elf.h:
+ #define EI_CLASS  4 // File class
+ #define EI_DATA   5 // Data encoding
+ #define ELFCLASS32 1 // 32-bit objects
+ #define ELFDATA2LSB 1 // Little-endian
+ */
+ 
+ // TODO: Define missing paging constants in include/paging.h
+ /* Example definitions to add to paging.h:
+ #define PAGE_SIZE 4096u
+ #define PAGING_PAGE_MASK   (~(PAGE_SIZE - 1u)) // Align down mask
+ #define PAGING_OFFSET_MASK (PAGE_SIZE - 1u)   // Offset mask
+ */
+ 
+ 
  // Helper structure to track allocated frames for cleanup
  typedef struct {
-     uint32_t vaddr;
-     uint32_t paddr;
+     uintptr_t vaddr; // Use uintptr_t for addresses
+     uintptr_t paddr; // Use uintptr_t for addresses
  } allocated_page_info_t;
  
  /**
@@ -53,14 +77,19 @@
          terminal_printf("[elf_loader] Error: Failed to read file '%s'.\n", path);
          return -1; // Or specific error from read_file if available
      }
-     terminal_printf("[elf_loader] Read %u bytes from '%s'.\n", file_size, path);
+     terminal_printf("[elf_loader] Read %u bytes from '%s'.\n", (unsigned int)file_size, path);
  
      // 2. Validate ELF Header
      Elf32_Ehdr *ehdr = (Elf32_Ehdr *)file_data;
-     if (memcmp(ehdr->e_ident, ELF_MAGIC, 4) != 0) {
+     // Corrected: Check individual magic bytes
+     if (ehdr->e_ident[EI_MAG0] != ELFMAG0 ||
+         ehdr->e_ident[EI_MAG1] != ELFMAG1 ||
+         ehdr->e_ident[EI_MAG2] != ELFMAG2 ||
+         ehdr->e_ident[EI_MAG3] != ELFMAG3) {
          terminal_printf("[elf_loader] Error: Invalid ELF magic number.\n");
          goto cleanup_file;
      }
+     // Note: EI_CLASS, ELFCLASS32, EI_DATA, ELFDATA2LSB need definitions in elf.h
      if (ehdr->e_ident[EI_CLASS] != ELFCLASS32 || ehdr->e_ident[EI_DATA] != ELFDATA2LSB) {
           terminal_printf("[elf_loader] Error: Not a 32-bit LSB ELF.\n");
           goto cleanup_file;
@@ -88,14 +117,15 @@
              uint32_t vaddr_end = vaddr_start + phdr->p_memsz;
  
              // Align start down and end up to page boundaries
-             uint32_t page_start = vaddr_start & PAGING_PAGE_MASK; // Align down
-             uint32_t page_end = (vaddr_end + PAGING_PAGE_SIZE - 1) & PAGING_PAGE_MASK; // Align up
+             // Note: PAGING_PAGE_MASK and PAGE_SIZE need definitions in paging.h
+             uintptr_t page_start = vaddr_start & PAGING_PAGE_MASK; // Align down
+             uintptr_t page_end = (vaddr_end + PAGE_SIZE - 1) & PAGING_PAGE_MASK; // Align up
  
              if (page_end <= page_start) continue; // Should not happen if memsz > 0
  
-             total_pages_needed += (page_end - page_start) / PAGING_PAGE_SIZE;
+             total_pages_needed += (uint32_t)((page_end - page_start) / PAGE_SIZE);
              terminal_printf("[elf_loader] Segment %d (vaddr 0x%x, memsz %u) needs %u pages.\n",
-                             i, vaddr_start, phdr->p_memsz, (page_end - page_start) / PAGING_PAGE_SIZE);
+                             i, vaddr_start, phdr->p_memsz, (unsigned int)((page_end - page_start) / PAGE_SIZE));
          }
      }
  
@@ -124,10 +154,10 @@
              continue;
          }
  
-         uint32_t vaddr_start = phdr->p_vaddr;
-         uint32_t vaddr_end = vaddr_start + phdr->p_memsz;
-         uint32_t page_start = vaddr_start & PAGING_PAGE_MASK;
-         uint32_t page_end = (vaddr_end + PAGING_PAGE_SIZE - 1) & PAGING_PAGE_MASK;
+         uintptr_t vaddr_start = phdr->p_vaddr;
+         uintptr_t vaddr_end = vaddr_start + phdr->p_memsz;
+         uintptr_t page_start = vaddr_start & PAGING_PAGE_MASK;
+         uintptr_t page_end = (vaddr_end + PAGE_SIZE - 1) & PAGING_PAGE_MASK;
  
          // Calculate page flags
          uint32_t flags = PAGE_PRESENT | PAGE_USER;
@@ -135,39 +165,47 @@
              flags |= PAGE_RW;
          }
          // Note: PF_X (execute) flag isn't directly mapped to typical x86 page flags here.
-         // NX bit control would be separate, often default enabled for user pages.
+         // Apply NX bit based on write permission (heuristic: RW -> NX, R-X -> No NX)
+         if(flags & PAGE_RW) {
+             flags |= PAGE_NX_BIT; // If writable, assume not executable
+         }
+         // If not writable, PAGE_NX_BIT remains unset, allowing execution if EFER.NXE=1
+ 
  
          // Allocate and map each page for this segment
-         for (uint32_t page_vaddr = page_start; page_vaddr < page_end; page_vaddr += PAGING_PAGE_SIZE) {
+         for (uintptr_t page_vaddr = page_start; page_vaddr < page_end; page_vaddr += PAGE_SIZE) {
              // Check if we already allocated/mapped this page for a previous overlapping segment?
              // Simple loader: Assume non-overlapping for now, or just map again (last flags win).
              // A more robust loader would handle shared segments.
  
-             uint32_t phys_frame = frame_alloc();
+             uintptr_t phys_frame = frame_alloc();
              if (phys_frame == 0) {
-                 terminal_printf("[elf_loader] Error: Failed to allocate physical frame for vaddr 0x%x.\n", page_vaddr);
+                 terminal_printf("[elf_loader] Error: Failed to allocate physical frame for vaddr 0x%lx.\n", (unsigned long)page_vaddr);
                  ret = -1; // Consider out-of-memory error
                  goto cleanup_frames; // Cleanup previously allocated frames
              }
  
              // Track the allocated frame
-             KERNEL_ASSERT(allocated_frame_count < total_pages_needed);
+             // Corrected: Added message to KERNEL_ASSERT
+             KERNEL_ASSERT(allocated_frame_count < total_pages_needed, "Allocated frame count exceeds total needed");
              phys_frames[allocated_frame_count].vaddr = page_vaddr;
              phys_frames[allocated_frame_count].paddr = phys_frame;
              allocated_frame_count++;
  
              // Map the page into the target page directory
-             if (paging_map_page(page_directory_phys, page_vaddr, phys_frame, flags) != 0) {
-                 terminal_printf("[elf_loader] Error: Failed to map vaddr 0x%x to paddr 0x%x.\n", page_vaddr, phys_frame);
-                 // frame_free(phys_frame); // Free the just allocated frame
-                 // allocated_frame_count--; // Decrement count as this one failed
+             // Corrected: Use paging_map_single_4k as found in paging.h
+             if (paging_map_single_4k(page_directory_phys, page_vaddr, phys_frame, flags) != 0) {
+                 terminal_printf("[elf_loader] Error: Failed to map vaddr 0x%lx to paddr 0x%lx.\n", (unsigned long)page_vaddr, (unsigned long)phys_frame);
+                 // frame_free(phys_frame); // Free the just allocated frame? Handled in cleanup_frames
+                 // allocated_frame_count--; // Adjust count? No, cleanup loop handles it.
                  ret = -1;
                  goto cleanup_frames; // Cleanup ALL frames allocated so far for this load
              }
-             // terminal_printf("[elf_loader] Mapped vaddr 0x%x -> paddr 0x%x (flags 0x%x)\n", page_vaddr, phys_frame, flags);
+             // terminal_printf("[elf_loader] Mapped vaddr 0x%lx -> paddr 0x%lx (flags 0x%x)\n", page_vaddr, phys_frame, flags);
          }
      }
-     KERNEL_ASSERT(allocated_frame_count == total_pages_needed);
+     // Corrected: Added message to KERNEL_ASSERT
+     KERNEL_ASSERT(allocated_frame_count == total_pages_needed, "Final allocated frame count mismatch");
      terminal_printf("[elf_loader] Page allocation and mapping complete.\n");
  
      // 6. Third Pass: Copy segment data using temporary kernel mappings
@@ -178,7 +216,7 @@
              continue;
          }
  
-         uint32_t seg_vaddr = phdr->p_vaddr;
+         uintptr_t seg_vaddr = phdr->p_vaddr;
          uint32_t seg_offset = phdr->p_offset;
          uint32_t seg_filesz = phdr->p_filesz;
          uint32_t seg_memsz = phdr->p_memsz;
@@ -191,20 +229,23 @@
          }
  
          uint8_t *file_src_base = (uint8_t *)file_data + seg_offset;
-         uint32_t current_vaddr = seg_vaddr;
+         uintptr_t current_vaddr = seg_vaddr;
          uint32_t bytes_processed = 0; // Track bytes copied/zeroed within the segment
  
          while (bytes_processed < seg_memsz) {
-             uint32_t page_vaddr = current_vaddr & PAGING_PAGE_MASK;
+             // Note: PAGING_PAGE_MASK, PAGING_OFFSET_MASK, PAGE_SIZE need definitions in paging.h
+             uintptr_t page_vaddr = current_vaddr & PAGING_PAGE_MASK;
              uint32_t offset_in_page = current_vaddr & PAGING_OFFSET_MASK;
-             uint32_t bytes_left_in_page = PAGING_PAGE_SIZE - offset_in_page;
+             uint32_t bytes_left_in_page = PAGE_SIZE - offset_in_page;
              uint32_t bytes_left_in_segment = seg_memsz - bytes_processed;
+             // Note: MIN needs definition (e.g., in types.h)
              uint32_t bytes_to_process_this_page = MIN(bytes_left_in_page, bytes_left_in_segment);
  
              // Find the physical address for this virtual page in the target directory
-             uint32_t phys_addr = paging_get_phys_addr(page_directory_phys, page_vaddr);
-             if (phys_addr == 0) {
-                 terminal_printf("[elf_loader] Error: Failed to get physical address for vaddr 0x%x (Seg %d).\n", page_vaddr, i);
+             // Corrected: Use paging_get_physical_address
+             uintptr_t phys_addr = 0; // Initialize to 0
+             if (paging_get_physical_address(page_directory_phys, page_vaddr, &phys_addr) != 0 || phys_addr == 0) {
+                 terminal_printf("[elf_loader] Error: Failed to get physical address for vaddr 0x%lx (Seg %d).\n", (unsigned long)page_vaddr, i);
                  ret = -1;
                  goto cleanup_mappings;
              }
@@ -212,7 +253,7 @@
              // Temporarily map this physical page into kernel space
              void *temp_mapped_page = paging_temp_map(phys_addr);
              if (!temp_mapped_page) {
-                 terminal_printf("[elf_loader] Error: Failed to temporarily map paddr 0x%x (Seg %d).\n", phys_addr, i);
+                 terminal_printf("[elf_loader] Error: Failed to temporarily map paddr 0x%lx (Seg %d).\n", (unsigned long)phys_addr, i);
                  ret = -1;
                  goto cleanup_mappings;
              }
@@ -245,7 +286,8 @@
              bytes_processed += bytes_to_process_this_page;
              current_vaddr += bytes_to_process_this_page;
          }
-         KERNEL_ASSERT(bytes_processed == seg_memsz);
+         // Corrected: Added message to KERNEL_ASSERT
+         KERNEL_ASSERT(bytes_processed == seg_memsz, "Bytes processed does not match segment memsz");
      }
      terminal_printf("[elf_loader] Segment data copying complete.\n");
  
@@ -255,13 +297,10 @@
  
  cleanup_mappings:
      terminal_printf("[elf_loader] Cleaning up mappings due to error...\n");
-     // Need to unmap pages - this requires iterating through phys_frames again
-     // A robust implementation would unmap *all* pages mapped so far.
-     // Simplified: We proceed to freeing frames which should ideally also unmap if
-     // frame_free handles unmapping or if the page directory will be discarded anyway.
-     // Adding explicit unmap loop:
+     // Unmap pages using the tracking array
      for(uint32_t k=0; k < allocated_frame_count; ++k) {
-         paging_unmap_page(page_directory_phys, phys_frames[k].vaddr);
+         // Corrected: Use paging_unmap_range to unmap a single page
+         paging_unmap_range(page_directory_phys, phys_frames[k].vaddr, PAGE_SIZE);
      }
  
  

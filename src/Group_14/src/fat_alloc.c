@@ -4,13 +4,13 @@
  */
 
  #include "fat_alloc.h"
- #include "fat_core.h"
- #include "fat_utils.h"  // For fat_get_next_cluster, fat_set_cluster_entry
- #include "terminal.h"   // For potential debug logging
- #include "fs_errno.h"
+ #include "fat_core.h"      // Needed for fat_fs_t definition [cite: 2]
+ #include "fat_utils.h"     // For fat_get_next_cluster, fat_set_cluster_entry (and expected fat_get_cluster_entry) [cite: 1]
+ #include "terminal.h"      // For potential debug logging
+ #include "fs_errno.h"      // For error codes [cite: 5]
  #include "libc/stdbool.h"
  #include "libc/stdint.h"
- #include "assert.h"     // For KERNEL_ASSERT
+ #include "assert.h"        // For KERNEL_ASSERT [cite: 4]
  
  /**
   * @brief Finds the first available free cluster in the FAT table.
@@ -24,8 +24,9 @@
  
      // Clusters 0 and 1 are reserved. Start searching from cluster 2.
      uint32_t first_search_cluster = 2;
-     // Total number of clusters available for data (0..cluster_count-1 map to 2..cluster_count+1)
-     uint32_t last_search_cluster = fs->cluster_count + 1; // Exclusive end
+     // Total number of clusters available for data (use total_data_clusters from fat_core.h) [cite: 2]
+     // Corrected: Use total_data_clusters instead of cluster_count
+     uint32_t last_search_cluster = fs->total_data_clusters + 1; // Exclusive end (+1 because cluster numbers start at 2)
  
      // TODO: Optimization: Add 'fs->first_free_hint' to start search from, update on free/alloc.
      // For now, simple linear scan.
@@ -33,8 +34,10 @@
      for (uint32_t i = first_search_cluster; i <= last_search_cluster; i++) {
          uint32_t entry_value;
          // Directly reading from the cached FAT table is efficient here.
-         // fat_get_next_cluster encapsulates the FAT type logic.
-         // We only care if the result indicates it's free (entry value == 0).
+         // NOTE: fat_get_cluster_entry is used here but its prototype is missing in fat_utils.h
+         //       and its implementation is likely missing in fat_utils.c.
+         //       You must add the prototype to fat_utils.h and the implementation.
+         //       int fat_get_cluster_entry(fat_fs_t *fs, uint32_t cluster, uint32_t *entry_value);
          if (fat_get_cluster_entry(fs, i, &entry_value) != FS_SUCCESS) {
               // This indicates an issue reading the FAT itself (e.g., bad index), severe error.
               terminal_printf("[FAT find_free] Error: Failed to read FAT entry for cluster %u\n", i);
@@ -58,7 +61,8 @@
   */
  uint32_t fat_allocate_cluster(fat_fs_t *fs, uint32_t previous_cluster)
  {
-     KERNEL_ASSERT(fs != NULL); // Non-recoverable if fs is NULL
+     // Corrected: Added descriptive message to KERNEL_ASSERT [cite: 4]
+     KERNEL_ASSERT(fs != NULL, "FAT filesystem context cannot be NULL in fat_allocate_cluster");
      // Assertion: Assumes caller holds fs->lock
  
      if (!fs->fat_table) {
@@ -104,7 +108,8 @@
   */
  int fat_free_cluster_chain(fat_fs_t *fs, uint32_t start_cluster)
  {
-     KERNEL_ASSERT(fs != NULL); // Non-recoverable if fs is NULL
+     // Corrected: Added descriptive message to KERNEL_ASSERT [cite: 4]
+     KERNEL_ASSERT(fs != NULL, "FAT filesystem context cannot be NULL in fat_free_cluster_chain");
  
      if (start_cluster < 2) {
          terminal_printf("[FAT free] Error: Cannot free reserved cluster %u\n", start_cluster);
