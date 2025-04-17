@@ -66,26 +66,48 @@
  // Default interrupt handler - Now terminates the process.
  // *** Changed signature to match idt.h ***
  void default_int_handler(registers_t *regs) {
-     // Note: Interrupts should be disabled by the hardware upon entering the handler.
-     terminal_printf("\n--- KERNEL PANIC ---\n");
-     terminal_printf(" Unhandled Exception/Interrupt: %d (Error Code: 0x%x)\n", regs->int_no, regs->err_code);
-     terminal_printf(" EIP: 0x%x CS: 0x%x EFLAGS: 0x%x\n", regs->eip, regs->cs, regs->eflags);
-     // *** Use get_current_process() and check result before accessing pid ***
-     pcb_t* current_proc = get_current_process();
-     terminal_printf(" Terminating process (PID %d)\n", current_proc ? current_proc->pid : 0);
-     if (regs->cs & 0x3) { // Check if fault occurred in user mode
-        terminal_printf(" UserESP: 0x%x UserSS: 0x%x\n", regs->user_esp, regs->user_ss);
-     }
-     terminal_printf("--------------------\n");
+    // Note: Interrupts should be disabled by the hardware upon entering the handler.
 
-     // Terminate the current process. Use a specific exit code.
-     uint32_t exit_code = 0xFF00 | regs->int_no; // Example: High byte FF, low byte is int number
-     remove_current_task_with_code(exit_code);
+    // *** ADD CHECK FOR CURRENT PROCESS ***
+    pcb_t* current_proc = get_current_process();
 
-     // remove_current_task_with_code should not return. Halt as a fallback.
-     terminal_write("[PANIC] Error: remove_current_task_with_code returned!\n");
-     while(1) { __asm__ volatile ("cli; hlt"); }
- }
+    if (current_proc == NULL) {
+        // --- FATAL KERNEL EXCEPTION DURING INIT/IDLE ---
+        // No process context exists, cannot terminate gracefully. This is critical.
+        terminal_printf("\n--- KERNEL PANIC (via Default Handler) ---\n");
+        terminal_printf(" Unhandled Exception/Interrupt: %d (Error Code: 0x%x)\n", regs->int_no, regs->err_code);
+        terminal_printf(" Occurred before scheduler context switch (current_process is NULL).\n");
+        terminal_printf(" EIP: 0x%x CS: 0x%x EFLAGS: 0x%x\n", regs->eip, regs->cs, regs->eflags);
+         if (regs->cs & 0x3) { // Check if CPU *thought* it was user mode (due to corruption)
+             terminal_printf(" UserESP: 0x%x UserSS: 0x%x (Note: CPU was in user mode flag!)\n", regs->user_esp, regs->user_ss);
+         } else {
+             terminal_printf(" ESP: 0x%x SS: 0x%x\n", regs->esp_dummy, regs->ds); // Approx kernel stack? DS likely holds SS.
+         }
+         terminal_printf(" System Halted.\n");
+        terminal_printf("-----------------------------------------\n");
+        while(1) { __asm__ volatile ("cli; hlt"); } // Halt directly
+
+    } else {
+        // --- EXCEPTION/INTERRUPT AFTER SCHEDULER START ---
+        // A process context exists, attempt graceful termination.
+        terminal_printf("\n--- KERNEL EXCEPTION/INTERRUPT ---\n");
+        terminal_printf(" Unhandled Exception/Interrupt: %d (Error Code: 0x%x)\n", regs->int_no, regs->err_code);
+        terminal_printf(" EIP: 0x%x CS: 0x%x EFLAGS: 0x%x\n", regs->eip, regs->cs, regs->eflags);
+        terminal_printf(" Terminating process (PID %d)\n", current_proc->pid);
+        if (regs->cs & 0x3) { // Check if fault occurred in user mode
+            terminal_printf(" UserESP: 0x%x UserSS: 0x%x\n", regs->user_esp, regs->user_ss);
+        }
+        terminal_printf("---------------------------------\n");
+
+        // Terminate the current process. Use a specific exit code.
+        uint32_t exit_code = 0xFF00 | regs->int_no; // Example: High byte FF, low byte is int number
+        remove_current_task_with_code(exit_code);
+
+        // remove_current_task_with_code should not return. Halt as a fallback.
+        terminal_write("[PANIC] Error: remove_current_task_with_code returned!\n");
+        while(1) { __asm__ volatile ("cli; hlt"); }
+    }
+}
 
  // Register a custom interrupt handler for vector 'num'.
  // *** Changed signature to match idt.h ***

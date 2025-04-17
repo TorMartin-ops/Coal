@@ -1155,57 +1155,58 @@ buffer_release(bs);
         terminal_write("[FAT load_v2] Error: NULL fs provided.\n");
         return -FS_ERR_INVALID_PARAM;
     }
+    
     if (fs->fat_size == 0 || fs->bytes_per_sector == 0) {
         terminal_printf("[FAT load_v2] Error: Invalid geometry (fat_size=%u, sector_size=%u).\n",
                         fs->fat_size, fs->bytes_per_sector);
         return -FS_ERR_INVALID_FORMAT;
     }
 
-    // --- Robust Size Calculation with Overflow Check ---
-    size_t bytes_per_sector_sz = fs->bytes_per_sector; // Cast to size_t if needed
-    size_t fat_size_sectors_sz = fs->fat_size;         // Cast to size_t if needed
-
+    // Calculate FAT table size
+    size_t bytes_per_sector_sz = fs->bytes_per_sector;
+    size_t fat_size_sectors_sz = fs->fat_size;
+    
     // Check for potential overflow before multiplication
     if (bytes_per_sector_sz > 0 && fat_size_sectors_sz > SIZE_MAX / bytes_per_sector_sz) {
-        terminal_printf("[FAT load_v2] Error: FAT table size calculation overflows size_t (%u sectors * %u bytes/sector).\n",
-                        fs->fat_size, fs->bytes_per_sector);
-        return -FS_ERR_OVERFLOW; // Use a specific overflow error if available
+        terminal_printf("[FAT load_v2] Error: FAT table size calculation overflows size_t.\n");
+        return -FS_ERR_OVERFLOW;
     }
+    
     size_t table_size_bytes = fat_size_sectors_sz * bytes_per_sector_sz;
-
-    // If the calculation legitimately results in 0 (should be caught by initial checks), handle it.
-    if (table_size_bytes == 0) {
-         terminal_printf("[FAT load_v2] Error: Calculated FAT table size is zero.\n");
-        return -FS_ERR_INVALID_FORMAT;
-    }
-
+    
     terminal_printf("[FAT load_v2] Calculated FAT table size: %u bytes (%u sectors).\n",
-                    table_size_bytes, fs->fat_size);
-
-    // --- Allocate Buffer ---
-    fs->fat_table = kmalloc(table_size_bytes);
+                   table_size_bytes, fs->fat_size);
+    
+    // Allocate buffer with extra padding to be safe
+    fs->fat_table = kmalloc(table_size_bytes + 64); // Add some padding just in case
     if (!fs->fat_table) {
-        terminal_printf("[FAT load_v2] Error: Failed to kmalloc %u bytes for FAT table.\n", table_size_bytes);
+        terminal_printf("[FAT load_v2] Error: Failed to kmalloc %u bytes for FAT table.\n", 
+                       table_size_bytes);
         return -FS_ERR_OUT_OF_MEMORY;
     }
-    terminal_printf("[FAT load_v2] Allocated FAT table buffer at virtual address: 0x%p\n", fs->fat_table);
-
-    // --- Direct Disk Read ---
-    // Read the entire FAT table in one go using the disk layer function.
-    // Assumes disk_read_sectors can handle reading fs->fat_size sectors.
-    terminal_printf("[FAT load_v2] Reading %u sectors from LBA %u into buffer...\n",
-                    fs->fat_size, fs->fat_start_lba);
-
-    int read_result = disk_read_sectors(&fs->disk,         // Disk structure
-                                        fs->fat_start_lba, // Starting LBA of FAT1
-                                        fs->fat_table,     // Destination buffer
-                                        fs->fat_size);     // Number of sectors to read
-
-    if (read_result != FS_SUCCESS) {
-        terminal_printf("[FAT load_v2] Error: disk_read_sectors failed (code %d) while reading FAT.\n", read_result);
-        kfree(fs->fat_table); // Free the buffer on error
-        fs->fat_table = NULL;
-        return -FS_ERR_IO; // Return I/O error
+    
+    // Zero the entire buffer first
+    memset(fs->fat_table, 0, table_size_bytes + 64);
+    
+    terminal_printf("[FAT load_v2] Allocated FAT table buffer at virtual address: 0x%p\n", 
+                   fs->fat_table);
+                   
+    // Read sectors one by one instead of all at once
+    uint8_t* buffer_pos = (uint8_t*)fs->fat_table;
+    for (uint32_t sector = 0; sector < fs->fat_size; sector++) {
+        uint32_t lba = fs->fat_start_lba + sector;
+        buffer_t* buf = buffer_get(fs->disk.blk_dev.device_name, lba);
+        if (!buf) {
+            terminal_printf("[FAT load_v2] Error: Failed to read sector %u.\n", lba);
+            kfree(fs->fat_table);
+            fs->fat_table = NULL;
+            return -FS_ERR_IO;
+        }
+        
+        // Copy sector data to our buffer
+        memcpy(buffer_pos, buf->data, fs->bytes_per_sector);
+        buffer_pos += fs->bytes_per_sector;
+        buffer_release(buf);
     }
 
     terminal_printf("[FAT] FAT table loaded successfully (%u sectors).\n", fs->fat_size);

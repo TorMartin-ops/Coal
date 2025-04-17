@@ -37,6 +37,7 @@ typedef enum fs_error {
     FS_ERR_NAMETOOLONG      = -19,
     FS_ERR_OVERFLOW         = -20,
     FS_ERR_EOF              = -21,
+    FS_ERR_NO_RESOURCES     = -22,  /* No resources available */
     // Add additional error codes as needed.
 } fs_error_t;
 
@@ -72,8 +73,8 @@ static inline const char *fs_strerror(fs_error_t err) {
         case FS_ERR_NAMETOOLONG:        return "Name too long";
         case FS_ERR_OVERFLOW:           return "Overflow error";
         case FS_ERR_EOF:                return "End of file";
+        case FS_ERR_NO_RESOURCES:     return "No resources available";
         default:                        return "Unrecognized error";
-        
     }
 }
 

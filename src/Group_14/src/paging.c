@@ -1025,6 +1025,11 @@ static int map_page_internal(uint32_t *target_page_directory_phys, // Physical a
     // Calculate PD index
     uint32_t pd_idx = PDE_INDEX(aligned_vaddr);
 
+    if (pd_idx == RECURSIVE_PDE_INDEX) {
+        terminal_printf("[Map Internal] Error: Attempted to map into recursive Paging range (V=0x%x, PDE %u).\n", vaddr, pd_idx);
+        return -1; // Or a specific error code like -EINVAL
+    }
+
     // --- Refined Flag Calculation ---
     // Base flags present in both PDE (for PT) and PTE
     uint32_t base_flags = PAGE_PRESENT;
@@ -1559,7 +1564,7 @@ int paging_map_range(uint32_t *page_directory_phys,
                  // Found a 4MB user page. Need to decrement ref count for all frames it covers.
                  uintptr_t frame_base = pde & PAGING_PDE_ADDR_MASK_4MB;
                  // Decrement ref count for each 4KB frame within the 4MB page
-                 for (int f = 0; f < PAGES_PER_TABLE; ++f) { // 1024 frames in 4MB
+                 for (size_t f = 0; f < PAGES_PER_TABLE; ++f) { // 1024 frames in 4MB
                       uintptr_t frame_addr = frame_base + f * PAGE_SIZE;
                       if(frame_addr < frame_base) break; // overflow check
                       put_frame(frame_addr);
@@ -1575,7 +1580,7 @@ int paging_map_range(uint32_t *page_directory_phys,
                  if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PT_DST, pt_phys, PTE_KERNEL_READONLY_FLAGS) == 0) {
                      target_pt_virt_temp = (uint32_t*)TEMP_MAP_ADDR_PT_DST;
                      // Iterate through PTEs in this table
-                     for (int j = 0; j < PAGES_PER_TABLE; ++j) {
+                     for (size_t j = 0; j < PAGES_PER_TABLE; ++j) {
                          uint32_t pte = target_pt_virt_temp[j];
                          if (pte & PAGE_PRESENT) {
                              uintptr_t frame_phys = pte & PAGING_PTE_ADDR_MASK;
@@ -1636,7 +1641,7 @@ int paging_map_range(uint32_t *page_directory_phys,
     }
     dst_pd_virt_temp = (uint32_t*)TEMP_MAP_ADDR_PD_DST;
 
-    for (int i = KERNEL_PDE_INDEX; i < RECURSIVE_PDE_INDEX; i++) {
+    for (size_t i = KERNEL_PDE_INDEX; i < RECURSIVE_PDE_INDEX; i++) {
         dst_pd_virt_temp[i] = g_kernel_page_directory_virt[i];
     }
     dst_pd_virt_temp[RECURSIVE_PDE_INDEX] = (new_pd_phys & PAGING_ADDR_MASK) | PAGE_PRESENT | PAGE_RW;
@@ -1648,7 +1653,7 @@ int paging_map_range(uint32_t *page_directory_phys,
         if (src_pde & PAGE_SIZE_4MB) {
              dst_pd_virt_temp[i] = src_pde;
              uintptr_t frame_base = src_pde & PAGING_PDE_ADDR_MASK_4MB; // Use constant
-             for (int f = 0; f < PAGES_PER_TABLE; ++f) {
+             for (size_t f = 0; f < PAGES_PER_TABLE; ++f) {
                  uintptr_t frame_addr_to_inc = frame_base + f * PAGE_SIZE;
                  if (frame_addr_to_inc < frame_base) break;
                  get_frame(frame_addr_to_inc);
@@ -1687,7 +1692,7 @@ int paging_map_range(uint32_t *page_directory_phys,
         }
         dst_pt_virt_temp = (uint32_t*)TEMP_MAP_ADDR_PT_DST;
 
-        for (int j = 0; j < PAGES_PER_TABLE; j++) {
+        for (size_t j = 0; j < PAGES_PER_TABLE; j++) {
             uint32_t src_pte = src_pt_virt_temp[j];
             if (src_pte & PAGE_PRESENT) {
                 uintptr_t frame_phys = src_pte & PAGING_PTE_ADDR_MASK; // Use constant
@@ -2118,4 +2123,38 @@ cleanup_unmap:
 
     terminal_printf("[Unmap Range] Completed for V=[0x%x - 0x%x).\n", v_start, v_end);
     return ret;
+}
+
+void copy_kernel_pde_entries(uint32_t *new_pd_virt)
+{
+    if (!g_kernel_page_directory_virt) {
+        terminal_write("[Process] Error: copy_kernel_pde_entries called when kernel PD is NULL!\n");
+        // Or PAGING_PANIC("copy_kernel_pde_entries called with NULL kernel PD virtual address");
+        return;
+    }
+    if (!new_pd_virt) {
+         terminal_write("[Process] Error: copy_kernel_pde_entries called with NULL destination PD pointer.\n");
+         // Or PAGING_PANIC("copy_kernel_pde_entries called with NULL destination PD pointer");
+        return;
+    }
+
+    // Iterate from the start of kernel space up to (but not including) the recursive entry
+    for (size_t i = KERNEL_PDE_INDEX; i < RECURSIVE_PDE_INDEX; i++) {
+        // Copy entry directly if present, ensuring USER flag is cleared
+        if (g_kernel_page_directory_virt[i] & PAGE_PRESENT) {
+            // Copy kernel PDE, ensuring USER flag is always cleared for kernel mappings
+            new_pd_virt[i] = g_kernel_page_directory_virt[i] & ~PAGE_USER;
+        } else {
+            // If not present in source, ensure it's not present in destination
+            new_pd_virt[i] = 0;
+        }
+    }
+
+    // Explicitly handle the PDE entry just *after* the recursive slot (if any needed),
+    // skipping the recursive slot itself (index 1023).
+    // The recursive entry for the *new* PD should be set by the caller (e.g., paging_clone_directory or process creation).
+    // If TABLES_PER_DIR is > 1024 (unlikely for 32-bit), this loop needs adjustment.
+    // Assuming TABLES_PER_DIR is 1024, the loop correctly stops before index 1023.
+    // We explicitly zero out the recursive entry in the destination PD to avoid accidental copying.
+    new_pd_virt[RECURSIVE_PDE_INDEX] = 0;
 }

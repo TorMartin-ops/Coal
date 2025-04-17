@@ -1,7 +1,4 @@
-; context_switch.asm
-; Implements:
-;   void context_switch(uint32_t **old_esp_ptr, uint32_t *new_esp, uint32_t *new_page_directory);
-; Saves current kernel ESP, loads new kernel ESP, and switches the page directory (CR3).
+; context_switch.asm (Modified)
 
 global context_switch
 section .text
@@ -18,15 +15,20 @@ context_switch:
     push ds
 
     ; --- Arguments from Stack ---
-    ; Stack layout at this point (after pushes):
-    ; [ebp+0]  = Old EBP
-    ; [ebp+4]  = Return Address from C caller (schedule function)
     ; [ebp+8]  = Arg 1: old_esp_ptr (address where current ESP should be saved) -> uint32_t**
     ; [ebp+12] = Arg 2: new_esp (value for the new kernel ESP) -> uint32_t*
     ; [ebp+16] = Arg 3: new_page_directory (physical address of new page dir) -> uint32_t*
 
     mov eax, [ebp + 8]      ; EAX = old_esp_ptr (address of the pointer to save ESP to)
+
+    ; *** ADD NULL CHECK HERE ***
+    test eax, eax           ; Check if old_esp_ptr (eax) is NULL
+    jz .skip_esp_save       ; If it is NULL, jump past the save instruction
+    ; *** END NULL CHECK ***
+
     mov [eax], esp          ; Save current kernel ESP into *old_esp_ptr (e.g., into old_tcb->esp)
+
+.skip_esp_save:             ; Label to jump to if old_esp_ptr was NULL
 
     ; --- Switch Page Directory (CR3) ---
     mov eax, [ebp + 16]     ; EAX = new_page_directory (physical address)
@@ -49,8 +51,6 @@ context_switch:
     popad                   ; Restore general purpose registers (EAX, ECX, EDX, EBX, ESP_temp, old EBP, ESI, EDI)
 
     ; --- Return ---
-    ; Restore EBP and return to C caller (which was likely the 'schedule' function)
-    ; The C caller's context (including EIP) will be restored based on the *new* stack.
     mov esp, ebp            ; Clean up stack frame (or use leave)
     pop ebp
     ret                     ; Return to C caller (schedule function)

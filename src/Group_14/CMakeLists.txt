@@ -1,4 +1,4 @@
-# CMakeLists.txt - Use mcopy + FAT16
+# CMakeLists.txt - Improved FAT16 disk integration
 
 ########################################
 # The University of Agder Operating System: UiAOS
@@ -127,17 +127,20 @@ set_target_properties(hello_elf PROPERTIES
 )
 
 ########################################
-# Create Empty Fat16 Disk Image
+# Create FAT16 Disk Image and Include in ISO
 ########################################
-set(DISK_IMAGE "${CMAKE_CURRENT_BINARY_DIR}/disk.iso")
+set(DISK_IMAGE "${CMAKE_CURRENT_BINARY_DIR}/disk.img") # Changed extension to .img for clarity
 
-# Custom target to create an empty FAT16 disk image of 32MB
-add_custom_target(
-    create-fat16-disk # Renamed target slightly for clarity
+# Create a combined target for disk image creation and file copying
+add_custom_command(
+    OUTPUT ${DISK_IMAGE}
+    # Create the FAT16 disk image
     COMMAND dd if=/dev/zero of=${DISK_IMAGE} bs=1M count=32
-    # --- Changed: Use -F 16 for FAT16 ---
     COMMAND mkfs.fat -F 16 ${DISK_IMAGE}
-    COMMENT "Creating 32MB FAT16 disk image: ${DISK_IMAGE}" # Changed comment
+    # Copy hello.elf to the FAT16 image
+    COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:hello_elf> ::/hello.elf
+    DEPENDS hello_elf
+    COMMENT "Creating FAT16 disk image with hello.elf"
     VERBATIM
 )
 
@@ -148,18 +151,7 @@ set(ISO_DIR ${CMAKE_CURRENT_BINARY_DIR}/iso)
 set(LIMINE_CONFIG_DIR ${CMAKE_SOURCE_DIR}) # Assumes limine.cfg is in the same dir as CMakeLists.txt
 set(LIMINE_DIR /usr/local/limine) # Assuming this path is correct on your system
 
-# Step 1: Copy hello.elf to the disk image using mcopy
-add_custom_command(
-    OUTPUT ${DISK_IMAGE}.stamp # A dummy file to track completion
-    # --- Changed: Reverted back to mcopy ---
-    COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:hello_elf> ::/hello.elf
-    # --- Make sure mtools package is installed ---
-    DEPENDS create-fat16-disk hello_elf # Depends on FAT16 disk creation and hello_elf build
-    COMMENT "Copying hello.elf to disk image (using mcopy)..."
-    VERBATIM
-)
-
-# Step 2: Create the ISO image (depends on kernel and the copy step)
+# Create the ISO image (depends on kernel and the FAT16 disk image)
 add_custom_target(
     uiaos-create-image ALL # Build this target by default
 
@@ -167,6 +159,8 @@ add_custom_target(
     COMMAND ${CMAKE_COMMAND} -E rm -rf ${ISO_DIR}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${ISO_DIR}
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:uiaos-kernel> ${ISO_DIR}/
+    # Copy the FAT16 disk image into the ISO directory
+    COMMAND ${CMAKE_COMMAND} -E copy ${DISK_IMAGE} ${ISO_DIR}/
     COMMAND ${CMAKE_COMMAND} -E copy
         ${LIMINE_CONFIG_DIR}/limine.cfg
         ${LIMINE_DIR}/limine-bios.sys
@@ -177,7 +171,7 @@ add_custom_target(
     COMMAND ${CMAKE_COMMAND} -E copy ${LIMINE_DIR}/BOOTX64.EFI ${ISO_DIR}/EFI/BOOT/
     COMMAND ${CMAKE_COMMAND} -E copy ${LIMINE_DIR}/BOOTIA32.EFI ${ISO_DIR}/EFI/BOOT/
 
-    # Create ISO command
+    # Create ISO command - include the FAT16 disk image
     COMMAND xorriso -as mkisofs -b limine-bios-cd.bin
         -no-emul-boot -boot-load-size 4 -boot-info-table
         --efi-boot limine-uefi-cd.bin
@@ -187,9 +181,9 @@ add_custom_target(
     # Install bootloader command
     COMMAND ${LIMINE_DIR}/limine bios-install ${CMAKE_CURRENT_BINARY_DIR}/${OS_KERNEL_IMAGE}
 
-    # Dependencies
-    DEPENDS uiaos-kernel ${DISK_IMAGE}.stamp # Depends on kernel and the stamp file from the copy command
-    COMMENT "Creating Limine ISO image: ${OS_KERNEL_IMAGE} and populating disk"
+    # Dependencies - note that we now depend directly on the disk image
+    DEPENDS uiaos-kernel ${DISK_IMAGE}
+    COMMENT "Creating Limine ISO image: ${OS_KERNEL_IMAGE} with embedded disk image"
     VERBATIM
     USES_TERMINAL
 )

@@ -196,6 +196,8 @@ uintptr_t paging_clone_directory(uint32_t* src_pd_phys);
 int paging_get_physical_address(uint32_t *page_directory_phys, uintptr_t vaddr, uintptr_t *paddr);
 int paging_map_single_4k(uint32_t *page_directory_phys, uintptr_t vaddr, uintptr_t paddr, uint32_t flags);
 
+// *** ADDED PROTOTYPE HERE ***
+void copy_kernel_pde_entries(uint32_t *new_pd_virt);
 
 #ifdef __cplusplus
 }
