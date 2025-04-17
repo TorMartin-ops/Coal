@@ -1,7 +1,7 @@
 #include "fat_core.h"
 #include "fat_utils.h"
 #include <string.h>
-#include <ctype.h>
+#include "libc/ctype.h"
 
 /**
  * Convert a FAT cluster number to LBA (Logical Block Address)

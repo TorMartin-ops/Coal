@@ -49,7 +49,7 @@
 #include "song.h"           // Song definitions for speaker
 #include "song_player.h"    // Song playback logic
 #include "my_songs.h"       // Specific song data
-// Note: block_device.h and disk.h are included via fs_init.h -> fat.h -> disk.h
+
 
 // === Utilities ===
 #include "get_cpu_id.h"     // Function to get current CPU ID

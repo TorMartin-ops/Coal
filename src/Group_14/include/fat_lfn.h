@@ -12,7 +12,6 @@
  
  #include "fat_core.h"   // Core FAT structures (fat_fs_t, fat_dir_entry_t, fat_lfn_entry_t)
  #include <libc/stdint.h> // Standard integer types
- #include <stddef.h>     // For size_t
  
  /* --- LFN Constants --- */
  #define FAT_LFN_ENTRY_LAST_FLAG 0x40 // Mask for sequence number byte indicating the last LFN entry

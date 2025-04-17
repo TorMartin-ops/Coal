@@ -12,7 +12,6 @@
  #include "fat_utils.h"  // Needs fat_format_filename_raw and potentially fat_raw_short_name_exists prototype
  #include "terminal.h"   // For logging
  #include <string.h>     // For strlen, memcpy, memset
- #include <libc/ctype.h> // For toupper
  #include "fs_errno.h"   // Error codes
  #include "assert.h"     // KERNEL_ASSERT
  

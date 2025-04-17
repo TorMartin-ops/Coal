@@ -3,7 +3,6 @@
 #define FAT_UTILS_H
 
 #include "types.h"
-#include "fat.h" // Include fat.h for fat_fs_t definition
 
 #ifdef __cplusplus
 extern "C" {
