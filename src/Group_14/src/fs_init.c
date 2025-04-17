@@ -9,12 +9,12 @@
 
  #include "fs_init.h"
  #include "vfs.h"            // VFS core API
- #include "fat.h"            // FAT filesystem driver
+ #include "fat_core.h"           // FAT filesystem driver (needs prototypes for register/unregister)
  #include "disk.h"           // Disk device abstraction
  #include "buffer_cache.h"   // Buffer cache registration/API
  #include "terminal.h"       // Kernel logging/debugging
  #include "fs_errno.h"       // Filesystem error codes
- // #include "fs_config.h"   // Not including as ROOT_* defines are missing
+ #include "fs_config.h"   // Not including as ROOT_* defines are missing
  #include "types.h"          // Standard types (bool, etc.)
  #include "sys_file.h"       // For O_RDONLY used in test function
  #include "kmalloc.h"        // For memory allocation (used in test function)
@@ -22,11 +22,6 @@
  
  #include <string.h>         // For strcmp, etc.
  
- // --- FIX: Define Root Device Configuration Locally (at top level) ---
- // TODO: Move these to a proper configuration system (e.g., kernel cmdline or fs_config.h)
- #define ROOT_DEVICE_NAME "hdb"
- #define ROOT_FS_TYPE     "FAT"
- // --- END FIX ---
  
  /* Global flag to prevent double initialization/shutdown */
  static bool s_fs_initialized = false;
@@ -56,7 +51,6 @@
  
      // 1. Initialize Buffer Cache (Should happen before disk registration)
      //    Assuming buffer_cache_init() is called elsewhere during kernel boot.
-     //    If not, add: buffer_cache_init();
  
      // 2. Initialize VFS Layer
      terminal_write("[FS_INIT] Initializing VFS layer...\n");
@@ -64,7 +58,7 @@
  
      // 3. Register Filesystem Drivers
      terminal_write("[FS_INIT] Registering FAT filesystem driver...\n");
-     ret = fat_register_driver();
+     ret = fat_register_driver(); // Calls function declared in fat.h, implemented in fat_core.c
      if (ret != FS_SUCCESS) {
          terminal_printf("[FS_INIT] Error: FAT driver registration failed (code %d).\n", ret);
          vfs_shutdown(); // Attempt cleanup
@@ -78,12 +72,11 @@
      const char *root_device_name = ROOT_DEVICE_NAME; // Using local define
      const char *root_fs_type = ROOT_FS_TYPE;         // Using local define
  
-     // Basic null check (less critical now with local defines, but good practice)
      if (!root_device_name || !root_fs_type) {
           terminal_write("[FS_INIT] Error: Root device name or FS type configuration is invalid (NULL).\n");
           fat_unregister_driver();
           vfs_shutdown();
-          return -FS_ERR_INVALID_PARAM; // Use existing error code
+          return -FS_ERR_INVALID_PARAM;
      }
  
      terminal_printf("[FS_INIT] Initializing root block device '%s'...\n", root_device_name);
@@ -101,8 +94,6 @@
      if (ret != FS_SUCCESS) {
           terminal_printf("[FS_INIT] Error: Failed to register root disk '%s' with buffer cache (code %d).\n",
                           root_device_name, ret);
-          // Note: disk is initialized, but we can't use it via cache. Should we cleanup disk?
-          // For now, just unregister driver and shutdown VFS.
           fat_unregister_driver();
           vfs_shutdown();
           return ret; // Propagate buffer cache registration error
@@ -163,11 +154,9 @@
      int final_ret = FS_SUCCESS; // Track if any step fails
  
      // 1. Unmount Root Filesystem (and implicitly any others via VFS shutdown)
-     //    A more robust shutdown might unmount all non-root first.
      terminal_write("[FS_SHUTDOWN] Unmounting root filesystem...\n");
      int unmount_result = vfs_unmount_root(); // Should handle unmounting "/"
      if (unmount_result != FS_SUCCESS) {
-         // This might fail if files are still open. Critical issue in real OS.
          terminal_printf("[FS_SHUTDOWN] Warning: Root file system unmount failed (code %d). Force continuing shutdown.\n",
                          unmount_result);
          final_ret = unmount_result; // Report the error but continue
@@ -175,7 +164,7 @@
  
      // 2. Unregister Filesystem Drivers
      terminal_write("[FS_SHUTDOWN] Unregistering FAT driver...\n");
-     fat_unregister_driver(); // Assuming this exists and cleans up FAT resources
+     fat_unregister_driver(); // Calls function declared in fat.h, implemented in fat_core.c
      // Unregister other drivers here...
  
      // 3. Unregister Disks from Buffer Cache (Optional but good practice)
@@ -235,18 +224,14 @@
      // Try to open the file for reading
      file = vfs_open(path, O_RDONLY);
      if (!file) {
-         // Note: vfs_open currently returns NULL on error, not error code.
-         // Need to rely on logging within vfs_open or assume FS_ERR_NOT_FOUND.
          terminal_printf("[FS_TEST] Error: vfs_open failed for file '%s'.\n", path);
-         // --- FIX: Use existing error code ---
-         return -FS_ERR_UNKNOWN; // Use FS_ERR_UNKNOWN instead of FS_ERR_GENERIC
-         // --- END FIX ---
+         return -FS_ERR_UNKNOWN; // Assuming failure means not found or other error
      }
  
      // Allocate a buffer for reading
      buffer = kmalloc(128); // Allocate a reasonable size buffer
      if (!buffer) {
-          terminal_printf("[FS_TEST] Error: Failed to allocate read buffer for '%s'.n", path);
+          terminal_printf("[FS_TEST] Error: Failed to allocate read buffer for '%s'.\n", path); // Corrected typo
           ret = -FS_ERR_OUT_OF_MEMORY;
           goto cleanup;
      }
@@ -256,7 +241,7 @@
      if (bytes_read < 0) {
          terminal_printf("[FS_TEST] Error: Failed to read from file '%s' (code %d)\n",
                          path, (int)bytes_read);
-         ret = bytes_read; // vfs_read returns negative FS_ERR_* code
+         ret = (int)bytes_read; // vfs_read returns negative FS_ERR_* code
          goto cleanup;
      }
  
@@ -287,9 +272,9 @@
      }
  
      if (ret == FS_SUCCESS) {
-        terminal_printf("[FS_TEST] File access test successful for '%s'\n", path);
+         terminal_printf("[FS_TEST] File access test successful for '%s'\n", path);
      } else {
-        terminal_printf("[FS_TEST] File access test failed for '%s' (Final code: %d)\n", path, ret);
+         terminal_printf("[FS_TEST] File access test failed for '%s' (Final code: %d)\n", path, ret);
      }
  
      return ret;

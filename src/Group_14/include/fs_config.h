@@ -59,6 +59,9 @@ extern "C" {
 #define FS_MOUNT_OPTION_SYNCHRONOUS 0x02
 #define FS_MOUNT_OPTION_NOEXEC      0x04
 
+ #define ROOT_DEVICE_NAME "hdb"
+ #define ROOT_FS_TYPE     "FAT"
+
 
 /**
  * fs_config_t
