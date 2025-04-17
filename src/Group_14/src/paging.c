@@ -176,53 +176,6 @@
      return 0;
  } // *** END OF kernel_map_virtual_to_physical_unsafe ***
  
- // Marked static as it's an internal unsafe helper
- static void kernel_unmap_virtual_unsafe(uintptr_t vaddr) {
-     if (!g_kernel_page_directory_virt) {
-         terminal_printf("[KUnmapUnsafe] Error: Kernel PD Virt not set!\n");
-         return;
-     }
-     // Basic alignment check
-     if (vaddr % PAGE_SIZE != 0) {
-         terminal_printf("[KUnmapUnsafe] Error: VAddr 0x%x not page aligned.\n", vaddr);
-         return;
-     }
- 
-     // Allow unmapping any address, caller beware.
-     // Original check restricted to kernel space or temp areas.
-     // terminal_printf("[KUnmapUnsafe] Unmapping V=0x%x\n", vaddr);
- 
-     uint32_t pd_idx = PDE_INDEX(vaddr);
-     uint32_t pt_idx = PTE_INDEX(vaddr);
- 
-     // Access kernel PD via virtual address
-     uint32_t pde = g_kernel_page_directory_virt[pd_idx];
- 
-     // If PDE not present or is a 4MB page, we can't unmap a 4KB page via PTE
-     if (!(pde & PAGE_PRESENT)) {
-         // terminal_printf("[KUnmapUnsafe] PDE not present for V=0x%x\n", vaddr);
-         return; // Nothing to unmap at PDE level
-     }
-     if (pde & PAGE_SIZE_4MB) {
-         terminal_printf("[KUnmapUnsafe] Cannot unmap 4KB page within a 4MB PDE V=0x%x\n", vaddr);
-         return; // Cannot unmap a 4k portion of a 4M page this way
-     }
- 
-     // PDE points to a 4KB page table. Access it via recursive mapping.
-     uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
- 
-     // Check if the PTE is actually present before clearing
-     if (pt_virt[pt_idx] & PAGE_PRESENT) {
-         pt_virt[pt_idx] = 0; // Clear the PTE
-         paging_invalidate_page((void*)vaddr); // Invalidate the TLB for the virtual address
-     } else {
-         // terminal_printf("[KUnmapUnsafe] PTE not present for V=0x%x\n", vaddr);
-     }
- 
-     // NOTE: This function does NOT free the frame the PTE pointed to,
-     // nor does it check if the page table becomes empty and can be freed.
-     // It's a low-level "zap PTE" function.
- }
  
  // --- Early Memory Allocation ---
  // Marked static as it's an internal early boot helper
@@ -854,9 +807,9 @@
         if (pde & PAGE_PRESENT) {
             // *** CORRECTED PRINTF ***
             terminal_printf(" PDE[%4u] (V~0x%08x): 0x%08x (P=%d RW=%d US=%d PS=%d",
-                            idx,
-                            va,
-                            pde,
+                (unsigned int)idx,              // Keep %u for index (usually fits int)
+                (unsigned long)va,              // Use %lx for address
+                (unsigned long)pde,             // Use %lx for PDE value
                             (pde & PAGE_PRESENT) ? 1 : 0,  // Print 1 or 0
                             (pde & PAGE_RW) ? 1 : 0,       // Print 1 or 0
                             (pde & PAGE_USER) ? 1 : 0,      // Print 1 or 0
@@ -871,9 +824,9 @@
             //                 (pde & PAGE_NX_BIT) ? 1 : 0); // Note: NX bit only meaningful in PTE
    
             if (pde & PAGE_SIZE_4MB) {
-                 terminal_printf(" Frame=0x%x)\n", pde & PAGING_PDE_ADDR_MASK_4MB);
+                terminal_printf(" Frame=0x%lx)\n", (unsigned long)(pde & PAGING_PDE_ADDR_MASK_4MB));
             } else {
-                 terminal_printf(" PT=0x%x)\n", pde & PAGING_PDE_ADDR_MASK_4KB);
+                terminal_printf(" PT=0x%lx)\n", (unsigned long)(pde & PAGING_PDE_ADDR_MASK_4KB));
             }
         } else {
             // Optionally print non-present entries too
@@ -904,11 +857,13 @@
      uint32_t recursive_pde_flags = PAGE_PRESENT | PAGE_RW| PAGE_NX_BIT; // Kernel RW access
      pd_phys_ptr[RECURSIVE_PDE_INDEX] = (page_directory_phys & ~0xFFF) | recursive_pde_flags;
  
-     terminal_printf("  Set recursive PDE[%d] to point to PD Phys=0x%x (Value=0x%x)\n",
-                     RECURSIVE_PDE_INDEX, page_directory_phys, pd_phys_ptr[RECURSIVE_PDE_INDEX]);
+     terminal_printf("  Set recursive PDE[%u] to point to PD Phys=0x%lx (Value=0x%lx)\n", // Use %u, %lx, %lx
+        (unsigned int)RECURSIVE_PDE_INDEX, 
+        (unsigned long)page_directory_phys, 
+        (unsigned long)pd_phys_ptr[RECURSIVE_PDE_INDEX]);
  
      // *** DEBUG: Print key PDE entries right before activation ***
-     terminal_printf("  PD Entries Before Activation (Accessed via Phys Addr: 0x%x):\n", page_directory_phys);
+     terminal_printf("  PD Entries Before Activation (Accessed via Phys Addr: 0x%lx):\n", (unsigned long)page_directory_phys); 
      debug_print_pd_entries((uint32_t*)pd_phys_ptr, 0x0, 4); // First few entries (identity map)
      debug_print_pd_entries((uint32_t*)pd_phys_ptr, KERNEL_SPACE_VIRT_START, 4); // Kernel map start
      debug_print_pd_entries((uint32_t*)pd_phys_ptr, RECURSIVE_PDE_VADDR, 1); // Recursive entry itself
@@ -936,8 +891,8 @@
  
      uintptr_t kernel_pd_virt_addr = RECURSIVE_PD_VADDR; // e.g., 0xFFFFF000
  
-     terminal_printf("  Setting global pointers: PD Virt=0x%x, PD Phys=0x%x\n",
-                     kernel_pd_virt_addr, page_directory_phys);
+     terminal_printf("  Setting global pointers: PD Virt=%p, PD Phys=0x%lx\n", 
+        (void*)kernel_pd_virt_addr, (unsigned long)page_directory_phys);
  
      // Set global pointers now that we can access the PD virtually
      g_kernel_page_directory_phys = page_directory_phys;
@@ -947,9 +902,10 @@
      // Read the recursive PDE entry using the *virtual* address of the PD to verify access.
      terminal_printf("  Verifying recursive mapping via virtual access...\n");
      volatile uint32_t recursive_value_read_virt = g_kernel_page_directory_virt[RECURSIVE_PDE_INDEX];
-     terminal_printf("  Recursive PDE[%d] read via *Virt* Addr 0x%x gives value: 0x%x\n",
-                     RECURSIVE_PDE_INDEX, (uintptr_t)&g_kernel_page_directory_virt[RECURSIVE_PDE_INDEX],
-                     recursive_value_read_virt);
+     terminal_printf("  Recursive PDE[%u] read via *Virt* Addr %p gives value: 0x%lx\n", // Use %u, %p, %lx
+        (unsigned int)RECURSIVE_PDE_INDEX, 
+        (void*)&g_kernel_page_directory_virt[RECURSIVE_PDE_INDEX],
+        (unsigned long)recursive_value_read_virt);
  
      // Compare the physical address part of the read value with the known physical address
      uint32_t actual_phys_in_pte = recursive_value_read_virt & ~0xFFF;
@@ -957,15 +913,15 @@
  
      if (actual_phys_in_pte != expected_phys) {
          terminal_printf("  ERROR: Recursive PDE verification failed!\n");
-         terminal_printf("    Expected PD Phys: 0x%x\n", expected_phys);
-         terminal_printf("    Physical Addr in PDE read virtually: 0x%x\n", actual_phys_in_pte);
+         terminal_printf("    Expected PD Phys: 0x%lx\n", (unsigned long)expected_phys);
+terminal_printf("    Physical Addr in PDE read virtually: 0x%lx\n", (unsigned long)actual_phys_in_pte);
          PAGING_PANIC("Failed to verify recursive mapping post-activation!");
      } else {
          terminal_printf("  Recursive mapping verified successfully.\n");
      }
  
      // *** DEBUG: Print key PDE entries AFTER activation using VIRTUAL address ***
-      terminal_printf("  PD Entries After Activation (Accessed via Virt Addr: 0x%x):\n", kernel_pd_virt_addr);
+     terminal_printf("  PD Entries After Activation (Accessed via Virt Addr: %p):\n", (void*)kernel_pd_virt_addr);
       debug_print_pd_entries(g_kernel_page_directory_virt, 0x0, 4); // First few entries
       debug_print_pd_entries(g_kernel_page_directory_virt, KERNEL_SPACE_VIRT_START, 4); // Kernel start
       debug_print_pd_entries(g_kernel_page_directory_virt, RECURSIVE_PDE_VADDR, 1); // Recursive entry
@@ -1728,142 +1684,334 @@ cleanup_clone_err:
  
  
  // --- Page Fault Handler ---
- 
- // Made non-static: Needs to be registered as the interrupt handler for #PF (IRQ 14).
  void page_fault_handler(registers_t *regs) {
-     uintptr_t fault_addr;
-     asm volatile("mov %%cr2, %0" : "=r"(fault_addr)); // Get faulting address from CR2
-     uint32_t error_code = regs->err_code; // Error code pushed by CPU
- 
-     // Decode error code bits
-     bool present      = (error_code & 0x1);  // 0: Non-present page; 1: Access rights violation
-     bool write        = (error_code & 0x2);  // 0: Read access; 1: Write access
-     bool user         = (error_code & 0x4);  // 0: Supervisor access; 1: User access
-     bool reserved_bit = (error_code & 0x8);  // 1: Reserved bit set in page entry
-     bool instruction_fetch = (error_code & 0x10); // 1: Fault caused by instruction fetch (requires NX check)
- 
-     pcb_t* current_process = get_current_process(); // Assumes scheduler provides this
-     uint32_t current_pid = current_process ? current_process->pid : (uint32_t)-1; // Get PID or -1 if no process
- 
-     terminal_printf("\n--- PAGE FAULT (#PF) ---\n");
-     terminal_printf(" PID: %d, Addr: 0x%x, ErrCode: 0x%x\n", current_pid, fault_addr, error_code);
-     terminal_printf(" Details: %s, %s, %s, %s, %s\n",
-                     present ? "Present" : "Not-Present",
-                     write ? "Write" : "Read",
-                     user ? "User" : "Supervisor",
-                     reserved_bit ? "Reserved-Bit-Set" : "Reserved-OK",
-                     instruction_fetch ? (g_nx_supported ? "Instruction-Fetch(NX?)" : "Instruction-Fetch") : "Data-Access");
-     terminal_printf(" CPU State: EIP=0x%x, CS=0x%x, EFLAGS=0x%x\n", regs->eip, regs->cs, regs->eflags);
-     if (user) {
-          terminal_printf("            ESP=0x%x, SS=0x%x\n", regs->user_esp, regs->user_ss);
-     }
- 
- 
-     // --- Kernel (Supervisor) Fault ---
-     if (!user) {
-         terminal_printf(" Reason: Fault occurred in Supervisor Mode!\n");
-         terminal_printf(" EAX=0x%x EBX=0x%x ECX=0x%x EDX=0x%x\n", regs->eax, regs->ebx, regs->ecx, regs->edx);
-         terminal_printf(" ESI=0x%x EDI=0x%x EBP=0x%x ESP=0x%x\n", regs->esi, regs->edi, regs->ebp, regs->esp_dummy);
-         // Kernel faults are usually unrecoverable bugs.
-         PAGING_PANIC("Irrecoverable Supervisor Page Fault");
-     }
- 
-     // --- User Mode Fault ---
-     terminal_printf(" Reason: Fault occurred in User Mode.\n");
+    uintptr_t fault_addr;
+    asm volatile("mov %%cr2, %0" : "=r"(fault_addr)); // Get faulting address from CR2
 
-     // *** ADD THIS CHECK ***
-     if (!current_process || !current_process->mm) {
-         terminal_printf("  Error: No current process or mm_struct available for user fault! Addr=0x%x\n", fault_addr);
-         PAGING_PANIC("User Page Fault without process context!"); // Halt directly
-     }
-     mm_struct_t *mm = current_process->mm;
-     if (!mm->pgd_phys) {
-          terminal_printf("  Error: Current process mm_struct has no page directory!\n");
-          goto kill_process;
-     }
- 
-     // Check for specific fatal error conditions first
-     if (reserved_bit) {
-         terminal_printf("  Error: Reserved bit set in page table entry. Corrupted mapping?\n");
+    // Ensure regs pointer is valid before accessing it
+    if (!regs) {
+        // Cannot safely proceed or log registers if regs is NULL
+        terminal_printf("\n--- PAGE FAULT (#PF) --- \n");
+        terminal_printf(" FATAL ERROR: regs pointer is NULL in page_fault_handler!\n");
+        PAGING_PANIC("Page Fault with NULL registers structure");
+        return; 
+    }
+
+    uint32_t error_code = regs->err_code; // Error code pushed by CPU
+
+    // Decode error code bits
+    bool present         = (error_code & 0x1);  // Bit 0
+bool write           = (error_code & 0x2);  // Bit 1
+bool user            = (error_code & 0x4);  // Bit 2
+bool reserved_bit    = (error_code & 0x8);  // Bit 3 
+bool instruction_fetch = (error_code & 0x10); // Bit 4 
+    // Get current process safely
+    pcb_t* current_process = get_current_process(); // Assumes this can return NULL
+    uint32_t current_pid = current_process ? current_process->pid : (uint32_t)-1; // Use -1 or 0 for "no process"
+
+    // --- Start logging fault details ---
+    terminal_printf("\n--- PAGE FAULT (#PF) ---\n");
+    // Use %u for PID (unsigned 32-bit), %p for address, %x for error code (hex)
+    terminal_printf(" PID: %u, Addr: %p, ErrCode: 0x%x\n", 
+                    (unsigned int)current_pid, 
+                    (void*)fault_addr, 
+                    (unsigned int)error_code); 
+    terminal_printf(" Details: %s, %s, %s, %s, %s\n",
+                    present ? "Present" : "Not-Present",
+                    write ? "Write" : "Read",
+                    user ? "User" : "Supervisor",
+                    reserved_bit ? "Reserved-Bit-Set" : "Reserved-OK",
+                    instruction_fetch ? (g_nx_supported ? "Instruction-Fetch(NX?)" : "Instruction-Fetch") : "Data-Access");
+    
+    // Log CPU state using %p for pointers/addresses, %x for segments/flags/registers
+    terminal_printf(" CPU State: EIP=%p, CS=0x%x, EFLAGS=0x%x\n", 
+                    (void*)regs->eip, 
+                    (unsigned int)regs->cs, 
+                    (unsigned int)regs->eflags);
+    terminal_printf(" EAX=0x%x EBX=0x%x ECX=0x%x EDX=0x%x\n", 
+                    (unsigned int)regs->eax, (unsigned int)regs->ebx, 
+                    (unsigned int)regs->ecx, (unsigned int)regs->edx);
+    terminal_printf(" ESI=0x%x EDI=0x%x EBP=0x%x K_ESP=0x%x\n", // Print Kernel ESP (esp_dummy)
+                    (unsigned int)regs->esi, (unsigned int)regs->edi, 
+                    (unsigned int)regs->ebp, (unsigned int)regs->esp_dummy);
+
+    // Log User ESP and SS only if the fault happened in User mode (makes sense)
+    if (user) {
+         terminal_printf("            U_ESP=0x%x, U_SS=0x%x\n", (unsigned int)regs->user_esp, (unsigned int)regs->user_ss);
+    }
+    // --- End logging fault details ---
+
+
+    // --- Kernel (Supervisor) Fault ---
+    if (!user) {
+        terminal_printf(" Reason: Fault occurred in Supervisor Mode!\n");
+        
+        // Additional context for kernel faults
+        if (reserved_bit) {
+            terminal_printf(" CRITICAL: Reserved bit set in paging structure accessed by kernel at VAddr %p!\n", (void*)fault_addr);
+        }
+        if (!present) {
+             terminal_printf(" CRITICAL: Kernel attempted to access non-present page at VAddr %p!\n", (void*)fault_addr);
+        } else if (write) {
+             terminal_printf(" CRITICAL: Kernel write attempt caused protection fault at VAddr %p!\n", (void*)fault_addr);
+        }
+        
+        // Kernel faults are usually unrecoverable bugs
+        PAGING_PANIC("Irrecoverable Supervisor Page Fault");
+        return; // Should not reach here
+    }
+
+    // --- User Mode Fault ---
+    terminal_printf(" Reason: Fault occurred in User Mode.\n");
+
+    // Check if we have a valid process context RIGHT NOW
+    if (!current_process) {
+        terminal_printf("  Error: No current process available for user fault! Addr=%p\n", (void*)fault_addr);
+        PAGING_PANIC("User Page Fault without process context!"); // Halt directly if state is inconsistent
+        return; 
+    }
+    
+    // Check for valid mm_struct within the process
+    if (!current_process->mm) {
+        terminal_printf("  Error: Current process (PID %u) has no mm_struct! Addr=%p\n", 
+                       (unsigned int)current_pid, (void*)fault_addr);
+        goto kill_process; // Cannot handle fault without memory context
+    }
+    
+    mm_struct_t *mm = current_process->mm;
+    if (!mm->pgd_phys) {
+        terminal_printf("  Error: Current process mm_struct has no page directory (pgd_phys is NULL)!\n");
+        goto kill_process; // Cannot handle fault without page directory
+    }
+
+    // --- Check for specific fatal error conditions first ---
+    if (reserved_bit) {
+        terminal_printf("  Error: Reserved bit set in user-accessed page table entry. Corrupted mapping? Terminating.\n");
+        goto kill_process;
+    }
+
+    // Check for No-Execute (NX) violation if supported and it was an instruction fetch
+    if (g_nx_supported && instruction_fetch) {
+        terminal_printf("  Error: Instruction fetch from a No-Execute page (NX violation) at Addr=%p. Terminating.\n", (void*)fault_addr);
+        goto kill_process;
+    }
+
+    // --- Consult Virtual Memory Areas (VMAs) ---
+    terminal_printf("  Searching for VMA covering faulting address %p...\n", (void*)fault_addr);
+    vma_struct_t *vma = find_vma(mm, fault_addr); // Find VMA covering the fault address
+
+    if (!vma) {
+        terminal_printf("  Error: No VMA covers the faulting address %p. Segmentation Fault.\n", 
+                       (void*)fault_addr);
+        goto kill_process; // Address is outside any valid allocated region for this process
+    }
+
+    // VMA found, log details and check permissions against the fault type
+    terminal_printf("  VMA Found: [0x%lx - 0x%lx) Flags: %c%c%c PageProt: 0x%x\n",
+                    (unsigned long)vma->vm_start, (unsigned long)vma->vm_end,
+                    (vma->vm_flags & VM_READ) ? 'R' : '-',
+                    (vma->vm_flags & VM_WRITE) ? 'W' : '-',
+                    (vma->vm_flags & VM_EXEC) ? 'X' : '-',
+                    (unsigned int)vma->page_prot); // Log page protection too
+
+    // Check Write Permission
+    if (write && !(vma->vm_flags & VM_WRITE)) {
+        terminal_printf("  Error: Write attempt to VMA without VM_WRITE flag. Segmentation Fault.\n");
+        goto kill_process;
+    }
+    // Check Read Permission (relevant if not a write fault OR if instruction fetch)
+    if (!write && !(vma->vm_flags & VM_READ)) {
+         // Instruction fetch always requires read permission
+         terminal_printf("  Error: Read/Execute attempt from VMA without VM_READ flag. Segmentation Fault.\n");
+         goto kill_process;
+    }
+     // Check Execute Permission (relevant if instruction fetch, ignore if NX already handled)
+     if (!g_nx_supported && instruction_fetch && !(vma->vm_flags & VM_EXEC)) {
+         terminal_printf("  Error: Instruction fetch from VMA without VM_EXEC flag (NX not supported). Segmentation Fault.\n");
          goto kill_process;
      }
- 
-     // Check for No-Execute (NX) violation if supported and it was an instruction fetch
-     if (g_nx_supported && instruction_fetch) {
-         terminal_printf("  Error: Instruction fetch from a No-Execute page (NX violation).\n");
-         // Could potentially check VMA flags here too, but NX bit itself is definitive HW signal.
-         goto kill_process;
-     }
- 
-     // --- Consult Virtual Memory Areas (VMAs) ---
-     vma_struct_t *vma = find_vma(mm, fault_addr); // Find VMA covering the fault address
- 
-     if (!vma) {
-         terminal_printf("  Error: No VMA covers the faulting address 0x%x. Segmentation Fault.\n", fault_addr);
-         goto kill_process; // Address is outside any valid allocated region for this process
-     }
- 
-     // VMA found, check permissions against the fault type
-     terminal_printf("  VMA Found: [0x%x - 0x%x) Flags: %c%c%c\n",
-                     vma->vm_start, vma->vm_end,
-                     (vma->vm_flags & VM_READ) ? 'R' : '-',
-                     (vma->vm_flags & VM_WRITE) ? 'W' : '-',
-                     (vma->vm_flags & VM_EXEC) ? 'X' : '-');
- 
-     // Check Write Permission
-     if (write && !(vma->vm_flags & VM_WRITE)) {
-         terminal_printf("  Error: Write attempt to non-writable VMA. Segmentation Fault.\n");
-         goto kill_process;
-     }
-     // Check Read Permission (relevant if not a write fault)
-     // Note: Instruction fetch implies a read is also needed.
-     if (!write && !(vma->vm_flags & VM_READ)) {
-          terminal_printf("  Error: Read attempt (or exec) from non-readable VMA. Segmentation Fault.\n");
-          goto kill_process;
-     }
-      // Check Execute Permission (relevant if instruction fetch, ignore if NX already handled)
-      if (!g_nx_supported && instruction_fetch && !(vma->vm_flags & VM_EXEC)) {
-          terminal_printf("  Error: Instruction fetch from non-executable VMA. Segmentation Fault.\n");
-          goto kill_process;
-      }
- 
- 
-     // --- Handle the Fault (Demand Paging / Copy-on-Write) ---
-     // If we got here:
-     // - It's a user fault.
-     // - Address is within a valid VMA.
-     // - Basic VMA permissions match the fault type (R/W/X).
-     // This implies either:
-     //   a) Page Not Present: Need to allocate a frame and map it (Demand Paging).
-     //   b) Write to Read-Only Page: Need to handle Copy-on-Write (COW).
- 
-     // Call a VMA-specific fault handler function (if implemented in mm.c/vma.c)
-     // This function encapsulates demand paging and COW logic.
-     int handle_result = handle_vma_fault(mm, vma, fault_addr, error_code);
- 
-     if (handle_result == 0) {
-         // Fault was successfully handled (e.g., page allocated and mapped, COW completed)
-         terminal_printf("  Fault Handled by VMA Ops. Resuming process.\n");
-         terminal_printf("--------------------------\n");
-         return; // Return from interrupt, CPU will re-run the faulting instruction
-     } else {
-         // VMA handler failed (e.g., out of memory, other error)
-         terminal_printf("  Error: handle_vma_fault failed with code %d.\n", handle_result);
-         goto kill_process;
-     }
- 
- 
- kill_process:
-     // Unhandled or fatal fault - terminate the process
-     terminal_printf("--- Unhandled User Page Fault ---\n");
-     terminal_printf(" Terminating Process PID %u.\n", current_pid);
-     terminal_printf("--------------------------\n");
-     // Use scheduler function to terminate the current task
-     remove_current_task_with_code(0xDEAD000E); // Use a specific exit code for page fault termination
- 
-     // Should not return from remove_current_task, but if it does, panic.
-     PAGING_PANIC("remove_current_task returned after page fault kill!");
- }
+
+
+    // --- Handle the Fault (Demand Paging / Copy-on-Write) ---
+    // If we got here: VMA exists, basic permissions align with fault type.
+    // The fault likely means page isn't present OR it's a COW situation.
+    terminal_printf("  Attempting to handle fault via VMA operations (Demand Paging / COW)...\n");
+
+    // Call the function responsible for handling faults within a VMA
+    // This function should implement demand paging (allocating/mapping pages)
+    // and Copy-on-Write logic.
+    int handle_result = handle_vma_fault(mm, vma, fault_addr, error_code);
+
+    if (handle_result == 0) {
+        // Fault was successfully handled by the VMA logic
+        terminal_printf("  VMA fault handler succeeded. Resuming process PID %u.\n", (unsigned int)current_pid);
+        terminal_printf("--------------------------\n");
+        return; // Return from interrupt, CPU will re-run the faulting instruction
+    } else {
+        // VMA handler failed (e.g., out of memory, protection error during COW)
+        terminal_printf("  Error: handle_vma_fault failed with code %d. Terminating process.\n", handle_result);
+        goto kill_process;
+    }
+
+
+kill_process:
+    // Unhandled or fatal fault - terminate the process
+    terminal_printf("--- Unhandled User Page Fault ---\n");
+    terminal_printf(" Terminating Process PID %u.\n", (unsigned int)current_pid);
+    terminal_printf("--------------------------\n");
+    
+    // Ensure we don't try to terminate a NULL process (should be caught earlier, but defensive check)
+    if (current_process) {
+        // Use scheduler function to terminate the current task
+        remove_current_task_with_code(0xDEAD000E); // Use a specific exit code for page fault termination
+    } else {
+        // This case should ideally be impossible if the initial check passed, but handle defensively
+        PAGING_PANIC("Page fault kill attempt with no valid process context!");
+    }
+    
+    // Should not return from remove_current_task, but if it does, panic.
+    PAGING_PANIC("remove_current_task returned after page fault kill!");
+}
+
+/**
+ * kernel_unmap_virtual_unsafe - Improved version with better validation
+ * This function unmaps a virtual address in the kernel's address space
+ */
+ static void kernel_unmap_virtual_unsafe(uintptr_t vaddr) {
+    // Basic checks before attempting unmapping
+    if (!g_kernel_page_directory_virt) {
+        terminal_printf("[KUnmapUnsafe] Error: Kernel PD Virt not set!\n");
+        return;
+    }
+    
+    if (vaddr % PAGE_SIZE != 0) {
+        terminal_printf("[KUnmapUnsafe] Error: VAddr 0x%lx not page aligned.\n", (unsigned long)vaddr);
+        return;
+    }
+
+    // Get PDE/PTE indices
+    uint32_t pd_idx = PDE_INDEX(vaddr);
+    uint32_t pt_idx = PTE_INDEX(vaddr);
+    
+    // Validate indices against bounds
+    if (pd_idx >= TABLES_PER_DIR) {
+        terminal_printf("[KUnmapUnsafe] Error: Invalid PDE index %lu for vaddr 0x%lx\n", 
+                       (unsigned long)pd_idx, (unsigned long)vaddr);
+        return;
+    }
+
+    // Get PDE
+    uint32_t pde = g_kernel_page_directory_virt[pd_idx];
+
+    // Check if PDE is present
+    if (!(pde & PAGE_PRESENT)) {
+        // Already not mapped at PDE level
+        return;
+    }
+    
+    // Check if it's a 4MB page
+    if (pde & PAGE_SIZE_4MB) {
+        terminal_printf("[KUnmapUnsafe] Cannot unmap 4KB page within a 4MB PDE V=0x%lx\n", 
+                       (unsigned long)vaddr);
+        return;
+    }
+
+    // Get physical address of the page table
+    uintptr_t pt_phys = pde & PAGING_PDE_ADDR_MASK_4KB;
+    
+    // Validate PT physical address
+    if (pt_phys == 0 || (pt_phys & ~PAGING_PDE_ADDR_MASK_4KB)) {
+        terminal_printf("[KUnmapUnsafe] Error: Invalid PT physical address 0x%lx from PDE[%lu]\n", 
+                       (unsigned long)pt_phys, (unsigned long)pd_idx);
+        return;
+    }
+
+    // Get virtual address of the page table using recursive mapping
+    uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
+    
+    // Validate PT virtual address
+    if (!pt_virt || (uintptr_t)pt_virt < RECURSIVE_PDE_VADDR || 
+        (uintptr_t)pt_virt >= (RECURSIVE_PDE_VADDR + (TABLES_PER_DIR * PAGE_SIZE))) {
+        terminal_printf("[KUnmapUnsafe] Error: Invalid PT virtual address 0x%lx for PDE[%lu]\n", 
+                       (unsigned long)pt_virt, (unsigned long)pd_idx);
+        return;
+    }
+    
+    // Validate PTE index
+    if (pt_idx >= PAGES_PER_TABLE) {
+        terminal_printf("[KUnmapUnsafe] Error: Invalid PTE index %lu for vaddr 0x%lx\n", 
+                       (unsigned long)pt_idx, (unsigned long)vaddr);
+        return;
+    }
+
+    // Check if PTE is present before clearing
+    if (pt_virt[pt_idx] & PAGE_PRESENT) {
+        // Check for reserved bits in PTE
+        if (pt_virt[pt_idx] & ~(PAGING_PTE_ADDR_MASK | PAGING_FLAG_MASK)) {
+            terminal_printf("[KUnmapUnsafe] Warning: PTE[%lu] at 0x%lx has reserved bits set: 0x%lx\n", 
+                           (unsigned long)pt_idx, (unsigned long)vaddr, (unsigned long)pt_virt[pt_idx]);
+        }
+        
+        // Clear the PTE
+        pt_virt[pt_idx] = 0;
+        
+        // Invalidate TLB entry
+        paging_invalidate_page((void*)vaddr);
+        
+        // Check if the page table is now empty
+        bool is_pt_empty = true;
+        for (size_t i = 0; i < PAGES_PER_TABLE; i++) {
+            if (pt_virt[i] != 0) {
+                is_pt_empty = false;
+                break;
+            }
+        }
+        
+        // If the page table is empty, free it
+        if (is_pt_empty) {
+            terminal_printf("[KUnmapUnsafe] PT at Phys 0x%lx (PDE[%lu]) became empty after unmapping 0x%lx. Freeing PT.\n", 
+                           (unsigned long)pt_phys, (unsigned long)pd_idx, (unsigned long)vaddr);
+            
+            // Clear the PDE
+            g_kernel_page_directory_virt[pd_idx] = 0;
+            
+            // Invalidate TLB again after PDE change
+            paging_invalidate_page((void*)vaddr);
+            
+            // Free the page table frame
+            put_frame(pt_phys);
+        }
+    }
+}
+
+
+/**
+ * is_page_table_empty - Improved function to check if a page table is empty
+ * Adds validation and safety checks
+ */
+ static bool is_page_table_empty(uint32_t *pt_virt) {
+    // Validate the PT pointer
+    if (!pt_virt) {
+        terminal_printf("[PT Check] Warning: NULL page table pointer provided\n");
+        return true; // Treat NULL PT as empty
+    }
+    
+    // Additional validation for PT address
+    if ((uintptr_t)pt_virt < KERNEL_SPACE_VIRT_START && 
+        (uintptr_t)pt_virt < RECURSIVE_PDE_VADDR) {
+        terminal_printf("[PT Check] Warning: PT virtual address 0x%lx outside expected ranges\n", 
+                       (unsigned long)pt_virt);
+    }
+    
+    // Check all entries
+    for (size_t i = 0; i < PAGES_PER_TABLE; ++i) {
+        if (pt_virt[i] != 0) {
+            return false; // Found an entry, not empty
+        }
+    }
+    
+    return true; // All entries are zero, PT is empty
+}
  
  
  // --- TLB Flushing ---
@@ -1921,15 +2069,6 @@ cleanup_clone_err:
     return map_page_internal(page_directory_phys, vaddr, paddr, flags, false);
 }
 
-static bool is_page_table_empty(uint32_t *pt_virt) {
-    if (!pt_virt) return true; // Or handle as error? Assume null means empty/invalid.
-    for (size_t i = 0; i < PAGES_PER_TABLE; ++i) {
-        if (pt_virt[i] != 0) { // Check if any entry is non-zero (could be present or just flags)
-            return false;
-        }
-    }
-    return true;
-}
 /**
  * @brief Unmaps a range of virtual addresses.
  * Frees associated physical frames using the Frame Allocator (`put_frame`).
@@ -1939,15 +2078,25 @@ static bool is_page_table_empty(uint32_t *pt_virt) {
  * @param memsz Size of the range to unmap.
  * @return 0 on success, negative error code on failure.
  */
- int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr, size_t memsz) {
+ /**
+ * @brief Unmaps a range of virtual addresses.
+ * Frees associated physical frames using the Frame Allocator (`put_frame`).
+ * Frees page table frames using the Frame Allocator if they become empty.
+ * @param page_directory_phys Physical address of the target page directory.
+ * @param virt_start_addr Start virtual address of the range to unmap.
+ * @param memsz Size of the range to unmap.
+ * @return 0 on success, negative error code on failure.
+ */
+int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr, size_t memsz) {
     if (!page_directory_phys || memsz == 0) {
-        terminal_printf("[Unmap Range] Invalid arguments: PD=0x%x, size=%u\n", (uintptr_t)page_directory_phys, (unsigned int)memsz);
+        terminal_printf("[Unmap Range] Invalid arguments: PD=0x%lx, size=%u\n",
+                        (unsigned long)page_directory_phys, (unsigned int)memsz);
         return -1;
     }
-     if (!g_kernel_page_directory_virt) {
-          terminal_printf("[Unmap Range] Paging not fully active or kernel PD virt invalid.\n");
-          return -1; // Cannot use helpers without paging active
-     }
+    if (!g_kernel_page_directory_virt) {
+        terminal_printf("[Unmap Range] Paging not fully active or kernel PD virt invalid.\n");
+        return -1; // Cannot use helpers without paging active
+    }
 
     // Align start address down, calculate end address, and align end address up.
     uintptr_t v_start = PAGE_ALIGN_DOWN(virt_start_addr);
@@ -1967,8 +2116,8 @@ static bool is_page_table_empty(uint32_t *pt_virt) {
         return 0; // Nothing to unmap
     }
 
-    terminal_printf("[Unmap Range] Request: V=[0x%x - 0x%x) in PD Phys 0x%x\n",
-                    v_start, v_end, (uintptr_t)page_directory_phys);
+    terminal_printf("[Unmap Range] Request: V=[0x%lx - 0x%lx) in PD Phys 0x%lx\n",
+                    (unsigned long)v_start, (unsigned long)v_end, (unsigned long)page_directory_phys);
 
     bool is_current_pd = ((uintptr_t)page_directory_phys == g_kernel_page_directory_phys);
     uint32_t* target_pd_virt = NULL; // Virtual address of target PD (direct or temp)
@@ -1980,7 +2129,7 @@ static bool is_page_table_empty(uint32_t *pt_virt) {
     } else {
         // Map target PD temporarily (writable)
         if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PD_DST, (uintptr_t)page_directory_phys, PTE_KERNEL_DATA_FLAGS) != 0) {
-            terminal_printf("[Unmap Range] Error: Failed to temp map target PD 0x%x\n", (uintptr_t)page_directory_phys);
+            terminal_printf("[Unmap Range] Error: Failed to temp map target PD 0x%lx\n", (unsigned long)page_directory_phys);
             return -1;
         }
         target_pd_virt = (uint32_t*)TEMP_MAP_ADDR_PD_DST;
@@ -1988,16 +2137,28 @@ static bool is_page_table_empty(uint32_t *pt_virt) {
 
     // --- Iterate through pages in the range ---
     for (uintptr_t current_v = v_start; current_v < v_end; current_v += PAGE_SIZE) {
+        // Check for overflow before accessing memory
+        if (current_v < v_start) {
+            terminal_printf("[Unmap Range] Address overflow detected at 0x%lx\n", (unsigned long)current_v);
+            ret = -1;
+            goto cleanup_unmap;
+        }
 
         uint32_t pd_idx = PDE_INDEX(current_v);
+        
+        // Validate PDE index is within bounds
+        if (pd_idx >= TABLES_PER_DIR) {
+            terminal_printf("[Unmap Range] Error: Invalid PDE index %lu for address 0x%lx\n", 
+                           (unsigned long)pd_idx, (unsigned long)current_v);
+            ret = -1;
+            goto cleanup_unmap;
+        }
+        
         uint32_t pde = target_pd_virt[pd_idx];
 
         // --- Check PDE ---
         if (!(pde & PAGE_PRESENT)) {
             // PDE not present, this part of the range is already unmapped (at PDE level)
-            // Advance current_v to the start of the next PDE range if beneficial,
-            // otherwise just continuing the loop is fine.
-            // current_v = (current_v & ~((1 << PAGING_PDE_SHIFT) - 1)) + (1 << PAGING_PDE_SHIFT) - PAGE_SIZE; // Align up to next PDE start, subtract PAGE_SIZE for loop increment
             continue;
         }
 
@@ -2007,45 +2168,77 @@ static bool is_page_table_empty(uint32_t *pt_virt) {
             // is contained within the requested [v_start, v_end) range. Otherwise skip/warn.
             uintptr_t page_4mb_start = PAGE_LARGE_ALIGN_DOWN(current_v);
             uintptr_t page_4mb_end = page_4mb_start + PAGE_SIZE_LARGE;
+            
+            // Check for potential overflow
+            if (page_4mb_end < page_4mb_start) {
+                terminal_printf("[Unmap Range] Error: 4MB page address overflow at 0x%lx\n", 
+                               (unsigned long)page_4mb_start);
+                ret = -1;
+                goto cleanup_unmap;
+            }
 
             if (v_start <= page_4mb_start && v_end >= page_4mb_end) {
                 // The requested range fully covers this 4MB page, so unmap it.
-                terminal_printf("  Unmapping 4MB page at V=0x%x (PDE[%d])\n", page_4mb_start, pd_idx);
+                terminal_printf("  Unmapping 4MB page at V=0x%lx (PDE[%lu])\n", 
+                               (unsigned long)page_4mb_start, (unsigned long)pd_idx);
                 uintptr_t frame_base = pde & PAGING_PDE_ADDR_MASK_4MB;
+                
+                // Validate frame base address (check for reserved bits)
+                if (frame_base & ~PAGING_PDE_ADDR_MASK_4MB) {
+                    terminal_printf("[Unmap Range] Error: Invalid 4MB frame base address 0x%lx (reserved bits set)\n", 
+                                   (unsigned long)frame_base);
+                    ret = -1;
+                    goto cleanup_unmap;
+                }
 
                 // Clear the PDE
                 target_pd_virt[pd_idx] = 0;
 
                 // Invalidate TLB *only if* operating on the current PD
                 if (is_current_pd) {
-                    // Invalidate the entire 4MB range - multiple invlpg might be needed,
-                    // or rely on CR3 reload if that's acceptable. Flushing just the start might not be enough.
-                    // Safest is often a full CR3 reload after major changes, but invlpg loop is targeted.
-                    for(uintptr_t inv_addr = page_4mb_start; inv_addr < page_4mb_end; inv_addr += PAGE_SIZE) {
-                         paging_invalidate_page((void*)inv_addr);
-                         if(inv_addr > UINTPTR_MAX - PAGE_SIZE) break; // Prevent overflow
+                    // Invalidate the entire 4MB range
+                    for (uintptr_t inv_addr = page_4mb_start; inv_addr < page_4mb_end; inv_addr += PAGE_SIZE) {
+                        // Check for overflow in the invalidation loop
+                        if (inv_addr < page_4mb_start) break; // Overflow check
+                        paging_invalidate_page((void*)inv_addr);
                     }
                 }
 
                 // Free all 1024 frames backing the 4MB page
                 for (size_t f = 0; f < PAGES_PER_TABLE; ++f) {
                     uintptr_t frame_addr = frame_base + f * PAGE_SIZE;
-                    if (frame_addr < frame_base) break; // Overflow check
+                    // Better overflow checking
+                    if (frame_addr < frame_base || frame_addr % PAGE_SIZE != 0) {
+                        terminal_printf("[Unmap Range] Warning: Invalid frame address 0x%lx (overflow or misaligned)\n", 
+                                       (unsigned long)frame_addr);
+                        break; // Stop freeing frames on error
+                    }
                     put_frame(frame_addr);
                 }
+                
                 // Advance loop counter past this 4MB page
-                 current_v = page_4mb_end - PAGE_SIZE; // Set current_v so next iteration starts after this 4MB page
+                current_v = page_4mb_end - PAGE_SIZE; // Set current_v so next iteration starts after this 4MB page
             } else {
                 // Requested range only partially overlaps a 4MB page. Don't touch it.
-                terminal_printf("  Warning: Skipping unmap for V=0x%x as it's within a partially covered 4MB page (PDE[%d]).\n", current_v, pd_idx);
-                 // Advance loop counter past this 4MB page
-                 current_v = page_4mb_end - PAGE_SIZE;
+                terminal_printf("  Warning: Skipping unmap for V=0x%lx as it's within a partially covered 4MB page (PDE[%lu]).\n", 
+                               (unsigned long)current_v, (unsigned long)pd_idx);
+                // Advance loop counter past this 4MB page
+                current_v = page_4mb_end - PAGE_SIZE;
             }
             continue; // Move to next iteration
         }
 
         // --- Handle 4KB Page Table ---
         uintptr_t pt_phys = pde & PAGING_PDE_ADDR_MASK_4KB;
+        
+        // Check for valid PT physical address
+        if (pt_phys == 0 || (pt_phys & ~PAGING_PDE_ADDR_MASK_4KB)) {
+            terminal_printf("[Unmap Range] Error: Invalid PT physical address 0x%lx from PDE[%lu]\n", 
+                           (unsigned long)pt_phys, (unsigned long)pd_idx);
+            ret = -1;
+            goto cleanup_unmap;
+        }
+        
         uint32_t* pt_virt = NULL; // Virtual address of the target PT
 
         // --- Access PT ---
@@ -2055,21 +2248,52 @@ static bool is_page_table_empty(uint32_t *pt_virt) {
         } else {
             // Map target PT temporarily (writable)
             if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PT_DST, pt_phys, PTE_KERNEL_DATA_FLAGS) != 0) {
-                terminal_printf("[Unmap Range] Error: Failed to temp map target PT 0x%x for V=0x%x\n", pt_phys, current_v);
-                ret = -1; // Mark error
-                // Should we continue or abort? Abort is safer.
+                terminal_printf("[Unmap Range] Error: Failed to temp map target PT 0x%lx for V=0x%lx\n", 
+                               (unsigned long)pt_phys, (unsigned long)current_v);
+                ret = -1;
                 goto cleanup_unmap;
             }
             pt_virt = (uint32_t*)TEMP_MAP_ADDR_PT_DST;
         }
+        
+        // Validate pt_virt pointer before using
+        if (!pt_virt) {
+            terminal_printf("[Unmap Range] Error: NULL PT virtual address for PDE[%lu]\n", 
+                           (unsigned long)pd_idx);
+            ret = -1;
+            goto cleanup_unmap;
+        }
 
         // --- Access PTE ---
         uint32_t pt_idx = PTE_INDEX(current_v);
+        
+        // Validate PTE index is within bounds
+        if (pt_idx >= PAGES_PER_TABLE) {
+            terminal_printf("[Unmap Range] Error: Invalid PTE index %lu for address 0x%lx\n", 
+                           (unsigned long)pt_idx, (unsigned long)current_v);
+            if (!is_current_pd) {
+                kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_DST);
+            }
+            ret = -1;
+            goto cleanup_unmap;
+        }
+        
         uint32_t pte = pt_virt[pt_idx];
 
         // --- Check and Unmap PTE ---
         if (pte & PAGE_PRESENT) {
             uintptr_t frame_phys = pte & PAGING_PTE_ADDR_MASK;
+            
+            // Validate frame physical address (check for reserved bits)
+            if (frame_phys & ~PAGING_PTE_ADDR_MASK) {
+                terminal_printf("[Unmap Range] Error: Invalid frame address 0x%lx from PTE[%lu] (reserved bits set)\n", 
+                               (unsigned long)frame_phys, (unsigned long)pt_idx);
+                if (!is_current_pd) {
+                    kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_DST);
+                }
+                ret = -1;
+                goto cleanup_unmap;
+            }
 
             // Clear the PTE
             pt_virt[pt_idx] = 0;
@@ -2082,24 +2306,41 @@ static bool is_page_table_empty(uint32_t *pt_virt) {
             // Free the physical frame
             put_frame(frame_phys);
 
-            // --- Check if Page Table is now Empty ---
+            // --- Safely Check if Page Table is now Empty ---
             if (is_page_table_empty(pt_virt)) {
-                 terminal_printf("  PT at Phys 0x%x (PDE[%d]) became empty. Freeing PT frame.\n", pt_phys, pd_idx);
+                terminal_printf("  PT at Phys 0x%lx (PDE[%u]) became empty. Freeing PT frame.\n", 
+                                (unsigned long)pt_phys, (unsigned int)pd_idx);
+   
+                // Clear the PDE pointing to this now-empty PT
+                target_pd_virt[pd_idx] = 0;
+   
+                // Invalidate TLB for this VAddr again (or range covered by PDE) if current PD
+                if (is_current_pd) {
+                    paging_invalidate_page((void*)current_v); // Invalidate again after PDE change
+                }
+   
+                // Free the frame that held the Page Table itself
+                put_frame(pt_phys);
+   
+                // Optimization: Since the PT is gone, we can potentially advance current_v
+                // to the start of the next PDE's range. However, the simple loop
+                // increment will also work correctly. Let's keep it simple for now.
+           }
+            
+            if (is_pt_empty) {
+                terminal_printf("  PT at Phys 0x%lx (PDE[%lu]) became empty. Freeing PT frame.\n", 
+                               (unsigned long)pt_phys, (unsigned long)pd_idx);
 
-                 // Clear the PDE pointing to this now-empty PT
-                 target_pd_virt[pd_idx] = 0;
+                // Clear the PDE pointing to this now-empty PT
+                target_pd_virt[pd_idx] = 0;
 
-                 // Invalidate TLB for this VAddr again (or range covered by PDE) if current PD
-                 if (is_current_pd) {
-                     paging_invalidate_page((void*)current_v); // Invalidate again after PDE change
-                 }
+                // Invalidate TLB for this VAddr again (or range covered by PDE) if current PD
+                if (is_current_pd) {
+                    paging_invalidate_page((void*)current_v); // Invalidate again after PDE change
+                }
 
-                 // Free the frame that held the Page Table itself
-                 put_frame(pt_phys);
-
-                 // Optimization: Since the PT is gone, we can potentially advance current_v
-                 // to the start of the next PDE's range. However, the simple loop
-                 // increment will also work correctly. Let's keep it simple.
+                // Free the frame that held the Page Table itself
+                put_frame(pt_phys);
             }
         } // End if PTE present
 
@@ -2108,7 +2349,7 @@ static bool is_page_table_empty(uint32_t *pt_virt) {
             kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_DST);
         }
 
-        // Check for overflow before loop increment (unlikely here, but good practice)
+        // Check for overflow before loop increment
         if (current_v > UINTPTR_MAX - PAGE_SIZE) {
             break;
         }
@@ -2117,11 +2358,12 @@ static bool is_page_table_empty(uint32_t *pt_virt) {
 
 cleanup_unmap:
     // --- Cleanup PD Temp Map ---
-    if (!is_current_pd) {
+    if (!is_current_pd && target_pd_virt) {
         kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PD_DST);
     }
 
-    terminal_printf("[Unmap Range] Completed for V=[0x%x - 0x%x).\n", v_start, v_end);
+    terminal_printf("[Unmap Range] Completed for V=[0x%lx - 0x%lx).\n", 
+                   (unsigned long)v_start, (unsigned long)v_end);
     return ret;
 }
 

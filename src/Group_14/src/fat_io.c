@@ -21,6 +21,8 @@
  #include <libc/limits.h> // For LONG_MAX, LONG_MIN, SIZE_MAX
  
  /* --- Cluster I/O Helpers --- */
+
+ #define FAT_DEBUG_LOG(fmt, ...) terminal_printf("[FAT DEBUG] " fmt "\n", ##__VA_ARGS__)
  
  /**
   * @brief Reads a block of data from a cluster using buffer cache.
@@ -33,7 +35,7 @@
      // Corrected: Added message to KERNEL_ASSERT
      KERNEL_ASSERT(fs != NULL && buf != NULL, "FS context and buffer must not be NULL in read_cluster_cached");
      if (cluster < 2) {
-         terminal_printf("[FAT Read Cluster] Error: Attempt to read invalid cluster %u\n", cluster);
+         terminal_printf("[FAT Read Cluster] Error: Attempt to read invalid cluster %lu\n", cluster);
          return -FS_ERR_INVALID_PARAM;
      }
       if (fs->cluster_size_bytes == 0 || fs->bytes_per_sector == 0) {
@@ -520,68 +522,72 @@
  /**
   * @brief Changes the current read/write offset of an opened file.
   */
- off_t fat_lseek_internal(file_t *file, off_t offset, int whence)
- {
+  off_t fat_lseek_internal(file_t *file, off_t offset, int whence)
+  {
       if (!file || !file->vnode || !file->vnode->data) {
-         return (off_t)-1; // Or set errno to EBADF
-     }
-     fat_file_context_t *fctx = (fat_file_context_t*)file->vnode->data;
-     // Corrected: Added message to KERNEL_ASSERT
-     KERNEL_ASSERT(fctx->fs != NULL, "File context must have a valid FS pointer in fat_lseek_internal");
-     fat_fs_t *fs = fctx->fs;
- 
-     off_t new_offset;
- 
-     // Lock required to read file_size consistently
-     uintptr_t irq_flags = spinlock_acquire_irqsave(&fs->lock);
-     uint32_t file_size = fctx->file_size; // Read size while lock is held
-     off_t current_offset = file->offset; // Read current offset
-     spinlock_release_irqrestore(&fs->lock, irq_flags);
- 
-     // Calculate the new offset based on whence
-     switch (whence) {
-     case SEEK_SET:
-         new_offset = offset;
-         break;
-     case SEEK_CUR:
-         // Check for potential overflow before adding
-         if ((offset > 0 && current_offset > (off_t)(LONG_MAX - offset)) ||
-             (offset < 0 && current_offset < (off_t)(LONG_MIN - offset))) {
-              // fs_set_errno(-FS_ERR_OVERFLOW);
-              return (off_t)-1;
-         }
-         new_offset = current_offset + offset;
-         break;
-     case SEEK_END:
+          // Return specific error for bad file descriptor/context
+          return (off_t)-FS_ERR_BAD_F;
+      }
+  
+      fat_file_context_t *fctx = (fat_file_context_t*)file->vnode->data;
+      // Assertion remains useful for debugging internal state
+      KERNEL_ASSERT(fctx->fs != NULL, "File context must have a valid FS pointer in fat_lseek_internal");
+      fat_fs_t *fs = fctx->fs;
+  
+      off_t new_offset;
+      uint32_t file_size; // Use local variable for size
+      off_t current_offset; // Use local variable for current offset
+  
+      // Acquire lock *only* to read the potentially shared/volatile state
+      uintptr_t irq_flags = spinlock_acquire_irqsave(&fs->lock);
+      file_size = fctx->file_size;      // Read file size from context
+      current_offset = file->offset;    // Read current file offset
+      spinlock_release_irqrestore(&fs->lock, irq_flags);
+  
+      // --->>> If file_size is read as 0 here, SEEK_END behavior will be based on 0.
+      // --->>> The root cause of the "Empty File" issue likely lies in the code
+      // --->>> that initializes/updates fctx->file_size (e.g., in fat_open/fat_lookup).
+      FAT_DEBUG_LOG("lseek internal: file_size from context = %u, current_offset = %lld", file_size, current_offset);
+  
+      // Calculate the new offset based on whence
+      switch (whence) {
+      case SEEK_SET:
+          new_offset = offset;
+          break;
+      case SEEK_CUR:
           // Check for potential overflow before adding
-          if ((offset > 0 && (off_t)file_size > (off_t)(LONG_MAX - offset)) ||
-              (offset < 0 && (off_t)file_size < (off_t)(LONG_MIN - offset))) {
-               // fs_set_errno(-FS_ERR_OVERFLOW);
-               return (off_t)-1;
+          // Assuming off_t is signed long
+          if ((offset > 0 && current_offset > (LONG_MAX - offset)) ||
+              (offset < 0 && current_offset < (LONG_MIN - offset))) {
+              return (off_t)-FS_ERR_OVERFLOW; // Specific error code
           }
-         new_offset = (off_t)file_size + offset;
-         break;
-     default:
-         // fs_set_errno(-FS_ERR_INVALID_PARAM);
-         return (off_t)-1; // Invalid whence
-     }
- 
-     // Check if the resulting offset is negative, which is invalid
-     if (new_offset < 0) {
-          // fs_set_errno(-FS_ERR_INVALID_PARAM);
-          return (off_t)-1;
-     }
- 
-     // POSIX allows seeking beyond the end of the file.
-     // A subsequent write will extend the file (potentially creating a hole).
-     // A subsequent read will return 0 (EOF).
- 
-     // Update the file offset (assuming VFS serializes access to file struct)
-     file->offset = new_offset;
- 
-     return new_offset; // Return the new offset
- }
- 
+          new_offset = current_offset + offset;
+          break;
+      case SEEK_END:
+           // Check for potential overflow before adding
+          if ((offset > 0 && (off_t)file_size > (LONG_MAX - offset)) ||
+              (offset < 0 && (off_t)file_size < (LONG_MIN - offset))) {
+              return (off_t)-FS_ERR_OVERFLOW; // Specific error code
+          }
+          new_offset = (off_t)file_size + offset;
+          FAT_DEBUG_LOG("lseek internal: SEEK_END calculated new_offset = %lld", new_offset);
+          break;
+      default:
+          // Should have been caught by VFS, but good practice to handle
+          return (off_t)-FS_ERR_INVALID_PARAM;
+      }
+  
+      // Check if the resulting offset is negative, which is usually invalid for file offsets
+      if (new_offset < 0) {
+          // Return specific error for invalid resulting offset
+          return (off_t)-FS_ERR_INVALID_PARAM;
+      }
+  
+      // DO NOT update file->offset here. The VFS layer handles this on success.
+  
+      // Return the calculated new offset (>= 0)
+      return new_offset;
+  }
  
  /**
   * @brief Closes an opened file.

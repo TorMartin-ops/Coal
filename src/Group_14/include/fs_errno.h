@@ -39,6 +39,7 @@ typedef enum fs_error {
     FS_ERR_EOF              = -21,
     FS_ERR_NO_RESOURCES     = -22,  /* No resources available */
     FS_ERR_OUT_OF_BOUNDS    = -23,  /* Access out of bounds */
+    FS_ERR_BAD_F           = -24,  /* Bad file descriptor */
     // Add additional error codes as needed.
 } fs_error_t;
 
@@ -76,6 +77,7 @@ static inline const char *fs_strerror(fs_error_t err) {
         case FS_ERR_EOF:                return "End of file";
         case FS_ERR_NO_RESOURCES:     return "No resources available";
         case FS_ERR_OUT_OF_BOUNDS:      return "Out of bounds access";
+        case FS_ERR_BAD_F:             return "Bad file descriptor";
         default:                        return "Unrecognized error";
     }
 }

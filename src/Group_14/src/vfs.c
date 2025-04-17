@@ -206,7 +206,7 @@
 
     while (curr) {
         // --- Add Debugging ---
-        terminal_printf("  Checking mount point: '%s' (len %u)\n",
+        terminal_printf("  Checking mount point: '%s' (len %zu)\n",
                         curr->mount_point ? curr->mount_point : "<NULL>",
                         curr->mount_point ? strlen(curr->mount_point) : 0);
         // --- End Debugging ---
@@ -476,14 +476,36 @@
  }
  
  off_t vfs_lseek(file_t *file, off_t offset, int whence) {
-      if (!file || !file->vnode || !file->vnode->fs_driver || !file->vnode->fs_driver->lseek) { return (off_t)-FS_ERR_INVALID_PARAM; }
-      if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) { return (off_t)-FS_ERR_INVALID_PARAM; }
-      VFS_DEBUG_LOG("Seeking in file 0x%p, offset=%lld, whence=%d", file, offset, whence);
-      off_t new_offset = file->vnode->fs_driver->lseek(file, offset, whence);
-      if (new_offset >= 0) { file->offset = new_offset; VFS_DEBUG_LOG("Seek successful, new offset=%lld", new_offset); }
-      else { VFS_ERROR("Driver lseek error %lld", new_offset); }
-      return new_offset;
- }
+    // Check for invalid file structure or missing driver operation first
+    if (!file || !file->vnode || !file->vnode->fs_driver || !file->vnode->fs_driver->lseek) {
+        // Use BAD_F for issues related to the file handle/context itself
+        return (off_t)-FS_ERR_BAD_F;
+    }
+    // Check for invalid 'whence' parameter
+    if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) {
+        return (off_t)-FS_ERR_INVALID_PARAM;
+    }
+
+    VFS_DEBUG_LOG("Seeking in file 0x%p, offset=%ld, whence=%d", file, offset, whence);
+
+    // Call the filesystem-specific implementation
+    off_t driver_result = file->vnode->fs_driver->lseek(file, offset, whence);
+
+    // Check the result from the driver
+    if (driver_result >= 0) {
+        // Success: Update the file offset and return the new offset
+        file->offset = driver_result;
+        VFS_DEBUG_LOG("Seek successful, new offset=%ld", driver_result);
+        return driver_result;
+    } else {
+        // Failure: Log the specific error code returned by the driver and return it
+        // No need to check if driver_result < 0 again, the 'else' covers it.
+        VFS_ERROR("Driver lseek failed with error code: %ld", driver_result);
+        // Optionally map driver errors to VFS errors here if needed,
+        // but returning the driver's error directly is often fine.
+        return driver_result; // Return the negative FS_ERR_* code
+    }
+}
  
  // vfs_is_ready, vfs_self_test, vfs_path_exists, vfs_debug_dump need updates
  // to use the global mount list functions as well.

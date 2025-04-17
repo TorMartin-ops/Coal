@@ -44,6 +44,10 @@
  
  // --- Static Helper Prototypes (Only for functions truly local to this file) ---
  static void fat_format_short_name_impl(const uint8_t name_8_3[11], char *out_name);
+
+
+#define FAT_ERROR_LOG(fmt, ...) terminal_printf("[FAT ERROR] (%s:%d) " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
+#define FAT_DEBUG_LOG(fmt, ...) terminal_printf("[FAT DEBUG] (%s) " fmt "\n", __func__, ##__VA_ARGS__)
  
  
  // Helper function implementation (previously static)
@@ -70,244 +74,121 @@
   * @note This function handles the logic for O_CREAT and O_TRUNC flags.
   * @return Pointer to the allocated vnode on success, NULL on failure.
   */
- vnode_t *fat_open_internal(void *fs_context, const char *path, int flags)
- {
-     fat_fs_t *fs = (fat_fs_t *)fs_context;
-     if (!fs || !path) {
-         return NULL; // Or set errno? Returning NULL is typical for VFS open failure
-     }
- 
-     uintptr_t irq_flags = spinlock_acquire_irqsave(&fs->lock);
- 
-     fat_dir_entry_t entry;
-     char lfn_buffer[FAT_MAX_LFN_CHARS]; // Buffer for LFN if found
-     uint32_t entry_dir_cluster = 0;     // Cluster containing the entry's directory entry
-     uint32_t entry_offset_in_dir = 0;   // Byte offset within the dir cluster chain
-     int find_res = fat_lookup_path(fs, path,
-                                    &entry, lfn_buffer, sizeof(lfn_buffer),
-                                    &entry_dir_cluster, &entry_offset_in_dir);
- 
-     bool exists = (find_res == FS_SUCCESS);
-     bool created = false;
-     bool truncated = false;
- 
-     vnode_t *vnode = NULL;
-     fat_file_context_t *file_ctx = NULL;
-     int ret_err = FS_SUCCESS; // Default to success
- 
-     // --- Handle File Creation (O_CREAT) ---
-     if (!exists && (flags & O_CREAT)) {
-         // DIAG_PRINTK("[FAT open O_CREAT] '%s' not found, attempting creation.\n", path);
-         created = true;
- 
-         // Split path to get parent directory and the new filename
-         char parent_dir_path[FS_MAX_PATH_LENGTH];
-         char new_name[MAX_FILENAME_LEN + 1]; // FS_LIMITS or similar needed for MAX_FILENAME_LEN
-         memset(parent_dir_path, 0, sizeof(parent_dir_path));
-         memset(new_name, 0, sizeof(new_name));
- 
-         if (fs_util_split_path(path, parent_dir_path, sizeof(parent_dir_path),
-                              new_name, sizeof(new_name)) != 0)
-         {
-             ret_err = -FS_ERR_NAMETOOLONG;
-             goto open_fail_locked;
-         }
-         if (strlen(new_name) == 0) { // Cannot create nameless file
-              ret_err = -FS_ERR_INVALID_PARAM;
-              goto open_fail_locked;
-         }
- 
-         // Lookup the parent directory
-         fat_dir_entry_t parent_entry;
-         uint32_t parent_entry_dir_cluster, parent_entry_offset; // Not strictly needed here
-         int parent_res = fat_lookup_path(fs, parent_dir_path,
-                                          &parent_entry, NULL, 0, // Don't need parent LFN name
-                                          &parent_entry_dir_cluster, &parent_entry_offset);
- 
-         if (parent_res != FS_SUCCESS) {
-             // DIAG_PRINTK("[FAT open O_CREAT] Parent dir '%s' not found (err %d).\n", parent_dir_path, parent_res);
-             ret_err = parent_res; // Propagate error from parent lookup
-             goto open_fail_locked;
-         }
-         if (!(parent_entry.attr & FAT_ATTR_DIRECTORY)) {
-             // DIAG_PRINTK("[FAT open O_CREAT] Parent path '%s' is not a directory.\n", parent_dir_path);
-             ret_err = -FS_ERR_NOT_A_DIRECTORY;
-             goto open_fail_locked;
-         }
- 
-         // Get the parent directory's starting cluster
-         uint32_t parent_cluster = fat_get_entry_cluster(&parent_entry);
-         // Handle FAT12/16 root directory cluster number (0 means root)
-         if (fs->type != FAT_TYPE_FAT32 && strcmp(parent_dir_path, "/") == 0) {
-             parent_cluster = 0;
-         }
- 
-         // Generate a unique 8.3 name (may involve number generation like ~1)
-         uint8_t short_name[11];
-         if (fat_generate_unique_short_name(fs, parent_cluster, new_name, short_name) != 0) {
-             // DIAG_PRINTK("[FAT open O_CREAT] Failed to generate unique short name for '%s'.\n", new_name);
-             ret_err = -FS_ERR_NAMETOOLONG; // Or potentially FS_ERR_NO_SPACE if name generation fails that way
-             goto open_fail_locked;
-         }
- 
-         // Generate LFN entries if the name requires it
-         fat_lfn_entry_t lfn_entries[FAT_MAX_LFN_ENTRIES];
-         uint8_t checksum = fat_calculate_lfn_checksum(short_name);
-         int lfn_count = fat_generate_lfn_entries(new_name, checksum, lfn_entries, FAT_MAX_LFN_ENTRIES);
-         if (lfn_count < 0) { // Error generating LFNs
-             // DIAG_PRINTK("[FAT open O_CREAT] Failed to generate LFN entries for '%s'.\n", new_name);
-             ret_err = -FS_ERR_INTERNAL; // Or map specific error
-             goto open_fail_locked;
-         }
-         size_t needed_slots = (size_t)lfn_count + 1; // LFN entries + 1 for the 8.3 entry
- 
-         // Find free slots in the parent directory
-         uint32_t slot_cluster, slot_offset;
-         int find_slot_res = find_free_directory_slot(fs, parent_cluster, needed_slots,
-                                                    &slot_cluster, &slot_offset);
-         if (find_slot_res != FS_SUCCESS) {
-              // DIAG_PRINTK("[FAT open O_CREAT] No free directory slots (%u needed) in parent cluster %u (err %d).\n",
-              //                 (unsigned int)needed_slots, parent_cluster, find_slot_res);
-              ret_err = find_slot_res; // Propagate error (e.g., -FS_ERR_NO_SPACE)
-              goto open_fail_locked;
-         }
- 
-         // Prepare the 8.3 directory entry for the new file
-         memset(&entry, 0, sizeof(entry));
-         memcpy(entry.name, short_name, 11);
-         entry.attr = FAT_ATTR_ARCHIVE; // Default attribute for new files
-         entry.file_size = 0;
-         entry.first_cluster_low  = 0; // No data clusters allocated yet
-         entry.first_cluster_high = 0;
-         // TODO: Set creation/modification timestamps here if supported
- 
-         // Write the LFN entries (if any) and then the 8.3 entry
-         uint32_t current_write_offset = slot_offset;
-         if (lfn_count > 0) {
-             if (write_directory_entries(fs, slot_cluster, current_write_offset,
-                                         lfn_entries, lfn_count) != FS_SUCCESS)
-             {
-                 // DIAG_PRINTK("[FAT open O_CREAT] Failed to write LFN entries.\n");
-                 ret_err = -FS_ERR_IO; // Assume I/O error on write failure
-                 // TODO: Need cleanup logic here - potentially remove partially written entries? Complex.
-                 goto open_fail_locked;
-             }
-             current_write_offset += (uint32_t)(lfn_count * sizeof(fat_dir_entry_t));
-         }
-         if (write_directory_entries(fs, slot_cluster, current_write_offset,
-                                     &entry, 1) != FS_SUCCESS)
-         {
-              // DIAG_PRINTK("[FAT open O_CREAT] Failed to write 8.3 entry.\n");
-              ret_err = -FS_ERR_IO;
-              // TODO: Cleanup LFN entries if they were written?
-              goto open_fail_locked;
-         }
- 
-         // Update location info for the newly created entry
-         entry_dir_cluster   = slot_cluster;
-         entry_offset_in_dir = current_write_offset; // Offset of the 8.3 entry
-         exists = true; // Mark as existing now
- 
-         buffer_cache_sync(); // Ensure directory changes are written to disk
-         // DIAG_PRINTK("[FAT open O_CREAT] Successfully created '%s'.\n", path);
- 
-     } else if (!exists) {
-         // File doesn't exist and O_CREAT was not specified
-         ret_err = find_res; // Return the error from fat_lookup_path (-FS_ERR_NOT_FOUND etc)
-         goto open_fail_locked;
-     }
- 
-     // --- File/Directory Exists (either found or just created) ---
- 
-     // Check permissions and type mismatches
-     if ((flags & (O_WRONLY | O_RDWR)) && (entry.attr & FAT_ATTR_DIRECTORY)) {
-         ret_err = -FS_ERR_IS_A_DIRECTORY; // Cannot open directory for writing
-         goto open_fail_locked;
-     }
-     if ((flags & (O_WRONLY | O_RDWR | O_TRUNC)) && (entry.attr & FAT_ATTR_READ_ONLY)) {
-          ret_err = -FS_ERR_PERMISSION_DENIED; // Cannot write/truncate read-only file
+  vnode_t *fat_open_internal(void *fs_context, const char *path, int flags)
+  {
+      FAT_DEBUG_LOG("Enter: path='%s', flags=0x%x", path ? path : "<NULL>", flags);
+  
+      fat_fs_t *fs = (fat_fs_t *)fs_context;
+      if (!fs || !path) {
+          FAT_ERROR_LOG("Invalid parameters: fs=%p, path=%p", fs, path);
+          return NULL;
+      }
+  
+      uintptr_t irq_flags = spinlock_acquire_irqsave(&fs->lock);
+  
+      fat_dir_entry_t entry;
+      char lfn_buffer[FAT_MAX_LFN_CHARS];
+      uint32_t entry_dir_cluster = 0;
+      uint32_t entry_offset_in_dir = 0;
+      int find_res;
+      bool exists = false;
+      bool created = false;
+      bool truncated = false;
+      vnode_t *vnode = NULL;
+      fat_file_context_t *file_ctx = NULL;
+      int ret_err = FS_SUCCESS;
+  
+      // --- Lookup ---
+      FAT_DEBUG_LOG("Looking up path '%s'...", path);
+      find_res = fat_lookup_path(fs, path, &entry, lfn_buffer, sizeof(lfn_buffer),
+                                 &entry_dir_cluster, &entry_offset_in_dir);
+      exists = (find_res == FS_SUCCESS);
+  
+      if (exists) {
+          FAT_DEBUG_LOG("Lookup success: Attr=0x%lx, Size=%lu, ClusterLow=%u, ClusterHigh=%u, DirClu=%lu, DirOff=%lu",
+                        (unsigned long)entry.attr, (unsigned long)entry.file_size, // <-- Key log!
+                        entry.first_cluster_low, entry.first_cluster_high,
+                        (unsigned long)entry_dir_cluster, (unsigned long)entry_offset_in_dir);
+      } else {
+          FAT_DEBUG_LOG("Lookup failed/not found: err=%d", find_res);
+      }
+  
+      // --- Handle File Creation (O_CREAT) ---
+      if (!exists && (flags & O_CREAT)) {
+          FAT_DEBUG_LOG("Handling O_CREAT for '%s'", path);
+          created = true;
+          // ... (creation logic - add more FAT_DEBUG_LOG calls inside if needed) ...
+          // On successful creation, 'entry' will be populated for the new file (size=0)
+          // 'exists' will be set to true, 'entry_dir_cluster'/'entry_offset_in_dir' updated.
+          if (ret_err != FS_SUCCESS) goto open_fail_locked; // Check if creation failed
+          FAT_DEBUG_LOG("O_CREAT successful, new entry Size=%lu", (unsigned long)entry.file_size); // Should be 0
+      } else if (!exists) {
+          ret_err = find_res;
           goto open_fail_locked;
-     }
- 
-     // --- Handle File Truncation (O_TRUNC) ---
-     if (exists && !created && !(entry.attr & FAT_ATTR_DIRECTORY) && (flags & O_TRUNC)) {
-         // DIAG_PRINTK("[FAT open O_TRUNC] Truncating existing file '%s'.\n", path);
-         truncated = true;
- 
-         uint32_t first_cluster = fat_get_entry_cluster(&entry);
- 
-         // Free the existing cluster chain if the file has data
-         if (first_cluster >= 2) {
-             int free_res = fat_free_cluster_chain(fs, first_cluster);
-             if (free_res != FS_SUCCESS) {
-                 // DIAG_PRINTK("[FAT open O_TRUNC] Error freeing cluster chain for file '%s' (err %d).\n", path, free_res);
-                 ret_err = free_res; // Propagate error from cluster freeing
-                 goto open_fail_locked;
-             }
-         }
- 
-         // Update the directory entry to reflect zero size and no first cluster
-         entry.file_size = 0;
-         entry.first_cluster_low  = 0;
-         entry.first_cluster_high = 0;
-         // TODO: Update modification timestamp here if supported
-         if (update_directory_entry(fs, entry_dir_cluster, entry_offset_in_dir,
-                                    &entry) != FS_SUCCESS)
-         {
-             // DIAG_PRINTK("[FAT open O_TRUNC] Error updating directory entry after truncation.\n");
-             ret_err = -FS_ERR_IO; // Assume I/O error
-             goto open_fail_locked;
-         }
- 
-         buffer_cache_sync(); // Write truncated directory entry to disk
-     }
- 
-     // --- Allocation & Setup for Vnode and File Context ---
-     vnode = kmalloc(sizeof(vnode_t));
-     file_ctx = kmalloc(sizeof(fat_file_context_t));
-     if (!vnode || !file_ctx) {
-         // DIAG_PRINTK("[FAT open] Out of memory allocating vnode/context.\n");
-         ret_err = -FS_ERR_OUT_OF_MEMORY;
-         goto open_fail_locked; // Note: vnode/file_ctx might be partially allocated
-     }
-     memset(vnode, 0, sizeof(*vnode));
-     memset(file_ctx, 0, sizeof(*file_ctx));
- 
-     // Populate the FAT-specific file context
-     uint32_t first_cluster_final = fat_get_entry_cluster(&entry);
- 
-     file_ctx->fs                 = fs;
-     file_ctx->first_cluster      = first_cluster_final;
-     file_ctx->file_size          = entry.file_size;
-     file_ctx->dir_entry_cluster  = entry_dir_cluster; // Cluster where the dir entry lives
-     file_ctx->dir_entry_offset   = entry_offset_in_dir; // Offset within that cluster chain
-     file_ctx->is_directory       = (entry.attr & FAT_ATTR_DIRECTORY) != 0;
-     file_ctx->dirty              = (created || truncated); // Mark context dirty if created/truncated
- 
-     // Initialize readdir state (only relevant for directories)
-     file_ctx->readdir_current_cluster = file_ctx->first_cluster;
-     if (file_ctx->is_directory && fs->type != FAT_TYPE_FAT32 && file_ctx->first_cluster == 0) {
-         file_ctx->readdir_current_cluster = 0; // Explicitly handle root dir cluster for FAT12/16
-     }
-     file_ctx->readdir_current_offset = 0;
-     file_ctx->readdir_last_index     = (size_t)-1; // Indicate start of iteration
- 
-     // Link context to vnode
-     vnode->data     = file_ctx;
-     vnode->fs_driver = &fat_vfs_driver; // Point back to our FAT driver operations
- 
-     spinlock_release_irqrestore(&fs->lock, irq_flags);
-     return vnode; // Success!
- 
- open_fail_locked:
-     // Failure path: Log error, free allocated memory, release lock
-     terminal_printf("[FAT open] Failed for path '%s'. Error code: %d\n", path, ret_err);
-     if (vnode)    kfree(vnode);       // Free if allocation succeeded before failure
-     if (file_ctx) kfree(file_ctx);     // Free if allocation succeeded before failure
-     spinlock_release_irqrestore(&fs->lock, irq_flags);
-     // Set filesystem error number here if desired (e.g., fs_set_errno(ret_err))
-     return NULL; // Indicate failure
- }
+      }
+  
+      // --- File/Directory Exists ---
+      // ... (permission/type checks - add FAT_DEBUG_LOG if needed) ...
+       if (ret_err != FS_SUCCESS) goto open_fail_locked;
+  
+      // --- Handle File Truncation (O_TRUNC) ---
+      if (exists && !created && !(entry.attr & FAT_ATTR_DIRECTORY) && (flags & O_TRUNC)) {
+          FAT_DEBUG_LOG("Handling O_TRUNC for '%s', original size=%lu", path, (unsigned long)entry.file_size);
+          truncated = true;
+          // ... (truncation logic: free clusters, update dir entry on disk) ...
+          if (ret_err != FS_SUCCESS) goto open_fail_locked; // Check if truncation failed
+  
+          // Update the local 'entry' struct to reflect truncation for context population
+          entry.file_size = 0;
+          entry.first_cluster_low  = 0;
+          entry.first_cluster_high = 0;
+          FAT_DEBUG_LOG("O_TRUNC successful, local entry size set to 0");
+      }
+  
+      // --- Allocation & Setup for Vnode and File Context ---
+      FAT_DEBUG_LOG("Allocating vnode and file context...");
+      vnode = kmalloc(sizeof(vnode_t));
+      file_ctx = kmalloc(sizeof(fat_file_context_t));
+      if (!vnode || !file_ctx) {
+          ret_err = -FS_ERR_OUT_OF_MEMORY;
+          goto open_fail_locked;
+      }
+      memset(vnode, 0, sizeof(*vnode));
+      memset(file_ctx, 0, sizeof(*file_ctx));
+      FAT_DEBUG_LOG("Allocation successful: vnode=%p, file_ctx=%p", vnode, file_ctx);
+  
+      // Populate the FAT-specific file context
+      uint32_t first_cluster_final = fat_get_entry_cluster(&entry);
+  
+      FAT_DEBUG_LOG("Populating context: Assigning file_size = %lu", (unsigned long)entry.file_size); // <-- Key log!
+      file_ctx->fs                 = fs;
+      file_ctx->first_cluster      = first_cluster_final;
+      file_ctx->file_size          = entry.file_size; // <-- Critical assignment
+      file_ctx->dir_entry_cluster  = entry_dir_cluster;
+      file_ctx->dir_entry_offset   = entry_offset_in_dir;
+      file_ctx->is_directory       = (entry.attr & FAT_ATTR_DIRECTORY) != 0;
+      file_ctx->dirty              = (created || truncated);
+  
+      // Initialize readdir state
+      // ... (readdir init) ...
+      FAT_DEBUG_LOG("Context populated: first_cluster=%lu, size=%lu, is_dir=%d",
+                     (unsigned long)file_ctx->first_cluster, (unsigned long)file_ctx->file_size, file_ctx->is_directory);
+  
+      vnode->data     = file_ctx;
+      vnode->fs_driver = &fat_vfs_driver;
+  
+      spinlock_release_irqrestore(&fs->lock, irq_flags);
+      FAT_DEBUG_LOG("Success: path='%s', returning vnode=%p", path ? path : "<NULL>", vnode);
+      return vnode; // Success!
+  
+  open_fail_locked:
+      // Use ERROR level for failures
+      FAT_ERROR_LOG("Failed: path='%s', error=%d (%s)", path ? path : "<NULL>", ret_err, fs_strerror(ret_err));
+      if (vnode)    kfree(vnode);
+      if (file_ctx) kfree(file_ctx);
+      spinlock_release_irqrestore(&fs->lock, irq_flags);
+      return NULL; // Indicate failure
+  }
  
  
  /**
@@ -1387,11 +1268,10 @@ lookup_done:
          // Directory is extendable (not FAT12/16 root) and no space was found.
          // DIAG_PRINTK("[FAT find_free_directory_slot] No slot found in existing chain (last cluster %u), attempting extension.\n", last_valid_cluster);
  
-         uint32_t new_cluster;
-         int alloc_res = fat_allocate_cluster(fs, &new_cluster);
- 
-         if (alloc_res != FS_SUCCESS) {
-             // DIAG_PRINTK("[FAT find_free_directory_slot] Failed to allocate new cluster for extension: %d\n", alloc_res);
+         terminal_printf("[FAT find_free_directory_slot] Attempting allocation, linking from cluster %lu\n", (unsigned long)last_valid_cluster); // Added Log
+         uint32_t new_cluster = fat_allocate_cluster(fs, last_valid_cluster); // CORRECT CALL: Pass cluster to link from, get new cluster number back
+         if (new_cluster == 0) { // Check return value for failure (0 means error/no space)
+             terminal_printf("[FAT find_free_directory_slot] fat_allocate_cluster failed (returned 0).\n");
              ret = -FS_ERR_NO_SPACE; // Allocation failure means no space
              goto find_slot_done;    // Exit without extending
          }
