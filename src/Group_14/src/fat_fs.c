@@ -8,7 +8,8 @@
  #include "fat_fs.h"     // Our function declarations
  #include "fat_core.h"   // Core FAT structures and constants
  #include "fat_utils.h"  // fat_cluster_to_lba (needed for geometry checks?) - maybe not needed here directly
- #include "buffer_cache.h"// For reading boot sector, FAT sectors
+ #include "assert.h"// For reading boot sector, FAT sectors
+ #include "buffer_cache.h" // Buffer cache for disk I/O
  #include "kmalloc.h"    // Kernel memory allocation
  #include "terminal.h"   // Logging
  #include "spinlock.h"   // Spinlock initialization

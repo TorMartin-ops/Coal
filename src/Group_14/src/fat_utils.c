@@ -10,7 +10,7 @@
 uint32_t fat_cluster_to_lba(fat_fs_t *fs, uint32_t cluster)
 {
     if (!fs || cluster < 2) return 0; // Invalid cluster (FAT clusters start at 2)
-    
+
     // Calculate the LBA from the first data sector and the cluster number
     // Note: Clusters are 0-based for LBA calculation after subtracting the reserved 2 entries
     return fs->first_data_sector + ((cluster - 2) * fs->sectors_per_cluster);
@@ -21,8 +21,9 @@ uint32_t fat_cluster_to_lba(fat_fs_t *fs, uint32_t cluster)
  */
 int fat_get_next_cluster(fat_fs_t *fs, uint32_t current_cluster, uint32_t *next_cluster)
 {
-    if (!fs || !fs->fat_table || !next_cluster || 
-        current_cluster >= (fs->fat_size * fs->bytes_per_sector / (fs->type == FAT_TYPE_FAT16 ? 2 : 4))) {
+    // Corrected: Use fat_size_sectors instead of fat_size
+    if (!fs || !fs->fat_table || !next_cluster ||
+        current_cluster >= (fs->fat_size_sectors * fs->bytes_per_sector / (fs->type == FAT_TYPE_FAT16 ? 2 : 4))) {
         return -1; // Invalid parameters
     }
 
@@ -30,7 +31,7 @@ int fat_get_next_cluster(fat_fs_t *fs, uint32_t current_cluster, uint32_t *next_
     if (fs->type == FAT_TYPE_FAT32) {
         uint32_t *FAT32 = (uint32_t*)fs->fat_table;
         *next_cluster = FAT32[current_cluster] & 0x0FFFFFFF; // Mask reserved bits
-    } 
+    }
     else if (fs->type == FAT_TYPE_FAT16) {
         uint16_t *FAT16 = (uint16_t*)fs->fat_table;
         *next_cluster = FAT16[current_cluster];
@@ -39,7 +40,7 @@ int fat_get_next_cluster(fat_fs_t *fs, uint32_t current_cluster, uint32_t *next_
         // FAT12 not fully implemented in this example
         return -1;
     }
-    
+
     return 0; // Success
 }
 
@@ -48,8 +49,9 @@ int fat_get_next_cluster(fat_fs_t *fs, uint32_t current_cluster, uint32_t *next_
  */
 int fat_set_cluster_entry(fat_fs_t *fs, uint32_t cluster, uint32_t value)
 {
-    if (!fs || !fs->fat_table || 
-        cluster >= (fs->fat_size * fs->bytes_per_sector / (fs->type == FAT_TYPE_FAT16 ? 2 : 4))) {
+    // Corrected: Use fat_size_sectors instead of fat_size
+    if (!fs || !fs->fat_table ||
+        cluster >= (fs->fat_size_sectors * fs->bytes_per_sector / (fs->type == FAT_TYPE_FAT16 ? 2 : 4))) {
         return -1; // Invalid parameters
     }
 
@@ -58,7 +60,7 @@ int fat_set_cluster_entry(fat_fs_t *fs, uint32_t cluster, uint32_t value)
         uint32_t *FAT32 = (uint32_t*)fs->fat_table;
         // Preserve the top 4 bits (reserved)
         FAT32[cluster] = (FAT32[cluster] & 0xF0000000) | (value & 0x0FFFFFFF);
-    } 
+    }
     else if (fs->type == FAT_TYPE_FAT16) {
         uint16_t *FAT16 = (uint16_t*)fs->fat_table;
         FAT16[cluster] = (uint16_t)value;
@@ -67,66 +69,76 @@ int fat_set_cluster_entry(fat_fs_t *fs, uint32_t cluster, uint32_t value)
         // FAT12 not fully implemented in this example
         return -1;
     }
-    
+
     return 0; // Success
 }
 
 /**
  * Format/normalize a filename to FAT 8.3 format.
  */
-void format_filename(const char *input, char *output)
+ // Corrected: Changed signature to match declaration in fat_utils.h
+void format_filename(const char *input, char output_8_3[11])
 {
     size_t i, j;
-    
+
     // Initialize output with spaces (padding for 8.3 format)
-    memset(output, ' ', 11);
-    
+    // Corrected: Use output_8_3
+    memset(output_8_3, ' ', 11);
+
     // Handle empty input
     if (!input || input[0] == '\0') {
-        memcpy(output, "NO_NAME    ", 11);
+        // Corrected: Use output_8_3
+        memcpy(output_8_3, "NO_NAME    ", 11);
         return;
     }
-    
+
     // Skip leading dots and spaces
     while (*input && (*input == '.' || *input == ' ')) {
         input++;
     }
-    
+
     // Handle empty input after skipping
     if (!*input) {
-        memcpy(output, "NO_NAME    ", 11);
+        // Corrected: Use output_8_3
+        memcpy(output_8_3, "NO_NAME    ", 11);
         return;
     }
 
     // Process the filename part (up to 8 characters before the extension)
     for (i = 0, j = 0; input[i] && input[i] != '.' && j < 8; i++) {
         char c = input[i];
-        if (c == ' ' || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || 
+        if (c == ' ' || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
             c == '"' || c == '<' || c == '>' || c == '|' || c < ' ') {
             continue; // Skip invalid characters
         }
-        output[j++] = toupper(c);
+        // Corrected: Use output_8_3
+        output_8_3[j++] = toupper(c);
     }
-    
+
     // Skip to extension part
     while (input[i] && input[i] != '.') {
         i++;
     }
-    
+
     // Process the extension part (up to 3 characters)
     if (input[i] == '.') {
         i++;
+        // Corrected: Use output_8_3 for index
         for (j = 8; input[i] && j < 11; i++) {
             char c = input[i];
-            if (c == ' ' || c == '.' || c == '/' || c == '\\' || c == ':' || 
-                c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || 
+            if (c == ' ' || c == '.' || c == '/' || c == '\\' || c == ':' ||
+                c == '*' || c == '?' || c == '"' || c == '<' || c == '>' ||
                 c == '|' || c < ' ') {
                 continue; // Skip invalid characters
             }
-            output[j++] = toupper(c);
+            // Corrected: Use output_8_3
+            output_8_3[j++] = toupper(c);
         }
     }
-    
-    // Ensure null-termination if output is treated as a string
-    output[11] = '\0';
+
+    // Ensure null-termination if output is treated as a string (Optional, as FAT 8.3 doesn't require it)
+    // Corrected: Use output_8_3
+    // Note: FAT 8.3 format does not use null termination. The 11 bytes are fixed.
+    // If you need null-termination elsewhere, copy to a separate buffer.
+    // output_8_3[11] = '\0'; // This line is typically incorrect for raw FAT 8.3 names.
 }
