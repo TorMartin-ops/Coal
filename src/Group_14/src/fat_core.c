@@ -36,7 +36,7 @@
  
  /* --- Static VFS Driver Structure --- */
  // Defines the FAT filesystem driver interface for the VFS.
- static vfs_driver_t fat_vfs_driver = {
+ vfs_driver_t fat_vfs_driver = {
      .fs_name = "FAT",               // Filesystem name
      .mount   = fat_mount_internal,    // Mount function pointer
      .unmount = fat_unmount_internal,  // Unmount function pointer

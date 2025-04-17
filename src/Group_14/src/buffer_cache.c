@@ -320,8 +320,9 @@
  
              // Perform Disk I/O if needed
              if (needs_flush && data_to_write && disk_to_write) {
-                 int write_result = disk_write_sectors(disk_to_write, block_to_write,
-                                                       data_to_write, 1);
+                int write_result = disk_write_raw_sectors(disk_to_write, block_to_write,
+                    data_to_write, 1);
+
                  if (write_result != 0) {
                      terminal_printf("[Evict] Flush FAILED (Error %d) for block %u.\n",
                                      write_result, block_to_write);
@@ -363,7 +364,7 @@
      int result = -1;
  
      while (retries < max_retries) {
-         result = disk_read_sectors(disk, start_sector, buffer, 1);
+        result = disk_read_raw_sectors(disk, start_sector, buffer, 1);
          if (result == 0) {
              break; // Success
          }
@@ -598,7 +599,7 @@
      spinlock_release_irqrestore(&cache_lock, irq_state);
  
      // Write to disk without holding the lock
-     int write_result = disk_write_sectors(disk, block, temp_data, 1);
+     int write_result = disk_write_raw_sectors(disk, block, temp_data, 1);
      kfree(temp_data);
  
      if (write_result != 0) {

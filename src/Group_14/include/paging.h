@@ -62,6 +62,12 @@ extern "C" {
 #define PAGING_PDE_ADDR_MASK_4KB  PAGING_ADDR_MASK // Mask for PDE pointing to 4KB PT address portion
 #define PAGING_PDE_ADDR_MASK_4MB  0xFFC00000 // Upper 10 bits are PFN for 4MB page (bits 22-31)
 
+// <<< ADDED PAGING MASK DEFINITIONS >>>
+#define PAGING_PAGE_MASK   (~(PAGE_SIZE - 1u)) // Align down mask (e.g., 0xFFFFF000)
+#define PAGING_OFFSET_MASK (PAGE_SIZE - 1u)   // Offset mask (e.g., 0x00000FFF)
+// <<< END ADDED >>>
+
+
 // --- Virtual Memory Layout ---
 #ifndef KERNEL_SPACE_VIRT_START
 #define KERNEL_SPACE_VIRT_START 0xC0000000u // Default higher half start address
@@ -198,6 +204,28 @@ int paging_map_single_4k(uint32_t *page_directory_phys, uintptr_t vaddr, uintptr
 
 // *** ADDED PROTOTYPE HERE ***
 void copy_kernel_pde_entries(uint32_t *new_pd_virt);
+
+// <<< ADDED TEMPORARY MAPPING PROTOTYPES >>>
+/**
+ * @brief Temporarily maps a physical page into the kernel's virtual address space.
+ * Uses a predefined temporary virtual address (e.g., TEMP_MAP_ADDR_PF).
+ * WARNING: This mapping is temporary and should be unmapped quickly.
+ * Not inherently thread-safe if the same temp address is used concurrently.
+ *
+ * @param phys_addr The physical address of the page frame to map.
+ * @return The kernel virtual address where the page was mapped, or NULL on failure.
+ */
+void* paging_temp_map(uintptr_t phys_addr);
+
+/**
+ * @brief Unmaps a temporary kernel mapping created by paging_temp_map.
+ * Assumes the mapping was done at the standard temporary virtual address.
+ *
+ * @param temp_vaddr The virtual address returned by paging_temp_map.
+ */
+void paging_temp_unmap(void* temp_vaddr);
+// <<< END ADDED >>>
+
 
 #ifdef __cplusplus
 }

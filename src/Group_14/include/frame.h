@@ -69,5 +69,18 @@ void put_frame(uintptr_t phys_addr);
  */
 int get_frame_refcount(uintptr_t phys_addr);
 
+// <<< ADDED PROTOTYPE >>>
+/**
+ * @brief Frees a physical frame directly (equivalent to put_frame(phys_addr)).
+ * This function exists primarily to resolve the missing declaration in elf_loader.c.
+ * It simply calls put_frame.
+ *
+ * @param phys_addr Physical address of the frame to free.
+ */
+static inline void frame_free(uintptr_t phys_addr) {
+    put_frame(phys_addr);
+}
+// <<< END ADDED >>>
+
 
 #endif // FRAME_H

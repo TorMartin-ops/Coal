@@ -2158,3 +2158,46 @@ void copy_kernel_pde_entries(uint32_t *new_pd_virt)
     // We explicitly zero out the recursive entry in the destination PD to avoid accidental copying.
     new_pd_virt[RECURSIVE_PDE_INDEX] = 0;
 }
+
+void* paging_temp_map(uintptr_t phys_addr) {
+    // Check if address is page aligned (optional sanity check)
+    if (phys_addr % PAGE_SIZE != 0) {
+        terminal_printf("[Paging Temp Map] Error: Physical address 0x%x is not page-aligned.\n", phys_addr);
+        return NULL;
+    }
+
+    // Map into the kernel's page directory at the predefined temporary address
+    if (paging_map_single_4k((uint32_t*)g_kernel_page_directory_phys,
+                              (uintptr_t)TEMP_MAP_ADDR_PF,
+                              phys_addr,
+                              PTE_KERNEL_DATA_FLAGS) != 0) // Kernel RW, NX
+    {
+        terminal_printf("[Paging Temp Map] Error: Failed to map paddr 0x%x to temp vaddr 0x%x.\n", phys_addr, (uintptr_t)TEMP_MAP_ADDR_PF);
+        return NULL;
+    }
+
+    // Return the predefined temporary virtual address
+    return (void*)TEMP_MAP_ADDR_PF;
+}
+
+/**
+ * @brief Unmaps a temporary kernel mapping created by paging_temp_map.
+ * Assumes the mapping was done at the standard temporary virtual address.
+ *
+ * @param temp_vaddr The virtual address returned by paging_temp_map (should be TEMP_MAP_ADDR_PF).
+ */
+void paging_temp_unmap(void* temp_vaddr) {
+    // Basic check: ensure the address matches the expected temporary address
+    if (temp_vaddr != (void*)TEMP_MAP_ADDR_PF) {
+        terminal_printf("[Paging Temp Unmap] Warning: Attempting to unmap unexpected address 0x%p (expected 0x%x).\n", temp_vaddr, (uintptr_t)TEMP_MAP_ADDR_PF);
+        // Still attempt to unmap it, but log warning.
+    }
+
+    // Unmap the single page at the temporary virtual address
+    paging_unmap_range((uint32_t*)g_kernel_page_directory_phys,
+                        (uintptr_t)temp_vaddr,
+                        PAGE_SIZE);
+
+    // Invalidate the TLB for the unmapped page
+    paging_invalidate_page(temp_vaddr);
+}

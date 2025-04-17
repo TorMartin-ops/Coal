@@ -11,6 +11,8 @@
 #define EI_MAG1   1
 #define EI_MAG2   2
 #define EI_MAG3   3
+#define EI_CLASS  4 // <<< ADDED
+#define EI_DATA   5 // <<< ADDED
 // etc...
 
 /* ELF magic */
@@ -18,6 +20,19 @@
 #define ELFMAG1 'E'
 #define ELFMAG2 'L'
 #define ELFMAG3 'F'
+
+// <<< ADDED Standard ELF Definitions >>>
+/* e_ident[EI_CLASS] */
+#define ELFCLASSNONE 0 /* Invalid class */
+#define ELFCLASS32   1 /* 32-bit objects */
+#define ELFCLASS64   2 /* 64-bit objects */
+
+/* e_ident[EI_DATA] */
+#define ELFDATANONE 0 /* Invalid data encoding */
+#define ELFDATA2LSB 1 /* 2's complement, little endian */
+#define ELFDATA2MSB 2 /* 2's complement, big endian */
+// <<< END ADDED >>>
+
 
 /* e_type */
 #define ET_NONE   0

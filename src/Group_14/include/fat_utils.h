@@ -3,6 +3,7 @@
 #define FAT_UTILS_H
 
 #include "types.h"
+#include "fat_core.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -58,6 +59,10 @@ int fat_set_cluster_entry(fat_fs_t *fs, uint32_t cluster, uint32_t value);
  * (e.g., "FILE    TXT"). The output is NOT null-terminated by this function.
  */
 void format_filename(const char *input, char output_8_3[11]);
+
+int fat_compare_lfn(const char* component, const char* reconstructed_lfn);
+int fat_compare_8_3(const char* component, const uint8_t name_8_3[11]);
+int fat_get_cluster_entry(fat_fs_t *fs, uint32_t cluster, uint32_t *entry_value);
 
 #ifdef __cplusplus
 }
