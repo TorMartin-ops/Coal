@@ -46,17 +46,24 @@ extern "C" {
 // R = PAGE_PRESENT must be set.
 // W = PAGE_RW must be set.
 // X = Depends on EFER.NXE. If NXE=1, page is X only if PAGE_NX_BIT is *not* set. If NXE=0, all readable pages are X.
-#define PTE_KERNEL_DATA_FLAGS     (PAGE_PRESENT | PAGE_RW | PAGE_NX_BIT)      // Kernel RW-, NX
-#define PTE_KERNEL_CODE_FLAGS     (PAGE_PRESENT | PAGE_RW)                  // Kernel RWX (Implicit NX doesn't block kernel, allow RW for now)
-#define PTE_KERNEL_READONLY_FLAGS (PAGE_PRESENT | PAGE_NX_BIT)              // Kernel R--, NX
+#define PTE_KERNEL_DATA_FLAGS     (PAGE_PRESENT | PAGE_RW | PAGE_NX_BIT)     // Kernel RW-, NX
+#define PTE_KERNEL_CODE_FLAGS     (PAGE_PRESENT | PAGE_RW)                   // Kernel RWX (Implicit NX doesn't block kernel, allow RW for now)
+#define PTE_KERNEL_READONLY_FLAGS (PAGE_PRESENT | PAGE_NX_BIT)               // Kernel R--, NX
 #define PTE_USER_DATA_FLAGS (PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX_BIT) // User RW-, NX
-#define PTE_USER_CODE_FLAGS (PAGE_PRESENT | PAGE_USER)               // User R-X (No PAGE_RW, No PAGE_NX_BIT)
+#define PTE_USER_CODE_FLAGS (PAGE_PRESENT | PAGE_USER)                     // User R-X (No PAGE_RW, No PAGE_NX_BIT)
 
 #define PDE_FLAGS_FROM_PTE(pte_flags) ((pte_flags) & (PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_PWT | PAGE_PCD))
 
+#define TEMP_MAP_ADDR_GENERIC 0xE0000000 // Example temporary virtual address
+#define TEMP_MAP_ADDR_PD_SRC  0xE0001000 // Example for source PD
+#define TEMP_MAP_ADDR_PT_SRC  0xE0002000 // Example for source PT
+#define TEMP_MAP_ADDR_PD_DST  0xE0003000 // Example for dest PD
+#define TEMP_MAP_ADDR_PT_DST  0xE0004000 // Example for dest PT
+//#define KERNEL_PDE_INDEX      768 // Common index for 3GB kernel split (0xC0000000 / 4MB) // Defined later using macro
+
 
 // --- Page Table Entry Address Masks (32-bit non-PAE) ---
-#define PAGING_FLAG_MASK          0xFFF   // Lower 12 bits are flags/available
+#define PAGING_FLAG_MASK          0xFFF      // Lower 12 bits are flags/available
 #define PAGING_ADDR_MASK          0xFFFFF000 // Upper 20 bits are physical frame number (PFN)
 #define PAGING_PTE_ADDR_MASK      PAGING_ADDR_MASK // Mask for PTE address portion
 #define PAGING_PDE_ADDR_MASK_4KB  PAGING_ADDR_MASK // Mask for PDE pointing to 4KB PT address portion
@@ -79,7 +86,7 @@ extern "C" {
 #define PAGING_PTE_SHIFT 12
 #define PDE_INDEX(addr)  (((uintptr_t)(addr) >> PAGING_PDE_SHIFT) & 0x3FFu) // Index: bits 22-31
 #define PTE_INDEX(addr)  (((uintptr_t)(addr) >> PAGING_PTE_SHIFT) & 0x3FFu) // Index: bits 12-21
-#define PAGE_OFFSET(addr) ((uintptr_t)(addr) & (PAGE_SIZE - 1))             // Offset: bits 0-11
+#define PAGE_OFFSET(addr) ((uintptr_t)(addr) & (PAGE_SIZE - 1))           // Offset: bits 0-11
 
 // Calculate index based on KERNEL_SPACE_VIRT_START (ensure it's defined first)
 #define KERNEL_PDE_INDEX PDE_INDEX(KERNEL_SPACE_VIRT_START) // Index of the PDE covering the kernel base
@@ -136,6 +143,10 @@ extern "C" {
 #endif
 #ifndef TEMP_MAP_ADDR_PF
 #define TEMP_MAP_ADDR_PF     (KERNEL_SPACE_VIRT_START - 5u * PAGE_SIZE) // Example
+#endif
+// Reuse one of the above for the generic temporary map if desired, or keep TEMP_MAP_ADDR_GENERIC
+#ifndef TEMP_MAP_ADDR_GENERIC
+#define TEMP_MAP_ADDR_GENERIC TEMP_MAP_ADDR_PF // Use TEMP_MAP_ADDR_PF as the generic one
 #endif
 
 
@@ -203,7 +214,7 @@ int paging_get_physical_address(uint32_t *page_directory_phys, uintptr_t vaddr, 
 int paging_map_single_4k(uint32_t *page_directory_phys, uintptr_t vaddr, uintptr_t paddr, uint32_t flags);
 
 // *** ADDED PROTOTYPE HERE ***
-void copy_kernel_pde_entries(uint32_t *new_pd_virt);
+void copy_kernel_pde_entries(uint32_t *new_pd_virt); // Confirmed void return type
 
 // <<< ADDED TEMPORARY MAPPING PROTOTYPES >>>
 /**
