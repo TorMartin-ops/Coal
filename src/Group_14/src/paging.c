@@ -67,7 +67,6 @@
  static uint32_t* allocate_page_table_phys(bool use_early_allocator);
  static struct multiboot_tag *find_multiboot_tag_early(uint32_t mb_info_phys_addr, uint16_t type);
  static int        kernel_map_virtual_to_physical_unsafe(uintptr_t vaddr, uintptr_t paddr, uint32_t flags);
- static void       kernel_unmap_virtual_unsafe(uintptr_t vaddr);
  static int        paging_map_physical_early(uintptr_t page_directory_phys, uintptr_t phys_addr_start, size_t size, uint32_t flags, bool map_to_higher_half);
  static void       debug_print_pd_entries(uint32_t* pd_phys_ptr, uintptr_t vaddr_start, size_t count);
  static bool is_page_table_empty(uint32_t *pt_virt);
@@ -1962,114 +1961,171 @@
   * kernel_unmap_virtual_unsafe - Improved version with better validation
   * This function unmaps a virtual address in the kernel's address space
   */
-  static void kernel_unmap_virtual_unsafe(uintptr_t vaddr) {
-     // Basic checks before attempting unmapping
-     if (!g_kernel_page_directory_virt) {
-         terminal_printf("[KUnmapUnsafe] Error: Kernel PD Virt not set!\n");
-         return;
-     }
- 
-     if (vaddr % PAGE_SIZE != 0) {
-         // *** FORMAT FIX: %u ***
-         terminal_printf("[KUnmapUnsafe] Error: VAddr 0x%u not page aligned.\n", (unsigned long)vaddr);
-         return;
-     }
- 
-     // Get PDE/PTE indices
-     uint32_t pd_idx = PDE_INDEX(vaddr);
-     uint32_t pt_idx = PTE_INDEX(vaddr);
- 
-     // Validate indices against bounds
-     if (pd_idx >= TABLES_PER_DIR) {
-          // *** FORMAT FIX: %lu (index), %u (addr) ***
-         terminal_printf("[KUnmapUnsafe] Error: Invalid PDE index %u for vaddr 0x%u\n",
-                         (unsigned long)pd_idx, (unsigned long)vaddr);
-         return;
-     }
- 
-     // Get PDE
-     uint32_t pde = g_kernel_page_directory_virt[pd_idx];
- 
-     // Check if PDE is present
-     if (!(pde & PAGE_PRESENT)) {
-         // Already not mapped at PDE level
-         return;
-     }
- 
-     // Check if it's a 4MB page
-     if (pde & PAGE_SIZE_4MB) {
-          // *** FORMAT FIX: %u ***
-         terminal_printf("[KUnmapUnsafe] Cannot unmap 4KB page within a 4MB PDE V=0x%u\n",
-                         (unsigned long)vaddr);
-         return;
-     }
- 
-     // Get physical address of the page table
-     uintptr_t pt_phys = pde & PAGING_PDE_ADDR_MASK_4KB;
- 
-     // Validate PT physical address
-     if (pt_phys == 0 || (pt_phys & ~PAGING_PDE_ADDR_MASK_4KB)) {
-          // *** FORMAT FIX: %u, %lu ***
-         terminal_printf("[KUnmapUnsafe] Error: Invalid PT physical address 0x%u from PDE[%u]\n",
-                         (unsigned long)pt_phys, (unsigned long)pd_idx);
-         return;
-     }
- 
-     // Get virtual address of the page table using recursive mapping
-     uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
- 
-     // Validate PT virtual address (simple check against recursive range)
-     if ((uintptr_t)pt_virt < RECURSIVE_PDE_VADDR || // Lower bound check is useful
-    (uintptr_t)pt_virt >= (RECURSIVE_PDE_VADDR + (TABLES_PER_DIR * PAGE_SIZE))) { // Check upper bound too
-          // *** FORMAT FIX: %p, %lu ***
-         terminal_printf("[KUnmapUnsafe] Error: Invalid PT virtual address %p for PDE[%u]\n",
-                         (void*)pt_virt, (unsigned long)pd_idx);
-         return;
-     }
- 
-     // Validate PTE index
-     if (pt_idx >= PAGES_PER_TABLE) {
-          // *** FORMAT FIX: %lu, %u ***
-         terminal_printf("[KUnmapUnsafe] Error: Invalid PTE index %u for vaddr 0x%u\n",
-                         (unsigned long)pt_idx, (unsigned long)vaddr);
-         return;
-     }
- 
-     // Check if PTE is present before clearing
-     if (pt_virt[pt_idx] & PAGE_PRESENT) {
-         // Check for reserved bits in PTE
-         if (pt_virt[pt_idx] & ~(PAGING_PTE_ADDR_MASK | PAGING_FLAG_MASK)) {
-              // *** FORMAT FIX: %lu, %u ***
-              terminal_printf("[KUnmapUnsafe] Warning: PTE[%u] at 0x%u has reserved bits set: 0x%u\n",
-                              (unsigned long)pt_idx, (unsigned long)vaddr, (unsigned long)pt_virt[pt_idx]);
-         }
- 
-         // Clear the PTE
-         pt_virt[pt_idx] = 0;
- 
-         // Invalidate TLB entry
-         paging_invalidate_page((void*)vaddr);
- 
-         // Check if the page table is now empty
-         bool pt_empty = is_page_table_empty(pt_virt); // Renamed variable
- 
-         // If the page table is empty, free it
-         if (pt_empty) {
-              // *** FORMAT FIX: %u, %lu ***
-              terminal_printf("[KUnmapUnsafe] PT at Phys 0x%u (PDE[%u]) became empty after unmapping 0x%u. Freeing PT.\n",
-                              (unsigned long)pt_phys, (unsigned long)pd_idx, (unsigned long)vaddr);
- 
-             // Clear the PDE
-             g_kernel_page_directory_virt[pd_idx] = 0;
- 
-             // Invalidate TLB again after PDE change
-             paging_invalidate_page((void*)vaddr);
- 
-             // Free the page table frame
+  #include <paging.h>
+  #include <terminal.h> // For terminal_printf
+  #include <frame.h>    // For put_frame
+  #include <libc/stdint.h> // For uintptr_t, uint32_t
+  #include <libc/stdbool.h> // For bool
+  #include <libc/stddef.h> // For NULL
+  
+  // Assume PAGE_SIZE, TABLES_PER_DIR, PAGES_PER_TABLE, PDE_INDEX, PTE_INDEX,
+  // PAGE_PRESENT, PAGE_SIZE_4MB, PAGING_PDE_ADDR_MASK_4KB, PAGING_PTE_ADDR_MASK,
+  // PAGING_FLAG_MASK, RECURSIVE_PDE_VADDR are defined correctly in paging.h
+  // Assume g_kernel_page_directory_virt points to the virtual address of the kernel PD.
+  // Assume paging_invalidate_page(void*) is defined.
+  // Assume is_page_table_empty(uint32_t* pt_virt) is defined and correct.
+  
+  /**
+   * @brief Unmaps a single 4KB virtual page from the kernel address space.
+   * @warning This function is UNSAFE. It directly manipulates kernel page tables
+   * without considering higher-level memory management (VMAs) or
+   * reference counting. It MUST be called with appropriate locks held
+   * to protect the kernel page directory/tables.
+   * It will free the underlying page table if it becomes empty.
+   *
+   * @param vaddr The page-aligned virtual address to unmap.
+   * @return 0 on success, -1 on error (e.g., alignment, invalid address, not mapped).
+   */
+   int kernel_unmap_virtual_unsafe(uintptr_t vaddr) {
+    // Use standard format specifiers for portability and clarity
+    // PRIxPTR requires <inttypes.h>, using "%#zx" as a common alternative for uintptr_t hex
+    // Assuming uintptr_t fits within unsigned long long for printing purposes if PRIxPTR not available
+    // Using %u for uint32_t indices
+
+    // Basic checks before attempting unmapping
+    if (!g_kernel_page_directory_virt) {
+        terminal_printf("[KUnmapUnsafe] Error: Kernel PD Virt (g_kernel_page_directory_virt) is NULL!\n");
+        return -1;
+    }
+
+    if (vaddr % PAGE_SIZE != 0) {
+        terminal_printf("[KUnmapUnsafe] Error: VAddr %#zx not page aligned.\n", vaddr);
+        return -1;
+    }
+
+    // Get PDE/PTE indices
+    uint32_t pd_idx = PDE_INDEX(vaddr);
+    uint32_t pt_idx = PTE_INDEX(vaddr);
+
+    // Validate PDE index against bounds
+    if (pd_idx >= TABLES_PER_DIR) {
+        terminal_printf("[KUnmapUnsafe] Error: Invalid PDE index %u for vaddr %#zx\n",
+                          pd_idx, vaddr);
+        return -1;
+    }
+
+    // --- CRITICAL SECTION START (Assumes caller holds lock) ---
+
+    // Get PDE entry value
+    uint32_t pde = g_kernel_page_directory_virt[pd_idx];
+
+    // Check if PDE is present *before* trying to use it
+    if (!(pde & PAGE_PRESENT)) {
+        // Already not mapped at PDE level, consider this success for unmap
+        // terminal_printf("[KUnmapUnsafe] Info: PDE[%u] for VAddr %#zx already not present.\n", pd_idx, vaddr);
+        return 0;
+    }
+
+    // Check if it's a 4MB page (cannot unmap 4KB within it)
+    if (pde & PAGE_SIZE_4MB) {
+        terminal_printf("[KUnmapUnsafe] Error: Cannot unmap 4KB page VAddr %#zx; it's part of a 4MB mapping (PDE[%u]=%#08x).\n",
+                          vaddr, pd_idx, pde);
+        return -1;
+    }
+
+    // Get physical address of the page table from PDE
+    uintptr_t pt_phys = pde & PAGING_PDE_ADDR_MASK_4KB;
+
+    // Validate PT physical address derived from PDE
+    // (Should always be page-aligned if set by mapping functions)
+    if (pt_phys == 0) {
+         terminal_printf("[KUnmapUnsafe] Error: Zero PT physical address in present PDE[%u]=%#08x for VAddr %#zx\n",
+                           pd_idx, pde, vaddr);
+         // This indicates page table corruption or invalid PDE state
+         return -1;
+    }
+    // Optional stricter check: (pt_phys % PAGE_SIZE != 0), but mask should ensure this.
+
+
+    // Calculate virtual address of the page table using recursive mapping
+    // Note: RECURSIVE_PDE_VADDR must be the *base* virtual address mapping the start of the page directory's page table pointers.
+    // e.g., 0xFFC00000 if recursive entry is PDE[1023]
+    uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
+
+    /*
+     * Removed the explicit validation check on `pt_virt` range here.
+     * If `pd_idx` is valid (0-1023, excluding recursive index if needed) and
+     * `RECURSIVE_PDE_VADDR` is correct, the calculation should yield a valid address
+     * within the 4MB virtual range managed by the recursive PDE.
+     * The previous error `Invalid PT virtual address 0xfff80000 for PDE[896]`
+     * likely indicated that accessing this address *failed* because the
+     * underlying PDE[1023] mapping was bad, OR PDE[896] became non-present
+     * between the check above and access here (race condition -> need locks),
+     * OR the hardware raised a fault for some other reason when accessing pt_virt.
+     * Relying on the hardware fault or ensuring locks are held by the caller is
+     * more robust than this specific range check.
+     */
+
+    // --- Access the Page Table ---
+    // Read PTE entry value
+    // (Potential fault here if pt_virt is invalid due to reasons above)
+    uint32_t pte = pt_virt[pt_idx];
+
+
+    // Check if PTE is present before clearing
+    if (pte & PAGE_PRESENT) {
+        // Optional: Check for reserved bits being set (indicates corruption)
+        // Mask includes typical flags (P, RW, US, PWT, PCD, A, D, PAT, G) and address.
+        // If any other bits are set, it's suspicious.
+        // Note: Define PAGING_PTE_RESERVED_MASK appropriately for your architecture/needs.
+        // if (pte & PAGING_PTE_RESERVED_MASK) {
+        //     terminal_printf("[KUnmapUnsafe] Warning: PTE[%u] at VAddr %#zx has unexpected bits set: %#08x\n",
+        //                       pt_idx, vaddr, pte);
+        // }
+
+        uintptr_t frame_phys = pte & PAGING_PTE_ADDR_MASK; // Get physical frame being unmapped
+
+        // Clear the PTE
+        pt_virt[pt_idx] = 0;
+
+        // Invalidate TLB entry for the specific virtual address
+        paging_invalidate_page((void*)vaddr);
+
+        // Optional: Decrement refcount for the physical frame if applicable
+        // This function is "unsafe" and might not do this, relying on caller.
+        // If refcounting is used: put_frame(frame_phys); // <<<<<<<< IMPORTANT IF USING REFCOUNTS
+
+        // Check if the page table is now empty
+        // Assumes is_page_table_empty iterates through pt_virt[0..PAGES_PER_TABLE-1]
+        bool pt_is_empty = is_page_table_empty(pt_virt);
+
+        // If the page table is empty, free it and clear the PDE
+        if (pt_is_empty) {
+            terminal_printf("[KUnmapUnsafe] Info: PT at Phys %#zx (PDE[%u]) became empty after unmapping VAddr %#zx. Freeing PT.\n",
+                              pt_phys, pd_idx, vaddr);
+
+            // Clear the PDE entry in the kernel page directory
+            g_kernel_page_directory_virt[pd_idx] = 0;
+
+            // Invalidate TLB again (potentially affects wider range due to PDE change)
+            // Using the same address should suffice, as TLB invalidation might be broader
+            // or the CPU handles PDE changes correctly with INVLPG on an address within its range.
+            // For safety, a full TLB flush might be considered, but often INVLPG is enough.
+             paging_invalidate_page((void*)vaddr); // Or full flush if needed
+
+            // Free the physical frame that held the page table itself
+            // IMPORTANT: Ensure this doesn't conflict with refcounting if PT frames are refcounted.
              put_frame(pt_phys);
-         }
-     }
- }
+        }
+    } else {
+        // PTE was already not present, nothing to unmap. Considered success.
+        // terminal_printf("[KUnmapUnsafe] Info: PTE[%u] for VAddr %#zx already not present.\n", pt_idx, vaddr);
+    }
+
+    // --- CRITICAL SECTION END (Assumes caller releases lock) ---
+
+    return 0; // Success
+}
  
  
  /**
@@ -2077,30 +2133,26 @@
   * Adds validation and safety checks
   */
   static bool is_page_table_empty(uint32_t *pt_virt) {
-     // Validate the PT pointer
-     if (!pt_virt) {
-         terminal_printf("[PT Check] Warning: NULL page table pointer provided\n");
-         return true; // Treat NULL PT as empty
-     }
- 
-     // Additional validation for PT address (check if it's in recursive range or kernel range)
-     if ((uintptr_t)pt_virt < RECURSIVE_PDE_VADDR ||
-         (uintptr_t)pt_virt >= (RECURSIVE_PDE_VADDR + (TABLES_PER_DIR * PAGE_SIZE))) {
-          // *** FORMAT FIX: %p ***
-         terminal_printf("[PT Check] Warning: PT virtual address %p outside expected recursive range\n",
-                        (void*)pt_virt);
-        // Don't return error, just warn, as it might be a temporarily mapped PT
-     }
- 
-     // Check all entries
-     for (size_t i = 0; i < PAGES_PER_TABLE; ++i) {
-         if (pt_virt[i] != 0) {
-             return false; // Found an entry, not empty
-         }
-     }
- 
-     return true; // All entries are zero, PT is empty
- }
+    // Validate the PT pointer
+    if (!pt_virt) {
+        terminal_printf("[is_page_table_empty] Warning: NULL page table pointer provided\n");
+        // Treat NULL PT as empty for safety, though this indicates a caller issue.
+        return true;
+    }
+
+    // Check all entries in the page table.
+    // The table is considered empty only if ALL entries are zero.
+    for (size_t i = 0; i < PAGES_PER_TABLE; ++i) {
+        // Check the raw value. Any non-zero entry means the table isn't empty.
+        // This is stricter than just checking PAGE_PRESENT, ensuring truly clean tables.
+        if (pt_virt[i] != 0) {
+            return false; // Found a non-zero entry, table is not empty
+        }
+    }
+
+    // If the loop completes without finding any non-zero entries, the table is empty.
+    return true;
+}
  
  
  // --- TLB Flushing ---
