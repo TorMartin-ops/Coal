@@ -1,45 +1,33 @@
-/**
- * @file fat_alloc.h
- * @brief Cluster allocation and management for FAT filesystem
- *
- * Provides functions to find, allocate, and free cluster chains within
- * the FAT filesystem. These functions directly manipulate the in-memory
- * FAT table and rely on external locking of the fat_fs_t structure.
- */
+// --- Add to fat_alloc.h ---
 
- #ifndef FAT_ALLOC_H
- #define FAT_ALLOC_H
- 
- #include "fat_core.h" // For fat_fs_t definition
- #include "fs_errno.h" // For error codes
- 
- /**
-  * @brief Allocates a new cluster and optionally links it to a previous one.
-  *
-  * Finds the first available free cluster in the FAT table, marks it as the
-  * end-of-chain (EOC), and optionally updates the entry for the
-  * 'previous_cluster' to point to the newly allocated one.
-  *
-  * @param fs Pointer to the FAT filesystem structure. Assumed locked by caller.
-  * @param previous_cluster The cluster number to link from (use 0 if allocating
-  * the first cluster in a chain).
-  * @return The cluster number of the newly allocated cluster (>= 2),
-  * or 0 if no free clusters are available or an error occurred.
-  */
- uint32_t fat_allocate_cluster(fat_fs_t *fs, uint32_t previous_cluster);
- 
- /**
-  * @brief Frees an entire cluster chain starting from a given cluster.
-  *
-  * Iterates through the FAT table starting from 'start_cluster', marking each
-  * cluster in the chain as free (0) until the end-of-chain marker is reached.
-  *
-  * @param fs Pointer to the FAT filesystem structure. Assumed locked by caller.
-  * @param start_cluster The first cluster in the chain to free (must be >= 2).
-  * @return FS_SUCCESS (0) on success, or a negative FS_ERR_* code on failure
-  * (e.g., invalid start cluster, error reading/writing FAT). Note that
-  * it attempts to free as much as possible even if errors occur mid-chain.
-  */
- int fat_free_cluster_chain(fat_fs_t *fs, uint32_t start_cluster);
- 
- #endif /* FAT_ALLOC_H */
+#ifndef FAT_ALLOC_H
+#define FAT_ALLOC_H
+
+#include "fat_fs.h"     // For fat_fs_t, fat_dir_entry_t
+#include "types.h"      // For uint32_t etc.
+#include "fs_errno.h"   // For FS_SUCCESS etc.
+
+// Allocates a new cluster and optionally links it from a previous one.
+uint32_t fat_allocate_cluster(fat_fs_t *fs, uint32_t previous_cluster);
+
+// Frees an entire cluster chain starting from a given cluster.
+int fat_free_cluster_chain(fat_fs_t *fs, uint32_t start_cluster);
+
+// Creates a new file entry (including LFN and 8.3) in a parent directory.
+// Assumes parent directory exists and path resolves correctly up to the last component.
+// Does NOT allocate data clusters for the file itself (creates a 0-byte file).
+int fat_create_file(fat_fs_t *fs,
+                    const char *path,          // Full path to the new file
+                    uint8_t attributes,       // Attributes for the new file (e.g., FAT_ATTR_ARCHIVE)
+                    fat_dir_entry_t *entry_out, // Output: Populated 8.3 entry for the new file
+                    uint32_t *dir_cluster_out, // Output: Cluster where the new entry was written
+                    uint32_t *dir_offset_out); // Output: Byte offset of the 8.3 entry within its dir
+
+// Truncates a file to zero length. Frees associated cluster chain.
+// Updates the directory entry on disk.
+int fat_truncate_file(fat_fs_t *fs,
+                      fat_dir_entry_t *entry, // The 8.3 entry struct (will be modified in memory)
+                      uint32_t entry_dir_cluster, // Cluster containing this entry
+                      uint32_t entry_offset_in_dir); // Byte offset of this 8.3 entry
+
+#endif // FAT_ALLOC_H

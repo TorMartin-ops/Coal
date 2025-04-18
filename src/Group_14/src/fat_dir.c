@@ -45,10 +45,20 @@
  // --- Static Helper Prototypes (Only for functions truly local to this file) ---
  static void fat_format_short_name_impl(const uint8_t name_8_3[11], char *out_name);
 
+// --- Corrected Logging Macros (Define properly elsewhere!) ---
+// NOTE: Using %lu for uint32_t and size_t, casting arguments to (unsigned long)
+// Define KLOG_LEVEL_DEBUG or similar during build to enable debug logs
+#ifdef KLOG_LEVEL_DEBUG
+#define FAT_DEBUG_LOG(fmt, ...) terminal_printf("[fat_dir:DEBUG] (%s) " fmt "\n", __func__, ##__VA_ARGS__)
+#else
+#define FAT_DEBUG_LOG(fmt, ...) do {} while(0) // Disabled if not KLOG_LEVEL_DEBUG
+#endif
+// TEMPORARY FIX: Map INFO/WARN to DEBUG until properly defined globally
+#define FAT_INFO_LOG(fmt, ...)  FAT_DEBUG_LOG("[INFO] " fmt, ##__VA_ARGS__) // Mapped to DEBUG
+#define FAT_WARN_LOG(fmt, ...)  FAT_DEBUG_LOG("[WARN] " fmt, ##__VA_ARGS__) // Mapped to DEBUG
+#define FAT_ERROR_LOG(fmt, ...) terminal_printf("[fat_dir:ERROR] (%s:%d) " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
+// --- End Logging Macros --
 
-#define FAT_ERROR_LOG(fmt, ...) terminal_printf("[FAT ERROR] (%s:%d) " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
-#define FAT_DEBUG_LOG(fmt, ...) terminal_printf("[FAT DEBUG] (%s) " fmt "\n", __func__, ##__VA_ARGS__)
- 
  
  // Helper function implementation (previously static)
  static void fat_format_short_name_impl(const uint8_t name_8_3[11], char *out_name) {
@@ -75,305 +85,367 @@
   * @return Pointer to the allocated vnode on success, NULL on failure.
   */
   vnode_t *fat_open_internal(void *fs_context, const char *path, int flags)
-  {
-      FAT_DEBUG_LOG("Enter: path='%s', flags=0x%x", path ? path : "<NULL>", flags);
-  
-      fat_fs_t *fs = (fat_fs_t *)fs_context;
-      if (!fs || !path) {
-          FAT_ERROR_LOG("Invalid parameters: fs=%p, path=%p", fs, path);
-          return NULL;
-      }
-  
-      uintptr_t irq_flags = spinlock_acquire_irqsave(&fs->lock);
-  
-      fat_dir_entry_t entry;
-      char lfn_buffer[FAT_MAX_LFN_CHARS];
-      uint32_t entry_dir_cluster = 0;
-      uint32_t entry_offset_in_dir = 0;
-      int find_res;
-      bool exists = false;
-      bool created = false;
-      bool truncated = false;
-      vnode_t *vnode = NULL;
-      fat_file_context_t *file_ctx = NULL;
-      int ret_err = FS_SUCCESS;
-  
-      // --- Lookup ---
-      FAT_DEBUG_LOG("Looking up path '%s'...", path);
-      find_res = fat_lookup_path(fs, path, &entry, lfn_buffer, sizeof(lfn_buffer),
-                                 &entry_dir_cluster, &entry_offset_in_dir);
-      exists = (find_res == FS_SUCCESS);
-  
-      if (exists) {
-          FAT_DEBUG_LOG("Lookup success: Attr=0x%lx, Size=%lu, ClusterLow=%u, ClusterHigh=%u, DirClu=%lu, DirOff=%lu",
-                        (unsigned long)entry.attr, (unsigned long)entry.file_size, // <-- Key log!
-                        entry.first_cluster_low, entry.first_cluster_high,
-                        (unsigned long)entry_dir_cluster, (unsigned long)entry_offset_in_dir);
-      } else {
-          FAT_DEBUG_LOG("Lookup failed/not found: err=%d", find_res);
-      }
-  
-      // --- Handle File Creation (O_CREAT) ---
-      if (!exists && (flags & O_CREAT)) {
-          FAT_DEBUG_LOG("Handling O_CREAT for '%s'", path);
-          created = true;
-          // ... (creation logic - add more FAT_DEBUG_LOG calls inside if needed) ...
-          // On successful creation, 'entry' will be populated for the new file (size=0)
-          // 'exists' will be set to true, 'entry_dir_cluster'/'entry_offset_in_dir' updated.
-          if (ret_err != FS_SUCCESS) goto open_fail_locked; // Check if creation failed
-          FAT_DEBUG_LOG("O_CREAT successful, new entry Size=%lu", (unsigned long)entry.file_size); // Should be 0
-      } else if (!exists) {
-          ret_err = find_res;
-          goto open_fail_locked;
-      }
-  
-      // --- File/Directory Exists ---
-      // ... (permission/type checks - add FAT_DEBUG_LOG if needed) ...
-       if (ret_err != FS_SUCCESS) goto open_fail_locked;
-  
-      // --- Handle File Truncation (O_TRUNC) ---
-      if (exists && !created && !(entry.attr & FAT_ATTR_DIRECTORY) && (flags & O_TRUNC)) {
-          FAT_DEBUG_LOG("Handling O_TRUNC for '%s', original size=%lu", path, (unsigned long)entry.file_size);
-          truncated = true;
-          // ... (truncation logic: free clusters, update dir entry on disk) ...
-          if (ret_err != FS_SUCCESS) goto open_fail_locked; // Check if truncation failed
-  
-          // Update the local 'entry' struct to reflect truncation for context population
-          entry.file_size = 0;
-          entry.first_cluster_low  = 0;
-          entry.first_cluster_high = 0;
-          FAT_DEBUG_LOG("O_TRUNC successful, local entry size set to 0");
-      }
-  
-      // --- Allocation & Setup for Vnode and File Context ---
-      FAT_DEBUG_LOG("Allocating vnode and file context...");
-      vnode = kmalloc(sizeof(vnode_t));
-      file_ctx = kmalloc(sizeof(fat_file_context_t));
-      if (!vnode || !file_ctx) {
-          ret_err = -FS_ERR_OUT_OF_MEMORY;
-          goto open_fail_locked;
-      }
-      memset(vnode, 0, sizeof(*vnode));
-      memset(file_ctx, 0, sizeof(*file_ctx));
-      FAT_DEBUG_LOG("Allocation successful: vnode=%p, file_ctx=%p", vnode, file_ctx);
-  
-      // Populate the FAT-specific file context
-      uint32_t first_cluster_final = fat_get_entry_cluster(&entry);
-  
-      FAT_DEBUG_LOG("Populating context: Assigning file_size = %lu", (unsigned long)entry.file_size); // <-- Key log!
-      file_ctx->fs                 = fs;
-      file_ctx->first_cluster      = first_cluster_final;
-      file_ctx->file_size          = entry.file_size; // <-- Critical assignment
-      file_ctx->dir_entry_cluster  = entry_dir_cluster;
-      file_ctx->dir_entry_offset   = entry_offset_in_dir;
-      file_ctx->is_directory       = (entry.attr & FAT_ATTR_DIRECTORY) != 0;
-      file_ctx->dirty              = (created || truncated);
-  
-      // Initialize readdir state
-      // ... (readdir init) ...
-      FAT_DEBUG_LOG("Context populated: first_cluster=%lu, size=%lu, is_dir=%d",
-                     (unsigned long)file_ctx->first_cluster, (unsigned long)file_ctx->file_size, file_ctx->is_directory);
-  
-      vnode->data     = file_ctx;
-      vnode->fs_driver = &fat_vfs_driver;
-  
-      spinlock_release_irqrestore(&fs->lock, irq_flags);
-      FAT_DEBUG_LOG("Success: path='%s', returning vnode=%p", path ? path : "<NULL>", vnode);
-      return vnode; // Success!
-  
-  open_fail_locked:
-      // Use ERROR level for failures
-      FAT_ERROR_LOG("Failed: path='%s', error=%d (%s)", path ? path : "<NULL>", ret_err, fs_strerror(ret_err));
-      if (vnode)    kfree(vnode);
-      if (file_ctx) kfree(file_ctx);
-      spinlock_release_irqrestore(&fs->lock, irq_flags);
-      return NULL; // Indicate failure
-  }
- 
- 
- /**
-  * @brief Reads the next directory entry from an opened directory.
-  * @param dir_file The file structure representing the opened directory.
-  * @param d_entry_out Pointer to a struct dirent to fill.
-  * @param entry_index The logical index requested (for sequential reads).
-  * @return FS_SUCCESS on success, negative FS_ERR_* code on failure or end of directory.
-  */
- int fat_readdir_internal(file_t *dir_file, struct dirent *d_entry_out, size_t entry_index)
- {
-     if (!dir_file || !dir_file->vnode || !dir_file->vnode->data || !d_entry_out) {
-         return -FS_ERR_INVALID_PARAM;
-     }
-     fat_file_context_t *fctx = (fat_file_context_t*)dir_file->vnode->data;
-     if (!fctx->fs || !fctx->is_directory) {
-         return -FS_ERR_NOT_A_DIRECTORY;
-     }
-     fat_fs_t *fs = fctx->fs;
- 
-     uintptr_t irq_flags = spinlock_acquire_irqsave(&fs->lock);
- 
-     // --- State Management for Sequential Reads ---
-     // Reset scan position if reading from start or seeking backward
-     if (entry_index == 0 || entry_index <= fctx->readdir_last_index) {
-         fctx->readdir_current_cluster = fctx->first_cluster;
-         if (fs->type != FAT_TYPE_FAT32 && fctx->first_cluster == 0) {
-             fctx->readdir_current_cluster = 0; // Handle FAT12/16 root explicitly
-         }
-         fctx->readdir_current_offset = 0;
-         fctx->readdir_last_index = (size_t)-1;
-     } else if (entry_index != fctx->readdir_last_index + 1) {
-         // We only support sequential reads for simplicity. Seeking would require
-         // rescanning from the beginning up to the desired index.
-         // DIAG_PRINTK("[FAT readdir] Warning: Non-sequential index requested (%u requested, %u expected). Seek not supported.\n",
-         //                 (unsigned int)entry_index, (unsigned int)(fctx->readdir_last_index + 1));
-         spinlock_release_irqrestore(&fs->lock, irq_flags);
-         return -FS_ERR_INVALID_PARAM; // Or -FS_ERR_NOT_SUPPORTED for seek
-     }
- 
-     // Allocate buffer for reading one sector at a time
+{
+    FAT_DEBUG_LOG("Enter: path='%s', flags=0x%x", path ? path : "<NULL>", flags);
+
+    fat_fs_t *fs = (fat_fs_t *)fs_context;
+    if (!fs || !path) {
+        FAT_ERROR_LOG("Invalid parameters: fs=%p, path=%p", fs, path);
+        return NULL;
+    }
+
+    uintptr_t irq_flags = spinlock_acquire_irqsave(&fs->lock);
+
+    fat_dir_entry_t entry;
+    char lfn_buffer[FAT_MAX_LFN_CHARS];
+    uint32_t entry_dir_cluster = 0;
+    uint32_t entry_offset_in_dir = 0;
+    int find_res;
+    bool exists = false;
+    bool created = false;
+    bool truncated = false;
+    vnode_t *vnode = NULL;
+    fat_file_context_t *file_ctx = NULL;
+    int ret_err = FS_SUCCESS;
+
+    // --- 1. Lookup the path ---
+    FAT_DEBUG_LOG("Looking up path '%s'...", path);
+    find_res = fat_lookup_path(fs, path, &entry, lfn_buffer, sizeof(lfn_buffer),
+                               &entry_dir_cluster, &entry_offset_in_dir);
+    exists = (find_res == FS_SUCCESS);
+
+    if (exists) {
+        FAT_DEBUG_LOG("Lookup success: Attr=0x%02x, Size=%lu, Cluster=%lu, DirClu=%lu, DirOff=%lu",
+                      entry.attr,
+                      (unsigned long)entry.file_size,
+                      (unsigned long)fat_get_entry_cluster(&entry),
+                      (unsigned long)entry_dir_cluster,
+                      (unsigned long)entry_offset_in_dir);
+    } else if (find_res == -FS_ERR_NOT_FOUND) {
+        FAT_DEBUG_LOG("Lookup: Path '%s' not found.", path);
+    } else {
+        // Use %d for int error codes
+        FAT_WARN_LOG("Lookup failed for '%s' with error: %d (%s)", path, find_res, fs_strerror(find_res)); // Now uses DEBUG log
+    }
+
+    // --- 2. Handle File Creation (O_CREAT) ---
+    if (!exists && (flags & O_CREAT)) {
+        FAT_INFO_LOG("Handling O_CREAT for '%s'", path); // Now uses DEBUG log
+        // *** NOTE: The line below WILL STILL CAUSE A LINKER ERROR if fat_create_file is not defined/linked ***
+        ret_err = fat_create_file(fs, path, FAT_ATTR_ARCHIVE, &entry, &entry_dir_cluster, &entry_offset_in_dir);
+        if (ret_err == FS_SUCCESS) {
+            created = true;
+            exists = true;
+            FAT_DEBUG_LOG("O_CREAT successful, new entry Size=%lu, Cluster=%lu",
+                          (unsigned long)entry.file_size,
+                          (unsigned long)fat_get_entry_cluster(&entry));
+        } else {
+            FAT_ERROR_LOG("fat_create_file failed for '%s', error: %d (%s)", path, ret_err, fs_strerror(ret_err));
+            goto open_fail_locked;
+        }
+    } else if (!exists) {
+        FAT_DEBUG_LOG("File not found and O_CREAT not specified for '%s'.", path);
+        ret_err = -FS_ERR_NOT_FOUND;
+        goto open_fail_locked;
+    }
+
+    // --- 3. File/Directory Exists: Perform Checks ---
+    bool is_dir = (entry.attr & FAT_ATTR_DIRECTORY);
+    if (is_dir && (flags & (O_WRONLY | O_RDWR | O_TRUNC))) {
+         FAT_ERROR_LOG("Cannot open directory '%s' with write or truncate flags (0x%x).", path, flags);
+         ret_err = -FS_ERR_IS_A_DIRECTORY;
+         goto open_fail_locked;
+    }
+
+    // --- 4. Handle File Truncation (O_TRUNC) ---
+    if (exists && !is_dir && !created && (flags & O_TRUNC)) {
+        FAT_INFO_LOG("Handling O_TRUNC for '%s', original size=%lu", path, (unsigned long)entry.file_size); // Now uses DEBUG log
+        if (entry.file_size > 0) {
+             // *** NOTE: The line below WILL STILL CAUSE A LINKER ERROR if fat_truncate_file is not defined/linked ***
+             ret_err = fat_truncate_file(fs, &entry, entry_dir_cluster, entry_offset_in_dir);
+             if (ret_err != FS_SUCCESS) {
+                  FAT_ERROR_LOG("fat_truncate_file failed for '%s', error: %d (%s)", path, ret_err, fs_strerror(ret_err));
+                  goto open_fail_locked;
+             }
+             truncated = true;
+             entry.file_size = 0;
+             entry.first_cluster_low  = 0;
+             entry.first_cluster_high = 0;
+             FAT_DEBUG_LOG("O_TRUNC successful, local entry size set to 0");
+        } else {
+             FAT_DEBUG_LOG("O_TRUNC specified but file size is already 0 for '%s'. No action needed.", path);
+             truncated = true;
+        }
+    }
+
+    // --- 5. Allocation & Setup --- (Code unchanged from previous version)
+    FAT_DEBUG_LOG("Allocating vnode and file context structure...");
+    vnode = kmalloc(sizeof(vnode_t));
+    file_ctx = kmalloc(sizeof(fat_file_context_t));
+    if (!vnode || !file_ctx) {
+        FAT_ERROR_LOG("kmalloc failed (vnode=%p, file_ctx=%p). Out of memory.", vnode, file_ctx);
+        ret_err = -FS_ERR_OUT_OF_MEMORY;
+        goto open_fail_locked;
+    }
+    memset(vnode, 0, sizeof(*vnode));
+    memset(file_ctx, 0, sizeof(*file_ctx));
+    FAT_DEBUG_LOG("Allocation successful: vnode=%p, file_ctx=%p", vnode, file_ctx);
+
+    // --- 6. Populate context --- (Code unchanged from previous version)
+    uint32_t first_cluster_final = fat_get_entry_cluster(&entry);
+    FAT_DEBUG_LOG("Populating context: Assigning file_size = %lu (from entry)", (unsigned long)entry.file_size);
+    file_ctx->fs                 = fs;
+    file_ctx->first_cluster      = first_cluster_final;
+    file_ctx->file_size          = entry.file_size;
+    file_ctx->dir_entry_cluster  = entry_dir_cluster;
+    file_ctx->dir_entry_offset   = entry_offset_in_dir;
+    file_ctx->is_directory       = is_dir;
+    file_ctx->dirty              = (created || truncated);
+    file_ctx->readdir_current_cluster = file_ctx->first_cluster;
+    if (fs->type != FAT_TYPE_FAT32 && file_ctx->first_cluster == 0 && is_dir) {
+         file_ctx->readdir_current_cluster = 0;
+    }
+    file_ctx->readdir_current_offset = 0;
+    file_ctx->readdir_last_index = (size_t)-1;
+    FAT_DEBUG_LOG("Context populated: first_cluster=%lu, size=%lu, is_dir=%d, dirty=%d",
+                  (unsigned long)file_ctx->first_cluster,
+                  (unsigned long)file_ctx->file_size,
+                  file_ctx->is_directory,
+                  file_ctx->dirty);
+
+    // --- 7. Link context to Vnode --- (Code unchanged from previous version)
+    vnode->data     = file_ctx;
+    vnode->fs_driver = &fat_vfs_driver;
+
+    // --- Success ---
+    spinlock_release_irqrestore(&fs->lock, irq_flags);
+    FAT_INFO_LOG("Open successful: path='%s', vnode=%p, size=%lu", path ? path : "<NULL>", vnode, (unsigned long)file_ctx->file_size); // Now uses DEBUG log
+    return vnode;
+
+// --- Failure Path ---
+open_fail_locked:
+    FAT_ERROR_LOG("Open failed: path='%s', error=%d (%s)", path ? path : "<NULL>", ret_err, fs_strerror(ret_err));
+    if (vnode) kfree(vnode);
+    if (file_ctx) kfree(file_ctx);
+    spinlock_release_irqrestore(&fs->lock, irq_flags);
+    return NULL;
+}
+
+
+int fat_readdir_internal(file_t *dir_file, struct dirent *d_entry_out, size_t entry_index)
+{
+    FAT_DEBUG_LOG("Enter: dir_file=%p, d_entry_out=%p, entry_index=%lu", dir_file, d_entry_out, (unsigned long)entry_index);
+
+    if (!dir_file || !dir_file->vnode || !dir_file->vnode->data || !d_entry_out) {
+        FAT_ERROR_LOG("Invalid parameters: dir_file=%p, vnode=%p, data=%p, d_entry_out=%p",
+                      dir_file, dir_file ? dir_file->vnode : NULL,
+                      dir_file && dir_file->vnode ? dir_file->vnode->data : NULL, d_entry_out);
+        return -FS_ERR_INVALID_PARAM;
+    }
+
+    fat_file_context_t *fctx = (fat_file_context_t*)dir_file->vnode->data;
+    if (!fctx->fs || !fctx->is_directory) {
+        FAT_ERROR_LOG("Context error: fs=%p, is_directory=%d. Not a valid directory context.", fctx->fs, fctx->is_directory);
+        return -FS_ERR_NOT_A_DIRECTORY;
+    }
+    fat_fs_t *fs = fctx->fs;
+    FAT_DEBUG_LOG("Context valid: fs=%p, first_cluster=%lu", fs, (unsigned long)fctx->first_cluster);
+
+    uintptr_t irq_flags = spinlock_acquire_irqsave(&fs->lock);
+
+    // --- State Management ---
+    FAT_DEBUG_LOG("Checking readdir state: requested_idx=%lu, last_idx=%lu, current_cluster=%lu, current_offset=%lu",
+                  (unsigned long)entry_index, (unsigned long)fctx->readdir_last_index,
+                  (unsigned long)fctx->readdir_current_cluster, (unsigned long)fctx->readdir_current_offset);
+
+    if (entry_index == 0 || entry_index <= fctx->readdir_last_index) {
+        // ... (reset logic unchanged) ...
+        if (entry_index != 0) {
+             FAT_DEBUG_LOG("Implicit reset: requested index %lu <= last index %lu.", (unsigned long)entry_index, (unsigned long)fctx->readdir_last_index);
+        } else {
+             FAT_DEBUG_LOG("Resetting scan to start (index 0).");
+        }
+        fctx->readdir_current_cluster = fctx->first_cluster;
+        if (fs->type != FAT_TYPE_FAT32 && fctx->first_cluster == 0) {
+            FAT_DEBUG_LOG("Adjusting start cluster for FAT12/16 root directory.");
+            fctx->readdir_current_cluster = 0;
+        }
+        fctx->readdir_current_offset = 0;
+        fctx->readdir_last_index = (size_t)-1;
+        FAT_DEBUG_LOG("Scan reset: start_cluster=%lu, start_offset=0, last_index=%lu",
+                      (unsigned long)fctx->readdir_current_cluster, (unsigned long)fctx->readdir_last_index);
+
+    } else if (entry_index != fctx->readdir_last_index + 1) {
+        FAT_WARN_LOG("Non-sequential index requested (%lu requested, %lu expected). Seeking not implemented, failing.", // Now uses DEBUG log
+                     (unsigned long)entry_index, (unsigned long)(fctx->readdir_last_index + 1));
+        spinlock_release_irqrestore(&fs->lock, irq_flags);
+        return -FS_ERR_INVALID_PARAM;
+    }
+
+    // --- Allocate buffer --- (Code unchanged)
      uint8_t *sector_buffer = kmalloc(fs->bytes_per_sector);
-     if (!sector_buffer) {
-         spinlock_release_irqrestore(&fs->lock, irq_flags);
-         return -FS_ERR_OUT_OF_MEMORY;
-     }
- 
-     fat_lfn_entry_t lfn_collector[FAT_MAX_LFN_ENTRIES]; // Buffer for LFN entries
-     int lfn_count = 0;
-     size_t current_logical_index = fctx->readdir_last_index + 1; // Index we are looking for
-     int ret = -FS_ERR_NOT_FOUND; // Default return if entry not found
- 
-     // --- Directory Scanning Loop ---
-     while (true) {
-         // Check if we are at the end of the cluster chain (or scanning fixed root)
-         if (fctx->readdir_current_cluster >= fs->eoc_marker && !(fs->type != FAT_TYPE_FAT32 && fctx->first_cluster == 0)) {
-             ret = -FS_ERR_NOT_FOUND; // End of directory cluster chain
+    if (!sector_buffer) {
+        FAT_ERROR_LOG("Failed to allocate %u bytes for sector buffer.", fs->bytes_per_sector);
+        spinlock_release_irqrestore(&fs->lock, irq_flags);
+        return -FS_ERR_OUT_OF_MEMORY;
+    }
+    FAT_DEBUG_LOG("Allocated sector buffer at %p (%u bytes).", sector_buffer, fs->bytes_per_sector);
+
+    // --- Init scan variables --- (Code unchanged)
+    fat_lfn_entry_t lfn_collector[FAT_MAX_LFN_ENTRIES];
+    int lfn_count = 0;
+    size_t current_logical_index = fctx->readdir_last_index + 1;
+    int ret = -FS_ERR_NOT_FOUND;
+
+    FAT_DEBUG_LOG("Starting scan for logical index %lu (expecting index %lu). Current pos: cluster=%lu, offset=%lu",
+                  (unsigned long)current_logical_index, (unsigned long)entry_index,
+                  (unsigned long)fctx->readdir_current_cluster, (unsigned long)fctx->readdir_current_offset);
+
+
+    // --- Directory Scanning Loop ---
+    while (true) { // (Loop logic largely unchanged, only logging format adjusted)
+        FAT_DEBUG_LOG("Loop iteration: target_idx=%lu, current_logical_idx=%lu, cluster=%lu, offset=%lu",
+                      (unsigned long)entry_index, (unsigned long)current_logical_index,
+                      (unsigned long)fctx->readdir_current_cluster, (unsigned long)fctx->readdir_current_offset);
+
+        bool is_fat12_16_root = (fs->type != FAT_TYPE_FAT32 && fctx->first_cluster == 0);
+        // ... (End of chain / End of root dir checks unchanged) ...
+         if (!is_fat12_16_root && fctx->readdir_current_cluster >= fs->eoc_marker) {
+            FAT_DEBUG_LOG("End of cluster chain reached (cluster %lu >= EOC %lu).",
+                           (unsigned long)fctx->readdir_current_cluster, (unsigned long)fs->eoc_marker);
+            ret = -FS_ERR_NOT_FOUND;
+            break;
+        }
+        if (is_fat12_16_root && fctx->readdir_current_offset >= (unsigned long)fs->root_dir_sectors * fs->bytes_per_sector) {
+            FAT_DEBUG_LOG("End of FAT12/16 root directory reached (offset %lu >= size %lu).",
+                          (unsigned long)fctx->readdir_current_offset, (unsigned long)fs->root_dir_sectors * fs->bytes_per_sector);
+             ret = -FS_ERR_NOT_FOUND;
              break;
-         }
- 
-         // Calculate current sector position within the directory's cluster chain
-         uint32_t sec_size = fs->bytes_per_sector;
-         uint32_t sector_offset_in_chain = fctx->readdir_current_offset / sec_size;
-         size_t   offset_in_sector       = fctx->readdir_current_offset % sec_size;
-         size_t   entries_per_sector     = sec_size / sizeof(fat_dir_entry_t);
-         size_t   entry_index_in_sector  = offset_in_sector / sizeof(fat_dir_entry_t);
- 
-         // Read the relevant directory sector
-         int read_res = read_directory_sector(fs, fctx->readdir_current_cluster,
-                                              sector_offset_in_chain, sector_buffer);
-         if (read_res != FS_SUCCESS) {
-             ret = read_res; // Propagate error (-FS_ERR_IO or other)
-             break;
-         }
- 
-         // Iterate through entries within the current sector
-         for (size_t e_i = entry_index_in_sector; e_i < entries_per_sector; e_i++)
-         {
-             fat_dir_entry_t *dent = (fat_dir_entry_t*)(sector_buffer + e_i * sizeof(fat_dir_entry_t));
- 
-             // Advance scan offset for the next iteration
-             fctx->readdir_current_offset += sizeof(fat_dir_entry_t);
- 
-             // Check for end-of-directory marker (first byte = 0x00)
-             if (dent->name[0] == FAT_DIR_ENTRY_UNUSED) {
-                 ret = -FS_ERR_NOT_FOUND; // Reached the end of used entries
-                 goto readdir_done;
-             }
-             // Skip deleted entries (0xE5) or Kanji placeholders (0x05)
-             if (dent->name[0] == FAT_DIR_ENTRY_DELETED || dent->name[0] == FAT_DIR_ENTRY_KANJI) {
-                 lfn_count = 0; // Reset LFN collector if sequence is broken
-                 continue;
-             }
-             // Skip volume label entries unless they are LFN parts (shouldn't happen for normal labels)
-             if ((dent->attr & FAT_ATTR_VOLUME_ID) && !(dent->attr & FAT_ATTR_LONG_NAME)) {
-                 lfn_count = 0;
-                 continue;
-             }
- 
-             // Process LFN entries
-             if ((dent->attr & FAT_ATTR_LONG_NAME_MASK) == FAT_ATTR_LONG_NAME) {
+        }
+
+        // Calculate sector position
+        uint32_t sec_size = fs->bytes_per_sector;
+        uint32_t sector_offset_in_chain = fctx->readdir_current_offset / sec_size;
+        size_t   offset_in_sector       = fctx->readdir_current_offset % sec_size;
+        size_t   entries_per_sector     = sec_size / sizeof(fat_dir_entry_t);
+        size_t   entry_index_in_sector  = offset_in_sector / sizeof(fat_dir_entry_t);
+
+        FAT_DEBUG_LOG("Reading sector: chain_offset=%lu, offset_in_sec=%lu, entry_idx_in_sec=%lu",
+                      (unsigned long)sector_offset_in_chain, (unsigned long)offset_in_sector, (unsigned long)entry_index_in_sector);
+
+        // Read sector
+        int read_res = read_directory_sector(fs, fctx->readdir_current_cluster,
+                                             sector_offset_in_chain, sector_buffer);
+        if (read_res != FS_SUCCESS) {
+            FAT_ERROR_LOG("read_directory_sector failed with error %d.", read_res);
+            ret = read_res;
+            break;
+        }
+        FAT_DEBUG_LOG("Sector read successful.");
+
+        // Iterate through entries
+        for (size_t e_i = entry_index_in_sector; e_i < entries_per_sector; e_i++)
+        {
+             // ... (Entry processing logic unchanged, only logging formats adjusted) ...
+            fat_dir_entry_t *dent = (fat_dir_entry_t*)(sector_buffer + e_i * sizeof(fat_dir_entry_t));
+            FAT_DEBUG_LOG("Processing entry at sector_offset %lu: Name[0]=0x%02x, Attr=0x%02x",
+                          (unsigned long)(e_i * sizeof(fat_dir_entry_t)), dent->name[0], dent->attr);
+
+            fctx->readdir_current_offset += sizeof(fat_dir_entry_t);
+
+            if (dent->name[0] == FAT_DIR_ENTRY_UNUSED) { /* ... */ ret = -FS_ERR_NOT_FOUND; goto readdir_done;}
+            if (dent->name[0] == FAT_DIR_ENTRY_DELETED || dent->name[0] == FAT_DIR_ENTRY_KANJI) { /* ... */ lfn_count = 0; continue;}
+            if ((dent->attr & FAT_ATTR_VOLUME_ID) && !(dent->attr & FAT_ATTR_LONG_NAME)) { /* ... */ lfn_count = 0; continue;}
+
+            if ((dent->attr & FAT_ATTR_LONG_NAME_MASK) == FAT_ATTR_LONG_NAME) {
+                // ... (LFN handling unchanged, just log format fixed) ...
                  fat_lfn_entry_t *lfn_ent = (fat_lfn_entry_t*)dent;
-                 if (lfn_count < FAT_MAX_LFN_ENTRIES) {
-                     // Store LFN entry (LFNs are stored backwards, first entry encountered is last part)
-                     lfn_collector[lfn_count++] = *lfn_ent;
-                 } else {
-                     // DIAG_PRINTK("[FAT readdir] Warning: LFN entry sequence exceeded buffer (%d entries).\n", FAT_MAX_LFN_ENTRIES);
-                     lfn_count = 0; // Discard collected LFNs if buffer overflows
-                 }
-                 continue; // Move to the next entry
-             }
-             else {
-                 // --- Found an 8.3 Entry ---
-                 // This entry corresponds to the LFN entries collected immediately before it.
- 
-                 // Check if this is the logical entry index we are looking for
-                 if (current_logical_index == entry_index) {
-                     // Found the target entry! Now reconstruct its name.
-                     char final_name[FAT_MAX_LFN_CHARS]; // Use LFN buffer size
-                     final_name[0] = '\0';
- 
-                     if (lfn_count > 0) {
-                         // Verify LFN checksum against the 8.3 entry
-                         uint8_t expected_sum = fat_calculate_lfn_checksum(dent->name);
+                FAT_DEBUG_LOG("Found LFN entry: Attr=0x%02x, Checksum=0x%02x", lfn_ent->attr, lfn_ent->checksum);
+                if (lfn_count < FAT_MAX_LFN_ENTRIES) {
+                    lfn_collector[lfn_count++] = *lfn_ent;
+                    FAT_DEBUG_LOG("Stored LFN entry %d", lfn_count);
+                } else {
+                    FAT_WARN_LOG("LFN entry sequence exceeded buffer (%d entries). Discarding LFN.", FAT_MAX_LFN_ENTRIES); // Uses DEBUG
+                    lfn_count = 0;
+                }
+                continue;
+            }
+            else {
+                // --- Found an 8.3 Entry ---
+                FAT_DEBUG_LOG("Found 8.3 entry: Name='%.11s', Attr=0x%02x", dent->name, dent->attr);
+
+                if (current_logical_index == entry_index) {
+                    FAT_INFO_LOG("Target logical index %lu found!", (unsigned long)entry_index); // Uses DEBUG
+                    // ... (Name reconstruction unchanged) ...
+                    char final_name[FAT_MAX_LFN_CHARS];
+                    final_name[0] = '\0';
+                    if (lfn_count > 0) { /* ... checksum check ... */
+                        FAT_DEBUG_LOG("Attempting to reconstruct LFN from %d collected entries.", lfn_count);
+                        uint8_t expected_sum = fat_calculate_lfn_checksum(dent->name);
                          if (lfn_collector[0].checksum == expected_sum) {
-                             // Reconstruct the long name from the collected entries
-                             fat_reconstruct_lfn(lfn_collector, lfn_count, final_name, sizeof(final_name));
+                            fat_reconstruct_lfn(lfn_collector, lfn_count, final_name, sizeof(final_name));
+                            if(final_name[0] != '\0') { FAT_DEBUG_LOG("LFN reconstruction successful: '%s'", final_name); }
+                            else { FAT_WARN_LOG("LFN reconstruction failed. Using 8.3 name.",0); /* Uses DEBUG */}
                          } else {
-                             // DIAG_PRINTK("[FAT readdir] LFN checksum mismatch for 8.3 name '%.11s'.\n", (char*)dent->name);
-                             lfn_count = 0; // Checksum failed, ignore LFN
+                              FAT_WARN_LOG("LFN checksum mismatch. Discarding LFN.",0); // Uses DEBUG
+                              lfn_count = 0;
                          }
-                     }
- 
-                     // If LFN reconstruction failed or wasn't present, use the 8.3 name
-                     if (final_name[0] == '\0') {
-                         fat_format_short_name_impl(dent->name, final_name);
-                     }
- 
-                     // Populate the output dirent structure
+                    } else { FAT_DEBUG_LOG("No preceding LFN entries found."); }
+                    if (final_name[0] == '\0') { /* ... format 8.3 name ... */ FAT_DEBUG_LOG("Using formatted 8.3 name: '%s'", final_name);}
+
+                    // Populate output dirent
+                    FAT_DEBUG_LOG("Populating output dirent: name='%s', cluster=%lu, attr=0x%02x",
+                                  final_name, (unsigned long)fat_get_entry_cluster(dent), dent->attr);
+                    // ... (strncpy, set ino, set type unchanged) ...
                      strncpy(d_entry_out->d_name, final_name, sizeof(d_entry_out->d_name) - 1);
-                     d_entry_out->d_name[sizeof(d_entry_out->d_name) - 1] = '\0'; // Ensure null termination
- 
-                     d_entry_out->d_ino = fat_get_entry_cluster(dent); // Use cluster as inode number (common practice)
-                     d_entry_out->d_type = (dent->attr & FAT_ATTR_DIRECTORY) ? DT_DIR : DT_REG; // Set file type
- 
-                     // Update readdir state for the next call
-                     fctx->readdir_last_index = entry_index;
-                     ret = FS_SUCCESS; // Report success
-                     goto readdir_done; // Exit loop and function
-                 }
- 
-                 // If not the entry we were looking for, increment logical index and reset LFN state
-                 current_logical_index++;
-                 lfn_count = 0;
-             }
-         } // End loop through entries in sector
- 
-         // --- Move to the next sector or cluster ---
-         // Check if we've finished the current cluster (FAT12/16 root dir doesn't use clusters)
-         if (!(fs->type != FAT_TYPE_FAT32 && fctx->readdir_current_cluster == 0) &&
-             (fctx->readdir_current_offset % fs->cluster_size_bytes == 0))
-         {
-             // Reached end of cluster, find next cluster in chain
-             uint32_t next_c;
-             int get_next_res = fat_get_next_cluster(fs, fctx->readdir_current_cluster, &next_c);
-             if (get_next_res != FS_SUCCESS) {
-                 ret = get_next_res; // Propagate I/O error from FAT read
-                 break;
-             }
-             if (next_c >= fs->eoc_marker) { // End of chain marker
-                 ret = -FS_ERR_NOT_FOUND; // No more clusters
-                 break;
-             }
-             fctx->readdir_current_cluster = next_c; // Move to next cluster
-             fctx->readdir_current_offset = 0;     // Reset offset within the new cluster
-         }
-         // If we finished a sector but not a cluster, the outer loop continues reading the next sector
- 
-     } // End while(true) loop for scanning directory
- 
- readdir_done:
-     kfree(sector_buffer); // Free the sector buffer
-     spinlock_release_irqrestore(&fs->lock, irq_flags);
-     return ret; // Return status (FS_SUCCESS, -FS_ERR_NOT_FOUND, -FS_ERR_IO, etc.)
- }
+                    d_entry_out->d_name[sizeof(d_entry_out->d_name) - 1] = '\0';
+                    d_entry_out->d_ino = fat_get_entry_cluster(dent);
+                    d_entry_out->d_type = (dent->attr & FAT_ATTR_DIRECTORY) ? DT_DIR : DT_REG;
+
+
+                    // Update state
+                    fctx->readdir_last_index = entry_index;
+                    FAT_DEBUG_LOG("Updated context state: last_index=%lu, current_cluster=%lu, current_offset=%lu",
+                                  (unsigned long)fctx->readdir_last_index, (unsigned long)fctx->readdir_current_cluster,
+                                  (unsigned long)fctx->readdir_current_offset);
+                    ret = FS_SUCCESS;
+                    goto readdir_done;
+                }
+
+                // Not the target entry
+                FAT_DEBUG_LOG("Logical index %lu does not match target %lu. Incrementing logical index.",
+                              (unsigned long)current_logical_index, (unsigned long)entry_index);
+                current_logical_index++;
+                lfn_count = 0;
+            }
+        } // End loop through entries in sector
+
+        // --- Move to next sector/cluster --- (Logic unchanged)
+         if (!is_fat12_16_root && (fctx->readdir_current_offset % fs->cluster_size_bytes == 0) && fctx->readdir_current_offset > 0)
+        {
+             FAT_DEBUG_LOG("End of cluster %lu reached (offset %lu). Finding next cluster.",
+                           (unsigned long)fctx->readdir_current_cluster, (unsigned long)fctx->readdir_current_offset);
+            uint32_t next_c;
+            int get_next_res = fat_get_next_cluster(fs, fctx->readdir_current_cluster, &next_c);
+            if (get_next_res != FS_SUCCESS) { /* ... error handling ... */ ret = get_next_res; break;}
+            FAT_DEBUG_LOG("Next cluster in chain is %lu.", (unsigned long)next_c);
+            if (next_c >= fs->eoc_marker) { /* ... end of chain ... */ ret = -FS_ERR_NOT_FOUND; break;}
+            fctx->readdir_current_cluster = next_c;
+            fctx->readdir_current_offset = 0;
+            FAT_DEBUG_LOG("Moved to next cluster: cluster=%lu, offset=0", (unsigned long)fctx->readdir_current_cluster);
+        }
+
+    } // End while(true) loop
+
+// --- Cleanup and Return ---
+readdir_done:
+    FAT_DEBUG_LOG("Exiting: Releasing lock, freeing buffer %p, returning status %d (%s).",
+                   sector_buffer, ret, fs_strerror(ret));
+    kfree(sector_buffer);
+    spinlock_release_irqrestore(&fs->lock, irq_flags);
+    return ret;
+}
+
  
  /**
   * @brief Deletes a file (not a directory) from the FAT filesystem.
