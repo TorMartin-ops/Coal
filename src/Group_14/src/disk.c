@@ -300,11 +300,11 @@ static int parse_mbr(disk_t *disk) {
             if (part->start_lba >= disk->blk_dev.total_sectors ||
                 part->total_sectors > disk->blk_dev.total_sectors - part->start_lba)
             {
-                 terminal_printf("[Disk MBR] Warning: Partition %d on '%s' seems invalid (Start=%llu, Size=%llu, DiskSize=%llu). Marking invalid.\n",
+                 terminal_printf("[Disk MBR] Warning: Partition %d on '%s' seems invalid (Start=%u, Size=%u, DiskSize=%u). Marking invalid.\n",
                                  i, disk->blk_dev.device_name, part->start_lba, part->total_sectors, disk->blk_dev.total_sectors);
                  part->is_valid = false;
             } else {
-                 terminal_printf("   [+] Partition %d: Type=0x%02X, StartLBA=%llu, Size=%llu sectors\n",
+                 terminal_printf("   [+] Partition %d: Type=0x%02X, StartLBA=%u, Size=%u sectors\n",
                                  i, part->type, part->start_lba, part->total_sectors);
             }
         } else {

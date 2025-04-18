@@ -104,15 +104,15 @@
  
      // Check alignment and range
      if ((vaddr % PAGE_SIZE != 0) || (paddr % PAGE_SIZE != 0)) {
-         // *** FORMAT FIX: %lx for uintptr_t ***
-         terminal_printf("[KMapUnsafe] Error: Unaligned addresses V=0x%lx P=0x%lx\n", (unsigned long)vaddr, (unsigned long)paddr);
+         // *** FORMAT FIX: %u for uintptr_t ***
+         terminal_printf("[KMapUnsafe] Error: Unaligned addresses V=0x%u P=0x%u\n", (unsigned long)vaddr, (unsigned long)paddr);
          return -1;
      }
  
      // Allow temporary mappings anywhere for flexibility, but user must be cautious.
      // The original check restricting to kernel space or specific TEMP addresses is removed,
      // but this makes the function more dangerous if misused.
-     // terminal_printf("[KMapUnsafe] Mapping V=0x%lx -> P=0x%lx\n", (unsigned long)vaddr, (unsigned long)paddr);
+     // terminal_printf("[KMapUnsafe] Mapping V=0x%u -> P=0x%u\n", (unsigned long)vaddr, (unsigned long)paddr);
  
      uint32_t pd_idx = PDE_INDEX(vaddr);
      uint32_t pt_idx = PTE_INDEX(vaddr);
@@ -125,8 +125,8 @@
          // Allocate a new page table using frame allocator (NOT early allocator here, assumes buddy is up)
          uintptr_t new_pt_phys = frame_alloc();
          if (new_pt_phys == 0) {
-             // *** FORMAT FIX: %lx for uintptr_t ***
-             terminal_printf("[KMapUnsafe] Error: Failed to allocate PT for VAddr 0x%lx\n", (unsigned long)vaddr);
+             // *** FORMAT FIX: %u for uintptr_t ***
+             terminal_printf("[KMapUnsafe] Error: Failed to allocate PT for VAddr 0x%u\n", (unsigned long)vaddr);
              return -1;
          }
  
@@ -154,8 +154,8 @@
  
      // Check if this is a 4MB page
      if (pde & PAGE_SIZE_4MB) {
-         // *** FORMAT FIX: %lx for uintptr_t ***
-         terminal_printf("[KMapUnsafe] Error: Cannot map 4KB page into existing 4MB PDE V=0x%lx\n", (unsigned long)vaddr);
+         // *** FORMAT FIX: %u for uintptr_t ***
+         terminal_printf("[KMapUnsafe] Error: Cannot map 4KB page into existing 4MB PDE V=0x%u\n", (unsigned long)vaddr);
          return -1;
      }
  
@@ -167,8 +167,8 @@
      if (pt_virt[pt_idx] & PAGE_PRESENT) {
          uintptr_t existing_paddr = pt_virt[pt_idx] & PAGING_ADDR_MASK;
          if (existing_paddr != (paddr & PAGING_ADDR_MASK)) {
-             // *** FORMAT FIX: %lx for uintptr_t ***
-             terminal_printf("[KMapUnsafe] Warning: Overwriting existing PTE for V=0x%lx (Old P=0x%lx, New P=0x%lx)\n",
+             // *** FORMAT FIX: %u for uintptr_t ***
+             terminal_printf("[KMapUnsafe] Warning: Overwriting existing PTE for V=0x%u (Old P=0x%u, New P=0x%u)\n",
                              (unsigned long)vaddr, (unsigned long)existing_paddr, (unsigned long)paddr);
          }
          // Allow overwriting identical mapping or changing flags
@@ -187,8 +187,8 @@
      // Access MB info directly via physical addr (ASSUMES <1MB or identity mapped)
      // Need volatile as memory contents can change unexpectedly before caching/MMU setup.
      if (mb_info_phys_addr == 0 || mb_info_phys_addr >= 0x100000) { // Basic sanity check for low memory
-         // *** FORMAT FIX: %lx for uint32_t (address) ***
-         terminal_printf("[MB Early] Invalid MB info address 0x%lx\n", (unsigned long)mb_info_phys_addr);
+         // *** FORMAT FIX: %u for uint32_t (address) ***
+         terminal_printf("[MB Early] Invalid MB info address 0x%u\n", (unsigned long)mb_info_phys_addr);
          return NULL;
      }
      volatile uint32_t* mb_info_ptr = (volatile uint32_t*)mb_info_phys_addr;
@@ -198,7 +198,7 @@
      // Sanity check size
      if (total_size < 8 || total_size > 16 * 1024) { // Header is 8 bytes, max reasonable size e.g. 16KB
          // *** FORMAT FIX: %lu for uint32_t (size) ***
-         terminal_printf("[MB Early] Invalid MB total size %lu\n", (unsigned long)total_size);
+         terminal_printf("[MB Early] Invalid MB total size %u\n", (unsigned long)total_size);
          return NULL;
      }
  
@@ -212,8 +212,8 @@
          if (current_tag_addr + sizeof(struct multiboot_tag) > info_end || // Ensure basic tag header fits
              tag->size < 8 ||                                              // Minimum tag size
              current_tag_addr + tag->size > info_end) {                    // Ensure full tag fits within total_size
-             // *** FORMAT FIX: %lx (address), %u (type), %lu (size) ***
-             terminal_printf("[MB Early] Invalid tag found at 0x%lx (type %u, size %lu)\n", (unsigned long)current_tag_addr, (unsigned int)tag->type, (unsigned long)tag->size);
+             // *** FORMAT FIX: %u (address), %u (type), %lu (size) ***
+             terminal_printf("[MB Early] Invalid tag found at 0x%u (type %u, size %lu)\n", (unsigned long)current_tag_addr, (unsigned int)tag->type, (unsigned long)tag->size);
              return NULL; // Invalid tag structure
          }
  
@@ -224,8 +224,8 @@
          // Move to the next tag (align size to 8 bytes)
          uintptr_t next_tag_addr = current_tag_addr + ((tag->size + 7) & ~7);
          if (next_tag_addr <= current_tag_addr || next_tag_addr >= info_end) { // Check for loop or overflow
-              // *** FORMAT FIX: %lx (address) ***
-             terminal_printf("[MB Early] Invalid next tag address 0x%lx calculated from tag at 0x%lx\n", (unsigned long)next_tag_addr, (unsigned long)current_tag_addr);
+              // *** FORMAT FIX: %u (address) ***
+             terminal_printf("[MB Early] Invalid next tag address 0x%u calculated from tag at 0x%u\n", (unsigned long)next_tag_addr, (unsigned long)current_tag_addr);
              break;
          }
          tag = (struct multiboot_tag *)next_tag_addr;
@@ -243,7 +243,7 @@
          PAGING_PANIC("Early alloc attempted before Multiboot info set!");
      }
  
-     // terminal_printf("[EARLY ALLOC] Finding memory map using MB info at PhysAddr 0x%lx\n", (unsigned long)g_multiboot_info_phys_addr_global);
+     // terminal_printf("[EARLY ALLOC] Finding memory map using MB info at PhysAddr 0x%u\n", (unsigned long)g_multiboot_info_phys_addr_global);
  
      struct multiboot_tag_mmap *mmap_tag = (struct multiboot_tag_mmap *)
          find_multiboot_tag_early(g_multiboot_info_phys_addr_global, MULTIBOOT_TAG_TYPE_MMAP);
@@ -344,7 +344,7 @@
                  // Access directly via physical address (assumes identity mapped or accessible)
                  memset((void*)current_frame_addr, 0, PAGE_SIZE);
  
-                 // terminal_printf("[EARLY ALLOC] Allocated frame: Phys=0x%lx\n", (unsigned long)current_frame_addr);
+                 // terminal_printf("[EARLY ALLOC] Allocated frame: Phys=0x%u\n", (unsigned long)current_frame_addr);
                  return current_frame_addr;
              }
          }
@@ -483,8 +483,8 @@
          PAGING_PANIC("Failed to allocate initial Page Directory frame!");
      }
      // Frame is guaranteed to be zeroed by the early allocator.
-     // *** FORMAT FIX: %lx for uintptr_t ***
-     terminal_printf("  Allocated initial PD at Phys: 0x%lx\n", (unsigned long)pd_phys);
+     // *** FORMAT FIX: %u for uintptr_t ***
+     terminal_printf("  Allocated initial PD at Phys: 0x%u\n", (unsigned long)pd_phys);
  
      // Check for PSE support and enable it in CR4. Panic if required and not available.
      if (!check_and_enable_pse()) {
@@ -518,8 +518,8 @@
                                       bool map_to_higher_half)
  {
      if (page_directory_phys == 0 || (page_directory_phys % PAGE_SIZE) != 0 || size == 0) {
-         // *** FORMAT FIX: %lx (address), %lu (size) ***
-         terminal_printf("[Paging Early Map] Invalid PD phys (0x%lx) or size (%lu).\n",
+         // *** FORMAT FIX: %u (address), %lu (size) ***
+         terminal_printf("[Paging Early Map] Invalid PD phys (0x%u) or size (%u).\n",
                          (unsigned long)page_directory_phys, (unsigned long)size);
          return -1;
      }
@@ -540,7 +540,7 @@
      end_phys = aligned_end_phys; // Use the page-aligned end address
  
      if (end_phys <= current_phys) {
-         // terminal_printf("[Paging Early Map] Range [0x%lx - 0x%lx) resulted in zero size after alignment.\n", (unsigned long)phys_addr_start, (unsigned long)(phys_addr_start+size));
+         // terminal_printf("[Paging Early Map] Range [0x%u - 0x%u) resulted in zero size after alignment.\n", (unsigned long)phys_addr_start, (unsigned long)(phys_addr_start+size));
          return 0; // Size is zero or negative after alignment
      }
  
@@ -551,8 +551,8 @@
      // Requires this physical address range to be accessible (e.g., identity mapped by bootloader or <1MB)
      volatile uint32_t* pd_phys_ptr = (volatile uint32_t*)page_directory_phys;
  
-     // *** FORMAT FIX: %lx (address), %lu (size), %lx (flags) ***
-     terminal_printf("  Mapping Phys [0x%lx - 0x%lx) -> %s (Size: %lu KB) with flags 0x%lx\n",
+     // *** FORMAT FIX: %u (address), %lu (size), %u (flags) ***
+     terminal_printf("  Mapping Phys [0x%u - 0x%u) -> %s (Size: %u KB) with flags 0x%u\n",
                      (unsigned long)current_phys, (unsigned long)end_phys,
                      map_to_higher_half ? "HigherHalf" : "Identity",
                      (unsigned long)(map_size / 1024),
@@ -576,8 +576,8 @@
          if (map_to_higher_half) {
              // Check for virtual address overflow when adding kernel base
              if (current_phys > UINTPTR_MAX - KERNEL_SPACE_VIRT_START) {
-                 // *** FORMAT FIX: %lx (address) ***
-                 terminal_printf("[Paging Early Map] Virtual address overflow for Phys 0x%lx to Higher Half\n", (unsigned long)current_phys);
+                 // *** FORMAT FIX: %u (address) ***
+                 terminal_printf("[Paging Early Map] Virtual address overflow for Phys 0x%u to Higher Half\n", (unsigned long)current_phys);
                  return -1;
              }
              target_vaddr = KERNEL_SPACE_VIRT_START + current_phys;
@@ -586,8 +586,8 @@
              target_vaddr = current_phys;
              // Basic check: identity maps should generally stay below kernel space start
              if (target_vaddr >= KERNEL_SPACE_VIRT_START) {
-                  // *** FORMAT FIX: %lx (address) ***
-                  terminal_printf("[Paging Early Map] Warning: Identity map target 0x%lx overlaps kernel space start 0x%lx\n",
+                  // *** FORMAT FIX: %u (address) ***
+                  terminal_printf("[Paging Early Map] Warning: Identity map target 0x%u overlaps kernel space start 0x%u\n",
                                   (unsigned long)target_vaddr, (unsigned long)KERNEL_SPACE_VIRT_START);
                   // Allow for now, but could be problematic later.
              }
@@ -595,8 +595,8 @@
  
          // Ensure calculated target_vaddr is page aligned (should be if current_phys is)
          if (target_vaddr % PAGE_SIZE != 0) {
-             // *** FORMAT FIX: %lx (address) ***
-             terminal_printf("[Paging Early Map] Internal Error: Target VAddr 0x%lx not aligned.\n", (unsigned long)target_vaddr);
+             // *** FORMAT FIX: %u (address) ***
+             terminal_printf("[Paging Early Map] Internal Error: Target VAddr 0x%u not aligned.\n", (unsigned long)target_vaddr);
              return -1;
          }
  
@@ -612,8 +612,8 @@
              // PDE not present: Allocate a new Page Table (PT) frame
              uint32_t* new_pt = allocate_page_table_phys(true); // Use early allocator
              if (!new_pt) {
-                 // *** FORMAT FIX: %lx (address) ***
-                 terminal_printf("[Paging Early Map] Failed to allocate PT frame for VAddr 0x%lx\n", (unsigned long)target_vaddr);
+                 // *** FORMAT FIX: %u (address) ***
+                 terminal_printf("[Paging Early Map] Failed to allocate PT frame for VAddr 0x%u\n", (unsigned long)target_vaddr);
                  return -1; // Allocation failed
              }
              pt_phys_addr = (uintptr_t)new_pt;
@@ -629,7 +629,7 @@
  
               // Debug print for new PT allocation
               // if (page_count < 5 || page_count % 128 == 0) {
-              //     terminal_printf("       Allocated PT at Phys 0x%lx for VAddr 0x%lx (PDE[%u]=0x%lx)\n",
+              //     terminal_printf("       Allocated PT at Phys 0x%u for VAddr 0x%u (PDE[%u]=0x%u)\n",
               //                     (unsigned long)pt_phys_addr, (unsigned long)target_vaddr, pd_idx, (unsigned long)pd_phys_ptr[pd_idx]);
               // }
  
@@ -637,8 +637,8 @@
              // PDE is present
              if (pde & PAGE_SIZE_4MB) {
                  // Cannot map a 4K page if a 4M page already covers this virtual address range
-                 // *** FORMAT FIX: %lx (address), %lu (index), %lx (pde) ***
-                 terminal_printf("[Paging Early Map] Error: Attempt to map 4K page over existing 4M page at VAddr 0x%lx (PDE[%lu]=0x%lx)\n",
+                 // *** FORMAT FIX: %u (address), %lu (index), %u (pde) ***
+                 terminal_printf("[Paging Early Map] Error: Attempt to map 4K page over existing 4M page at VAddr 0x%u (PDE[%u]=0x%u)\n",
                                  (unsigned long)target_vaddr, (unsigned long)pd_idx, (unsigned long)pde);
                  return -1;
              }
@@ -656,7 +656,7 @@
                   pd_phys_ptr[pd_idx] |= (needed_pde_flags & (PAGE_RW | PAGE_USER)); // Add missing flags
                   // Debug print for flag promotion
                   // if (page_count < 5 || page_count % 128 == 0) {
-                  //     terminal_printf("       Promoted PDE[%u] flags for VAddr 0x%lx from 0x%lx to 0x%lx\n",
+                  //     terminal_printf("       Promoted PDE[%u] flags for VAddr 0x%u from 0x%u to 0x%u\n",
                   //                     pd_idx, (unsigned long)target_vaddr, (unsigned long)old_pde, (unsigned long)pd_phys_ptr[pd_idx]);
                   // }
              }
@@ -675,13 +675,13 @@
              // PTE exists. Check if it's the *same* mapping or different.
              if (pte == new_pte) {
                  // Identical mapping already exists. Silently allow, maybe warn.
-                 // terminal_printf("[Paging Early Map] Warning: Re-mapping identical V=0x%lx -> P=0x%lx\n", (unsigned long)target_vaddr, (unsigned long)current_phys);
+                 // terminal_printf("[Paging Early Map] Warning: Re-mapping identical V=0x%u -> P=0x%u\n", (unsigned long)target_vaddr, (unsigned long)current_phys);
              } else {
                  // PTE exists but points elsewhere or has different flags. This is an error.
-                  // *** FORMAT FIX: %lx (address), %lu (index), %lx (pte) ***
-                 terminal_printf("[Paging Early Map] Error: PTE already present/different for VAddr 0x%lx (PTE[%lu])\n", (unsigned long)target_vaddr, (unsigned long)pt_idx);
-                 terminal_printf("  Existing PTE = 0x%lx (Points to Phys 0x%lx)\n", (unsigned long)pte, (unsigned long)(pte & PAGING_ADDR_MASK));
-                 terminal_printf("  Attempted PTE = 0x%lx (Points to Phys 0x%lx)\n", (unsigned long)new_pte, (unsigned long)(new_pte & PAGING_ADDR_MASK));
+                  // *** FORMAT FIX: %u (address), %lu (index), %u (pte) ***
+                 terminal_printf("[Paging Early Map] Error: PTE already present/different for VAddr 0x%u (PTE[%u])\n", (unsigned long)target_vaddr, (unsigned long)pt_idx);
+                 terminal_printf("  Existing PTE = 0x%u (Points to Phys 0x%u)\n", (unsigned long)pte, (unsigned long)(pte & PAGING_ADDR_MASK));
+                 terminal_printf("  Attempted PTE = 0x%u (Points to Phys 0x%u)\n", (unsigned long)new_pte, (unsigned long)(new_pte & PAGING_ADDR_MASK));
                  return -1; // Overwriting a different mapping is not allowed here
              }
          }
@@ -692,7 +692,7 @@
  
          // Limit debug output to avoid flooding console during large mappings
          // if (page_count < 10 || page_count % 512 == 0) {
-         //     terminal_printf("         Set PTE[%lu] in PT Phys 0x%lx -> Phys 0x%lx (Value 0x%lx)\n",
+         //     terminal_printf("         Set PTE[%lu] in PT Phys 0x%u -> Phys 0x%u (Value 0x%u)\n",
          //                     (unsigned long)pt_idx, (unsigned long)pt_phys_addr, (unsigned long)current_phys, (unsigned long)new_pte);
          // }
  
@@ -740,8 +740,8 @@
      uintptr_t kernel_phys_aligned_start = PAGE_ALIGN_DOWN(kernel_phys_start);
      uintptr_t kernel_phys_aligned_end = PAGE_ALIGN_UP(kernel_phys_end);
      size_t kernel_size = kernel_phys_aligned_end - kernel_phys_aligned_start;
-     // *** FORMAT FIX: %lx for uintptr_t (addresses) ***
-     terminal_printf("  Mapping Kernel Phys [0x%lx - 0x%lx) to Higher Half [0x%lx - 0x%lx)\n",
+     // *** FORMAT FIX: %u for uintptr_t (addresses) ***
+     terminal_printf("  Mapping Kernel Phys [0x%u - 0x%u) to Higher Half [0x%u - 0x%u)\n",
                      (unsigned long)kernel_phys_aligned_start, (unsigned long)kernel_phys_aligned_end,
                      (unsigned long)(KERNEL_SPACE_VIRT_START + kernel_phys_aligned_start),
                      (unsigned long)(KERNEL_SPACE_VIRT_START + kernel_phys_aligned_end));
@@ -770,8 +770,8 @@
           if(heap_phys_aligned_end < heap_end) heap_phys_aligned_end = UINTPTR_MAX; // overflow check
          size_t heap_aligned_size = heap_phys_aligned_end - heap_phys_aligned_start;
  
-         // *** FORMAT FIX: %lx for uintptr_t (addresses) ***
-         terminal_printf("  Mapping Kernel Heap Phys [0x%lx - 0x%lx) to Higher Half [0x%lx - 0x%lx)\n",
+         // *** FORMAT FIX: %u for uintptr_t (addresses) ***
+         terminal_printf("  Mapping Kernel Heap Phys [0x%u - 0x%u) to Higher Half [0x%u - 0x%u)\n",
                          (unsigned long)heap_phys_aligned_start, (unsigned long)heap_phys_aligned_end,
                          (unsigned long)(KERNEL_SPACE_VIRT_START + heap_phys_aligned_start),
                          (unsigned long)(KERNEL_SPACE_VIRT_START + heap_phys_aligned_end));
@@ -789,8 +789,8 @@
  
      // 4. Map VGA Buffer (if needed for terminal output after paging)
      //    Map physical VGA_PHYS_ADDR to virtual VGA_VIRT_ADDR (usually in higher half)
-     // *** FORMAT FIX: %lx for addresses ***
-     terminal_printf("  Mapping VGA Buffer Phys 0x%lx to Virt 0x%lx\n", (unsigned long)VGA_PHYS_ADDR, (unsigned long)VGA_VIRT_ADDR);
+     // *** FORMAT FIX: %u for addresses ***
+     terminal_printf("  Mapping VGA Buffer Phys 0x%u to Virt 0x%u\n", (unsigned long)VGA_PHYS_ADDR, (unsigned long)VGA_VIRT_ADDR);
      if (paging_map_physical_early(page_directory_phys,
                                    VGA_PHYS_ADDR,           // Physical VGA address (e.g., 0xB8000)
                                    PAGE_SIZE,               // Size (typically one page is enough)
@@ -826,11 +826,11 @@
          uintptr_t va = (uintptr_t)idx << PAGING_PDE_SHIFT;
  
          if (pde & PAGE_PRESENT) {
-              // *** FORMAT FIX: %u (index), %08lx (addr/pde), %d (flags) ***
-             terminal_printf(" PDE[%4u] (V~0x%08lx): 0x%08lx (P=%d RW=%d US=%d PS=%d",
+              // *** FORMAT FIX: %u (index), %08u (addr/pde), %d (flags) ***
+             terminal_printf(" PDE[%4u] (V~0x%08u): 0x%08u (P=%d RW=%d US=%d PS=%d",
                    (unsigned int)idx,           // Keep %u for index (usually fits int)
-                   (unsigned long)va,           // Use %lx for address
-                   (unsigned long)pde,          // Use %lx for PDE value
+                   (unsigned long)va,           // Use %u for address
+                   (unsigned long)pde,          // Use %u for PDE value
                              (pde & PAGE_PRESENT) ? 1 : 0,  // Print 1 or 0
                              (pde & PAGE_RW) ? 1 : 0,       // Print 1 or 0
                              (pde & PAGE_USER) ? 1 : 0,     // Print 1 or 0
@@ -845,13 +845,13 @@
              //              (pde & PAGE_NX_BIT) ? 1 : 0); // Note: NX bit only meaningful in PTE
  
              if (pde & PAGE_SIZE_4MB) {
-                 terminal_printf(" Frame=0x%lx)\n", (unsigned long)(pde & PAGING_PDE_ADDR_MASK_4MB));
+                 terminal_printf(" Frame=0x%u)\n", (unsigned long)(pde & PAGING_PDE_ADDR_MASK_4MB));
              } else {
-                 terminal_printf(" PT=0x%lx)\n", (unsigned long)(pde & PAGING_PDE_ADDR_MASK_4KB));
+                 terminal_printf(" PT=0x%u)\n", (unsigned long)(pde & PAGING_PDE_ADDR_MASK_4KB));
              }
          } else {
              // Optionally print non-present entries too
-             // terminal_printf(" PDE[%4u] (V~0x%08lx): 0x%08lx (Not Present)\n", idx, (unsigned long)va, (unsigned long)pde);
+             // terminal_printf(" PDE[%4u] (V~0x%08u): 0x%08u (Not Present)\n", idx, (unsigned long)va, (unsigned long)pde);
          }
      }
      terminal_write("------------------------\n");
@@ -878,15 +878,15 @@
      uint32_t recursive_pde_flags = PAGE_PRESENT | PAGE_RW| PAGE_NX_BIT; // Kernel RW access
      pd_phys_ptr[RECURSIVE_PDE_INDEX] = (page_directory_phys & PAGING_ADDR_MASK) | recursive_pde_flags;
  
-     // *** FORMAT FIX: %u, %lx, %lx ***
-     terminal_printf("  Set recursive PDE[%u] to point to PD Phys=0x%lx (Value=0x%lx)\n",
+     // *** FORMAT FIX: %u, %u, %u ***
+     terminal_printf("  Set recursive PDE[%u] to point to PD Phys=0x%u (Value=0x%u)\n",
        (unsigned int)RECURSIVE_PDE_INDEX,
        (unsigned long)page_directory_phys,
        (unsigned long)pd_phys_ptr[RECURSIVE_PDE_INDEX]);
  
      // *** DEBUG: Print key PDE entries right before activation ***
-     // *** FORMAT FIX: %lx (address) ***
-     terminal_printf("  PD Entries Before Activation (Accessed via Phys Addr: 0x%lx):\n", (unsigned long)page_directory_phys);
+     // *** FORMAT FIX: %u (address) ***
+     terminal_printf("  PD Entries Before Activation (Accessed via Phys Addr: 0x%u):\n", (unsigned long)page_directory_phys);
      debug_print_pd_entries((uint32_t*)pd_phys_ptr, 0x0, 4); // First few entries (identity map)
      debug_print_pd_entries((uint32_t*)pd_phys_ptr, KERNEL_SPACE_VIRT_START, 4); // Kernel map start
      debug_print_pd_entries((uint32_t*)pd_phys_ptr, RECURSIVE_PDE_VADDR, 1); // Recursive entry itself
@@ -914,8 +914,8 @@
  
      uintptr_t kernel_pd_virt_addr = RECURSIVE_PD_VADDR; // e.g., 0xFFFFF000
  
-     // *** FORMAT FIX: %p (pointer), %lx (address) ***
-     terminal_printf("  Setting global pointers: PD Virt=%p, PD Phys=0x%lx\n",
+     // *** FORMAT FIX: %p (pointer), %u (address) ***
+     terminal_printf("  Setting global pointers: PD Virt=%p, PD Phys=0x%u\n",
        (void*)kernel_pd_virt_addr, (unsigned long)page_directory_phys);
  
      // Set global pointers now that we can access the PD virtually
@@ -926,8 +926,8 @@
      // Read the recursive PDE entry using the *virtual* address of the PD to verify access.
      terminal_printf("  Verifying recursive mapping via virtual access...\n");
      volatile uint32_t recursive_value_read_virt = g_kernel_page_directory_virt[RECURSIVE_PDE_INDEX];
-     // *** FORMAT FIX: %u, %p, %lx ***
-     terminal_printf("  Recursive PDE[%u] read via *Virt* Addr %p gives value: 0x%lx\n",
+     // *** FORMAT FIX: %u, %p, %u ***
+     terminal_printf("  Recursive PDE[%u] read via *Virt* Addr %p gives value: 0x%u\n",
        (unsigned int)RECURSIVE_PDE_INDEX,
        (void*)&g_kernel_page_directory_virt[RECURSIVE_PDE_INDEX],
        (unsigned long)recursive_value_read_virt);
@@ -938,9 +938,9 @@
  
      if (actual_phys_in_pte != expected_phys) {
          terminal_printf("  ERROR: Recursive PDE verification failed!\n");
-         // *** FORMAT FIX: %lx ***
-         terminal_printf("    Expected PD Phys: 0x%lx\n", (unsigned long)expected_phys);
-         terminal_printf("    Physical Addr in PDE read virtually: 0x%lx\n", (unsigned long)actual_phys_in_pte);
+         // *** FORMAT FIX: %u ***
+         terminal_printf("    Expected PD Phys: 0x%u\n", (unsigned long)expected_phys);
+         terminal_printf("    Physical Addr in PDE read virtually: 0x%u\n", (unsigned long)actual_phys_in_pte);
          PAGING_PANIC("Failed to verify recursive mapping post-activation!");
      } else {
          terminal_printf("  Recursive mapping verified successfully.\n");
@@ -987,8 +987,8 @@
          return -1; // Should not be reached
      }
      if (!target_page_directory_phys || ((uintptr_t)target_page_directory_phys % PAGE_SIZE) != 0) {
-         // *** FORMAT FIX: %lx for address ***
-         terminal_printf("[Map Internal] Invalid target PD phys 0x%lx\n", (unsigned long)target_page_directory_phys);
+         // *** FORMAT FIX: %u for address ***
+         terminal_printf("[Map Internal] Invalid target PD phys 0x%u\n", (unsigned long)target_page_directory_phys);
          return -1;
      }
  
@@ -1010,8 +1010,8 @@
      uint32_t pd_idx = PDE_INDEX(aligned_vaddr);
  
      if (pd_idx == RECURSIVE_PDE_INDEX) {
-         // *** FORMAT FIX: %lx (address), %lu (index) ***
-         terminal_printf("[Map Internal] Error: Attempted to map into recursive Paging range (V=0x%lx, PDE %lu).\n", (unsigned long)vaddr, (unsigned long)pd_idx);
+         // *** FORMAT FIX: %u (address), %lu (index) ***
+         terminal_printf("[Map Internal] Error: Attempted to map into recursive Paging range (V=0x%u, PDE %lu).\n", (unsigned long)vaddr, (unsigned long)pd_idx);
          return -1; // Or a specific error code like -EINVAL
      }
  
@@ -1062,7 +1062,7 @@
      }
  
      // *** START DEBUG LOGGING ***
-     //terminal_printf("MAP_INT PRE-CHECK: V=0x%lx->P=0x%lx UseLarge=%d | InputFlags=0x%lx EffFlags=0x%lx BaseFlags=0x%lx PDEFlags=0x%lx PTEFlags=0x%lx\n",
+     //terminal_printf("MAP_INT PRE-CHECK: V=0x%u->P=0x%u UseLarge=%d | InputFlags=0x%u EffFlags=0x%u BaseFlags=0x%u PDEFlags=0x%u PTEFlags=0x%u\n",
                      //(unsigned long)aligned_vaddr, (unsigned long)aligned_paddr, use_large_page, (unsigned long)flags, (unsigned long)effective_flags, (unsigned long)base_flags, (unsigned long)pde_final_flags, (unsigned long)pte_final_flags);
      // *** END DEBUG LOGGING ***
  
@@ -1078,14 +1078,14 @@
  
              if (current_pde & PAGE_PRESENT) {
                  if (current_pde == new_pde_val_4mb) return 0; // Identical mapping exists
-                 // *** FORMAT FIX: %lu (index), %lx (pde), %lx (address) ***
-                 terminal_printf("[Map Internal] Error: PDE[%lu] already present (value 0x%lx), cannot map 4MB page at V=0x%lx\n",
+                 // *** FORMAT FIX: %lu (index), %u (pde), %u (address) ***
+                 terminal_printf("[Map Internal] Error: PDE[%u] already present (value 0x%u), cannot map 4MB page at V=0x%u\n",
                                  (unsigned long)pd_idx, (unsigned long)current_pde, (unsigned long)aligned_vaddr);
                  return -1;
              }
              // *** DEBUG LOGGING ***
-             // *** FORMAT FIX: %lx, %lu ***
-             //terminal_printf("MAP_INT DEBUG 4MB: V=0x%lx -> P=0x%lx | Setting PDE[%lu] = 0x%08lx\n",
+             // *** FORMAT FIX: %u, %lu ***
+             //terminal_printf("MAP_INT DEBUG 4MB: V=0x%u -> P=0x%u | Setting PDE[%lu] = 0x%08u\n",
                            //(unsigned long)aligned_vaddr, (unsigned long)aligned_paddr, (unsigned long)pd_idx, (unsigned long)new_pde_val_4mb);
              // *** END DEBUG LOGGING ***
              g_kernel_page_directory_virt[pd_idx] = new_pde_val_4mb;
@@ -1108,8 +1108,8 @@
  
                  uint32_t pde_value_to_write = (pt_phys_addr & PAGING_ADDR_MASK) | pde_final_flags | PAGE_PRESENT;
                  // *** DEBUG LOGGING ***
-                 // *** FORMAT FIX: %lx, %lu ***
-                 terminal_printf("MAP_INT DEBUG NEW_PT: V=0x%lx | Setting PDE[%lu] = 0x%08lx (PT Phys=0x%lx)\n",
+                 // *** FORMAT FIX: %u, %lu ***
+                 terminal_printf("MAP_INT DEBUG NEW_PT: V=0x%u | Setting PDE[%u] = 0x%08u (PT Phys=0x%u)\n",
                                  (unsigned long)aligned_vaddr, (unsigned long)pd_idx, (unsigned long)pde_value_to_write, (unsigned long)pt_phys_addr);
                  // *** END DEBUG LOGGING ***
                  g_kernel_page_directory_virt[pd_idx] = pde_value_to_write;
@@ -1119,8 +1119,8 @@
                  memset(pt_virt, 0, PAGE_SIZE);
  
              } else if (pde & PAGE_SIZE_4MB) {
-                  // *** FORMAT FIX: %lx (address), %lu (index), %lx (pde) ***
-                  terminal_printf("[Map Internal] Error: Attempted 4KB map over existing 4MB page at V=0x%lx (PDE[%lu]=0x%lx)\n",
+                  // *** FORMAT FIX: %u (address), %lu (index), %u (pde) ***
+                  terminal_printf("[Map Internal] Error: Attempted 4KB map over existing 4MB page at V=0x%u (PDE[%u]=0x%u)\n",
                                   (unsigned long)aligned_vaddr, (unsigned long)pd_idx, (unsigned long)pde);
                  return -1;
              } else {
@@ -1131,8 +1131,8 @@
                  if ((pde & needed_pde_flags) != needed_pde_flags) {
                       uint32_t promoted_pde_val = pde | (needed_pde_flags & (PAGE_RW | PAGE_USER | PAGE_PWT | PAGE_PCD));
                      // *** DEBUG LOGGING ***
-                     // *** FORMAT FIX: %lx, %lu ***
-                     terminal_printf("MAP_INT DEBUG PROMOTE_PDE: V=0x%lx | Promoting PDE[%lu] from 0x%lx to 0x%lx\n",
+                     // *** FORMAT FIX: %u, %lu ***
+                     terminal_printf("MAP_INT DEBUG PROMOTE_PDE: V=0x%u | Promoting PDE[%lu] from 0x%u to 0x%u\n",
                                      (unsigned long)aligned_vaddr, (unsigned long)pd_idx, (unsigned long)pde, (unsigned long)promoted_pde_val);
                      // *** END DEBUG LOGGING ***
                      g_kernel_page_directory_virt[pd_idx] = promoted_pde_val;
@@ -1149,8 +1149,8 @@
                  if (existing_phys == (aligned_paddr & PAGING_ADDR_MASK)) {
                      if (existing_pte_val != new_pte_val_4kb) {
                          // *** DEBUG LOGGING ***
-                         // *** FORMAT FIX: %lx, %lu ***
-                         terminal_printf("MAP_INT DEBUG 4KB_UPDATE: V=0x%lx -> P=0x%lx | Updating PTE[%lu] in PT@0x%lx from 0x%08lx to 0x%08lx\n",
+                         // *** FORMAT FIX: %u, %lu ***
+                         terminal_printf("MAP_INT DEBUG 4KB_UPDATE: V=0x%u -> P=0x%u | Updating PTE[%u] in PT@0x%u from 0x%08u to 0x%08u\n",
                                          (unsigned long)aligned_vaddr, (unsigned long)aligned_paddr, (unsigned long)pt_idx, (unsigned long)pt_phys_addr, (unsigned long)existing_pte_val, (unsigned long)new_pte_val_4kb);
                          // *** END DEBUG LOGGING ***
                          pt_virt[pt_idx] = new_pte_val_4kb; // Update flags
@@ -1158,8 +1158,8 @@
                      } // else: identical mapping, do nothing
                      return 0; // Success (already mapped or flags updated)
                  } else {
-                      // *** FORMAT FIX: %lu (index), %lx (address) ***
-                      terminal_printf("[Map Internal] Error: PTE[%lu] already present for V=0x%lx but maps to different P=0x%lx (tried P=0x%lx)\n",
+                      // *** FORMAT FIX: %lu (index), %u (address) ***
+                      terminal_printf("[Map Internal] Error: PTE[%u] already present for V=0x%u but maps to different P=0x%u (tried P=0x%u)\n",
                                       (unsigned long)pt_idx, (unsigned long)aligned_vaddr, (unsigned long)existing_phys, (unsigned long)aligned_paddr);
                      if (pt_allocated_here) { put_frame(pt_phys_addr); g_kernel_page_directory_virt[pd_idx] = 0; paging_invalidate_page((void*)aligned_vaddr); }
                      return -1;
@@ -1168,8 +1168,8 @@
  
              // PTE was not present, set the new PTE
              // *** DEBUG LOGGING ***
-              // *** FORMAT FIX: %lx, %lu ***
-             terminal_printf("MAP_INT DEBUG 4KB_SET: V=0x%lx -> P=0x%lx | Setting PTE[%lu] in PT@0x%lx = 0x%08lx\n",
+              // *** FORMAT FIX: %u, %lu ***
+             terminal_printf("MAP_INT DEBUG 4KB_SET: V=0x%u -> P=0x%u | Setting PTE[%u] in PT@0x%u = 0x%08u\n",
                              (unsigned long)aligned_vaddr, (unsigned long)aligned_paddr, (unsigned long)pt_idx, (unsigned long)pt_phys_addr, (unsigned long)new_pte_val_4kb);
              // *** END DEBUG LOGGING ***
              pt_virt[pt_idx] = new_pte_val_4kb;
@@ -1200,8 +1200,8 @@
                  terminal_printf("MAP_INT: OTHER PD 4MB conflict\n");
                  ret = -1;
              } else {
-                 // *** FORMAT FIX: %lx, %lu ***
-                 terminal_printf("MAP_INT OTHER_PD DEBUG 4MB: V=0x%lx -> P=0x%lx | Setting PDE[%lu] = 0x%08lx\n",
+                 // *** FORMAT FIX: %u, %lu ***
+                 terminal_printf("MAP_INT OTHER_PD DEBUG 4MB: V=0x%u -> P=0x%u | Setting PDE[%u] = 0x%08u\n",
                                  (unsigned long)aligned_vaddr, (unsigned long)aligned_paddr, (unsigned long)pd_idx, (unsigned long)new_pde_val_4mb);
                  target_pd_virt_temp[pd_idx] = new_pde_val_4mb;
                  ret = 0;
@@ -1220,8 +1220,8 @@
                  uint32_t needed_pde_flags = pde_final_flags;
                  if ((pde & needed_pde_flags) != needed_pde_flags) {
                      uint32_t promoted_pde_val = pde | (needed_pde_flags & (PAGE_RW | PAGE_USER | PAGE_PWT | PAGE_PCD));
-                      // *** FORMAT FIX: %lx, %lu ***
-                     terminal_printf("MAP_INT OTHER_PD DEBUG PROMOTE_PDE: V=0x%lx | Promoting PDE[%lu] from 0x%lx to 0x%lx\n",
+                      // *** FORMAT FIX: %u, %lu ***
+                     terminal_printf("MAP_INT OTHER_PD DEBUG PROMOTE_PDE: V=0x%u | Promoting PDE[%u] from 0x%u to 0x%u\n",
                                      (unsigned long)aligned_vaddr, (unsigned long)pd_idx, (unsigned long)pde, (unsigned long)promoted_pde_val);
                      target_pd_virt_temp[pd_idx] = promoted_pde_val;
                  }
@@ -1246,8 +1246,8 @@
                  kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_DST);
  
                  uint32_t pde_value_to_write = (pt_phys & PAGING_ADDR_MASK) | pde_final_flags | PAGE_PRESENT;
-                  // *** FORMAT FIX: %lx, %lu ***
-                 terminal_printf("MAP_INT OTHER_PD DEBUG NEW_PT: V=0x%lx | Setting PDE[%lu] = 0x%08lx (PT Phys=0x%lx)\n",
+                  // *** FORMAT FIX: %u, %lu ***
+                 terminal_printf("MAP_INT OTHER_PD DEBUG NEW_PT: V=0x%u | Setting PDE[%u] = 0x%08u (PT Phys=0x%u)\n",
                                  (unsigned long)aligned_vaddr, (unsigned long)pd_idx, (unsigned long)pde_value_to_write, (unsigned long)pt_phys);
                  target_pd_virt_temp[pd_idx] = pde_value_to_write;
              }
@@ -1270,8 +1270,8 @@
                  uint32_t existing_phys = current_pte & PAGING_ADDR_MASK;
                  if (existing_phys == (aligned_paddr & PAGING_ADDR_MASK)) {
                      if (current_pte != new_pte_val_4kb) {
-                          // *** FORMAT FIX: %lx, %lu ***
-                          terminal_printf("MAP_INT OTHER_PD DEBUG 4KB_UPDATE: V=0x%lx -> P=0x%lx | Updating PTE[%lu] in PT@0x%lx from 0x%08lx to 0x%08lx\n",
+                          // *** FORMAT FIX: %u, %lu ***
+                          terminal_printf("MAP_INT OTHER_PD DEBUG 4KB_UPDATE: V=0x%u -> P=0x%u | Updating PTE[%u] in PT@0x%u from 0x%08u to 0x%08u\n",
                                           (unsigned long)aligned_vaddr, (unsigned long)aligned_paddr, (unsigned long)pt_idx, (unsigned long)pt_phys, (unsigned long)current_pte, (unsigned long)new_pte_val_4kb);
                          target_pt_virt_temp[pt_idx] = new_pte_val_4kb; // Update flags
                      }
@@ -1285,8 +1285,8 @@
                     }
                  }
              } else {
-                  // *** FORMAT FIX: %lx, %lu ***
-                  terminal_printf("MAP_INT OTHER_PD DEBUG 4KB_SET: V=0x%lx -> P=0x%lx | Setting PTE[%lu] in PT@0x%lx = 0x%08lx\n",
+                  // *** FORMAT FIX: %u, %lu ***
+                  terminal_printf("MAP_INT OTHER_PD DEBUG 4KB_SET: V=0x%u -> P=0x%u | Setting PTE[%lu] in PT@0x%u = 0x%08u\n",
                                   (unsigned long)aligned_vaddr, (unsigned long)aligned_paddr, (unsigned long)pt_idx, (unsigned long)pt_phys, (unsigned long)new_pte_val_4kb);
                  target_pt_virt_temp[pt_idx] = new_pte_val_4kb;
                  ret = 0; // Success
@@ -1323,8 +1323,8 @@
      // Mask the input flags to only allow valid bits
      uint32_t masked_flags = flags & VALID_FLAGS_MASK;
      if (flags != masked_flags) {
-          // *** FORMAT FIX: %lx for flags ***
-          terminal_printf("[Map Range] Warning: Input flags 0x%lx contained invalid bits. Using masked flags 0x%lx.\n", (unsigned long)flags, (unsigned long)masked_flags);
+          // *** FORMAT FIX: %u for flags ***
+          terminal_printf("[Map Range] Warning: Input flags 0x%u contained invalid bits. Using masked flags 0x%u.\n", (unsigned long)flags, (unsigned long)masked_flags);
      }
  
      // Align addresses
@@ -1364,8 +1364,8 @@
          if (v_end <= v_start) v_end = UINTPTR_MAX; // Handle wrap from alignment
      }
  
-     // *** FORMAT FIX: %lx for addresses/flags ***
-     terminal_printf("[Map Range] Mapping V=[0x%lx-0x%lx) to P=[0x%lx...) Flags=0x%lx (Masked=0x%lx)\n",
+     // *** FORMAT FIX: %u for addresses/flags ***
+     terminal_printf("[Map Range] Mapping V=[0x%u-0x%u) to P=[0x%u...) Flags=0x%u (Masked=0x%u)\n",
                      (unsigned long)v_start, (unsigned long)v_end, (unsigned long)p_start, (unsigned long)flags, (unsigned long)masked_flags);
  
      // Mapping loop
@@ -1428,8 +1428,8 @@
                                         use_large);
  
          if (result != 0) {
-             // *** FORMAT FIX: %lx for addresses ***
-             terminal_printf("[Map Range] Failed map_page_internal for V=0x%lx P=0x%lx Large=%d\n",
+             // *** FORMAT FIX: %u for addresses ***
+             terminal_printf("[Map Range] Failed map_page_internal for V=0x%u P=0x%u Large=%d\n",
                              (unsigned long)current_v, (unsigned long)current_p, use_large);
              return -1; // Exit on error
          }
@@ -1455,8 +1455,8 @@
      // *** END OF WHILE LOOP ***
      }
  
-     // *** FORMAT FIX: %lx for addresses ***
-     terminal_printf("[Map Range] Completed. Mapped %d pages/blocks for V=[0x%lx - 0x%lx).\n",
+     // *** FORMAT FIX: %u for addresses ***
+     terminal_printf("[Map Range] Completed. Mapped %d pages/blocks for V=[0x%u - 0x%u).\n",
                    mapped_pages, (unsigned long)v_start, (unsigned long)current_v); // Use current_v for actual end mapped
      return 0; // Success
  }
@@ -1489,7 +1489,7 @@
      uint32_t pde = target_pd_virt_temp[pd_idx];
  
      if (!(pde & PAGE_PRESENT)) {
-         // terminal_printf("[GetPhys] PDE not present for V=0x%lx\n", (unsigned long)vaddr);
+         // terminal_printf("[GetPhys] PDE not present for V=0x%u\n", (unsigned long)vaddr);
          goto cleanup_get_phys; // Not mapped at PDE level
      }
  
@@ -1500,7 +1500,7 @@
          uintptr_t page_offset = vaddr & (PAGE_SIZE_LARGE - 1); // Offset within the 4MB page
          *paddr_out = page_base_phys + page_offset;
          ret = 0; // Success
-         // terminal_printf("[GetPhys] 4MB PDE Found: V=0x%lx -> P=0x%lx\n", (unsigned long)vaddr, (unsigned long)*paddr_out);
+         // terminal_printf("[GetPhys] 4MB PDE Found: V=0x%u -> P=0x%u\n", (unsigned long)vaddr, (unsigned long)*paddr_out);
          goto cleanup_get_phys;
      } else {
          // 4KB Page Table - need to check PTE
@@ -1508,8 +1508,8 @@
  
          // 4. Map target PT temporarily
          if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PT_SRC, pt_phys, PTE_KERNEL_READONLY_FLAGS) != 0) {
-             // *** FORMAT FIX: %lx for addresses ***
-             terminal_printf("[GetPhys] Failed to temp map target PT 0x%lx for V=0x%lx\n", (unsigned long)pt_phys, (unsigned long)vaddr);
+             // *** FORMAT FIX: %u for addresses ***
+             terminal_printf("[GetPhys] Failed to temp map target PT 0x%u for V=0x%u\n", (unsigned long)pt_phys, (unsigned long)vaddr);
              goto cleanup_get_phys;
          }
          target_pt_virt_temp = (uint32_t*)TEMP_MAP_ADDR_PT_SRC;
@@ -1519,7 +1519,7 @@
          uint32_t pte = target_pt_virt_temp[pt_idx];
  
          if (!(pte & PAGE_PRESENT)) {
-             // terminal_printf("[GetPhys] PTE not present for V=0x%lx\n", (unsigned long)vaddr);
+             // terminal_printf("[GetPhys] PTE not present for V=0x%u\n", (unsigned long)vaddr);
              goto cleanup_get_phys; // Not mapped at PTE level
          }
  
@@ -1528,7 +1528,7 @@
          uintptr_t page_offset = vaddr & (PAGE_SIZE - 1); // Offset within the 4KB page
          *paddr_out = page_base_phys + page_offset;
          ret = 0; // Success
-         // terminal_printf("[GetPhys] 4KB PTE Found: V=0x%lx -> P=0x%lx\n", (unsigned long)vaddr, (unsigned long)*paddr_out);
+         // terminal_printf("[GetPhys] 4KB PTE Found: V=0x%u -> P=0x%u\n", (unsigned long)vaddr, (unsigned long)*paddr_out);
      }
  
      cleanup_get_phys:
@@ -1603,12 +1603,12 @@
                      }
                      kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_DST); // Unmap the PT
                   } else {
-                       // *** FORMAT FIX: %lx (address), %zu (index) ***
-                       terminal_printf("[FreeUser] Warning: Failed to temp map PT 0x%lx from PDE[%zu] - frames leak!\n", (unsigned long)pt_phys, i);
+                       // *** FORMAT FIX: %u (address), %zu (index) ***
+                       terminal_printf("[FreeUser] Warning: Failed to temp map PT 0x%u from PDE[%zu] - frames leak!\n", (unsigned long)pt_phys, i);
                   }
                   // Free the Page Table frame itself
                   put_frame(pt_phys);
-                  // terminal_printf("  Freed Page Table 0x%lx and its frames for PDE[%zu]\n", (unsigned long)pt_phys, i);
+                  // terminal_printf("  Freed Page Table 0x%u and its frames for PDE[%zu]\n", (unsigned long)pt_phys, i);
              }
              // Clear the PDE entry in the target PD
              target_pd_virt_temp[i] = 0;
@@ -1635,8 +1635,8 @@
          terminal_printf("[CloneDir] Error: Failed to allocate frame for new PD.\n");
          return 0;
      }
-     // *** FORMAT FIX: %p (pointer), %lx (address) ***
-     terminal_printf("[CloneDir] Cloning PD %p -> New PD 0x%lx\n", (void*)src_pd_phys_addr, (unsigned long)new_pd_phys);
+     // *** FORMAT FIX: %p (pointer), %u (address) ***
+     terminal_printf("[CloneDir] Cloning PD %p -> New PD 0x%u\n", (void*)src_pd_phys_addr, (unsigned long)new_pd_phys);
  
      uint32_t* src_pd_virt_temp = NULL;
      uint32_t* dst_pd_virt_temp = NULL;
@@ -1653,8 +1653,8 @@
      src_pd_virt_temp = (uint32_t*)TEMP_MAP_ADDR_PD_SRC;
  
      if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PD_DST, new_pd_phys, PTE_KERNEL_DATA_FLAGS) != 0) {
-         // *** FORMAT FIX: %lx for address ***
-         terminal_printf("[CloneDir] Error: Failed to map destination PD 0x%lx.\n", (unsigned long)new_pd_phys);
+         // *** FORMAT FIX: %u for address ***
+         terminal_printf("[CloneDir] Error: Failed to map destination PD 0x%u.\n", (unsigned long)new_pd_phys);
          error_occurred = 1; goto cleanup_clone_err;
      }
      dst_pd_virt_temp = (uint32_t*)TEMP_MAP_ADDR_PD_DST;
@@ -1704,15 +1704,15 @@
          uint32_t* dst_pt_virt_temp = NULL;
  
          if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PT_SRC, src_pt_phys, PTE_KERNEL_READONLY_FLAGS) != 0) {
-              // *** FORMAT FIX: %lx for address ***
-              terminal_printf("[CloneDir] Error: Failed to map source PT 0x%lx.\n", (unsigned long)src_pt_phys);
+              // *** FORMAT FIX: %u for address ***
+              terminal_printf("[CloneDir] Error: Failed to map source PT 0x%u.\n", (unsigned long)src_pt_phys);
              error_occurred = 1; goto cleanup_clone_err;
          }
          src_pt_virt_temp = (uint32_t*)TEMP_MAP_ADDR_PT_SRC;
  
          if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PT_DST, dst_pt_phys, PTE_KERNEL_DATA_FLAGS) != 0) {
-             // *** FORMAT FIX: %lx for address ***
-             terminal_printf("[CloneDir] Error: Failed to map destination PT 0x%lx.\n", (unsigned long)dst_pt_phys);
+             // *** FORMAT FIX: %u for address ***
+             terminal_printf("[CloneDir] Error: Failed to map destination PT 0x%u.\n", (unsigned long)dst_pt_phys);
              kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_SRC);
              error_occurred = 1; goto cleanup_clone_err;
          }
@@ -1750,8 +1750,8 @@
          return 0; // Return 0 on error
      }
  
-     // *** FORMAT FIX: %lx for address ***
-     terminal_printf("[CloneDir] Successfully cloned PD to 0x%lx\n", (unsigned long)new_pd_phys);
+     // *** FORMAT FIX: %u for address ***
+     terminal_printf("[CloneDir] Successfully cloned PD to 0x%u\n", (unsigned long)new_pd_phys);
      return new_pd_phys;
  }
  
@@ -1784,8 +1784,8 @@
  
      // --- Start logging fault details ---
      terminal_printf("\n--- PAGE FAULT (#PF) ---\n");
-     // *** FORMAT FIX: %u (pid), %p (addr), %lx (errcode) ***
-     terminal_printf(" PID: %u, Addr: %p, ErrCode: 0x%lx\n",
+     // *** FORMAT FIX: %u (pid), %p (addr), %u (errcode) ***
+     terminal_printf(" PID: %u, Addr: %p, ErrCode: 0x%u\n",
                      (unsigned int)current_pid,
                      (void*)fault_addr,
                      (unsigned long)error_code);
@@ -1796,22 +1796,22 @@
                      reserved_bit ? "Reserved-Bit-Set" : "Reserved-OK",
                      instruction_fetch ? (g_nx_supported ? "Instruction-Fetch(NX?)" : "Instruction-Fetch") : "Data-Access");
  
-     // *** FORMAT FIX: %p (EIP), %lx (CS/EFLAGS/registers) ***
-     terminal_printf(" CPU State: EIP=%p, CS=0x%lx, EFLAGS=0x%lx\n",
+     // *** FORMAT FIX: %p (EIP), %u (CS/EFLAGS/registers) ***
+     terminal_printf(" CPU State: EIP=%p, CS=0x%u, EFLAGS=0x%u\n",
                      (void*)regs->eip,
                      (unsigned long)regs->cs,
                      (unsigned long)regs->eflags);
-     terminal_printf(" EAX=0x%lx EBX=0x%lx ECX=0x%lx EDX=0x%lx\n",
+     terminal_printf(" EAX=0x%u EBX=0x%u ECX=0x%u EDX=0x%u\n",
                      (unsigned long)regs->eax, (unsigned long)regs->ebx,
                      (unsigned long)regs->ecx, (unsigned long)regs->edx);
-     terminal_printf(" ESI=0x%lx EDI=0x%lx EBP=%p K_ESP=0x%lx\n", // Print Kernel ESP (esp_dummy), EBP as pointer
+     terminal_printf(" ESI=0x%u EDI=0x%u EBP=%p K_ESP=0x%u\n", // Print Kernel ESP (esp_dummy), EBP as pointer
                      (unsigned long)regs->esi, (unsigned long)regs->edi,
                      (void*)regs->ebp, (unsigned long)regs->esp_dummy);
  
      // Log User ESP and SS only if the fault happened in User mode (makes sense)
      if (user) {
-         // *** FORMAT FIX: %lx ***
-         terminal_printf("            U_ESP=0x%lx, U_SS=0x%lx\n", (unsigned long)regs->user_esp, (unsigned long)regs->user_ss);
+         // *** FORMAT FIX: %u ***
+         terminal_printf("            U_ESP=0x%u, U_SS=0x%u\n", (unsigned long)regs->user_esp, (unsigned long)regs->user_ss);
      }
      // --- End logging fault details ---
  
@@ -1889,8 +1889,8 @@
      }
  
      // VMA found, log details and check permissions against the fault type
-     // *** FORMAT FIX: %lx (addr), %lx (page_prot) ***
-     terminal_printf("  VMA Found: [0x%lx - 0x%lx) Flags: %c%c%c PageProt: 0x%lx\n",
+     // *** FORMAT FIX: %u (addr), %u (page_prot) ***
+     terminal_printf("  VMA Found: [0x%u - 0x%u) Flags: %c%c%c PageProt: 0x%u\n",
                      (unsigned long)vma->vm_start, (unsigned long)vma->vm_end,
                      (vma->vm_flags & VM_READ) ? 'R' : '-',
                      (vma->vm_flags & VM_WRITE) ? 'W' : '-',
@@ -1970,8 +1970,8 @@
      }
  
      if (vaddr % PAGE_SIZE != 0) {
-         // *** FORMAT FIX: %lx ***
-         terminal_printf("[KUnmapUnsafe] Error: VAddr 0x%lx not page aligned.\n", (unsigned long)vaddr);
+         // *** FORMAT FIX: %u ***
+         terminal_printf("[KUnmapUnsafe] Error: VAddr 0x%u not page aligned.\n", (unsigned long)vaddr);
          return;
      }
  
@@ -1981,8 +1981,8 @@
  
      // Validate indices against bounds
      if (pd_idx >= TABLES_PER_DIR) {
-          // *** FORMAT FIX: %lu (index), %lx (addr) ***
-         terminal_printf("[KUnmapUnsafe] Error: Invalid PDE index %lu for vaddr 0x%lx\n",
+          // *** FORMAT FIX: %lu (index), %u (addr) ***
+         terminal_printf("[KUnmapUnsafe] Error: Invalid PDE index %u for vaddr 0x%u\n",
                          (unsigned long)pd_idx, (unsigned long)vaddr);
          return;
      }
@@ -1998,8 +1998,8 @@
  
      // Check if it's a 4MB page
      if (pde & PAGE_SIZE_4MB) {
-          // *** FORMAT FIX: %lx ***
-         terminal_printf("[KUnmapUnsafe] Cannot unmap 4KB page within a 4MB PDE V=0x%lx\n",
+          // *** FORMAT FIX: %u ***
+         terminal_printf("[KUnmapUnsafe] Cannot unmap 4KB page within a 4MB PDE V=0x%u\n",
                          (unsigned long)vaddr);
          return;
      }
@@ -2009,8 +2009,8 @@
  
      // Validate PT physical address
      if (pt_phys == 0 || (pt_phys & ~PAGING_PDE_ADDR_MASK_4KB)) {
-          // *** FORMAT FIX: %lx, %lu ***
-         terminal_printf("[KUnmapUnsafe] Error: Invalid PT physical address 0x%lx from PDE[%lu]\n",
+          // *** FORMAT FIX: %u, %lu ***
+         terminal_printf("[KUnmapUnsafe] Error: Invalid PT physical address 0x%u from PDE[%u]\n",
                          (unsigned long)pt_phys, (unsigned long)pd_idx);
          return;
      }
@@ -2022,15 +2022,15 @@
      if ((uintptr_t)pt_virt < RECURSIVE_PDE_VADDR || // Lower bound check is useful
     (uintptr_t)pt_virt >= (RECURSIVE_PDE_VADDR + (TABLES_PER_DIR * PAGE_SIZE))) { // Check upper bound too
           // *** FORMAT FIX: %p, %lu ***
-         terminal_printf("[KUnmapUnsafe] Error: Invalid PT virtual address %p for PDE[%lu]\n",
+         terminal_printf("[KUnmapUnsafe] Error: Invalid PT virtual address %p for PDE[%u]\n",
                          (void*)pt_virt, (unsigned long)pd_idx);
          return;
      }
  
      // Validate PTE index
      if (pt_idx >= PAGES_PER_TABLE) {
-          // *** FORMAT FIX: %lu, %lx ***
-         terminal_printf("[KUnmapUnsafe] Error: Invalid PTE index %lu for vaddr 0x%lx\n",
+          // *** FORMAT FIX: %lu, %u ***
+         terminal_printf("[KUnmapUnsafe] Error: Invalid PTE index %u for vaddr 0x%u\n",
                          (unsigned long)pt_idx, (unsigned long)vaddr);
          return;
      }
@@ -2039,8 +2039,8 @@
      if (pt_virt[pt_idx] & PAGE_PRESENT) {
          // Check for reserved bits in PTE
          if (pt_virt[pt_idx] & ~(PAGING_PTE_ADDR_MASK | PAGING_FLAG_MASK)) {
-              // *** FORMAT FIX: %lu, %lx ***
-              terminal_printf("[KUnmapUnsafe] Warning: PTE[%lu] at 0x%lx has reserved bits set: 0x%lx\n",
+              // *** FORMAT FIX: %lu, %u ***
+              terminal_printf("[KUnmapUnsafe] Warning: PTE[%u] at 0x%u has reserved bits set: 0x%u\n",
                               (unsigned long)pt_idx, (unsigned long)vaddr, (unsigned long)pt_virt[pt_idx]);
          }
  
@@ -2055,8 +2055,8 @@
  
          // If the page table is empty, free it
          if (pt_empty) {
-              // *** FORMAT FIX: %lx, %lu ***
-              terminal_printf("[KUnmapUnsafe] PT at Phys 0x%lx (PDE[%lu]) became empty after unmapping 0x%lx. Freeing PT.\n",
+              // *** FORMAT FIX: %u, %lu ***
+              terminal_printf("[KUnmapUnsafe] PT at Phys 0x%u (PDE[%u]) became empty after unmapping 0x%u. Freeing PT.\n",
                               (unsigned long)pt_phys, (unsigned long)pd_idx, (unsigned long)vaddr);
  
              // Clear the PDE
@@ -2143,8 +2143,8 @@
           terminal_printf("[PagingSet] Error: Invalid null pointers provided.\n");
           return;
      }
-     // *** FORMAT FIX: %p, %lx ***
-     terminal_printf("[PagingSet] Setting Kernel PD Globals: Virt=%p Phys=0x%lx\n", (void*)pd_virt, (unsigned long)pd_phys);
+     // *** FORMAT FIX: %p, %u ***
+     terminal_printf("[PagingSet] Setting Kernel PD Globals: Virt=%p Phys=0x%u\n", (void*)pd_virt, (unsigned long)pd_phys);
      g_kernel_page_directory_virt = pd_virt;
      g_kernel_page_directory_phys = pd_phys;
  }
@@ -2152,8 +2152,8 @@
  int paging_map_single_4k(uint32_t *page_directory_phys, uintptr_t vaddr, uintptr_t paddr, uint32_t flags) {
      // Basic alignment checks
      if ((vaddr % PAGE_SIZE != 0) || (paddr % PAGE_SIZE != 0)) {
-         // *** FORMAT FIX: %lx ***
-         terminal_printf("[MapSingle4k] Error: Unaligned addresses V=0x%lx P=0x%lx\n", (unsigned long)vaddr, (unsigned long)paddr);
+         // *** FORMAT FIX: %u ***
+         terminal_printf("[MapSingle4k] Error: Unaligned addresses V=0x%u P=0x%u\n", (unsigned long)vaddr, (unsigned long)paddr);
          return -1;
      }
      // Call the internal helper, explicitly setting use_large_page to false
@@ -2164,7 +2164,7 @@
  void* paging_temp_map(uintptr_t phys_addr) {
     // Validate physical address alignment
     if (phys_addr % PAGE_SIZE != 0) {
-        terminal_printf("[Paging Temp Map] Error: Physical address 0x%lx is not page-aligned.\n", (unsigned long)phys_addr);
+        terminal_printf("[Paging Temp Map] Error: Physical address 0x%u is not page-aligned.\n", (unsigned long)phys_addr);
         return NULL;
     }
 
@@ -2177,12 +2177,12 @@
     );
 
     if (result != 0) {
-        terminal_printf("[Paging Temp Map] Error: Failed to map paddr 0x%lx to temp vaddr 0x%lx.\n",
+        terminal_printf("[Paging Temp Map] Error: Failed to map paddr 0x%u to temp vaddr 0x%u.\n",
                         (unsigned long)phys_addr, (unsigned long)TEMP_MAP_ADDR_GENERIC);
         return NULL;
     }
 
-    // terminal_printf("[Paging Temp Map] Mapped P=0x%lx -> V=%p\n", (unsigned long)phys_addr, (void*)TEMP_MAP_ADDR_GENERIC);
+    // terminal_printf("[Paging Temp Map] Mapped P=0x%u -> V=%p\n", (unsigned long)phys_addr, (void*)TEMP_MAP_ADDR_GENERIC);
     return (void*)TEMP_MAP_ADDR_GENERIC;
 }
 
@@ -2243,7 +2243,7 @@ void copy_kernel_pde_entries(uint32_t *dst_pd_virt) { // *** CHANGE int to void 
 }
 
 int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr, size_t memsz) {
-    terminal_printf("[Unmap Range] V=[0x%lx - 0x%lx) in PD Phys %p\n",
+    terminal_printf("[Unmap Range] V=[0x%u - 0x%u) in PD Phys %p\n",
                     (unsigned long)virt_start_addr, (unsigned long)(virt_start_addr + memsz), (void*)page_directory_phys);
 
     if (!page_directory_phys || memsz == 0) {
@@ -2297,7 +2297,7 @@ int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr,
         // Ensure we are not touching kernel or recursive space if unmapping user space
         // This check might need adjustment based on your exact memory layout policy
         if (pd_idx >= KERNEL_PDE_INDEX) {
-             terminal_printf("[Unmap Range] Warning: Attempt to unmap kernel/recursive range V=0x%lx skipped.\n", (unsigned long)v_addr);
+             terminal_printf("[Unmap Range] Warning: Attempt to unmap kernel/recursive range V=0x%u skipped.\n", (unsigned long)v_addr);
              continue; // Skip kernel/recursive PDEs
         }
 
@@ -2309,7 +2309,7 @@ int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr,
 
         if (pde & PAGE_SIZE_4MB) {
             // This implementation currently does not support unmapping ranges overlapping 4MB pages.
-            terminal_printf("[Unmap Range] Error: Cannot unmap range overlapping 4MB page at V=0x%lx.\n", (unsigned long)v_addr);
+            terminal_printf("[Unmap Range] Error: Cannot unmap range overlapping 4MB page at V=0x%u.\n", (unsigned long)v_addr);
             if (!is_current_pd) paging_temp_unmap(target_pd_virt);
             return -1;
         }
@@ -2325,7 +2325,7 @@ int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr,
         } else {
              pt_virt = paging_temp_map(pt_phys);
              if (!pt_virt) {
-                 terminal_printf("[Unmap Range] Error: Failed to temp map target PT %p for V=0x%lx.\n", (void*)pt_phys, (unsigned long)v_addr);
+                 terminal_printf("[Unmap Range] Error: Failed to temp map target PT %p for V=0x%u.\n", (void*)pt_phys, (unsigned long)v_addr);
                  // Continue to next PDE, but leak the PT for now? Or return error?
                  // Returning error is safer to signal incomplete unmap.
                  if (!is_current_pd) paging_temp_unmap(target_pd_virt);
@@ -2354,7 +2354,7 @@ int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr,
             // Check if the entire page table is now empty
             // NOTE: is_page_table_empty needs the VIRTUAL address of the PT
             if (is_page_table_empty(pt_virt)) {
-                terminal_printf("[Unmap Range] PT at Phys 0x%lx (PDE[%lu]) became empty. Freeing PT.\n",
+                terminal_printf("[Unmap Range] PT at Phys 0x%u (PDE[%u]) became empty. Freeing PT.\n",
                                 (unsigned long)pt_phys, (unsigned long)pd_idx);
 
                 // Clear the PDE in the target PD

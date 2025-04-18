@@ -85,254 +85,159 @@
   * within the KERNEL'S address space (kernel page directory).
   * 5. Sets pcb->kernel_stack_vaddr_top.
   */
- static bool allocate_kernel_stack(pcb_t *proc)
- {
-     KERNEL_ASSERT(proc != NULL, "allocate_kernel_stack: NULL proc");
- 
-     size_t stack_alloc_size = PROCESS_KSTACK_SIZE;
- 
-     // Validate stack size configuration
-     if (stack_alloc_size == 0 || (stack_alloc_size % PAGE_SIZE) != 0) {
-         terminal_printf("[Process] Error: Invalid PROCESS_KSTACK_SIZE (%u bytes) - must be multiple of %u and > 0.\n",
-                         (unsigned)stack_alloc_size, (unsigned)PAGE_SIZE);
-         return false;
-     }
- 
-     size_t num_pages = stack_alloc_size / PAGE_SIZE;
-     terminal_printf("  Allocating %u pages (%u bytes) for kernel stack...\n", (unsigned)num_pages, (unsigned)stack_alloc_size);
- 
-     // --------------------------------------------------------------------
-     // 1) Allocate Physical Frames
-     // --------------------------------------------------------------------
-     // Use a temporary array on the *current* kernel stack (caller's stack)
-     // If num_pages is large, consider kmalloc, but usually it's small (e.g., 4 pages).
-     // KERNEL_ASSERT(num_pages < 16, "Kernel stack size excessively large?"); // Sanity check
-     if (num_pages >= 16) { // Use kmalloc for larger stacks to avoid stack overflow
-          terminal_printf("[Process] Warning: Large kernel stack requested (%u pages), using kmalloc for temp frame list.\n", (unsigned)num_pages);
-          // Fall through to kmalloc based allocation below
-     } else {
-          // Allocate on current stack if small enough
-          uintptr_t phys_frames_on_stack[num_pages];
-          memset(phys_frames_on_stack, 0, sizeof(phys_frames_on_stack));
- 
-          size_t allocated_count = 0;
-          for (size_t i = 0; i < num_pages; i++) {
-             uintptr_t frame_addr = frame_alloc();
-             if (!frame_addr) {
-                 terminal_printf("  [Process] Failed to allocate physical frame %u/%u for kernel stack (Out of Memory?).\n", (unsigned)(i + 1), (unsigned)num_pages);
-                 // Cleanup previously allocated frames
-                 for (size_t j = 0; j < allocated_count; j++) {
-                     if (phys_frames_on_stack[j] != 0) {
-                         put_frame(phys_frames_on_stack[j]);
-                     }
-                 }
-                 return false; // Physical frame allocation failed
-             }
-             phys_frames_on_stack[i] = frame_addr;
-             allocated_count++;
+  static bool allocate_kernel_stack(pcb_t *proc)
+  {
+      KERNEL_ASSERT(proc != NULL, "allocate_kernel_stack: NULL proc");
+  
+      size_t stack_alloc_size = PROCESS_KSTACK_SIZE;
+  
+      // Validate stack size configuration
+      if (stack_alloc_size == 0 || (stack_alloc_size % PAGE_SIZE) != 0) {
+          terminal_printf("[Process] Error: Invalid PROCESS_KSTACK_SIZE (%u bytes) - must be multiple of %u and > 0.\n",
+                          (unsigned)stack_alloc_size, (unsigned)PAGE_SIZE);
+          return false;
+      }
+  
+      size_t num_pages = stack_alloc_size / PAGE_SIZE;
+      terminal_printf("  Allocating %u pages (%u bytes) for kernel stack...\n", (unsigned)num_pages, (unsigned)stack_alloc_size);
+  
+      // Use a temporary array on the heap to store physical frame addresses
+      // This avoids potential stack overflow if num_pages is large.
+      uintptr_t *phys_frames_heap = kmalloc(num_pages * sizeof(uintptr_t));
+      if (!phys_frames_heap) {
+          terminal_write("  [Process] Failed to allocate temporary array (heap) for kernel stack frames.\n");
+          return false;
+      }
+      memset(phys_frames_heap, 0, num_pages * sizeof(uintptr_t));
+  
+      // --------------------------------------------------------------------
+      // 1) Allocate Physical Frames
+      // --------------------------------------------------------------------
+      size_t allocated_count_heap = 0;
+      bool phys_alloc_ok = true;
+      for (size_t i = 0; i < num_pages; i++) {
+          uintptr_t frame_addr = frame_alloc();
+          if (!frame_addr) {
+              terminal_printf("  [Process] Failed to allocate physical frame %u/%u for kernel stack (Out of Memory?).\n", (unsigned)(i + 1), (unsigned)num_pages);
+              phys_alloc_ok = false;
+              break; // Exit loop on failure
           }
-          proc->kernel_stack_phys_base = (uint32_t)phys_frames_on_stack[0]; // Store base physical frame
-          terminal_printf("  Successfully allocated %u physical frames for kernel stack.\n", (unsigned)allocated_count);
- 
- 
-          // --------------------------------------------------------------------
-          // 2) Allocate contiguous virtual range from dedicated kernel stack area
-          // --------------------------------------------------------------------
-          // --- Placeholder Virtual Allocator ---
-          // NOTE: Add locking if using this in an SMP environment!
-          uintptr_t kstack_virt_base = g_next_kernel_stack_virt_base;
-          g_next_kernel_stack_virt_base += stack_alloc_size;
- 
-          // Basic check for overlap/exhaustion
-          if (g_next_kernel_stack_virt_base >= KERNEL_STACK_VIRT_END || kstack_virt_base < KERNEL_STACK_VIRT_START) {
-              terminal_printf("  [Process] Error: Kernel stack virtual address space exhausted or invalid range.\n");
-              g_next_kernel_stack_virt_base = kstack_virt_base; // Rollback allocation pointer
- 
-              // Cleanup frames
-              for (size_t i = 0; i < allocated_count; i++) {
-                  put_frame(phys_frames_on_stack[i]);
+          phys_frames_heap[i] = frame_addr;
+          allocated_count_heap++;
+      }
+  
+      if (!phys_alloc_ok) {
+          // Cleanup previously allocated frames if allocation failed mid-way
+          for (size_t j = 0; j < allocated_count_heap; j++) {
+              put_frame(phys_frames_heap[j]);
+          }
+          kfree(phys_frames_heap);
+          return false; // Physical frame allocation failed
+      }
+  
+      proc->kernel_stack_phys_base = (uint32_t)phys_frames_heap[0]; // Store base physical frame
+      terminal_printf("  Successfully allocated %u physical frames for kernel stack.\n", (unsigned)allocated_count_heap);
+  
+      // --------------------------------------------------------------------
+      // 2) Allocate contiguous virtual range from dedicated kernel stack area
+      // --------------------------------------------------------------------
+      // --- Placeholder Virtual Allocator ---
+      // NOTE: Add locking if using this in an SMP environment!
+      uintptr_t kstack_virt_base_heap = g_next_kernel_stack_virt_base;
+      g_next_kernel_stack_virt_base += stack_alloc_size;
+  
+      // Basic check for overlap/exhaustion
+      if (g_next_kernel_stack_virt_base >= KERNEL_STACK_VIRT_END || kstack_virt_base_heap < KERNEL_STACK_VIRT_START) {
+          terminal_printf("  [Process] Error: Kernel stack virtual address space exhausted or invalid range.\n");
+          g_next_kernel_stack_virt_base = kstack_virt_base_heap; // Rollback allocation pointer
+  
+          // Cleanup frames
+          for (size_t i = 0; i < allocated_count_heap; i++) {
+              put_frame(phys_frames_heap[i]);
+          }
+          kfree(phys_frames_heap);
+          return false;
+      }
+      // --- End Placeholder Virtual Allocator ---
+  
+      // Ensure the allocated virtual base is page-aligned
+      KERNEL_ASSERT((kstack_virt_base_heap % PAGE_SIZE) == 0, "Kernel stack virtual base not page aligned");
+  
+      terminal_printf("  Allocated kernel stack VIRTUAL range: [0x%x - 0x%x)\n",
+                      (unsigned)kstack_virt_base_heap,
+                      (unsigned)(kstack_virt_base_heap + stack_alloc_size));
+  
+      // --------------------------------------------------------------------
+      // 3) Map each physical frame into that virtual range in the Kernel PD
+      // --------------------------------------------------------------------
+      // **** LIKELY POINT OF FAILURE SEEN IN LOG ****
+      // The error "PTE[0] already present for V=0xE0000000..." happens here.
+      // This implies that the range [KERNEL_STACK_VIRT_START, KERNEL_STACK_VIRT_END)
+      // was *not* completely free in the kernel page directory before this function
+      // was called. Check the initial kernel mappings in `paging_setup_early_maps`.
+      // The early heap mapping might be overlapping with 0xE0000000.
+      // ***********************************************
+      bool mapping_ok_heap = true;
+      for (size_t i = 0; i < num_pages; i++) {
+          uintptr_t target_vaddr = kstack_virt_base_heap + (i * PAGE_SIZE);
+          uintptr_t phys_addr    = phys_frames_heap[i];
+  
+          int map_res = paging_map_single_4k(
+              (uint32_t*)g_kernel_page_directory_phys, // Target the KERNEL PD
+              target_vaddr,
+              phys_addr,
+              PTE_KERNEL_DATA_FLAGS // Kernel RW, NX=true (if supported)
+          );
+          if (map_res != 0) {
+              // *** Error path where invalid PT address might occur ***
+              // The error "Invalid PT virtual address 0xfff80000 for PDE[896]"
+              // likely happened during the call to paging_unmap_range below.
+              // This suggests a bug in how paging_unmap_range (or its callees)
+              // calculates the virtual address of the page table via recursive mapping,
+              // especially near PDE 896 (0xE0000000).
+              // *********************************************************
+              terminal_printf("  [Process] Failed to map kernel stack page %u (V=0x%x -> P=0x%x), code=%d.\n",
+                              (unsigned)i, (unsigned)target_vaddr, (unsigned)phys_addr, map_res);
+  
+              // Unmap previously successfully mapped pages (0 to i-1)
+              if (i > 0) {
+                  paging_unmap_range(
+                      (uint32_t*)g_kernel_page_directory_phys, // Target KERNEL PD
+                      kstack_virt_base_heap,
+                      i * PAGE_SIZE // Size to unmap
+                  );
               }
-              return false;
+              // Free ALL allocated physical frames (0 to allocated_count_heap-1)
+              for (size_t j = 0; j < allocated_count_heap; j++) {
+                  put_frame(phys_frames_heap[j]);
+              }
+              kfree(phys_frames_heap); // Free the temp array
+              // Rollback VA allocation
+               g_next_kernel_stack_virt_base = kstack_virt_base_heap;
+              mapping_ok_heap = false;
+              break; // Exit mapping loop
           }
-          // --- End Placeholder Virtual Allocator ---
- 
-          // Ensure the allocated virtual base is page-aligned (it should be if KERNEL_STACK_VIRT_START and stack_alloc_size are page-aligned)
-          KERNEL_ASSERT((kstack_virt_base % PAGE_SIZE) == 0, "Kernel stack virtual base not page aligned");
- 
-          terminal_printf("  Allocated kernel stack VIRTUAL range: [0x%x - 0x%x)\n",
-                          (unsigned)kstack_virt_base,
-                          (unsigned)(kstack_virt_base + stack_alloc_size));
- 
-          // --------------------------------------------------------------------
-          // 3) Map each physical frame into that virtual range in the Kernel PD
-          // --------------------------------------------------------------------
-          bool mapping_ok = true;
-          for (size_t i = 0; i < num_pages; i++) {
-             uintptr_t target_vaddr = kstack_virt_base + (i * PAGE_SIZE);
-             uintptr_t phys_addr    = phys_frames_on_stack[i];
- 
-             // Map into the global kernel page directory
-             int map_res = paging_map_single_4k(
-                 (uint32_t*)g_kernel_page_directory_phys, // Map into KERNEL's address space
-                 target_vaddr,
-                 phys_addr,
-                 PTE_KERNEL_DATA_FLAGS // Kernel RW, NX flags (usually stacks aren't executable)
-             );
-             if (map_res != 0) {
-                 terminal_printf("  [Process] Failed to map kernel stack page %u (V=0x%x -> P=0x%x), code=%d.\n",
-                                 (unsigned)i, (unsigned)target_vaddr, (unsigned)phys_addr, map_res);
- 
-                 // Unmap previously successfully mapped pages (0 to i-1) from KERNEL PD
-                 if (i > 0) {
-                     paging_unmap_range(
-                         (uint32_t*)g_kernel_page_directory_phys,
-                         kstack_virt_base,
-                         i * PAGE_SIZE // Unmap only the pages successfully mapped so far
-                     );
-                 }
-                 // Free ALL allocated physical frames (0 to allocated_count-1)
-                 for (size_t j = 0; j < allocated_count; j++) {
-                     put_frame(phys_frames_on_stack[j]);
-                 }
-                 // Rollback VA allocation
-                  g_next_kernel_stack_virt_base = kstack_virt_base;
-                 mapping_ok = false;
-                 break; // Exit mapping loop
-             }
-          }
- 
-          if (!mapping_ok) {
-              return false; // Mapping failed
-          }
- 
-          // The top of the stack is at the high end of the virtual range
-          proc->kernel_stack_vaddr_top = (uint32_t*)(kstack_virt_base + stack_alloc_size);
- 
-          terminal_printf("  Kernel stack mapped: PhysBase=0x%x, VirtBase=0x%x, VirtTop=0x%x\n",
-                          (unsigned)proc->kernel_stack_phys_base,
-                          (unsigned)kstack_virt_base,
-                          (unsigned)proc->kernel_stack_vaddr_top);
- 
-          return true; // Success using on-stack temp array
- 
-     } // End of stack allocation block
- 
- 
-     // Fallback to kmalloc based allocation if stack is large or if stack allocation block above fails
-     uintptr_t *phys_frames_heap = kmalloc(num_pages * sizeof(uintptr_t));
-     if (!phys_frames_heap) {
-        terminal_write("  [Process] Failed to allocate temporary array (heap) for kernel stack frames.\n");
-        return false;
-     }
-     memset(phys_frames_heap, 0, num_pages * sizeof(uintptr_t));
- 
-     size_t allocated_count_heap = 0;
-     for (size_t i = 0; i < num_pages; i++) {
-        uintptr_t frame_addr = frame_alloc();
-        if (!frame_addr) {
-            terminal_printf("  [Process] Failed to allocate physical frame %u/%u for kernel stack (Out of Memory?).\n", (unsigned)(i + 1), (unsigned)num_pages);
-            // Cleanup previously allocated frames
-            for (size_t j = 0; j < allocated_count_heap; j++) {
-                if (phys_frames_heap[j] != 0) {
-                    put_frame(phys_frames_heap[j]);
-                }
-            }
-            kfree(phys_frames_heap);
-            return false; // Physical frame allocation failed
-        }
-        phys_frames_heap[i] = frame_addr;
-        allocated_count_heap++;
-     }
-     proc->kernel_stack_phys_base = (uint32_t)phys_frames_heap[0]; // Store base physical frame
-     terminal_printf("  Successfully allocated %u physical frames for kernel stack (using heap temp).\n", (unsigned)allocated_count_heap);
- 
- 
-     // --------------------------------------------------------------------
-     // 2) Allocate contiguous virtual range from dedicated kernel stack area
-     // --------------------------------------------------------------------
-     // --- Placeholder Virtual Allocator ---
-     // NOTE: Add locking if using this in an SMP environment!
-     uintptr_t kstack_virt_base_heap = g_next_kernel_stack_virt_base;
-     g_next_kernel_stack_virt_base += stack_alloc_size;
- 
-     // Basic check for overlap/exhaustion
-     if (g_next_kernel_stack_virt_base >= KERNEL_STACK_VIRT_END || kstack_virt_base_heap < KERNEL_STACK_VIRT_START) {
-         terminal_printf("  [Process] Error: Kernel stack virtual address space exhausted or invalid range.\n");
-         g_next_kernel_stack_virt_base = kstack_virt_base_heap; // Rollback allocation pointer
- 
-         // Cleanup frames
-         for (size_t i = 0; i < allocated_count_heap; i++) {
-             put_frame(phys_frames_heap[i]);
-         }
-         kfree(phys_frames_heap);
-         return false;
-     }
-     // --- End Placeholder Virtual Allocator ---
- 
-     // Ensure the allocated virtual base is page-aligned
-     KERNEL_ASSERT((kstack_virt_base_heap % PAGE_SIZE) == 0, "Kernel stack virtual base not page aligned");
- 
-     terminal_printf("  Allocated kernel stack VIRTUAL range: [0x%x - 0x%x)\n",
-                     (unsigned)kstack_virt_base_heap,
-                     (unsigned)(kstack_virt_base_heap + stack_alloc_size));
- 
-     // --------------------------------------------------------------------
-     // 3) Map each physical frame into that virtual range in the Kernel PD
-     // --------------------------------------------------------------------
-     bool mapping_ok_heap = true;
-     for (size_t i = 0; i < num_pages; i++) {
-        uintptr_t target_vaddr = kstack_virt_base_heap + (i * PAGE_SIZE);
-        uintptr_t phys_addr    = phys_frames_heap[i];
- 
-        int map_res = paging_map_single_4k(
-            (uint32_t*)g_kernel_page_directory_phys,
-            target_vaddr,
-            phys_addr,
-            PTE_KERNEL_DATA_FLAGS
-        );
-        if (map_res != 0) {
-            terminal_printf("  [Process] Failed to map kernel stack page %u (V=0x%x -> P=0x%x), code=%d.\n",
-                            (unsigned)i, (unsigned)target_vaddr, (unsigned)phys_addr, map_res);
- 
-            // Unmap previously successfully mapped pages (0 to i-1)
-            if (i > 0) {
-                paging_unmap_range(
-                    (uint32_t*)g_kernel_page_directory_phys,
-                    kstack_virt_base_heap,
-                    i * PAGE_SIZE
-                );
-            }
-            // Free ALL allocated physical frames (0 to allocated_count_heap-1)
-            for (size_t j = 0; j < allocated_count_heap; j++) {
-                put_frame(phys_frames_heap[j]);
-            }
-            kfree(phys_frames_heap); // Free the temp array
-            // Rollback VA allocation
-             g_next_kernel_stack_virt_base = kstack_virt_base_heap;
-            mapping_ok_heap = false;
-            break; // Exit mapping loop
-        }
-     }
- 
-     if (!mapping_ok_heap) {
-         kfree(phys_frames_heap); // Make sure temp array is freed on error
-         return false; // Mapping failed
-     }
- 
-     // The top of the stack is at the high end of the virtual range
-     proc->kernel_stack_vaddr_top = (uint32_t*)(kstack_virt_base_heap + stack_alloc_size);
- 
-     // We don't need the list of physical frames anymore (ownership transferred to page tables)
-     kfree(phys_frames_heap);
- 
-     terminal_printf("  Kernel stack mapped: PhysBase=0x%x, VirtBase=0x%x, VirtTop=0x%x\n",
-                     (unsigned)proc->kernel_stack_phys_base,
-                     (unsigned)kstack_virt_base_heap,
-                     (unsigned)proc->kernel_stack_vaddr_top);
- 
-     return true; // Success using heap temp array
- 
- }
+      }
+  
+      if (!mapping_ok_heap) {
+          // Already cleaned up frames and VA in the loop body
+          // kfree(phys_frames_heap); // Don't double free
+          return false; // Mapping failed
+      }
+  
+      // The top of the stack is at the high end of the virtual range
+      proc->kernel_stack_vaddr_top = (uint32_t*)(kstack_virt_base_heap + stack_alloc_size);
+  
+      // We don't need the list of physical frames anymore (ownership transferred to page tables)
+      kfree(phys_frames_heap);
+  
+      terminal_printf("  Kernel stack mapped: PhysBase=0x%x, VirtBase=0x%x, VirtTop=0x%x\n",
+                      (unsigned)proc->kernel_stack_phys_base,
+                      (unsigned)kstack_virt_base_heap,
+                      (unsigned)proc->kernel_stack_vaddr_top);
+  
+      return true; // Success
+  }
  
  
  // ------------------------------------------------------------------------
