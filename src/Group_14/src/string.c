@@ -1,280 +1,361 @@
-#include "string.h"
+#include <string.h> // Include the header this file implements
+#include <libc/stdint.h> // For uintptr_t, uint8_t etc. used in optimized memcpy
+#include <libc/stddef.h> // For size_t, NULL
+
+// Helper definitions for optimized memcpy
+typedef uintptr_t word_t; // Use native word size for potentially faster copies
+#define WORD_SIZE sizeof(word_t)
+#define WORD_MASK (WORD_SIZE - 1)
+
+/* --- Memory Manipulation Functions --- */
 
 void *memset(void *dest, int c, size_t n) {
     unsigned char *ptr = (unsigned char *)dest;
     unsigned char value = (unsigned char)c;
-    
+
     for (size_t i = 0; i < n; i++) {
         ptr[i] = value;
     }
-    
+
     return dest;
 }
 
+/**
+ * @brief Copies n bytes from memory area src to memory area dest.
+ * Uses word-sized copies for aligned sections for better performance.
+ * @warning The memory areas must not overlap. Use memmove if overlap is possible.
+ */
 void *memcpy(void *dest, const void *src, size_t n) {
     unsigned char *d = (unsigned char *)dest;
     const unsigned char *s = (const unsigned char *)src;
-    
-    for (size_t i = 0; i < n; i++) {
-        d[i] = s[i];
+    void *original_dest = dest; // Save original destination pointer
+
+    // Optimization: Handle small copies byte-by-byte directly.
+    // Also handle the case where n is too small for word alignment logic.
+    // Threshold can be tuned (e.g., 2 * WORD_SIZE, or a fixed small number).
+    if (n < WORD_SIZE * 2) {
+        goto byte_copy_remainder;
     }
-    
-    return dest;
+
+    // Align destination pointer down to the nearest word boundary (optional optimization)
+    // This example aligns dest first, then checks src alignment.
+    size_t dest_offset = (uintptr_t)d & WORD_MASK;
+    if (dest_offset != 0) {
+        dest_offset = WORD_SIZE - dest_offset; // Bytes to copy to reach alignment
+        if (dest_offset > n) {
+            dest_offset = n; // Don't copy more than requested
+        }
+        n -= dest_offset;
+        while (dest_offset--) {
+            *d++ = *s++;
+        }
+        // Now 'd' should be aligned if n was large enough
+    }
+
+    // If source is also aligned (or if we don't care about src alignment
+    // and are willing to risk potential performance hit/unaligned access),
+    // copy using word_t chunks.
+    // This example requires both to be aligned for word copy stage.
+    if (((uintptr_t)s & WORD_MASK) == 0) {
+        word_t *wd = (word_t *)d;
+        const word_t *ws = (const word_t *)s;
+        size_t num_words = n / WORD_SIZE;
+
+        // Copy the bulk of the data using word-sized operations
+        while (num_words--) {
+            *wd++ = *ws++;
+        }
+
+        // Update pointers to the end of the word-copied section
+        d = (unsigned char *)wd;
+        s = (const unsigned char *)ws;
+        n &= WORD_MASK; // n = n % WORD_SIZE; Get the remaining bytes count
+    }
+
+byte_copy_remainder:
+    // Copy any remaining bytes (either initial if small size, or trailing bytes)
+    while (n--) {
+        *d++ = *s++;
+    }
+
+    return original_dest;
 }
+
 
 void *memmove(void *dest, const void *src, size_t n) {
     unsigned char *d = (unsigned char *)dest;
     const unsigned char *s = (const unsigned char *)src;
-    
-    // If dest is before src or after src+n, we can use a forward copy
+
+    // If dest is before src or they don't overlap significantly,
+    // a forward copy is safe.
     if (d <= s || d >= s + n) {
-        return memcpy(dest, src, n);
+        // Can use memcpy (or the optimized forward copy logic within it)
+        return memcpy(dest, src, n); // Assuming memcpy is defined (either builtin or custom)
     }
-    
-    // Otherwise, we need to copy backward to avoid overwriting source data
-    for (size_t i = n; i > 0; i--) {
-        d[i-1] = s[i-1];
+
+    // Otherwise, regions overlap and dest is *after* src (d > s).
+    // Copy backward to avoid overwriting source data before it's read.
+    // Start from the end of the buffers.
+    d += n;
+    s += n;
+    while (n--) {
+        *(--d) = *(--s);
     }
-    
-    return dest;
+
+    return dest; // Per standard, return the original destination pointer
 }
 
 void *memchr(const void *s, int c, size_t n) {
     const unsigned char *ptr = (const unsigned char *)s;
     unsigned char value = (unsigned char)c;
-    
+
     for (size_t i = 0; i < n; i++) {
         if (ptr[i] == value) {
-            return (void *)(ptr + i);
+            return (void *)(ptr + i); // Cast okay: returning pointer within original buffer
         }
     }
-    
+
     return NULL;
 }
 
 int memcmp(const void *s1, const void *s2, size_t n) {
     const unsigned char *p1 = (const unsigned char *)s1;
     const unsigned char *p2 = (const unsigned char *)s2;
-    
+
     for (size_t i = 0; i < n; i++) {
         if (p1[i] != p2[i]) {
+            // Return difference of the first non-matching bytes
             return p1[i] - p2[i];
         }
     }
-    
+
+    // All n bytes matched
     return 0;
 }
 
+/* --- String Manipulation Functions --- */
+
 size_t strlen(const char *s) {
     size_t len = 0;
-    
     while (s[len] != '\0') {
         len++;
     }
-    
     return len;
 }
 
 int strcmp(const char *s1, const char *s2) {
+    // Iterate while both strings have characters and they are equal
     while (*s1 && (*s1 == *s2)) {
         s1++;
         s2++;
     }
-    
+    // Return the difference of the first non-matching characters
+    // or the difference when one string ends (e.g., 'A' vs 'A\0' -> 0 - 'A')
+    // Cast to unsigned char before subtraction as per C standard
     return *(const unsigned char *)s1 - *(const unsigned char *)s2;
 }
 
 int strncmp(const char *s1, const char *s2, size_t n) {
     if (n == 0) {
-        return 0; // Comparing zero characters always results in equality
+        return 0;
     }
 
-    // Iterate while characters match, n > 0, and neither string ends
     while (n-- > 0 && *s1 && (*s1 == *s2)) {
+        // If we decrement n to 0 here, it means we compared n chars and they matched
+        if (n == 0) break;
         s1++;
         s2++;
     }
 
-    // If n reached 0 or we hit the end of s1 simultaneously with s2 ending or matching, they are equal up to n
-    // Otherwise, return the difference of the first non-matching characters (or terminating null).
-    // The subtraction handles the case where one string ends before n characters are compared.
-    // Note: We cast to unsigned char before subtraction, as per the C standard, to handle potential negative char values correctly.
-    if (n == (size_t)-1) { // Check if n wrapped around due to n-- on the last iteration when they matched
-        return 0; // Matched exactly n characters
-    } else {
-        return *(const unsigned char *)s1 - *(const unsigned char *)s2;
-    }
+    // If n is 0 here, it means the loop terminated because n characters were matched
+    // Otherwise, the loop terminated because *s1 or *s2 was null, or *s1 != *s2
+    // Return the difference of the characters at the point of termination
+    // Cast to unsigned char before subtraction as per C standard
+     return (n == (size_t)-1) ? 0 : *(const unsigned char*)s1 - *(const unsigned char*)s2;
+
+     // Note: The n == (size_t)-1 check is a bit obscure way to check if n became 0
+     // *after* the decrement in the loop condition when the characters matched.
+     // A potentially clearer way:
+     /*
+     size_t i = 0;
+     while (i < n && s1[i] && s2[i] && s1[i] == s2[i]) {
+         i++;
+     }
+     if (i == n) {
+         return 0; // Compared n characters and all matched
+     } else {
+         // Return difference at the point of mismatch or end-of-string
+         return *(const unsigned char*)(s1 + i) - *(const unsigned char*)(s2 + i);
+     }
+     */
 }
+
 
 char *strcpy(char *dest, const char *src) {
     char *original_dest = dest;
-    
+    // Copy characters including the null terminator
     while ((*dest++ = *src++) != '\0');
-    
     return original_dest;
 }
 
 char *strncpy(char *dest, const char *src, size_t n) {
+    char *original_dest = dest;
     size_t i;
-    
-    // Copy from src to dest, up to n characters or until src is exhausted
+
+    // Copy at most n characters from src
     for (i = 0; i < n && src[i] != '\0'; i++) {
         dest[i] = src[i];
     }
-    
-    // Pad remaining characters in dest with nulls
+    // If src was shorter than n, pad the rest of dest with null bytes
     for (; i < n; i++) {
         dest[i] = '\0';
     }
-    
-    return dest;
+
+    // Note: If src is n bytes or longer, dest might not be null-terminated!
+    return original_dest;
 }
 
 char *strcat(char *dest, const char *src) {
     char *original_dest = dest;
-    
-    // Find the end of dest
-    while (*dest) {
+
+    // Find the end of the destination string
+    while (*dest != '\0') {
         dest++;
     }
-    
-    // Copy src to the end of dest
+    // Append the source string, including its null terminator
     while ((*dest++ = *src++) != '\0');
-    
+
     return original_dest;
 }
 
 char *strncat(char *dest, const char *src, size_t n) {
     char *original_dest = dest;
-    size_t dest_len;
-    
-    // Find the end of dest
-    while (*dest) {
+
+    // Find the end of the destination string
+    while (*dest != '\0') {
         dest++;
     }
-    dest_len = dest - original_dest;
-    
+
     // Append at most n characters from src
     size_t i;
     for (i = 0; i < n && src[i] != '\0'; i++) {
         dest[i] = src[i];
     }
-    
-    // Add terminating null byte
+    // Add the terminating null byte
     dest[i] = '\0';
-    
+
     return original_dest;
 }
 
 char *strchr(const char *s, int c) {
+    char char_to_find = (char)c;
     while (*s != '\0') {
-        if (*s == (char)c) {
-            return (char *)s;
+        if (*s == char_to_find) {
+            return (char *)s; // Cast away const-ness as per standard C library behavior
         }
         s++;
     }
-    
-    // Also check for terminating null if c is '\0'
-    if ((char)c == '\0') {
+    // If c was '\0', return pointer to the string's null terminator
+    if (char_to_find == '\0') {
         return (char *)s;
     }
-    
     return NULL;
 }
 
 char *strrchr(const char *s, int c) {
-    const char *last = NULL;
-    
-    // Search for the last occurrence
+    const char *last_match = NULL;
+    char char_to_find = (char)c;
+
+    // Iterate through the string, keeping track of the last match
     while (*s != '\0') {
-        if (*s == (char)c) {
-            last = s;
+        if (*s == char_to_find) {
+            last_match = s;
         }
         s++;
     }
-    
-    // Check terminating null if c is '\0'
-    if ((char)c == '\0') {
+    // If c was '\0', return pointer to the string's null terminator
+    if (char_to_find == '\0') {
         return (char *)s;
     }
-    
-    return (char *)last;
+    // Return the last match found, or NULL if none was found
+    return (char *)last_match; // Cast away const-ness as per standard C library behavior
 }
+
 
 size_t strspn(const char *str, const char *accept) {
     size_t count = 0;
-    
+    const char *p;
+    int found;
+
     while (str[count] != '\0') {
-        // Check if current character is in accept
-        size_t i = 0;
-        while (accept[i] != '\0') {
-            if (str[count] == accept[i]) {
+        found = 0;
+        for (p = accept; *p != '\0'; p++) {
+            if (str[count] == *p) {
+                found = 1;
                 break;
             }
-            i++;
         }
-        
-        // If we reached the end of accept, character is not accepted
-        if (accept[i] == '\0') {
-            return count;
+        if (!found) {
+            return count; // Character not in accept set
         }
-        
         count++;
     }
-    
-    return count;
+    return count; // Reached end of str, all characters were in accept
 }
 
 char *strpbrk(const char *str, const char *accept) {
+    const char *a;
     while (*str != '\0') {
-        // Check if current character is in accept
-        const char *a = accept;
-        while (*a != '\0') {
+        for (a = accept; *a != '\0'; a++) {
             if (*str == *a) {
-                return (char *)str;
+                return (char *)str; // Found a matching character
             }
-            a++;
         }
         str++;
     }
-    
-    return NULL;
+    return NULL; // No character from accept found in str
 }
 
-// Static variable for strtok's state
+
+// Static variable to hold the state for strtok
+// WARNING: This makes strtok non-reentrant and not thread-safe!
 static char *strtok_next = NULL;
 
 char *strtok(char *str, const char *delim) {
     char *token_start;
-    
-    // If str is NULL, use the saved position
-    if (str == NULL) {
-        str = strtok_next;
-    }
-    
-    // If starting position is NULL, we're done
-    if (str == NULL) {
+    char *current_pos;
+
+    // Use saved position if str is NULL
+    current_pos = (str == NULL) ? strtok_next : str;
+
+    // If current position is NULL, no more tokens
+    if (current_pos == NULL) {
         return NULL;
     }
-    
+
     // Skip leading delimiters
-    str += strspn(str, delim);
-    if (*str == '\0') {
-        strtok_next = NULL;
+    current_pos += strspn(current_pos, delim);
+    if (*current_pos == '\0') {
+        strtok_next = NULL; // Reached end of string
         return NULL;
     }
-    
-    // Find the end of the token
-    token_start = str;
-    str = strpbrk(token_start, delim);
-    if (str == NULL) {
-        // This is the last token
+
+    // Mark the beginning of the token
+    token_start = current_pos;
+
+    // Find the end of the token (first delimiter)
+    current_pos = strpbrk(token_start, delim);
+
+    if (current_pos == NULL) {
+        // This token extends to the end of the string
+        // Save NULL so the next call returns NULL
         strtok_next = NULL;
     } else {
-        // Terminate the token and set the next position
-        *str = '\0';
-        strtok_next = str + 1;
+        // Terminate the current token
+        *current_pos = '\0';
+        // Save the position after the delimiter for the next call
+        strtok_next = current_pos + 1;
     }
-    
+
     return token_start;
 }
