@@ -1285,7 +1285,7 @@
                  }
              } else {
                   // *** FORMAT FIX: %u, %lu ***
-                  terminal_printf("MAP_INT OTHER_PD DEBUG 4KB_SET: V=0x%u -> P=0x%u | Setting PTE[%lu] in PT@0x%u = 0x%08u\n",
+                  terminal_printf("MAP_INT OTHER_PD DEBUG 4KB_SET: V=0x%u -> P=0x%u | Setting PTE[%u] in PT@0x%u = 0x%08u\n",
                                   (unsigned long)aligned_vaddr, (unsigned long)aligned_paddr, (unsigned long)pt_idx, (unsigned long)pt_phys, (unsigned long)new_pte_val_4kb);
                  target_pt_virt_temp[pt_idx] = new_pte_val_4kb;
                  ret = 0; // Success

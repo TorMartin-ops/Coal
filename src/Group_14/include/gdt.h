@@ -13,6 +13,11 @@ extern "C" {
  *
  * Each entry is 8 bytes long.
  */
+
+ #define GDT_USER_CODE_SELECTOR 0x18 | 0x03 // 3rd entry (index 3), RPL 3
+ #define GDT_USER_DATA_SELECTOR 0x20 | 0x03 // 4th entry (index 4), RPL 3
+
+
 struct gdt_entry {
     uint16_t limit_low;    // Lower 16 bits of the segment limit.
     uint16_t base_low;     // Lower 16 bits of the base address.

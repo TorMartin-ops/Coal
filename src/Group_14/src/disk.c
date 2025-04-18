@@ -61,7 +61,7 @@ int disk_init(disk_t *disk, const char *device_name) {
         disk->initialized = false; // Ensure it's marked as not initialized
         return ret; // Propagate block device error
     }
-    terminal_printf("[Disk] Block device '%s' initialized. Total Sectors: %llu\n",
+    terminal_printf("[Disk] Block device '%s' initialized. Total Sectors: %u\n",
                     disk->blk_dev.device_name, disk->blk_dev.total_sectors);
 
     // *** FIX APPLIED HERE ***

@@ -647,26 +647,27 @@
  /**
   * @brief Opens or creates a file/directory via the appropriate driver.
   */
- file_t *vfs_open(const char *path, int flags) {
-       if (!path || path[0] != '/') { VFS_ERROR("vfs_open: Invalid path '%s'", path ? path : "NULL"); return NULL; }
-       VFS_DEBUG_LOG("vfs_open: path='%s', flags=0x%x", path, flags);
- 
-       mount_t *mnt = find_best_mount_for_path(path);
-       if (!mnt) { VFS_ERROR("vfs_open: No mount point found for path '%s'", path); return NULL; }
- 
-       vfs_driver_t *driver = vfs_get_driver(mnt->fs_name); // Use correct type
-       if (!driver) { VFS_ERROR("vfs_open: Driver '%s' not found for mount point '%s'", mnt->fs_name, mnt->mount_point); return NULL; }
- 
-       const char *relative_path = get_relative_path(path, mnt);
-       if (!relative_path) { VFS_ERROR("vfs_open: Failed to calculate relative path for '%s' on '%s'", path, mnt->mount_point); return NULL; }
- 
-       VFS_DEBUG_LOG("vfs_open: Using mount '%s', driver '%s', relative path '%s'",
-                     mnt->mount_point, driver->fs_name, relative_path);
- 
-       if (!driver->open) { VFS_ERROR("Driver '%s' does not support open operation", driver->fs_name); return NULL; }
- 
-       // Call the driver's open function
-       vnode_t *node = driver->open(mnt->fs_context, relative_path, flags);
+  file_t *vfs_open(const char *path, int flags) {
+    if (!path || path[0] != '/') { VFS_ERROR("vfs_open: Invalid path '%s'", path ? path : "NULL"); return NULL; }
+    VFS_DEBUG_LOG("vfs_open: path='%s', flags=0x%x", path, flags);
+
+    mount_t *mnt = find_best_mount_for_path(path);
+    if (!mnt) { VFS_ERROR("vfs_open: No mount point found for path '%s'", path); return NULL; }
+
+    vfs_driver_t *driver = vfs_get_driver(mnt->fs_name); // Use correct type
+    if (!driver) { VFS_ERROR("vfs_open: Driver '%s' not found for mount point '%s'", mnt->fs_name, mnt->mount_point); return NULL; }
+
+    // THIS is where the relative path is calculated
+    const char *relative_path = get_relative_path(path, mnt);
+    if (!relative_path) { VFS_ERROR("vfs_open: Failed to calculate relative path for '%s' on '%s'", path, mnt->mount_point); return NULL; }
+
+    VFS_DEBUG_LOG("vfs_open: Using mount '%s', driver '%s', relative path '%s'",
+                    mnt->mount_point, driver->fs_name, relative_path);
+
+    if (!driver->open) { VFS_ERROR("Driver '%s' does not support open operation", driver->fs_name); return NULL; }
+
+    // Call the driver's open function with the relative path
+    vnode_t *node = driver->open(mnt->fs_context, relative_path, flags);
        if (!node) {
            VFS_DEBUG_LOG("vfs_open: Driver '%s' failed to open relative path '%s'", driver->fs_name, relative_path);
            // Driver open failed, return NULL. Driver is responsible for internal cleanup.

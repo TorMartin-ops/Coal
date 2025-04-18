@@ -575,172 +575,230 @@ readdir_done:
   * @return FS_SUCCESS on success, negative FS_ERR_* code on failure (e.g., NOT_FOUND, IO).
   */
  int fat_find_in_dir(fat_fs_t *fs,
-                     uint32_t dir_cluster,
-                     const char *component,
-                     fat_dir_entry_t *entry_out,
-                     char *lfn_out, size_t lfn_max_len,
-                     uint32_t *entry_offset_in_dir_out,
-                     uint32_t *first_lfn_offset_out)
- {
-     KERNEL_ASSERT(fs != NULL && component != NULL && entry_out != NULL && entry_offset_in_dir_out != NULL,
-                   "NULL pointer passed to fat_find_in_dir for required arguments");
-     KERNEL_ASSERT(strlen(component) > 0, "Component name cannot be empty");
- 
-     uint32_t current_cluster = dir_cluster;
-     bool scanning_fixed_root = (fs->type != FAT_TYPE_FAT32 && dir_cluster == 0);
-     uint32_t current_byte_offset = 0; // Offset within the current directory cluster chain
- 
-     // Clear LFN output buffer if provided
-     if (lfn_out && lfn_max_len > 0) lfn_out[0] = '\0';
-     // Initialize optional LFN start offset output
-     if (first_lfn_offset_out) *first_lfn_offset_out = (uint32_t)-1;
- 
-     // Allocate sector buffer
-     uint8_t *sector_data = kmalloc(fs->bytes_per_sector);
-     if (!sector_data) return -FS_ERR_OUT_OF_MEMORY;
- 
-     fat_lfn_entry_t lfn_collector[FAT_MAX_LFN_ENTRIES]; // Buffer to collect LFN entries
-     int lfn_count = 0;
-     uint32_t current_lfn_start_offset = (uint32_t)-1; // Track start offset of current LFN sequence
-     int ret = -FS_ERR_NOT_FOUND; // Default return if not found
- 
-     // Main loop iterating through directory sectors/clusters
-     while (true) {
-          // Check for end of cluster chain (only applies to non-root dirs or FAT32 root)
-          if (current_cluster >= fs->eoc_marker && !scanning_fixed_root) {
-              ret = -FS_ERR_NOT_FOUND;
-              break; // End of directory
-          }
- 
-         // Calculate sector offset within the chain
-         uint32_t sector_offset_in_chain = current_byte_offset / fs->bytes_per_sector;
-         size_t entries_per_sector = fs->bytes_per_sector / sizeof(fat_dir_entry_t);
- 
-         // Read the directory sector
-         int read_res = read_directory_sector(fs, current_cluster, sector_offset_in_chain, sector_data);
-         if (read_res != FS_SUCCESS) {
-             ret = read_res; // Propagate error (-FS_ERR_IO or other)
-             break;          // Cannot read directory sector
-         }
- 
-         // Iterate through entries in the loaded sector
-         for (size_t e_idx = 0; e_idx < entries_per_sector; e_idx++) {
-             fat_dir_entry_t *de = (fat_dir_entry_t*)(sector_data + e_idx * sizeof(fat_dir_entry_t));
-             uint32_t entry_abs_offset = current_byte_offset + (uint32_t)(e_idx * sizeof(fat_dir_entry_t));
- 
-             // Check for end-of-directory marker (0x00)
-             if (de->name[0] == FAT_DIR_ENTRY_UNUSED) {
-                 ret = -FS_ERR_NOT_FOUND;
-                 goto find_done; // End of used entries
-             }
-             // Skip deleted (0xE5) and Kanji (0x05) entries
-             if (de->name[0] == FAT_DIR_ENTRY_DELETED || de->name[0] == FAT_DIR_ENTRY_KANJI) {
-                 lfn_count = 0; // Reset LFN state
-                 current_lfn_start_offset = (uint32_t)-1;
-                 continue;
-             }
-              // Skip volume label entries that are not part of an LFN sequence
-              if ((de->attr & FAT_ATTR_VOLUME_ID) && !(de->attr & FAT_ATTR_LONG_NAME)) {
-                 lfn_count = 0;
-                 current_lfn_start_offset = (uint32_t)-1;
-                 continue;
-             }
- 
-             // Process LFN entry
-             if ((de->attr & FAT_ATTR_LONG_NAME_MASK) == FAT_ATTR_LONG_NAME) {
-                 if (lfn_count == 0) {
-                     // Record the starting offset of this LFN sequence
-                     current_lfn_start_offset = entry_abs_offset;
-                 }
-                 if (lfn_count < FAT_MAX_LFN_ENTRIES) {
-                     // Collect the LFN entry
-                     lfn_collector[lfn_count++] = *((fat_lfn_entry_t*)de);
-                 } else {
-                     // LFN sequence too long for buffer, discard collected entries
-                     lfn_count = 0;
-                     current_lfn_start_offset = (uint32_t)-1;
-                 }
-             } else {
-                 // Process 8.3 Entry - Check if it matches the component we're looking for
-                 bool match = false;
-                 char reconstructed_lfn_buf[FAT_MAX_LFN_CHARS]; // Temp buffer for reconstructed name
- 
-                 // Check if the LFN sequence collected matches the component
-                 if (lfn_count > 0) {
-                     uint8_t expected_sum = fat_calculate_lfn_checksum(de->name);
-                     // Verify checksum before reconstructing
-                     if (lfn_collector[0].checksum == expected_sum) {
-                         fat_reconstruct_lfn(lfn_collector, lfn_count, reconstructed_lfn_buf, sizeof(reconstructed_lfn_buf));
-                         // Compare reconstructed LFN with the target component name
-                         if (fat_compare_lfn(component, reconstructed_lfn_buf) == 0) {
-                             match = true;
-                             // Copy LFN name to output buffer if requested
-                             if (lfn_out && lfn_max_len > 0) {
-                                 strncpy(lfn_out, reconstructed_lfn_buf, lfn_max_len - 1);
-                                 lfn_out[lfn_max_len - 1] = '\0';
-                             }
-                         }
-                     } else {
-                         // Checksum mismatch, invalidate collected LFN entries
-                         lfn_count = 0;
-                         current_lfn_start_offset = (uint32_t)-1;
-                     }
-                 }
- 
-                 // If LFN didn't match (or wasn't present), check the 8.3 name
-                 if (!match) {
-                     if (fat_compare_8_3(component, de->name) == 0) {
-                         match = true;
-                         // Clear LFN output buffer as 8.3 name matched
-                         if (lfn_out && lfn_max_len > 0) lfn_out[0] = '\0';
-                         // Invalidate LFN start offset as 8.3 matched directly
-                         current_lfn_start_offset = (uint32_t)-1;
-                     }
-                 }
- 
-                 // If either LFN or 8.3 name matched:
-                 if (match) {
-                     memcpy(entry_out, de, sizeof(fat_dir_entry_t)); // Copy the found 8.3 entry
-                     *entry_offset_in_dir_out = entry_abs_offset;    // Record offset of 8.3 entry
-                     // Record the start offset of the LFN sequence if applicable
-                     if (first_lfn_offset_out) {
-                         *first_lfn_offset_out = current_lfn_start_offset;
-                     }
-                     ret = FS_SUCCESS; // Set success status
-                     goto find_done;   // Exit function
-                 }
- 
-                 // If no match, reset LFN state for the next entry
-                 lfn_count = 0;
-                 current_lfn_start_offset = (uint32_t)-1;
-             }
-         } // End loop through entries in sector
- 
-         // Advance byte offset to the start of the next sector
-         current_byte_offset += fs->bytes_per_sector;
- 
-         // Check if we need to move to the next cluster in the chain
-         if (!scanning_fixed_root && (current_byte_offset % fs->cluster_size_bytes == 0)) {
-             uint32_t next_c;
-             int get_next_res = fat_get_next_cluster(fs, current_cluster, &next_c);
-             if (get_next_res != FS_SUCCESS) {
-                  ret = get_next_res; // Propagate I/O error
-                  break;
-             }
-             if (next_c >= fs->eoc_marker) { // End of chain
-                  ret = -FS_ERR_NOT_FOUND;
-                  break;
-             }
-             current_cluster = next_c;     // Move to next cluster
-             current_byte_offset = 0;      // Reset offset for the new cluster
-         }
-         // Otherwise, the loop continues to read the next sector of the current cluster
-     } // End while(true) main loop
- 
- find_done:
-     kfree(sector_data); // Free allocated sector buffer
-     return ret; // Return final status
- }
+                    uint32_t dir_cluster,
+                    const char *component,
+                    fat_dir_entry_t *entry_out,
+                    char *lfn_out, size_t lfn_max_len,
+                    uint32_t *entry_offset_in_dir_out,
+                    uint32_t *first_lfn_offset_out)
+{
+    KERNEL_ASSERT(fs != NULL && component != NULL && entry_out != NULL && entry_offset_in_dir_out != NULL,
+                  "NULL pointer passed to fat_find_in_dir for required arguments");
+    KERNEL_ASSERT(strlen(component) > 0, "Component name cannot be empty");
+
+    // --- Added Entry Log ---
+    terminal_printf("[FAT FIND DEBUG] Enter: Searching for '%s' in dir_cluster %u\n", component, (unsigned long)dir_cluster);
+
+    uint32_t current_cluster = dir_cluster;
+    bool scanning_fixed_root = (fs->type != FAT_TYPE_FAT32 && dir_cluster == 0);
+    uint32_t current_byte_offset = 0; // Offset within the current directory cluster chain
+
+    // Clear LFN output buffer if provided
+    if (lfn_out && lfn_max_len > 0) lfn_out[0] = '\0';
+    // Initialize optional LFN start offset output
+    if (first_lfn_offset_out) *first_lfn_offset_out = (uint32_t)-1;
+
+    // Allocate sector buffer
+    uint8_t *sector_data = kmalloc(fs->bytes_per_sector);
+    if (!sector_data) {
+        terminal_printf("[FAT FIND DEBUG] ERROR: Failed to allocate sector buffer (%u bytes)\n", fs->bytes_per_sector);
+        return -FS_ERR_OUT_OF_MEMORY;
+    }
+     terminal_printf("[FAT FIND DEBUG] Allocated sector buffer at %p\n", sector_data);
+
+
+    fat_lfn_entry_t lfn_collector[FAT_MAX_LFN_ENTRIES]; // Buffer to collect LFN entries
+    int lfn_count = 0;
+    uint32_t current_lfn_start_offset = (uint32_t)-1; // Track start offset of current LFN sequence
+    int ret = -FS_ERR_NOT_FOUND; // Default return if not found
+
+    // Main loop iterating through directory sectors/clusters
+    while (true) {
+         terminal_printf("[FAT FIND DEBUG] Loop: current_cluster=%u, current_byte_offset=%u\n", (unsigned long)current_cluster, (unsigned long)current_byte_offset);
+        // Check for end of cluster chain (only applies to non-root dirs or FAT32 root)
+        if (current_cluster >= fs->eoc_marker && !scanning_fixed_root) {
+             terminal_printf("[FAT FIND DEBUG] End of cluster chain reached (cluster %u >= EOC %u).\n", (unsigned long)current_cluster, (unsigned long)fs->eoc_marker);
+            ret = -FS_ERR_NOT_FOUND;
+            break; // End of directory
+        }
+
+        // Calculate sector offset within the chain
+        uint32_t sector_offset_in_chain = current_byte_offset / fs->bytes_per_sector;
+        size_t entries_per_sector = fs->bytes_per_sector / sizeof(fat_dir_entry_t);
+
+        terminal_printf("[FAT FIND DEBUG] Reading sector: chain_offset=%u\n", (unsigned long)sector_offset_in_chain);
+        // Read the directory sector
+        int read_res = read_directory_sector(fs, current_cluster, sector_offset_in_chain, sector_data);
+        if (read_res != FS_SUCCESS) {
+            terminal_printf("[FAT FIND DEBUG] ERROR: read_directory_sector failed (err %d)\n", read_res);
+            ret = read_res; // Propagate error (-FS_ERR_IO or other)
+            break;          // Cannot read directory sector
+        }
+         terminal_printf("[FAT FIND DEBUG] Sector read success. Processing %u entries...\n", (unsigned long)entries_per_sector);
+
+
+        // Iterate through entries in the loaded sector
+        for (size_t e_idx = 0; e_idx < entries_per_sector; e_idx++) {
+            fat_dir_entry_t *de = (fat_dir_entry_t*)(sector_data + e_idx * sizeof(fat_dir_entry_t));
+            uint32_t entry_abs_offset = current_byte_offset + (uint32_t)(e_idx * sizeof(fat_dir_entry_t));
+
+             // --- Added Log for each entry ---
+             terminal_printf("[FAT FIND DEBUG] Entry %u (abs_offset %u): Name[0]=0x%02x, Attr=0x%02x\n",
+                             (unsigned long)e_idx, (unsigned long)entry_abs_offset, de->name[0], de->attr);
+
+
+            // Check for end-of-directory marker (0x00)
+            if (de->name[0] == FAT_DIR_ENTRY_UNUSED) {
+                terminal_printf("[FAT FIND DEBUG] Found UNUSED entry marker (0x00). End of directory.\n");
+                ret = -FS_ERR_NOT_FOUND;
+                goto find_done; // End of used entries
+            }
+            // Skip deleted (0xE5) and Kanji (0x05) entries
+            if (de->name[0] == FAT_DIR_ENTRY_DELETED || de->name[0] == FAT_DIR_ENTRY_KANJI) {
+                 terminal_printf("[FAT FIND DEBUG] Skipping DELETED (0xE5) or KANJI (0x05) entry.\n");
+                lfn_count = 0; // Reset LFN state
+                current_lfn_start_offset = (uint32_t)-1;
+                continue;
+            }
+             // Skip volume label entries that are not part of an LFN sequence
+             if ((de->attr & FAT_ATTR_VOLUME_ID) && !(de->attr & FAT_ATTR_LONG_NAME)) {
+                 terminal_printf("[FAT FIND DEBUG] Skipping VOLUME ID entry.\n");
+                lfn_count = 0;
+                current_lfn_start_offset = (uint32_t)-1;
+                continue;
+            }
+
+            // Process LFN entry
+            if ((de->attr & FAT_ATTR_LONG_NAME_MASK) == FAT_ATTR_LONG_NAME) {
+                terminal_printf("[FAT FIND DEBUG] Processing LFN entry...\n");
+                if (lfn_count == 0) {
+                    // Record the starting offset of this LFN sequence
+                    current_lfn_start_offset = entry_abs_offset;
+                    terminal_printf("[FAT FIND DEBUG]   Started new LFN sequence at offset %u.\n", (unsigned long)current_lfn_start_offset);
+                }
+                if (lfn_count < FAT_MAX_LFN_ENTRIES) {
+                    // Collect the LFN entry
+                    lfn_collector[lfn_count++] = *((fat_lfn_entry_t*)de);
+                     terminal_printf("[FAT FIND DEBUG]   Collected LFN part %d.\n", lfn_count);
+                } else {
+                    // LFN sequence too long for buffer, discard collected entries
+                    terminal_printf("[FAT FIND DEBUG]   WARNING: LFN sequence too long (>%d), discarding.\n", FAT_MAX_LFN_ENTRIES);
+                    lfn_count = 0;
+                    current_lfn_start_offset = (uint32_t)-1;
+                }
+            } else {
+                // --- Process 8.3 Entry ---
+                 terminal_printf("[FAT FIND DEBUG] Processing 8.3 entry: Name='%.11s'\n", de->name); // Log raw 8.3 name
+                bool match = false;
+                char reconstructed_lfn_buf[FAT_MAX_LFN_CHARS]; // Temp buffer for reconstructed name
+
+                // Check if the LFN sequence collected matches the component
+                if (lfn_count > 0) {
+                    terminal_printf("[FAT FIND DEBUG]   Checking collected LFN (%d parts)...\n", lfn_count);
+                    uint8_t expected_sum = fat_calculate_lfn_checksum(de->name);
+                    terminal_printf("[FAT FIND DEBUG]   Expected checksum: 0x%02x, First LFN checksum: 0x%02x\n", expected_sum, lfn_collector[0].checksum);
+                    // Verify checksum before reconstructing
+                    if (lfn_collector[0].checksum == expected_sum) {
+                        fat_reconstruct_lfn(lfn_collector, lfn_count, reconstructed_lfn_buf, sizeof(reconstructed_lfn_buf));
+                         terminal_printf("[FAT FIND DEBUG]   LFN reconstructed: '%s'. Comparing with '%s'.\n", reconstructed_lfn_buf, component);
+                        // Compare reconstructed LFN with the target component name
+                        if (fat_compare_lfn(component, reconstructed_lfn_buf) == 0) {
+                            match = true;
+                             terminal_printf("[FAT FIND DEBUG]   LFN MATCH!\n");
+                            // Copy LFN name to output buffer if requested
+                            if (lfn_out && lfn_max_len > 0) {
+                                strncpy(lfn_out, reconstructed_lfn_buf, lfn_max_len - 1);
+                                lfn_out[lfn_max_len - 1] = '\0';
+                            }
+                        }
+                    } else {
+                        // Checksum mismatch, invalidate collected LFN entries
+                         terminal_printf("[FAT FIND DEBUG]   LFN checksum mismatch! Discarding LFN.\n");
+                        lfn_count = 0;
+                        current_lfn_start_offset = (uint32_t)-1;
+                    }
+                }
+
+                // If LFN didn't match (or wasn't present), check the 8.3 name
+                if (!match) {
+                     terminal_printf("[FAT FIND DEBUG]   Checking 8.3 name match against '%s'...\n", component);
+                    if (fat_compare_8_3(component, de->name) == 0) {
+                        match = true;
+                         terminal_printf("[FAT FIND DEBUG]   8.3 MATCH!\n");
+                        // Clear LFN output buffer as 8.3 name matched
+                        if (lfn_out && lfn_max_len > 0) lfn_out[0] = '\0';
+                        // Invalidate LFN start offset as 8.3 matched directly
+                        current_lfn_start_offset = (uint32_t)-1;
+                    }
+                }
+
+                // --- If either LFN or 8.3 name matched: ---
+                if (match) {
+                    terminal_printf("[FAT FIND DEBUG] ---> MATCH FOUND for '%s' <---\n", component);
+
+                    // --- Added Debug Prints Around Memcpy ---
+                    uint32_t raw_size_from_buffer = *(uint32_t*)((uint8_t*)de + 28); // Read bytes 28-31 from buffer
+                    terminal_printf("[FAT FIND DEBUG] MATCH: Raw size from buffer (offset 28) = %u\n", (unsigned long)raw_size_from_buffer);
+                    terminal_printf("[FAT FIND DEBUG] MATCH: Raw first_cluster_low = %u, high = %u\n", (unsigned int)de->first_cluster_low, (unsigned int)de->first_cluster_high);
+                    terminal_printf("[FAT FIND DEBUG] MATCH: Raw attr = 0x%02x\n", de->attr);
+
+                    memcpy(entry_out, de, sizeof(fat_dir_entry_t)); // Copy the found 8.3 entry
+
+                    terminal_printf("[FAT FIND DEBUG] MATCH: After memcpy, entry_out->file_size = %u\n", (unsigned long)entry_out->file_size);
+                    terminal_printf("[FAT FIND DEBUG] MATCH: After memcpy, entry_out->first_cluster_low = %u, high = %u\n", (unsigned int)entry_out->first_cluster_low, (unsigned int)entry_out->first_cluster_high);
+                    terminal_printf("[FAT FIND DEBUG] MATCH: After memcpy, entry_out->attr = 0x%02x\n", entry_out->attr);
+                    // --- End Added Debug Prints ---
+
+
+                    *entry_offset_in_dir_out = entry_abs_offset;    // Record offset of 8.3 entry
+                    // Record the start offset of the LFN sequence if applicable
+                    if (first_lfn_offset_out) {
+                        *first_lfn_offset_out = current_lfn_start_offset;
+                        terminal_printf("[FAT FIND DEBUG] MATCH: Stored first LFN offset = %u\n", (unsigned long)*first_lfn_offset_out);
+                    }
+                    ret = FS_SUCCESS; // Set success status
+                    goto find_done;   // Exit function
+                }
+
+                // If no match, reset LFN state for the next entry
+                 terminal_printf("[FAT FIND DEBUG]   No match for this 8.3 entry. Resetting LFN state.\n");
+                lfn_count = 0;
+                current_lfn_start_offset = (uint32_t)-1;
+            }
+        } // End loop through entries in sector
+
+        // Advance byte offset to the start of the next sector
+        current_byte_offset += fs->bytes_per_sector;
+         terminal_printf("[FAT FIND DEBUG] Advanced to next sector offset: %u\n", (unsigned long)current_byte_offset);
+
+
+        // Check if we need to move to the next cluster in the chain
+        if (!scanning_fixed_root && (current_byte_offset % fs->cluster_size_bytes == 0)) {
+             terminal_printf("[FAT FIND DEBUG] End of cluster %u reached. Finding next...\n", (unsigned long)current_cluster);
+            uint32_t next_c;
+            int get_next_res = fat_get_next_cluster(fs, current_cluster, &next_c);
+            if (get_next_res != FS_SUCCESS) {
+                 terminal_printf("[FAT FIND DEBUG] ERROR: fat_get_next_cluster failed (err %d)\n", get_next_res);
+                ret = get_next_res; // Propagate I/O error
+                break;
+            }
+            terminal_printf("[FAT FIND DEBUG] Next cluster in chain: %u\n", (unsigned long)next_c);
+            if (next_c >= fs->eoc_marker) { // End of chain
+                 terminal_printf("[FAT FIND DEBUG] Next cluster is EOC marker. Ending scan.\n");
+                ret = -FS_ERR_NOT_FOUND;
+                break;
+            }
+            current_cluster = next_c;     // Move to next cluster
+            current_byte_offset = 0;      // Reset offset for the new cluster
+        }
+        // Otherwise, the loop continues to read the next sector of the current cluster
+    } // End while(true) main loop
+
+find_done:
+     terminal_printf("[FAT FIND DEBUG] Exit: Freeing buffer %p, returning status %d (%s)\n", sector_data, ret, fs_strerror(ret));
+    kfree(sector_data); // Free allocated sector buffer
+    return ret; // Return final status
+}
  
  
  /**
@@ -755,24 +813,26 @@ readdir_done:
   * @return FS_SUCCESS on success, negative FS_ERR_* code on failure.
   */
  int fat_lookup_path(fat_fs_t *fs, const char *path,
-                     fat_dir_entry_t *entry_out,
-                     char *lfn_out, size_t lfn_max_len,
-                     uint32_t *entry_dir_cluster_out,
-                     uint32_t *entry_offset_in_dir_out)
+                    fat_dir_entry_t *entry_out,
+                    char *lfn_out, size_t lfn_max_len,
+                    uint32_t *entry_dir_cluster_out,
+                    uint32_t *entry_offset_in_dir_out)
 {
     KERNEL_ASSERT(fs != NULL && path != NULL && entry_out != NULL && entry_dir_cluster_out != NULL && entry_offset_in_dir_out != NULL,
                   "NULL pointer passed to fat_lookup_path for required arguments");
-    
-    // Modified assertion to handle both leading slash and no leading slash
-    // This makes the function more flexible since VFS might pass paths either way
-    if (path[0] != '/' && path[0] != '\0') {
-        terminal_printf("[FAT lookup] Warning: Path '%s' does not start with '/'.\n", path);
-        // Consider prepending a slash instead of failing
-        path = "/";  // Use root as fallback to avoid crash
-    }
 
-    // Handle the root directory case specially
-    if (strcmp(path, "/") == 0 || path[0] == '\0') {
+    // --- REMOVED INCORRECT PATH CHECK AND FALLBACK ---
+    // The VFS should provide a path relative to the mount point.
+    // If the mount point is '/', the path might be "file.txt" or "dir/file.txt".
+    // If the mount point is '/mnt/fat', the path might be "file.txt".
+    // We should handle paths that don't start with '/' correctly.
+
+    terminal_printf("[FAT lookup] Received path from VFS: '%s'\n", path);
+
+    // Handle the root directory case specifically if path is empty or "/"
+    // (VFS might pass "/" or "" for the root of the mounted FS)
+    if (path[0] == '\0' || strcmp(path, "/") == 0) {
+         terminal_printf("[FAT lookup] Handling as root directory.\n");
         memset(entry_out, 0, sizeof(*entry_out));
         entry_out->attr = FAT_ATTR_DIRECTORY;
         *entry_offset_in_dir_out = 0; // Root has no offset within a parent
@@ -803,11 +863,11 @@ readdir_done:
     if (!path_copy) return -FS_ERR_OUT_OF_MEMORY;
     strcpy(path_copy, path);
 
-    // Start tokenizing after the initial '/'
-    // If path doesn't start with '/', start from beginning (path_copy)
-    // NOTE: strtok modifies path_copy!
-    char *start_pos = (path[0] == '/') ? path_copy + 1 : path_copy;
-    char *component = strtok(start_pos, "/");
+    // --- ADJUSTED TOKENIZATION START ---
+    // strtok works fine whether path starts with '/' or not, as long as delimiter is '/'
+    char *component = strtok(path_copy, "/");
+    // If the original path started with '/', the first token will be the first directory/file.
+    // If the original path was relative (e.g., "hello.elf"), the first token will be "hello.elf".
 
     // --- Path Traversal ---
     uint32_t current_dir_cluster; // Cluster of the directory currently being searched
@@ -827,17 +887,14 @@ readdir_done:
 
     // Loop through each path component
     while (component != NULL) {
-        // Skip empty components resulting from "//"
-        if (strlen(component) == 0) {
-            component = strtok(NULL, "/");
-            continue;
-        }
+        // Skip empty components resulting from "//" - strtok handles this automatically
+        // (it won't return an empty token unless the string itself is empty or just delimiters)
 
-        // Debug: print each component being looked up
-        terminal_printf("[FAT lookup] Looking up component: '%s'\n", component);
+        terminal_printf("[FAT lookup] Looking up component: '%s' in cluster %u\n", component, (unsigned long)current_dir_cluster);
 
         // Handle "." (current directory) - just continue to next component
         if (strcmp(component, ".") == 0) {
+             terminal_printf("[FAT lookup] Skipping '.' component.\n");
             component = strtok(NULL, "/");
             continue;
         }
@@ -854,45 +911,52 @@ readdir_done:
         // Find the current component within the current directory cluster
         uint32_t component_entry_offset; // Offset of the found entry within previous_dir_cluster
         int find_comp_res = fat_find_in_dir(fs, current_dir_cluster, component,
-                                          &current_entry, // Store the found entry here
-                                          lfn_out, lfn_max_len, // Pass LFN buffer for the final component
-                                          &component_entry_offset, NULL); // Get offset, don't need LFN start offset here
+                                             &current_entry, // Store the found entry here
+                                             lfn_out, lfn_max_len, // Pass LFN buffer for the final component
+                                             &component_entry_offset, NULL); // Get offset, don't need LFN start offset here
 
         if (find_comp_res != FS_SUCCESS) {
-            terminal_printf("[FAT lookup] Component '%s' not found (err %d).\n", component, find_comp_res);
+            terminal_printf("[FAT lookup] Component '%s' not found in cluster %u (err %d).\n", component, (unsigned long)current_dir_cluster, find_comp_res);
             ret = find_comp_res; // Component not found, or I/O error during find
             goto lookup_done;
         }
+         terminal_printf("[FAT lookup] Found component '%s'. Attr=0x%02x, Size=%u, Cluster=%u\n",
+                        component, current_entry.attr, (unsigned long)current_entry.file_size, (unsigned long)fat_get_entry_cluster(&current_entry));
+
 
         // Get the next path component
         char* next_component = strtok(NULL, "/");
 
         // Check if this was the LAST component in the path
         if (next_component == NULL) {
+             terminal_printf("[FAT lookup] Component '%s' is the final component.\n", component);
             // We found the final entry!
             memcpy(entry_out, &current_entry, sizeof(*entry_out)); // Copy the final entry data
-            *entry_dir_cluster_out = previous_dir_cluster;      // Store the parent directory cluster
-            *entry_offset_in_dir_out = component_entry_offset;  // Store the offset within the parent
+            *entry_dir_cluster_out = previous_dir_cluster;     // Store the parent directory cluster
+            *entry_offset_in_dir_out = component_entry_offset; // Store the offset within the parent
             ret = FS_SUCCESS; // Report success
             goto lookup_done; // Exit
         }
 
         // If not the last component, it MUST be a directory to continue traversal
         if (!(current_entry.attr & FAT_ATTR_DIRECTORY)) {
-            terminal_printf("[FAT lookup] Component '%s' is not a directory.\n", component);
+            terminal_printf("[FAT lookup] Error: Component '%s' is not a directory, but path continues.\n", component);
             ret = -FS_ERR_NOT_A_DIRECTORY; // Path component is not a directory
             goto lookup_done;
         }
 
         // Update current_dir_cluster to the cluster of the directory we just found
         current_dir_cluster = fat_get_entry_cluster(&current_entry);
-        if (fs->type != FAT_TYPE_FAT32 && current_dir_cluster == 0) {
-             // This should not happen normally unless traversing back to root via '..' (which is unsupported)
-             // Or if the FS is corrupted.
-            terminal_printf("[FAT lookup] Warning: Traversed into FAT12/16 root unexpectedly.\n");
-            ret = -FS_ERR_INVALID_FORMAT; // Indicate potential FS corruption
-            goto lookup_done;
-        }
+        terminal_printf("[FAT lookup] Descending into directory '%s' (cluster %lu). Next component: '%s'\n", component, (unsigned long)current_dir_cluster, next_component);
+
+
+        // Handle potential issue: If current_dir_cluster is 0 (FAT12/16 root) but we are not at the root level, it's an error
+        if (fs->type != FAT_TYPE_FAT32 && current_dir_cluster == 0 && previous_dir_cluster != 0) {
+             // This should only happen if the directory entry is corrupted or points back to root incorrectly.
+             terminal_printf("[FAT lookup] Error: Invalid traversal into FAT12/16 root (cluster 0) from non-root parent.\n");
+             ret = -FS_ERR_INVALID_FORMAT; // Indicate potential FS corruption
+             goto lookup_done;
+         }
 
         // Move to the next component for the next iteration
         component = next_component;
@@ -900,6 +964,7 @@ readdir_done:
     } // End while(component != NULL)
 
 lookup_done:
+    terminal_printf("[FAT lookup] Exit: Path='%s', returning status %d (%s)\n", path, ret, fs_strerror(ret));
     kfree(path_copy); // Free the mutable path copy
     return ret; // Return final status
 }

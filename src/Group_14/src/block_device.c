@@ -129,7 +129,7 @@
      }
  
      // Timeout occurred - *** CORRECTED FORMAT SPECIFIER FOR initial_timeout ***
-     terminal_printf("[ATA %s @%#x] Poll timeout after %lu loops (mask=%#x, val=%#x). Last status=%#x\n",
+     terminal_printf("[ATA %s @%#x] Poll timeout after %u loops (mask=%#x, val=%#x). Last status=%#x\n",
                        context, io_base, initial_timeout, wait_mask, wait_value, inb(io_base + ATA_REG_STATUS));
      return -1;
  }
@@ -490,7 +490,7 @@
      }
      if (dev->sector_size == 0 || (dev->sector_size % 2 != 0)) {
           // *** CORRECTED FORMAT: Use %lu for sector_size ***
-          terminal_printf("[ATA %s RW] Error: Invalid sector size (%lu) in device struct.\n",
+          terminal_printf("[ATA %s RW] Error: Invalid sector size (%u) in device struct.\n",
                           dev->device_name, (unsigned long)dev->sector_size);
           // *** FIXED ERROR CODE ***
           return BLOCK_ERR_PARAMS;

@@ -237,7 +237,7 @@ void* paging_temp_map(uintptr_t phys_addr);
 void paging_temp_unmap(void* temp_vaddr);
 // <<< END ADDED >>>
 
-kernel_unmap_virtual_unsafe(uintptr_t vaddr);
+int kernel_unmap_virtual_unsafe(uintptr_t vaddr);
 
 
 #ifdef __cplusplus
