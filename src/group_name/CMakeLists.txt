@@ -1,3 +1,5 @@
+# CMakeLists.txt - Improved FAT16 disk integration
+
 ########################################
 # The University of Agder Operating System: UiAOS
 # Languages: C, C++, and NASM Assembly
@@ -20,16 +22,17 @@ file(LOCK ${CMAKE_SOURCE_DIR} DIRECTORY GUARD FILE)
 ########################################
 # CMake: Import Plugins
 ########################################
-include(FetchContent)
+# include(FetchContent) # Not used currently
 
 ########################################
 # UiAOS: Variables
 ########################################
-set(OS_ARCH_TARGET "i386")  # x86_64 
+set(OS_ARCH_TARGET "i386")  # or x86_64
 set(OS_NAME "UiA Operating System")
 set(OS_KERNEL_NAME "uiaos")
 set(OS_KERNEL_BINARY "kernel.bin")
 set(OS_KERNEL_IMAGE "kernel.iso")
+set(OS_HELLO_ELF_BINARY "hello.elf") # Define output name for hello
 
 ########################################
 # Compiler Configuration
@@ -42,71 +45,102 @@ set(CMAKE_C_STANDARD 99)
 ########################################
 set(CMAKE_ASM_NASM_SOURCE_FILE_EXTENSIONS "s;S;asm")
 if(OS_ARCH_TARGET STREQUAL "i386")
-	set(CMAKE_ASM_NASM_OBJECT_FORMAT "elf32")
+    set(CMAKE_ASM_NASM_OBJECT_FORMAT "elf32")
 elseif(OS_ARCH_TARGET STREQUAL "x86_64")
-	set(CMAKE_ASM_NASM_OBJECT_FORMAT "elf64")
+    set(CMAKE_ASM_NASM_OBJECT_FORMAT "elf64")
 endif()
 
 # Command to compile NASM files
-set(CMAKE_ASM_NASM_COMPILE_OBJECT 
-    "<CMAKE_ASM_NASM_COMPILER> <DEFINES> <INCLUDES> <FLAGS> -f ${CMAKE_ASM_NASM_OBJECT_FORMAT} -o <OBJECT> <SOURCE>")
+set(CMAKE_ASM_NASM_COMPILE_OBJECT
+    "<CMAKE_ASM_NASM_COMPILER> <DEFINES> <INCLUDES> <FLAGS> -f ${CMAKE_ASM_NASM_OBJECT_FORMAT} -g -o <OBJECT> <SOURCE>")
 
 ########################################
-# OS Target
+# OS Target (Kernel)
 ########################################
-set(OS_KERNEL_LINKER "${CMAKE_CURRENT_SOURCE_DIR}/src/arch/${OS_ARCH_TARGET}/linker.ld")
+set(OS_KERNEL_LINKER "${CMAKE_CURRENT_SOURCE_DIR}/src/arch/${OS_ARCH_TARGET}/linker.ld") # Make sure this linker script exists and is correct
 
-# Add executable target for the kernel
-add_executable(uiaos-kernel 
-	src/multiboot2.asm
-    src/kernel.c
-	src/hello.c
+# Use GLOB_RECURSE to find all source files in src directory relative to CMakeLists.txt
+file(GLOB_RECURSE KERNEL_SOURCES
+    "src/*.c"
+    "src/*.cpp"
+    "src/*.asm"
 )
 
+# Filter out user-space sources (using relative paths from CMakeLists.txt)
+list(FILTER KERNEL_SOURCES EXCLUDE REGEX ".*/hello\\.c$")
+list(FILTER KERNEL_SOURCES EXCLUDE REGEX ".*/entry\\.asm$")
+list(FILTER KERNEL_SOURCES EXCLUDE REGEX ".*/user\\.ld$")
+
+# Add the executable using the gathered source files
+add_executable(uiaos-kernel ${KERNEL_SOURCES})
+
 # Include directories for the kernel target
-target_include_directories(uiaos-kernel PUBLIC include)
+target_include_directories(uiaos-kernel PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include" # Relative path from CMakeLists.txt
+)
 
-
-# Specify compile options for C and C++
+# Specify compile options for C and C++ (Kernel)
 target_compile_options(uiaos-kernel PRIVATE
     $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -nostdinc -nostdlib -fno-builtin -fno-stack-protector -fno-stack-check -fno-lto -fPIE -m32 -march=i386 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -Wno-main -g>
     $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -nostdinc -nostdlib -fno-builtin -fno-stack-protector -fno-stack-check -fno-lto -fPIE -m32 -march=i386 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -g>
-    $<$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>:-m32 -march=i386 -Wno-unused-variable -Wno-unused-parameter>
+    $<$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>:-m32 -march=i386 -Wno-unused-variable -Wno-unused-parameter -g> # Added -g here
 )
 
-
-# Specify link options for C and C++
+# Specify link options for C and C++ (Kernel) - Simplified, removed redundancy
 target_link_options(uiaos-kernel PUBLIC
-    $<$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>:-ffreestanding -nostdlib -fno-builtin -static -pie -O0 -T${OS_KERNEL_LINKER} -g>
+    -ffreestanding -nostdlib -fno-builtin -static -pie -O0 -T${OS_KERNEL_LINKER} -g -lgcc # Added -lgcc
 )
-
-
-target_link_options(
-	uiaos-kernel
-	PUBLIC "-ffreestanding"
-	PUBLIC "-nostdlib"
-	PUBLIC "-static"
-	PUBLIC "-pie"
-	PUBLIC "-T${OS_KERNEL_LINKER}"
-)
-
 
 # Set properties for the kernel target
 set_target_properties(uiaos-kernel PROPERTIES
     OUTPUT_NAME "${OS_KERNEL_BINARY}"
-    #LINK_FLAGS "${OS_KERNEL_LINK_FLAGS}"
 )
 
 ########################################
-# Create Empty Fat32 Disk Image
+# User Space Program Target (hello.elf)
 ########################################
-set(DISK_IMAGE "${CMAKE_CURRENT_BINARY_DIR}/disk.iso")
+# Use correct relative paths from CMakeLists.txt
+add_executable(hello_elf
+    hello.c     # Assuming hello.c is in the same directory as CMakeLists.txt
+    entry.asm   # Assuming entry.asm is in the same directory as CMakeLists.txt
+)
 
-# Custom target to create an empty FAT32 disk image of 32MB
-add_custom_target(
-    create-fat32-disk
+set(OS_USER_LINKER "${CMAKE_CURRENT_SOURCE_DIR}/src/arch/${OS_ARCH_TARGET}/user.ld") # Path relative to CMakeLists.txt
+
+# Link Options for hello_elf using user.ld
+target_link_options(hello_elf PUBLIC
+    -m32
+    -nostdlib
+    -static
+    -T${OS_USER_LINKER} # <-- Use the user linker script!
+    -g
+    -lgcc
+)
+
+# Compile Options for hello_elf
+target_compile_options(hello_elf PRIVATE
+    $<$<COMPILE_LANGUAGE:C>:-m32 -Wall -Wextra -nostdlib -fno-builtin -fno-stack-protector -g>
+)
+
+set_target_properties(hello_elf PROPERTIES
+    OUTPUT_NAME "${OS_HELLO_ELF_BINARY}"
+)
+
+########################################
+# Create FAT16 Disk Image and Include in ISO
+########################################
+set(DISK_IMAGE "${CMAKE_CURRENT_BINARY_DIR}/disk.img") # Changed extension to .img for clarity
+
+# Create a combined target for disk image creation and file copying
+add_custom_command(
+    OUTPUT ${DISK_IMAGE}
+    # Create the FAT16 disk image
     COMMAND dd if=/dev/zero of=${DISK_IMAGE} bs=1M count=32
-    COMMAND mkfs.fat -F 32 ${DISK_IMAGE}
+    COMMAND mkfs.fat -F 16 ${DISK_IMAGE}
+    # Copy hello.elf to the FAT16 image
+    COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:hello_elf> ::/hello.elf
+    DEPENDS hello_elf
+    COMMENT "Creating FAT16 disk image with hello.elf"
     VERBATIM
 )
 
@@ -114,25 +148,42 @@ add_custom_target(
 # OS-Image Target
 ########################################
 set(ISO_DIR ${CMAKE_CURRENT_BINARY_DIR}/iso)
-set(LIMINE_CONFIG_DIR ${CMAKE_SOURCE_DIR})
-set(LIMINE_DIR /usr/local/limine)
+set(LIMINE_CONFIG_DIR ${CMAKE_SOURCE_DIR}) # Assumes limine.cfg is in the same dir as CMakeLists.txt
+set(LIMINE_DIR /usr/local/limine) # Assuming this path is correct on your system
+
+# Create the ISO image (depends on kernel and the FAT16 disk image)
 add_custom_target(
-	uiaos-create-image
-	COMMAND rm -rf ${ISO_DIR}
-	COMMAND mkdir -p ${ISO_DIR}
-	COMMAND cp -v $<TARGET_FILE:uiaos-kernel> 
-	 	${LIMINE_CONFIG_DIR}/limine.cfg ${LIMINE_DIR}/limine-bios.sys ${LIMINE_DIR}/limine-bios-cd.bin
-		${LIMINE_DIR}/limine-uefi-cd.bin ${ISO_DIR}/
-	COMMAND mkdir -p ${ISO_DIR}/EFI/BOOT
-	COMMAND cp -v ${LIMINE_DIR}/BOOTX64.EFI ${ISO_DIR}/EFI/BOOT/
-	COMMAND cp -v ${LIMINE_DIR}/BOOTIA32.EFI ${ISO_DIR}/EFI/BOOT/
-	COMMAND xorriso -as mkisofs -b limine-bios-cd.bin
-	 	-no-emul-boot -boot-load-size 4 -boot-info-table
-	 	--efi-boot limine-uefi-cd.bin
-	 	-efi-boot-part --efi-boot-image --protective-msdos-label
-	 	${ISO_DIR} -o ${CMAKE_CURRENT_BINARY_DIR}/kernel.iso
-	COMMAND ${LIMINE_DIR}/limine bios-install ${CMAKE_CURRENT_BINARY_DIR}/kernel.iso
-	#COMMAND sudo rm -rf ${ISO_DIR}
-	DEPENDS create-fat32-disk uiaos-kernel
-	VERBATIM
+    uiaos-create-image ALL # Build this target by default
+
+    # Setup ISO directory
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${ISO_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${ISO_DIR}
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:uiaos-kernel> ${ISO_DIR}/
+    # Copy the FAT16 disk image into the ISO directory
+    COMMAND ${CMAKE_COMMAND} -E copy ${DISK_IMAGE} ${ISO_DIR}/
+    COMMAND ${CMAKE_COMMAND} -E copy
+        ${LIMINE_CONFIG_DIR}/limine.cfg
+        ${LIMINE_DIR}/limine-bios.sys
+        ${LIMINE_DIR}/limine-bios-cd.bin
+        ${LIMINE_DIR}/limine-uefi-cd.bin
+        ${ISO_DIR}/
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${ISO_DIR}/EFI/BOOT
+    COMMAND ${CMAKE_COMMAND} -E copy ${LIMINE_DIR}/BOOTX64.EFI ${ISO_DIR}/EFI/BOOT/
+    COMMAND ${CMAKE_COMMAND} -E copy ${LIMINE_DIR}/BOOTIA32.EFI ${ISO_DIR}/EFI/BOOT/
+
+    # Create ISO command - include the FAT16 disk image
+    COMMAND xorriso -as mkisofs -b limine-bios-cd.bin
+        -no-emul-boot -boot-load-size 4 -boot-info-table
+        --efi-boot limine-uefi-cd.bin
+        -efi-boot-part --efi-boot-image --protective-msdos-label
+        ${ISO_DIR} -o ${CMAKE_CURRENT_BINARY_DIR}/${OS_KERNEL_IMAGE}
+
+    # Install bootloader command
+    COMMAND ${LIMINE_DIR}/limine bios-install ${CMAKE_CURRENT_BINARY_DIR}/${OS_KERNEL_IMAGE}
+
+    # Dependencies - note that we now depend directly on the disk image
+    DEPENDS uiaos-kernel ${DISK_IMAGE}
+    COMMENT "Creating Limine ISO image: ${OS_KERNEL_IMAGE} with embedded disk image"
+    VERBATIM
+    USES_TERMINAL
 )

@@ -185,21 +185,7 @@ static struct multiboot_tag *find_multiboot_tag(uint32_t mb_info_phys_addr, uint
  * @param out_heap_size Pointer to store the size of the chosen heap region.
  * @return true on success, false if no suitable heap region is found or an error occurs.
  */
- #include "terminal.h"       // For terminal_printf, terminal_write
-#include "types.h"          // For uintptr_t, size_t, bool, uint64_t
-#include <multiboot2.h>      // For Multiboot structures
-#include <libc/stdint.h>    // For SIZE_MAX, UINTPTR_MAX, UINT64_MAX
-#include "paging.h"         // For PAGE_ALIGN_UP
-#include "kmalloc_internal.h" // For ALIGN_UP (might be redundant if PAGE_ALIGN_UP exists)
-
-// Include necessary definitions if not already present in scope
-#ifndef MIN_HEAP_SIZE
-#define MIN_HEAP_SIZE (1 * 1024 * 1024) // Example minimum
-#endif
-
-// Assumed externs (adjust as needed based on your actual linker script/layout)
-// extern uint8_t _kernel_start_phys; // Already declared above
-// extern uint8_t _kernel_end_phys; // Already declared above
+ // Removed duplicate include guards and includes already present at top of file
 
 // Helper to safely add a 64-bit length to a 32-bit base address
 static inline uintptr_t safe_add_base_len(uintptr_t base, uint64_t len) {
@@ -238,7 +224,7 @@ static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
     uintptr_t kernel_start_phys_addr = (uintptr_t)&_kernel_start_phys;
     // Align kernel end UP to ensure the whole kernel is excluded
     uintptr_t kernel_end_phys_addr = ALIGN_UP((uintptr_t)&_kernel_end_phys, PAGE_SIZE);
-     if (kernel_end_phys_addr == 0) kernel_end_phys_addr = UINTPTR_MAX; // Handle alignment overflow
+     if (kernel_end_phys_addr == 0 && (uintptr_t)&_kernel_end_phys > 0) kernel_end_phys_addr = UINTPTR_MAX; // Handle alignment overflow
 
     // Use %#lx for hex addresses, %lu for size_t/uint32_t decimals
     terminal_printf("  Kernel phys memory boundaries: Start=%#lx, End=%#lx\n",
@@ -477,11 +463,11 @@ static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
      if (heap_size < MIN_HEAP_SIZE) {
         KERNEL_PANIC_HALT("Heap region too small!");
         return false; // Unreachable
-    }
+     }
      if (total_memory == 0) {
         KERNEL_PANIC_HALT("Total physical memory reported as zero!");
         return false; // Unreachable
-    }
+     }
 
     uintptr_t kernel_phys_start = (uintptr_t)&_kernel_start_phys;
     uintptr_t kernel_phys_end = (uintptr_t)&_kernel_end_phys;
@@ -507,6 +493,10 @@ static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
 
     // --- Stage 3: Initialize Buddy Allocator ---
     terminal_write(" Stage 3: Initializing Buddy Allocator...\n");
+    // Note: Buddy needs the VIRTUAL address corresponding to heap_phys_start AFTER paging is enabled.
+    // However, the current implementation seems to initialize it using the physical address before paging.
+    // This implies the early mapping included an identity map for the heap area. Let's assume that's correct for now.
+    // If not, buddy_init needs to be called AFTER paging_finalize_and_activate using the higher-half address.
     buddy_init((void *)heap_phys_start, heap_size); // Uses identity mapped heap
     if (buddy_free_space() == 0 && heap_size >= MIN_BLOCK_SIZE) {
         terminal_write("  [Warning] Buddy Allocator reports zero free space after init.\n");
@@ -526,34 +516,33 @@ static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
     // --- STAGE 4.5: Map Multiboot Info Structure ---
  terminal_write(" Stage 4.5: Mapping Multiboot Info Structure...\n");
  if (g_multiboot_info_phys_addr_global != 0) {
-     // ... (Size calculation remains the same) ...
-     uint32_t mb_info_size = *(volatile uint32_t*)g_multiboot_info_phys_addr_global;
-     if (mb_info_size < 8) mb_info_size = 8;
-     // mb_info_size = ALIGN_UP(mb_info_size, PAGE_SIZE); // Size calculation needs careful review
-
+     // Find the MB info tag size (safer access now via virtual address if possible)
+     // Assuming direct physical access might still be okay if identity mapped, but virtual is better
+     // We need to map the MB info struct itself before accessing its content virtually.
      uintptr_t mb_info_phys_page_start = PAGE_ALIGN_DOWN(g_multiboot_info_phys_addr_global);
-     // Calculate end address carefully
-     uintptr_t mb_info_phys_end_approx = g_multiboot_info_phys_addr_global + mb_info_size;
-     if (mb_info_phys_end_approx < g_multiboot_info_phys_addr_global) mb_info_phys_end_approx = UINTPTR_MAX;
-     size_t mb_mapping_size = ALIGN_UP(mb_info_phys_end_approx, PAGE_SIZE) - mb_info_phys_page_start;
-     if(mb_mapping_size == 0) mb_mapping_size = PAGE_SIZE; // Ensure at least one page
+     // Determine a reasonable size to map (e.g., at least one page, maybe more if struct is large)
+     // A safer approach is needed here to determine the actual size *after* paging is on.
+     // For now, map one page as a minimum.
+     size_t mb_mapping_size = PAGE_SIZE;
 
-     // *** CORRECT VIRTUAL ADDRESS CALCULATION ***
-     uintptr_t mb_info_virt_page_start = KERNEL_SPACE_VIRT_START + mb_info_phys_page_start;
+     // Calculate the virtual address where the MB info physical page will be mapped
+     uintptr_t mb_info_virt_page_start = KERNEL_SPACE_VIRT_START + mb_info_phys_page_start; // Example mapping logic
 
      terminal_printf("   Mapping MB Info Phys [%#lx - %#lx) to Virt [%#lx - %#lx)\n",
                       (unsigned long)mb_info_phys_page_start, (unsigned long)(mb_info_phys_page_start + mb_mapping_size),
                       (unsigned long)mb_info_virt_page_start, (unsigned long)(mb_info_virt_page_start + mb_mapping_size));
 
+     // Use the post-activation mapping function
      if (paging_map_range((uint32_t*)g_kernel_page_directory_phys,
-                          mb_info_virt_page_start,   // Corrected Virt Addr
-                          mb_info_phys_page_start,
-                          mb_mapping_size,
-                          PTE_KERNEL_READONLY_FLAGS) != 0)
+                          mb_info_virt_page_start,   // Target Virtual Addr
+                          mb_info_phys_page_start,   // Source Physical Addr
+                          mb_mapping_size,           // Size to map
+                          PTE_KERNEL_READONLY_FLAGS) != 0) // Flags (Kernel Read-Only)
      {
           KERNEL_PANIC_HALT("Failed to map Multiboot info structure!");
           return false;
      }
+     // Calculate the final virtual address of the structure start
      g_multiboot_info_virt_addr_global = mb_info_virt_page_start + (g_multiboot_info_phys_addr_global % PAGE_SIZE);
      terminal_printf("   Multiboot structure accessible at VIRT: %#lx\n", (unsigned long)g_multiboot_info_virt_addr_global);
 
@@ -565,210 +554,215 @@ static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
 
     // Inside init_memory() in kernel.c after Stage 4.5
 
-// --- Stage 5: Map Physical Memory to Higher Half ---
-terminal_write(" Stage 5: Mapping physical memory to higher half...\n");
-
-/* --- BLOCK TO REMOVE ---
-// Original code calculating and using map_size was here.
-// Since we are removing this large mapping, remove the related 'if' below too.
-uintptr_t map_size = total_memory;
-// ... (Clamping logic) ...
-*/
-
-// *** REMOVE this 'if' and 'else' block ***
-/*
-if (map_size > 0) { // <--- REMOVE THIS LINE
-     terminal_printf("   Mapping Phys: [0x0 - 0x%x) -> Virt: [0x%x - 0x%x) Flags: RW-NX\n", ...); // <--- REMOVE THIS LINE
-     if (paging_map_range(...) != 0) { // <--- REMOVE THIS LINE
-          KERNEL_PANIC_HALT(...); // <--- REMOVE THIS LINE
-          return false; // <--- REMOVE THIS LINE
-     } // <--- REMOVE THIS LINE
-     terminal_write("   Physical memory mapped successfully.\n"); // <--- REMOVE THIS LINE
-} else { // <--- REMOVE THIS LINE
-    terminal_write("   Skipping physical memory mapping (map_size is zero).\n"); // <--- REMOVE THIS LINE
-} // <--- REMOVE THIS LINE
-*/
-// *** END BLOCK TO REMOVE ***
-
-// Replace removed block with a simple message:
-terminal_write("   Skipping Stage 5 large physical memory mapping (handled on demand).\n");
+ // --- Stage 5: Map Physical Memory to Higher Half ---
+ terminal_write(" Stage 5: Mapping physical memory to higher half...\n");
+ // This large mapping is often unnecessary and can consume page tables.
+ // Typically handled on-demand via page faults or specific driver mappings.
+ terminal_write("   Skipping Stage 5 large physical memory mapping (handled on demand).\n");
 
 
-// --- Stage 6: Initialize Frame Allocator ---
-terminal_write(" Stage 6: Initializing Frame Allocator...\n");
+ // --- Stage 6: Initialize Frame Allocator ---
+ terminal_write(" Stage 6: Initializing Frame Allocator...\n");
 
-    // *** Calculate virtual address of mmap tag ***
-    struct multiboot_tag_mmap *mmap_tag_virt = NULL;
-    if (mmap_tag_phys && g_multiboot_info_virt_addr_global) {
-        uintptr_t offset = (uintptr_t)mmap_tag_phys - g_multiboot_info_phys_addr_global;
-        mmap_tag_virt = (struct multiboot_tag_mmap *)(g_multiboot_info_virt_addr_global + offset);
-        terminal_printf("   Passing MMAP tag virtual address %p to frame_init.\n", mmap_tag_virt);
-    } else {
-         KERNEL_PANIC_HALT("Cannot find or calculate virtual address for MMAP tag!");
-         return false;
-    }
+     // *** Calculate virtual address of mmap tag using the mapped MB info ***
+     struct multiboot_tag_mmap *mmap_tag_virt = NULL;
+     if (g_multiboot_info_virt_addr_global) {
+         // Find the tag VIRTUALLY now that MB info is mapped
+          struct multiboot_tag* tag = (struct multiboot_tag *)(g_multiboot_info_virt_addr_global + 8);
+          uint32_t total_virt_size = *(uint32_t*)g_multiboot_info_virt_addr_global;
+          uintptr_t info_virt_end = g_multiboot_info_virt_addr_global + total_virt_size;
 
-    // *** Pass VIRTUAL address to frame_init ***
-    if (frame_init(mmap_tag_virt,
-                   kernel_phys_start, kernel_phys_end,
-                   heap_phys_start, heap_phys_start + heap_size) != 0) {
-        KERNEL_PANIC_HALT("Frame Allocator initialization failed!");
-        return false; // Unreachable
-    }
+          // Re-implement tag finding logic using virtual addresses
+          while ((uintptr_t)tag < info_virt_end && tag->type != MULTIBOOT_TAG_TYPE_END) {
+               // Bounds check virtually
+               if ((uintptr_t)tag + sizeof(struct multiboot_tag) > info_virt_end ||
+                   tag->size < 8 ||
+                   (uintptr_t)tag + tag->size > info_virt_end) {
+                    break; // Invalid tag
+               }
+               if (tag->type == MULTIBOOT_TAG_TYPE_MMAP) {
+                    mmap_tag_virt = (struct multiboot_tag_mmap *)tag;
+                    break;
+               }
+               uintptr_t next_tag_virt = (uintptr_t)tag + ((tag->size + 7) & ~7);
+               if (next_tag_virt <= (uintptr_t)tag || next_tag_virt >= info_virt_end) break;
+               tag = (struct multiboot_tag *)next_tag_virt;
+          }
+     }
 
-    // --- Stage 7: Initialize Kmalloc ---
-    terminal_write(" Stage 7: Initializing Kmalloc...\n");
-    kmalloc_init();
+     if (!mmap_tag_virt) {
+          KERNEL_PANIC_HALT("Cannot find MMAP tag via virtual address!");
+          return false;
+     }
 
-    terminal_write("[OK] Memory Subsystems Initialized Successfully.\n");
-    return true;
-}
+     terminal_printf("   Passing MMAP tag virtual address %p to frame_init.\n", mmap_tag_virt);
 
+     // *** Pass VIRTUAL address of the tag to frame_init ***
+     if (frame_init(mmap_tag_virt,
+                    kernel_phys_start, kernel_phys_end,
+                    heap_phys_start, heap_phys_start + heap_size) != 0) {
+         KERNEL_PANIC_HALT("Frame Allocator initialization failed!");
+         return false; // Unreachable
+     }
 
-// === Kernel Idle Task ===
-/**
- * kernel_idle_task
- *
- * A simple idle task that halts the CPU, waiting for the next interrupt.
- * This is run when no other tasks are ready to be scheduled.
- */
-static void kernel_idle_task(void) {
-    terminal_write("[Idle] Kernel idle task started. Halting CPU when idle.\n");
-    while(1) {
-        // Enable interrupts briefly to allow pending interrupts (like PIT) to fire.
-        asm volatile("sti");
-        // Halt the CPU. It will wake up on the next interrupt.
-        // Interrupts are automatically disabled by the CPU upon entering an ISR.
-        asm volatile("hlt");
-        // Loop back to re-enable interrupts before halting again.
-    }
-}
+     // --- Stage 7: Initialize Kmalloc ---
+     terminal_write(" Stage 7: Initializing Kmalloc...\n");
+     kmalloc_init();
 
-// === Main Kernel Entry Point ===
-/**
- * main
- *
- * The C entry point for the UiAOS kernel, called from assembly (`_start`).
- * Initializes all kernel subsystems and starts the scheduler.
- *
- * @param magic The Multiboot2 magic number passed by the bootloader.
- * @param mb_info_phys_addr The physical address of the Multiboot 2 info structure.
- */
-void main(uint32_t magic, uint32_t mb_info_phys_addr) {
-    // Store Multiboot info address globally FIRST - needed by early memory init
-    g_multiboot_info_phys_addr_global = mb_info_phys_addr;
-
-    serial_init();
-
-    // 1. Early Initialization (Console, CPU Features, Core Tables)
-    terminal_init(); // Initialize console output ASAP
-    terminal_write("=== UiAOS Kernel Booting ===\n");
-    terminal_printf(" Version: %s\n\n", "3.2-BuildFix"); // Example version
-
-    // Verify Multiboot Magic
-    if (magic != MULTIBOOT2_BOOTLOADER_MAGIC) {
-        KERNEL_PANIC_HALT("Invalid Multiboot Magic number received from bootloader.");
-    }
-    terminal_printf("[Boot] Multiboot magic OK (Info at phys %#lx).\n", (unsigned long)mb_info_phys_addr);
-
-    // Initialize essential CPU tables: GDT and TSS
-    terminal_write("[Kernel] Initializing GDT & TSS...\n");
-    gdt_init(); // Sets up segments and loads TSS selector
-
-    // Initialize Interrupt Handling: IDT and PICs
-    terminal_write("[Kernel] Initializing IDT & PIC...\n");
-    idt_init(); // Sets up interrupt gates and remaps PIC
-
-    // 2. Memory Management Initialization (Multi-Stage Process)
-    if (!init_memory(g_multiboot_info_phys_addr_global)) {
-        // Panic should have occurred within init_memory
-        return; // Should not be reached
-    }
-
-    // 3. Hardware Driver Initialization (Requires Memory Management)
-    terminal_write("[Kernel] Initializing Hardware Drivers...\n");
-    terminal_write("  Initializing PIT...\n");
-    init_pit(); // Requires IDT
-    terminal_write("  Initializing Keyboard...\n");
-    keyboard_init(); // Requires IDT
-    keymap_load(KEYMAP_NORWEGIAN); // Set desired layout (Example: Norwegian)
-
-    // 4. Filesystem Initialization (Optional, Requires Block Device)
-    terminal_write("[Kernel] Initializing Filesystem Layer...\n");
-    // *** Filesystem Initialization Block - COMMENTED OUT FOR TESTING ***
-    /*
-    if (fs_init() == FS_SUCCESS) { // fs_init internally handles VFS init, driver registration, root mount
-        terminal_write("  [OK] Filesystem initialized and root mounted.\n");
-        list_mounts(); // List mounted filesystems for verification
-        // Optional: Test file access
-        // fs_test_file_access("/test.txt"); // Replace with a file expected on your disk image
-    } else {
-        terminal_write("  [Warning] Filesystem initialization failed. Continuing without FS.\n");
-        // Depending on OS requirements, this could be a panic:
-        // KERNEL_PANIC_HALT("Filesystem initialization failed.");
-    }
-    */
-    terminal_write("  [DEBUG] Filesystem initialization SKIPPED.\n"); // Add message indicating skip
+     terminal_write("[OK] Memory Subsystems Initialized Successfully.\n");
+     return true;
+ }
 
 
-    // 5. Scheduler and Initial Process Setup
-    terminal_write("[Kernel] Initializing Scheduler...\n");
-    // *** Scheduler Initialization - COMMENTED OUT FOR TESTING ***
-    // scheduler_init(); // Requires memory allocators
-    terminal_write("  [DEBUG] Scheduler initialization SKIPPED.\n");
+ // === Kernel Idle Task ===
+ /**
+  * kernel_idle_task
+  *
+  * A simple idle task that halts the CPU, waiting for the next interrupt.
+  * This is run when no other tasks are ready to be scheduled.
+  */
+ static void kernel_idle_task(void) {
+     terminal_write("[Idle] Kernel idle task started. Halting CPU when idle.\n");
+     while(1) {
+         // Enable interrupts briefly to allow pending interrupts (like PIT) to fire.
+         asm volatile("sti");
+         // Halt the CPU. It will wake up on the next interrupt.
+         // Interrupts are automatically disabled by the CPU upon entering an ISR.
+         asm volatile("hlt");
+         // Loop back to re-enable interrupts before halting again.
+     }
+ }
+
+ // === Main Kernel Entry Point ===
+ /**
+  * main
+  *
+  * The C entry point for the UiAOS kernel, called from assembly (`_start`).
+  * Initializes all kernel subsystems and starts the scheduler.
+  *
+  * @param magic The Multiboot2 magic number passed by the bootloader.
+  * @param mb_info_phys_addr The physical address of the Multiboot 2 info structure.
+  */
+ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
+     // Store Multiboot info address globally FIRST - needed by early memory init
+     g_multiboot_info_phys_addr_global = mb_info_phys_addr;
+
+     serial_init();
+
+     // 1. Early Initialization (Console, CPU Features, Core Tables)
+     terminal_init(); // Initialize console output ASAP
+     terminal_write("=== UiAOS Kernel Booting ===\n");
+     terminal_printf(" Version: %s\n\n", "3.2-BuildFix"); // Example version
+
+     // Verify Multiboot Magic
+     if (magic != MULTIBOOT2_BOOTLOADER_MAGIC) {
+         KERNEL_PANIC_HALT("Invalid Multiboot Magic number received from bootloader.");
+     }
+     terminal_printf("[Boot] Multiboot magic OK (Info at phys %#lx).\n", (unsigned long)mb_info_phys_addr);
+
+     // Initialize essential CPU tables: GDT and TSS
+     terminal_write("[Kernel] Initializing GDT & TSS...\n");
+     gdt_init(); // Sets up segments and loads TSS selector
+
+     // Initialize Interrupt Handling: IDT and PICs
+     terminal_write("[Kernel] Initializing IDT & PIC...\n");
+     idt_init(); // Sets up interrupt gates and remaps PIC
+
+     // 2. Memory Management Initialization (Multi-Stage Process)
+     if (!init_memory(g_multiboot_info_phys_addr_global)) {
+         // Panic should have occurred within init_memory
+         return; // Should not be reached
+     }
+
+     // 3. Hardware Driver Initialization (Requires Memory Management)
+     terminal_write("[Kernel] Initializing Hardware Drivers...\n");
+     terminal_write("  Initializing PIT...\n");
+     init_pit(); // Requires IDT
+     terminal_write("  Initializing Keyboard...\n");
+     keyboard_init(); // Requires IDT
+     keymap_load(KEYMAP_NORWEGIAN); // Set desired layout (Example: Norwegian)
+
+     // 4. Filesystem Initialization (Optional, Requires Block Device)
+     terminal_write("[Kernel] Initializing Filesystem Layer...\n");
+     // *** UNCOMMENTED Filesystem Initialization Block ***
+     bool fs_ready = false; // Flag to track if FS is ready
+     if (fs_init() == FS_SUCCESS) { // fs_init internally handles VFS init, driver registration, root mount
+         terminal_write("  [OK] Filesystem initialized and root mounted.\n");
+         fs_ready = true;
+         list_mounts(); // List mounted filesystems for verification
+         // Optional: Test file access
+         // fs_test_file_access("/test.txt"); // Replace with a file expected on your disk image
+     } else {
+         terminal_write("  [Warning] Filesystem initialization failed. Continuing without FS.\n");
+         // Depending on OS requirements, this could be a panic:
+         // KERNEL_PANIC_HALT("Filesystem initialization failed.");
+         fs_ready = false;
+     }
 
 
-    terminal_write("[Kernel] Creating initial user process...\n");
-    const char *user_prog_path = "/hello.elf"; // Default user program to load
+     // 5. Scheduler and Initial Process Setup
+     terminal_write("[Kernel] Initializing Scheduler...\n");
+     // *** UNCOMMENTED Scheduler Initialization ***
+     scheduler_init(); // Requires memory allocators
+     bool scheduler_ready = true; // Assume success for now, add error check if scheduler_init can fail
 
-    // *** START FIX ***
-    bool task_added = false; // Flag to track if a task was successfully added
-    // *** MODIFIED FS CHECK ***
-    terminal_printf(" [Debug] FS Check before loading user process: fs_is_initialized() returns %d (FS Init Skipped)\n", 0); // Assume 0 since skipped
-    if (0) { // Force false since FS init is skipped
-         terminal_write("  [Info] Filesystem not available, cannot load initial user process.\n");
-    } else {
-        // *** ADDED WARNING IF FS WAS NEEDED ***
-        terminal_write("  [Warning] Attempting to load user process without FS initialized. This will fail.\n");
-        pcb_t *user_proc_pcb = create_user_process(user_prog_path); // This call will now likely fail inside read_file
-        if (user_proc_pcb) {
-            // This part likely won't be reached if read_file fails correctly
-            terminal_printf("  [OK] Process created (PID %lu) from '%s'. Adding to scheduler.\n", (unsigned long)user_proc_pcb->pid, user_prog_path);
-            // *** Call scheduler_add_task here ***
-            // Cannot add task if scheduler is not initialized
-            terminal_write("  [Warning] Cannot add task to scheduler (Scheduler init skipped).\n");
-            // if (scheduler_add_task(user_proc_pcb) == 0) { // Assuming scheduler_add_task takes pcb_t*
-            //      terminal_write("  [OK] Initial user process scheduled.\n");
-            //      task_added = true; // Mark task as added successfully
-            // } else {
-            //      terminal_printf("  [ERROR] Failed to add initial process (PID %lu) to scheduler.\n", (unsigned long)user_proc_pcb->pid);
-            //      destroy_process(user_proc_pcb); // Clean up failed process
-            // }
-        } else {
-            terminal_printf("  [ERROR] Failed to create initial user process from '%s' (likely due to missing FS).\n", user_prog_path);
-            // Decide whether to panic or continue
-            // KERNEL_PANIC_HALT("Failed to create initial process.");
-        }
-    }
 
-    // 6. Enable Preemption and Start Idle Loop
-   // *** Check the flag before enabling scheduler readiness ***
-    if (task_added) {
-        terminal_write("[Kernel] Enabling preemptive scheduling via PIT...\n");
-        pit_set_scheduler_ready(); // Now it's safe to call this
-    } else {
-        terminal_write("[Kernel] No tasks scheduled. Entering simple idle loop.\n");
-    }
-    // *** END FIX ***
+     terminal_write("[Kernel] Creating initial user process...\n");
+     const char *user_prog_path = "/hello.elf"; // Default user program to load
 
-    terminal_write("\n[Kernel] Initialization complete. Enabling interrupts and entering idle task.\n");
-    terminal_write("======================================================================\n");
+     bool task_added = false; // Flag to track if a task was successfully added
 
-    // Enable interrupts (usually done just before jumping to idle/first task)
-    asm volatile ("sti");
+     // *** Use actual fs_ready flag ***
+     terminal_printf(" [Debug] FS Check before loading user process: fs_is_initialized() returns %d\n", fs_is_initialized());
+     if (fs_is_initialized()) { // Check if FS actually initialized successfully
+         pcb_t *user_proc_pcb = create_user_process(user_prog_path);
+         if (user_proc_pcb) {
+             terminal_printf("  [OK] Process created (PID %lu) from '%s'. Adding to scheduler.\n", (unsigned long)user_proc_pcb->pid, user_prog_path);
 
-    kernel_idle_task();
-    // --- Code should not be reached beyond kernel_idle_task ---
-    KERNEL_PANIC_HALT("Reached end of main() unexpectedly!"); // Added semicolon
-}
+             // *** Call scheduler_add_task here (assuming it exists and is safe) ***
+             if (scheduler_ready) {
+                 // Assuming scheduler_add_task takes pcb_t* and returns 0 on success
+                 if (scheduler_add_task(user_proc_pcb) == 0) {
+                     terminal_write("  [OK] Initial user process scheduled.\n");
+                     task_added = true; // Mark task as added successfully
+                 } else {
+                     terminal_printf("  [ERROR] Failed to add initial process (PID %lu) to scheduler.\n", (unsigned long)user_proc_pcb->pid);
+                     destroy_process(user_proc_pcb); // Clean up failed process
+                 }
+             } else {
+                  terminal_write("  [Warning] Cannot add task to scheduler (Scheduler init failed or skipped).\n");
+                  destroy_process(user_proc_pcb); // Clean up process if cannot add to scheduler
+             }
+         } else {
+             terminal_printf("  [ERROR] Failed to create initial user process from '%s'.\n", user_prog_path);
+             // Decide whether to panic or continue
+             // KERNEL_PANIC_HALT("Failed to create initial process.");
+         }
+     } else {
+          terminal_write("  [Info] Filesystem not available, cannot load initial user process.\n");
+     }
 
+
+     // 6. Enable Preemption and Start Idle Loop
+    // *** Check the flag before enabling scheduler readiness ***
+     if (task_added && scheduler_ready) {
+         terminal_write("[Kernel] Enabling preemptive scheduling via PIT...\n");
+         pit_set_scheduler_ready(); // Now it's safe to call this
+     } else {
+         terminal_write("[Kernel] No tasks scheduled or scheduler not ready. Entering simple idle loop.\n");
+     }
+
+     terminal_write("\n[Kernel] Initialization complete. Enabling interrupts and entering idle task/scheduler.\n");
+     terminal_write("======================================================================\n");
+
+     // Enable interrupts (usually done just before jumping to idle/first task)
+     asm volatile ("sti");
+
+     // If tasks were added, the scheduler should take over. If not, fall back to idle.
+     // The specific mechanism depends on the scheduler design (e.g., calling schedule() or just idling).
+     // For now, we go to idle. The PIT interrupt should trigger the scheduler if ready.
+     kernel_idle_task();
+
+     // --- Code should not be reached beyond kernel_idle_task ---
+     KERNEL_PANIC_HALT("Reached end of main() unexpectedly!");
+ }

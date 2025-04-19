@@ -75,7 +75,7 @@
         // --- FATAL KERNEL EXCEPTION DURING INIT/IDLE ---
         // No process context exists, cannot terminate gracefully. This is critical.
         terminal_printf("\n--- KERNEL PANIC (via Default Handler) ---\n");
-        terminal_printf(" Unhandled Exception/Interrupt: %d (Error Code: 0x%x)\n", regs->int_no, regs->err_code);
+        terminal_printf(" Unhandled Exception/Interrupt: %u (Error Code: 0x%x)\n", regs->int_no, regs->err_code); // Use %u for int_no
         terminal_printf(" Occurred before scheduler context switch (current_process is NULL).\n");
         terminal_printf(" EIP: 0x%x CS: 0x%x EFLAGS: 0x%x\n", regs->eip, regs->cs, regs->eflags);
          if (regs->cs & 0x3) { // Check if CPU *thought* it was user mode (due to corruption)
@@ -91,9 +91,9 @@
         // --- EXCEPTION/INTERRUPT AFTER SCHEDULER START ---
         // A process context exists, attempt graceful termination.
         terminal_printf("\n--- KERNEL EXCEPTION/INTERRUPT ---\n");
-        terminal_printf(" Unhandled Exception/Interrupt: %d (Error Code: 0x%x)\n", regs->int_no, regs->err_code);
+        terminal_printf(" Unhandled Exception/Interrupt: %u (Error Code: 0x%x)\n", regs->int_no, regs->err_code); // Use %u for int_no
         terminal_printf(" EIP: 0x%x CS: 0x%x EFLAGS: 0x%x\n", regs->eip, regs->cs, regs->eflags);
-        terminal_printf(" Terminating process (PID %d)\n", current_proc->pid);
+        terminal_printf(" Terminating process (PID %u)\n", current_proc->pid); // Use %u for pid
         if (regs->cs & 0x3) { // Check if fault occurred in user mode
             terminal_printf(" UserESP: 0x%x UserSS: 0x%x\n", regs->user_esp, regs->user_ss);
         }
@@ -144,6 +144,17 @@
  }
 
  // Initialize the IDT.
+
+ // *** ADD KERNEL ADDRESS DEFINITIONS (ADJUST THESE!) ***
+ // These values MUST match your kernel's configuration (linker script, boot setup)
+ #define KERNEL_LINK_PHYS_BASE 0x100000  // Example physical base address from linker script
+ #define KERNEL_VIRT_BASE      0xC0000000 // Example virtual base address
+
+ // Helper macro for calculating virtual address from physical link address
+ // Assumes the provided stub address is the physical link-time address
+ #define STUB_VADDR(stub_phys_addr) \
+     (((uint32_t)(stub_phys_addr) - KERNEL_LINK_PHYS_BASE) + KERNEL_VIRT_BASE)
+
  void idt_init(void) {
      idtp.limit = (uint16_t)(sizeof(idt_entries) - 1);
      idtp.base  = (uint32_t)&idt_entries[0];
@@ -156,45 +167,50 @@
 
      // Install ISRs for CPU exceptions (0-31)
      // Using 0x8E: P=1, DPL=0 (Kernel), Type=0xE (32-bit Interrupt Gate)
-     idt_set_gate(0,  (uint32_t)isr0,  0x08, 0x8E);
-     idt_set_gate(1,  (uint32_t)isr1,  0x08, 0x8E);
-     idt_set_gate(2,  (uint32_t)isr2,  0x08, 0x8E);
-     idt_set_gate(3,  (uint32_t)isr3,  0x08, 0x8E);
-     idt_set_gate(4,  (uint32_t)isr4,  0x08, 0x8E);
-     idt_set_gate(5,  (uint32_t)isr5,  0x08, 0x8E);
-     idt_set_gate(6,  (uint32_t)isr6,  0x08, 0x8E);
-     idt_set_gate(7,  (uint32_t)isr7,  0x08, 0x8E);
-     idt_set_gate(8,  (uint32_t)isr8,  0x08, 0x8E); // Double Fault
-     idt_set_gate(10, (uint32_t)isr10, 0x08, 0x8E); // Invalid TSS
-     idt_set_gate(11, (uint32_t)isr11, 0x08, 0x8E); // Segment Not Present
-     idt_set_gate(12, (uint32_t)isr12, 0x08, 0x8E); // Stack-Segment Fault
-     idt_set_gate(13, (uint32_t)isr13, 0x08, 0x8E); // General Protection Fault
-     idt_set_gate(14, (uint32_t)isr14, 0x08, 0x8E); // Page Fault
-     idt_set_gate(16, (uint32_t)isr16, 0x08, 0x8E); // x87 FPU Error
-     idt_set_gate(17, (uint32_t)isr17, 0x08, 0x8E); // Alignment Check
-     idt_set_gate(18, (uint32_t)isr18, 0x08, 0x8E); // Machine Check
-     idt_set_gate(19, (uint32_t)isr19, 0x08, 0x8E); // SIMD FP Exception
+     // *** USE STUB_VADDR MACRO to calculate VIRTUAL addresses ***
+     idt_set_gate(0,  STUB_VADDR(isr0),  0x08, 0x8E);
+     idt_set_gate(1,  STUB_VADDR(isr1),  0x08, 0x8E);
+     idt_set_gate(2,  STUB_VADDR(isr2),  0x08, 0x8E);
+     idt_set_gate(3,  STUB_VADDR(isr3),  0x08, 0x8E);
+     idt_set_gate(4,  STUB_VADDR(isr4),  0x08, 0x8E);
+     idt_set_gate(5,  STUB_VADDR(isr5),  0x08, 0x8E);
+     idt_set_gate(6,  STUB_VADDR(isr6),  0x08, 0x8E);
+     idt_set_gate(7,  STUB_VADDR(isr7),  0x08, 0x8E);
+     idt_set_gate(8,  STUB_VADDR(isr8),  0x08, 0x8E); // Double Fault
+     idt_set_gate(10, STUB_VADDR(isr10), 0x08, 0x8E); // Invalid TSS
+     idt_set_gate(11, STUB_VADDR(isr11), 0x08, 0x8E); // Segment Not Present
+     idt_set_gate(12, STUB_VADDR(isr12), 0x08, 0x8E); // Stack-Segment Fault
+     idt_set_gate(13, STUB_VADDR(isr13), 0x08, 0x8E); // General Protection Fault
+     idt_set_gate(14, STUB_VADDR(isr14), 0x08, 0x8E); // Page Fault
+     idt_set_gate(16, STUB_VADDR(isr16), 0x08, 0x8E); // x87 FPU Error
+     idt_set_gate(17, STUB_VADDR(isr17), 0x08, 0x8E); // Alignment Check
+     idt_set_gate(18, STUB_VADDR(isr18), 0x08, 0x8E); // Machine Check
+     idt_set_gate(19, STUB_VADDR(isr19), 0x08, 0x8E); // SIMD FP Exception
      // ISRs 20-31 reserved or architecture-specific
 
      // Install IRQ handlers (32-47)
-     idt_set_gate(32, (uint32_t)irq0,  0x08, 0x8E); // PIT
-     idt_set_gate(33, (uint32_t)irq1,  0x08, 0x8E); // Keyboard
-     idt_set_gate(34, (uint32_t)irq2,  0x08, 0x8E); // Cascade
-     idt_set_gate(35, (uint32_t)irq3,  0x08, 0x8E); // COM2
-     idt_set_gate(36, (uint32_t)irq4,  0x08, 0x8E); // COM1
-     idt_set_gate(37, (uint32_t)irq5,  0x08, 0x8E); // LPT2
-     idt_set_gate(38, (uint32_t)irq6,  0x08, 0x8E); // Floppy Disk
-     idt_set_gate(39, (uint32_t)irq7,  0x08, 0x8E); // LPT1 / Spurious
-     idt_set_gate(40, (uint32_t)irq8,  0x08, 0x8E); // RTC
-     idt_set_gate(41, (uint32_t)irq9,  0x08, 0x8E); // Free
-     idt_set_gate(42, (uint32_t)irq10, 0x08, 0x8E); // Free
-     idt_set_gate(43, (uint32_t)irq11, 0x08, 0x8E); // Free
-     idt_set_gate(44, (uint32_t)irq12, 0x08, 0x8E); // PS/2 Mouse
-     idt_set_gate(45, (uint32_t)irq13, 0x08, 0x8E); // FPU Coprocessor
-     idt_set_gate(46, (uint32_t)irq14, 0x08, 0x8E); // Primary ATA
-     idt_set_gate(47, (uint32_t)irq15, 0x08, 0x8E); // Secondary ATA
+     // *** USE STUB_VADDR MACRO to calculate VIRTUAL addresses ***
+     idt_set_gate(32, STUB_VADDR(irq0),  0x08, 0x8E); // PIT
+     idt_set_gate(33, STUB_VADDR(irq1),  0x08, 0x8E); // Keyboard
+     idt_set_gate(34, STUB_VADDR(irq2),  0x08, 0x8E); // Cascade
+     idt_set_gate(35, STUB_VADDR(irq3),  0x08, 0x8E); // COM2
+     idt_set_gate(36, STUB_VADDR(irq4),  0x08, 0x8E); // COM1
+     idt_set_gate(37, STUB_VADDR(irq5),  0x08, 0x8E); // LPT2
+     idt_set_gate(38, STUB_VADDR(irq6),  0x08, 0x8E); // Floppy Disk
+     idt_set_gate(39, STUB_VADDR(irq7),  0x08, 0x8E); // LPT1 / Spurious
+     idt_set_gate(40, STUB_VADDR(irq8),  0x08, 0x8E); // RTC
+     idt_set_gate(41, STUB_VADDR(irq9),  0x08, 0x8E); // Free
+     idt_set_gate(42, STUB_VADDR(irq10), 0x08, 0x8E); // Free
+     idt_set_gate(43, STUB_VADDR(irq11), 0x08, 0x8E); // Free
+     idt_set_gate(44, STUB_VADDR(irq12), 0x08, 0x8E); // PS/2 Mouse
+     idt_set_gate(45, STUB_VADDR(irq13), 0x08, 0x8E); // FPU Coprocessor
+     idt_set_gate(46, STUB_VADDR(irq14), 0x08, 0x8E); // Primary ATA
+     idt_set_gate(47, STUB_VADDR(irq15), 0x08, 0x8E); // Secondary ATA
 
      // Register Page Fault C Handler
+     // Ensure page_fault_handler itself is correctly linked for higher half
+     // The STUB_VADDR macro is for the assembly stubs; page_fault_handler is a C function
+     // Assuming page_fault_handler symbol resolves to its correct virtual address
      register_int_handler(14, page_fault_handler, NULL);
 
      // Load the IDT

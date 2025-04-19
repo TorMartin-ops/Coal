@@ -18,8 +18,7 @@ typedef unsigned long long uint64_t;
 
 // Added definition for UINT64_MAX
 #define UINT64_MAX (0xFFFFFFFFFFFFFFFFULL)
-#define INT64_MIN  (-9223372036854775807LL - 1LL) // Use LL suffix
-#define INT64_MAX  (9223372036854775807LL)  // Use LL suffix
+
 
 #define SIZE_MAX   UINT32_MAX // Note: SIZE_MAX might need to be UINT64_MAX on a 64-bit target, but is likely correct as UINT32_MAX for i386
 

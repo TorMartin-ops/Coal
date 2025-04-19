@@ -54,14 +54,6 @@ extern "C" {
 
 #define PDE_FLAGS_FROM_PTE(pte_flags) ((pte_flags) & (PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_PWT | PAGE_PCD))
 
-#define TEMP_MAP_ADDR_GENERIC 0xE0000000 // Example temporary virtual address
-#define TEMP_MAP_ADDR_PD_SRC  0xE0001000 // Example for source PD
-#define TEMP_MAP_ADDR_PT_SRC  0xE0002000 // Example for source PT
-#define TEMP_MAP_ADDR_PD_DST  0xE0003000 // Example for dest PD
-#define TEMP_MAP_ADDR_PT_DST  0xE0004000 // Example for dest PT
-//#define KERNEL_PDE_INDEX      768 // Common index for 3GB kernel split (0xC0000000 / 4MB) // Defined later using macro
-
-
 // --- Page Table Entry Address Masks (32-bit non-PAE) ---
 #define PAGING_FLAG_MASK          0xFFF      // Lower 12 bits are flags/available
 #define PAGING_ADDR_MASK          0xFFFFF000 // Upper 20 bits are physical frame number (PFN)
@@ -126,28 +118,19 @@ extern "C" {
 #endif
 
 
-// --- Temporary Kernel Mapping Addresses ---
-// Ensure these are unique and reserved in the kernel's virtual address space,
-// typically just below KERNEL_SPACE_VIRT_START.
-#ifndef TEMP_MAP_ADDR_PD_SRC
-#define TEMP_MAP_ADDR_PD_SRC (KERNEL_SPACE_VIRT_START - 1u * PAGE_SIZE)
-#endif
-#ifndef TEMP_MAP_ADDR_PT_SRC
-#define TEMP_MAP_ADDR_PT_SRC (KERNEL_SPACE_VIRT_START - 2u * PAGE_SIZE)
-#endif
-#ifndef TEMP_MAP_ADDR_PD_DST
-#define TEMP_MAP_ADDR_PD_DST (KERNEL_SPACE_VIRT_START - 3u * PAGE_SIZE)
-#endif
-#ifndef TEMP_MAP_ADDR_PT_DST
-#define TEMP_MAP_ADDR_PT_DST (KERNEL_SPACE_VIRT_START - 4u * PAGE_SIZE)
-#endif
-#ifndef TEMP_MAP_ADDR_PF
-#define TEMP_MAP_ADDR_PF     (KERNEL_SPACE_VIRT_START - 5u * PAGE_SIZE) // Example
-#endif
-// Reuse one of the above for the generic temporary map if desired, or keep TEMP_MAP_ADDR_GENERIC
-#ifndef TEMP_MAP_ADDR_GENERIC
-#define TEMP_MAP_ADDR_GENERIC TEMP_MAP_ADDR_PF // Use TEMP_MAP_ADDR_PF as the generic one
-#endif
+// --- Temporary Kernel Mapping Address ---
+// Define a dedicated virtual address for temporary mappings.
+// Ensure this address doesn't conflict with kernel, heap, stacks, or MMIO.
+// Placed just below the recursive mapping area (maps PT 1022).
+#define PAGING_TEMP_VADDR 0xFFBFF000 // Last page in PT mapped by PDE 1022
+
+// Old temporary addresses - Should NOT be used by the new paging_temp_map/unmap
+// #define TEMP_MAP_ADDR_GENERIC 0xE0000000 // Example temporary virtual address - REMOVED
+// #define TEMP_MAP_ADDR_PD_SRC  0xE0001000 // Example for source PD - REMOVED
+// #define TEMP_MAP_ADDR_PT_SRC  0xE0002000 // Example for source PT - REMOVED
+// #define TEMP_MAP_ADDR_PD_DST  0xE0003000 // Example for dest PD - REMOVED
+// #define TEMP_MAP_ADDR_PT_DST  0xE0004000 // Example for dest PT - REMOVED
+// #define TEMP_MAP_ADDR_PF     (KERNEL_SPACE_VIRT_START - 5u * PAGE_SIZE) // Example - REMOVED
 
 
 // --- CPU Features / Control Register Bits / MSRs ---
@@ -219,20 +202,19 @@ void copy_kernel_pde_entries(uint32_t *new_pd_virt); // Confirmed void return ty
 // <<< ADDED TEMPORARY MAPPING PROTOTYPES >>>
 /**
  * @brief Temporarily maps a physical page into the kernel's virtual address space.
- * Uses a predefined temporary virtual address (e.g., TEMP_MAP_ADDR_PF).
+ * Uses a predefined temporary virtual address (PAGING_TEMP_VADDR).
  * WARNING: This mapping is temporary and should be unmapped quickly.
  * Not inherently thread-safe if the same temp address is used concurrently.
  *
  * @param phys_addr The physical address of the page frame to map.
- * @return The kernel virtual address where the page was mapped, or NULL on failure.
+ * @return The kernel virtual address where the page was mapped (PAGING_TEMP_VADDR), or NULL on failure.
  */
 void* paging_temp_map(uintptr_t phys_addr);
 
 /**
- * @brief Unmaps a temporary kernel mapping created by paging_temp_map.
- * Assumes the mapping was done at the standard temporary virtual address.
+ * @brief Unmaps the dedicated temporary virtual address (PAGING_TEMP_VADDR).
  *
- * @param temp_vaddr The virtual address returned by paging_temp_map.
+ * @param temp_vaddr The virtual address returned by paging_temp_map (MUST be PAGING_TEMP_VADDR).
  */
 void paging_temp_unmap(void* temp_vaddr);
 // <<< END ADDED >>>
