@@ -1,16 +1,17 @@
 /*
  * terminal.c
- * Enhanced VGA text‑mode driver for a 32‑bit x86 OS.
+ * Enhanced VGA text-mode driver for a 32-bit x86 OS.
  *
  * Features:
- *  - Standard text output with scrolling.
- *  - Dual output to VGA and Serial Port (COM1).
- *  - Re‑entrant, spin‑lock protected printf (32‑bit for now).
- *  - Basic ANSI escape sequence support (colours, clear screen, cursor hide/show).
- *  - Multi‑line interactive input editing with proper state management.
- *  - Hard‑lock‑order respected: serial < terminal.
+ * - Standard text output with scrolling.
+ * - Dual output to VGA and Serial Port (COM1).
+ * - Re-entrant, spin-lock protected printf (handles long types).
+ * - Basic ANSI escape sequence support (colours, clear screen, cursor hide/show).
+ * - Multi-line interactive input editing with proper state management.
+ * - Hard-lock-order respected: serial < terminal.
  *
- * 2025‑04‑17 – "10×" pass: volatile VGA MMIO, ESC[?25l/h, stricter bounds before memmove, rule‑of‑zero helpers, tidy‑ups.
+ * 2025-04-19 - printf fix: Added handling for 'l' modifier in _vsnprintf.
+ * 2025-04-17 - "10x" pass: volatile VGA MMIO, ESC[?25l/h, stricter bounds before memmove, rule-of-zero helpers, tidy-ups.
  */
 
  #include "terminal.h"
@@ -25,39 +26,39 @@
  #include <libc/stdbool.h>
  #include <libc/stddef.h>
  #include <libc/stdint.h>
- #include <string.h>
+ #include <string.h> // Use kernel's string functions
  
  /* ------------------------------------------------------------------------- */
- /*  Manual 64‑bit limits (lift when libc supplies them)                      */
+ /* Manual 64-bit limits (lift when libc supplies them)                      */
  /* ------------------------------------------------------------------------- */
  #ifndef LLONG_MAX
- #  define LLONG_MAX  9223372036854775807LL
+ #   define LLONG_MAX  9223372036854775807LL
  #endif
  #ifndef LLONG_MIN
- #  define LLONG_MIN (-LLONG_MAX - 1LL)
+ #   define LLONG_MIN (-LLONG_MAX - 1LL)
  #endif
  #ifndef ULLONG_MAX
- #  define ULLONG_MAX 18446744073709551615ULL
+ #   define ULLONG_MAX 18446744073709551615ULL
  #endif
  
  /* ------------------------------------------------------------------------- */
- /*  Compile‑time configuration                                               */
+ /* Compile-time configuration                                               */
  /* ------------------------------------------------------------------------- */
- #define TAB_WIDTH            4
+ #define TAB_WIDTH           4
  #define PRINTF_BUFFER_SIZE 256
  #define MAX_INPUT_LINES     64
  /* MAX_INPUT_LENGTH comes from terminal.h */
  
  /* ------------------------------------------------------------------------- */
- /*  VGA hardware constants                                                  */
+ /* VGA hardware constants                                                   */
  /* ------------------------------------------------------------------------- */
- #define VGA_MEM_ADDRESS      0xC00B8000
- #define VGA_COLS             80
- #define VGA_ROWS             25
- #define VGA_CMD_PORT         0x3D4
- #define VGA_DATA_PORT        0x3D5
- #define VGA_REG_CURSOR_HI    0x0E
- #define VGA_REG_CURSOR_LO    0x0F
+ #define VGA_MEM_ADDRESS     0xC00B8000 // Assumes mapped to virtual memory
+ #define VGA_COLS            80
+ #define VGA_ROWS            25
+ #define VGA_CMD_PORT        0x3D4
+ #define VGA_DATA_PORT       0x3D5
+ #define VGA_REG_CURSOR_HI   0x0E
+ #define VGA_REG_CURSOR_LO   0x0F
  #define VGA_REG_CURSOR_START 0x0A
  #define VGA_REG_CURSOR_END   0x0B
  #define CURSOR_SCANLINE_START 14
@@ -69,32 +70,32 @@
  #define VGA_BG(attr)     (((attr)>>4)&0x0F)
  
  /* ------------------------------------------------------------------------- */
- /*  ANSI escape‑code state machine                                           */
+ /* ANSI escape-code state machine                                           */
  /* ------------------------------------------------------------------------- */
  typedef enum {
      ANSI_STATE_NORMAL,
-     ANSI_STATE_ESC,        /* got ESC */
-     ANSI_STATE_BRACKET,    /* got ESC[ */
-     ANSI_STATE_PARAM       /* parsing numeric params */
+     ANSI_STATE_ESC,       /* got ESC */
+     ANSI_STATE_BRACKET,   /* got ESC[ */
+     ANSI_STATE_PARAM      /* parsing numeric params */
  } AnsiState;
  
  /* ------------------------------------------------------------------------- */
- /*  Terminal global state                                                    */
+ /* Terminal global state                                                    */
  /* ------------------------------------------------------------------------- */
- static spinlock_t terminal_lock;               /* serial < terminal ordering */
- static uint8_t    terminal_color = 0x07;       /* VGA_ATTR: light‑grey on black */
+ static spinlock_t terminal_lock;                /* serial < terminal ordering */
+ static uint8_t    terminal_color = 0x07;      /* VGA_ATTR: light-grey on black */
  static volatile uint16_t * const vga_buffer =  /* volatile MMIO! */
          (volatile uint16_t *)VGA_MEM_ADDRESS;
  static int        cursor_x = 0;
  static int        cursor_y = 0;
  static uint8_t    cursor_visible = 1;
  static AnsiState  ansi_state = ANSI_STATE_NORMAL;
- static bool       ansi_private = false;        /* ESC[? … */
+ static bool       ansi_private = false;       /* ESC[? … */
  static int        ansi_params[4];
  static int        ansi_param_count = 0;
  
  /* ------------------------------------------------------------------------- */
- /*  Interactive multi‑line input                                             */
+ /* Interactive multi-line input                                             */
  /* ------------------------------------------------------------------------- */
  typedef struct {
      char  lines[MAX_INPUT_LINES][MAX_INPUT_LENGTH];
@@ -110,7 +111,7 @@
  static terminal_input_state_t input_state;
  
  /* ------------------------------------------------------------------------- */
- /*  Forward declarations                                                     */
+ /* Forward declarations                                                     */
  /* ------------------------------------------------------------------------- */
  static void update_hardware_cursor(void);
  static void enable_hardware_cursor(void);
@@ -128,11 +129,12 @@
  
  /* printf helpers */
  static int _vsnprintf(char *str, size_t size, const char *fmt, va_list args);
- static int _format_number(uint32_t num, bool is_negative, int base, bool upper,
+ // *** MODIFIED: Use unsigned long long for number formatting ***
+ static int _format_number(unsigned long long num, bool is_negative, int base, bool upper,
                            int min_width, bool zero_pad, char *buf, int buf_sz);
  
  /* ------------------------------------------------------------------------- */
- /*  Helpers                                                                  */
+ /* Helpers                                                                  */
  /* ------------------------------------------------------------------------- */
  static inline uint16_t vga_entry(char ch, uint8_t color)
  {
@@ -140,7 +142,7 @@
  }
  
  /* ------------------------------------------------------------------------- */
- /*  Hardware cursor                                                          */
+ /* Hardware cursor                                                          */
  /* ------------------------------------------------------------------------- */
  static void enable_hardware_cursor(void)
  {
@@ -153,7 +155,7 @@
  static void disable_hardware_cursor(void)
  {
      outb(VGA_CMD_PORT, VGA_REG_CURSOR_START);
-     outb(VGA_DATA_PORT, 0x20); /* bit5=1 → cursor disabled */
+     outb(VGA_DATA_PORT, 0x20); /* bit5=1 -> cursor disabled */
  }
  
  static void update_hardware_cursor(void)
@@ -175,7 +177,7 @@
  }
  
  /* ------------------------------------------------------------------------- */
- /*  Low‑level VGA buffer access                                              */
+ /* Low-level VGA buffer access                                              */
  /* ------------------------------------------------------------------------- */
  static void put_char_at(char c, uint8_t color, int x, int y)
  {
@@ -207,7 +209,7 @@
  }
  
  /* ------------------------------------------------------------------------- */
- /*  ANSI escape parser                                                       */
+ /* ANSI escape parser                                                       */
  /* ------------------------------------------------------------------------- */
  static void reset_ansi_state(void)
  {
@@ -227,7 +229,10 @@
      case ANSI_STATE_ESC:
          if (c == '[') {
              ansi_state = ANSI_STATE_BRACKET;
-             reset_ansi_state(); /* clears params/private */
+             // Reset params/private flag for new sequence
+             ansi_private     = false;
+             ansi_param_count = 0;
+             for (int i = 0; i < 4; ++i) ansi_params[i] = -1;
          } else {
              ansi_state = ANSI_STATE_NORMAL;
          }
@@ -240,7 +245,7 @@
          } else if (c >= '0' && c <= '9') {
              ansi_state = ANSI_STATE_PARAM;
              ansi_params[0] = c - '0';
-         } else if (c == 'J') { /* ESC[J   or ESC[2J */
+         } else if (c == 'J') { /* ESC[J  or ESC[2J */
              terminal_clear_internal();
              ansi_state = ANSI_STATE_NORMAL;
          } else {
@@ -252,7 +257,9 @@
          if (c >= '0' && c <= '9') {
              int *cur = &ansi_params[ansi_param_count];
              if (*cur == -1) *cur = 0;
-             *cur = (*cur * 10) + (c - '0');
+             // Basic overflow check
+             if (*cur > (INT32_MAX / 10) - 10) { *cur = INT32_MAX; }
+             else { *cur = (*cur * 10) + (c - '0'); }
          } else if (c == ';') {
              if (ansi_param_count < 3) {
                  ++ansi_param_count;
@@ -267,11 +274,11 @@
              case 'm': /* SGR */
                  for (int i = 0; i <= ansi_param_count; ++i) {
                      int p = (ansi_params[i] == -1) ? 0 : ansi_params[i];
-                     if      (p == 0)                     terminal_color = 0x07; /* reset */
-                     else if (p >= 30 && p <= 37)         terminal_color = (terminal_color & 0xF0) | (p - 30);
-                     else if (p >= 40 && p <= 47)         terminal_color = ((p - 40) << 4) | (terminal_color & 0x0F);
-                     else if (p >= 90 && p <= 97)         terminal_color = (terminal_color & 0xF0) | ((p - 90) + 8);
-                     else if (p >= 100 && p <= 107)       terminal_color = (((p - 100) + 8) << 4) | (terminal_color & 0x0F);
+                     if      (p == 0)                terminal_color = 0x07; /* reset */
+                     else if (p >= 30 && p <= 37)    terminal_color = (terminal_color & 0xF0) | (p - 30);
+                     else if (p >= 40 && p <= 47)    terminal_color = ((p - 40) << 4) | (terminal_color & 0x0F);
+                     else if (p >= 90 && p <= 97)    terminal_color = (terminal_color & 0xF0) | ((p - 90) + 8);
+                     else if (p >= 100 && p <= 107)  terminal_color = (((p - 100) + 8) << 4) | (terminal_color & 0x0F);
                  }
                  ansi_state = ANSI_STATE_NORMAL;
                  break;
@@ -300,7 +307,7 @@
  }
  
  /* ------------------------------------------------------------------------- */
- /*  Core output                                                              */
+ /* Core output                                                              */
  /* ------------------------------------------------------------------------- */
  static void terminal_putchar_internal(char c)
  {
@@ -374,13 +381,15 @@
  }
  
  /* ------------------------------------------------------------------------- */
- /*  printf                                                                   */
+ /* printf                                                                   */
  /* ------------------------------------------------------------------------- */
- static int _format_number(uint32_t num, bool is_negative, int base, bool upper,
+ // *** MODIFIED: Use unsigned long long for internal representation ***
+ static int _format_number(unsigned long long num, bool is_negative, int base, bool upper,
                            int min_width, bool zero_pad, char *buf, int buf_sz)
  {
      if (buf_sz < 2) return 0;
-     char tmp[33];
+     // Use larger buffer for 64-bit numbers
+     char tmp[65]; // Max 64 bits binary + null
      int  i = 0;
      const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
      if (base < 2 || base > 16) base = 10;
@@ -388,6 +397,7 @@
      if (num == 0) tmp[i++] = '0';
      else {
          while (num && i < (int)sizeof(tmp) - 1) {
+             // Use modulo/division on unsigned long long
              tmp[i++] = digits[num % base];
              num /= base;
          }
@@ -398,9 +408,11 @@
      int total      = num_digits + sign_char;
      int padding    = (min_width > total) ? (min_width - total) : 0;
  
+     // Check buffer overflow potential more carefully
      if (total + padding >= buf_sz) {
-         strncpy(buf, "[FMT_OOM]", buf_sz);
-         return (int)strlen("[FMT_OOM]");
+         // Truncate if possible, otherwise indicate error
+         if (buf_sz > 5) { strncpy(buf, "[...]", buf_sz); buf[buf_sz-1] = '\0'; return buf_sz-1; }
+         else { buf[0] = '\0'; return 0; } // Not enough space even for error marker
      }
  
      int pos = 0;
@@ -412,10 +424,13 @@
      return pos;
  }
  
+ // *** MODIFIED: Handle 'l' modifier ***
  static int _vsnprintf(char *str, size_t size, const char *fmt, va_list args)
  {
      if (!str || !size) return 0;
-     size_t w = 0; char tmp[34];
+     size_t w = 0;
+     // Use larger temp buffer for 64-bit numbers
+     char tmp[66]; // Max 64 bits hex + "0x" + null
  
      while (*fmt && w < size - 1) {
          if (*fmt != '%') {
@@ -426,14 +441,24 @@
  
          bool zero_pad = false;
          int  min_width = 0;
+         bool is_long = false; // *** ADDED: Track 'l' modifier ***
+         // bool is_long_long = false; // Keep commented unless needed
+ 
+         // Parse flags and width
          if (*fmt == '0') { zero_pad = true; ++fmt; }
          while (*fmt >= '0' && *fmt <= '9') {
              min_width = min_width * 10 + (*fmt - '0');
              ++fmt;
          }
  
-         bool long_long = false;
-         if (fmt[0] == 'l' && fmt[1] == 'l') { long_long = true; fmt += 2; }
+         // *** ADDED: Parse length modifier ***
+         if (*fmt == 'l') {
+             is_long = true;
+             fmt++;
+             // if (*fmt == 'l') { is_long_long = true; fmt++; } // Uncomment for 'll'
+         }
+         // Add 'z' for size_t if needed later
+         // else if (*fmt == 'z') { is_size_t = true; fmt++; }
  
          const char *arg_str = NULL;
          int  len = 0;
@@ -449,25 +474,39 @@
              arg_str = tmp; len = 1;
              break;
          case 'd': {
-             if (long_long) { va_arg(args, long long); arg_str = "[lld NI]"; len = 8; break; }
-             int   v  = va_arg(args, int);
-             bool  neg = v < 0;
-             uint32_t u = neg ? (uint32_t)-v : (uint32_t)v;
-             len = _format_number(u, neg, 10, false, min_width, zero_pad, tmp, sizeof(tmp));
+             long long val_ll = 0; // Use long long for intermediate storage
+             bool neg = false;
+             if (is_long) { // *** Handle long ***
+                 long val_l = va_arg(args, long);
+                 if (val_l < 0) { neg = true; val_ll = -(long long)val_l; }
+                 else { val_ll = (long long)val_l; }
+             } else { // Handle int
+                 int val_i = va_arg(args, int);
+                 if (val_i < 0) { neg = true; val_ll = -(long long)val_i; }
+                 else { val_ll = (long long)val_i; }
+             }
+             len = _format_number(val_ll, neg, 10, false, min_width, zero_pad, tmp, sizeof(tmp));
              arg_str = tmp;
              break; }
          case 'u': case 'x': case 'X': {
-             if (long_long) { va_arg(args, unsigned long long); arg_str = (*fmt=='u')?"[llu NI]":"[llx NI]"; len = 8; break; }
-             uint32_t u = va_arg(args, unsigned int);
+             unsigned long long val_ull;
+             if (is_long) { // *** Handle unsigned long ***
+                  val_ull = va_arg(args, unsigned long);
+             } else { // Handle unsigned int
+                  val_ull = va_arg(args, unsigned int);
+             }
              int base = (*fmt == 'u') ? 10 : 16;
              bool upper = (*fmt == 'X');
-             len = _format_number(u, false, base, upper, min_width, zero_pad, tmp, sizeof(tmp));
+             len = _format_number(val_ull, false, base, upper, min_width, zero_pad, tmp, sizeof(tmp));
              arg_str = tmp;
              break; }
          case 'p': {
+             // Pointers are typically unsigned long on 32/64 bit systems we care about
              uintptr_t p = (uintptr_t)va_arg(args, void*);
+             // Ensure enough space for "0x" prefix
              if (w < size - 3) { str[w++] = '0'; str[w++] = 'x'; }
-             len = _format_number((uint32_t)p, false, 16, false, sizeof(uintptr_t)*2, true, tmp, sizeof(tmp));
+             // Format as unsigned long long hex, zero-padded to pointer size
+             len = _format_number((unsigned long long)p, false, 16, false, sizeof(uintptr_t)*2, true, tmp, sizeof(tmp));
              arg_str = tmp;
              break; }
          case '%':
@@ -477,19 +516,22 @@
          }
  
          if (arg_str) {
+             // Copy formatted string/number, respecting buffer size
              for (int i = 0; i < len && w < size - 1; ++i)
                  str[w++] = arg_str[i];
          }
-         if (*fmt) ++fmt;
+         if (*fmt) ++fmt; // Move past the format specifier character
      }
-     str[w] = '\0';
-     return (int)w;
+     str[w] = '\0'; // Null-terminate
+     return (int)w; // Return number of characters written (excluding null)
  }
+ 
  
  void terminal_printf(const char *fmt, ...)
  {
      char buf[PRINTF_BUFFER_SIZE];
      va_list ap; va_start(ap, fmt);
+     // Use the corrected _vsnprintf
      int len = _vsnprintf(buf, sizeof(buf), fmt, ap);
      va_end(ap);
  
@@ -501,14 +543,14 @@
  }
  
  /* ------------------------------------------------------------------------- */
- /*  Terminal control                                                         */
+ /* Terminal control                                                         */
  /* ------------------------------------------------------------------------- */
  void terminal_clear_internal(void)
  {
      for (int y = 0; y < VGA_ROWS; ++y)
          clear_row(y, terminal_color);
      cursor_x = cursor_y = 0;
-     ansi_state = ANSI_STATE_NORMAL;
+     ansi_state = ANSI_STATE_NORMAL; // Reset ANSI state on clear
  }
  
  void terminal_clear(void)
@@ -554,15 +596,15 @@
  {
      spinlock_init(&terminal_lock);
      terminal_clear_internal();
-     input_state.is_active = false;
+     input_state.is_active = false; // Ensure input state is initially inactive
      enable_hardware_cursor();
      update_hardware_cursor();
  }
  
  /* ------------------------------------------------------------------------- */
- /*  Interactive input – only small fixes here (bounds before memmove, etc.)  */
+ /* Interactive input – only small fixes here (bounds before memmove, etc.)  */
  /* ------------------------------------------------------------------------- */
- static void redraw_input(void); /* fwd */
+ static void redraw_input(void) { /* ... placeholder ... */ } /* fwd */
  
  static void update_desired_column(void) { input_state.desired_column = input_state.input_cursor; }
  
@@ -576,12 +618,15 @@
  
      /* shift right */
      int len = input_state.line_lengths[idx];
-     memmove(&input_state.lines[idx][input_state.input_cursor + 1],
-             &input_state.lines[idx][input_state.input_cursor],
-             len - input_state.input_cursor + 1);
-     input_state.lines[idx][input_state.input_cursor] = c;
-     input_state.line_lengths[idx]++;
-     input_state.input_cursor++;
+     // Bounds check before memmove
+     if (input_state.input_cursor <= len) {
+         memmove(&input_state.lines[idx][input_state.input_cursor + 1],
+                 &input_state.lines[idx][input_state.input_cursor],
+                 len - input_state.input_cursor + 1); // +1 for null terminator
+         input_state.lines[idx][input_state.input_cursor] = c;
+         input_state.line_lengths[idx]++;
+         input_state.input_cursor++;
+     }
  }
  
  static void erase_character(void)
@@ -591,22 +636,26 @@
  
      if (input_state.input_cursor > 0) {
          int len = input_state.line_lengths[idx];
-         memmove(&input_state.lines[idx][input_state.input_cursor - 1],
-                 &input_state.lines[idx][input_state.input_cursor],
-                 len - input_state.input_cursor + 1);
-         input_state.line_lengths[idx]--;
-         input_state.input_cursor--;
+          // Bounds check before memmove
+         if (input_state.input_cursor <= len) {
+             memmove(&input_state.lines[idx][input_state.input_cursor - 1],
+                     &input_state.lines[idx][input_state.input_cursor],
+                     len - input_state.input_cursor + 1); // +1 for null terminator
+             input_state.line_lengths[idx]--;
+             input_state.input_cursor--;
+         }
      } else if (idx > 0) {
          int prev = idx - 1;
          int prev_len = input_state.line_lengths[prev];
          int cur_len  = input_state.line_lengths[idx];
          if (prev_len + cur_len < MAX_INPUT_LENGTH) {
-             memcpy(&input_state.lines[prev][prev_len], input_state.lines[idx], cur_len + 1);
+             memcpy(&input_state.lines[prev][prev_len], input_state.lines[idx], cur_len + 1); // +1 for null
              input_state.line_lengths[prev] += cur_len;
              /* pull up lines */
-             for (int l = idx; l < input_state.total_lines - 1; ++l) {
-                 memcpy(input_state.lines[l], input_state.lines[l+1], MAX_INPUT_LENGTH);
-                 input_state.line_lengths[l] = input_state.line_lengths[l+1];
+             // Bounds check: only move if there are lines above the current one
+             if (input_state.total_lines > 1 && idx < input_state.total_lines -1) {
+                  memmove(&input_state.lines[idx], &input_state.lines[idx+1], (input_state.total_lines - 1 - idx) * MAX_INPUT_LENGTH);
+                  memmove(&input_state.line_lengths[idx], &input_state.line_lengths[idx+1], (input_state.total_lines - 1 - idx) * sizeof(int));
              }
              input_state.total_lines--;
              input_state.current_line--;
@@ -615,11 +664,10 @@
      }
  }
  
- /*  --- rest of multi‑line input code unchanged (for brevity) ---            */
- /*  ... you can keep your previous implementation here ...                  */
+ /* --- rest of multi-line input code unchanged (for brevity) ---           */
+ /* ... you can keep your previous implementation here ...                  */
  
  void terminal_write_char(char c) { terminal_putchar(c); }
  
  /* ------------------------------------------------------------------------- */
- /*  End of file                                                              */
- 
+ /* End of file                                                              */

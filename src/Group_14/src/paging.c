@@ -28,6 +28,20 @@
  #ifndef ARRAY_SIZE
  #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
  #endif
+
+ // --- Debugging Control ---
+#define PAGING_DEBUG 1 // Set to 0 to disable debug prints
+
+// --- ADDED DEBUG MACRO DEFINITION ---
+#if PAGING_DEBUG
+#define PAGING_DEBUG_PRINTF(fmt, ...) \
+    do { \
+        terminal_printf("[Paging DEBUG %s:%d] " fmt, __func__, __LINE__, ##__VA_ARGS__); \
+    } while (0)
+#else
+#define PAGING_DEBUG_PRINTF(fmt, ...) do {} while (0) // Define as empty block when disabled
+#endif
+// --- END DEBUG MACRO DEFINITION ---
  
  // --- Globals ---
  uint32_t* g_kernel_page_directory_virt = NULL;
@@ -96,94 +110,101 @@
  // --- Low-Level Temporary Mappings (Use with EXTREME caution) ---
  // Marked static as it's an internal unsafe helper
  static int kernel_map_virtual_to_physical_unsafe(uintptr_t vaddr, uintptr_t paddr, uint32_t flags) {
-     if (!g_kernel_page_directory_virt) {
-         // If called before paging is fully active and recursive mapping established,
-         // this relies on the caller having another way to access the kernel PD.
-         // After activation, g_kernel_page_directory_virt MUST be valid.
-         terminal_printf("[KMapUnsafe] Warning: Kernel PD Virt not set (may be okay pre-activation)\n");
-         // This function is problematic before full activation - needs careful use.
-         // If needed pre-activation, direct physical access or identity map is safer.
-         // For now, assume it's called post-activation or caller handles PD access.
-         if (!g_kernel_page_directory_virt) return -1; // Hard fail if called post-activation without valid virt ptr
-     }
- 
-     // Check alignment and range
-     if ((vaddr % PAGE_SIZE != 0) || (paddr % PAGE_SIZE != 0)) {
-         // *** FORMAT FIX: %u for uintptr_t ***
-         terminal_printf("[KMapUnsafe] Error: Unaligned addresses V=0x%u P=0x%u\n", (unsigned long)vaddr, (unsigned long)paddr);
-         return -1;
-     }
- 
-     // Allow temporary mappings anywhere for flexibility, but user must be cautious.
-     // The original check restricting to kernel space or specific TEMP addresses is removed,
-     // but this makes the function more dangerous if misused.
-     // terminal_printf("[KMapUnsafe] Mapping V=0x%u -> P=0x%u\n", (unsigned long)vaddr, (unsigned long)paddr);
- 
-     uint32_t pd_idx = PDE_INDEX(vaddr);
-     uint32_t pt_idx = PTE_INDEX(vaddr);
- 
-     // Access kernel PD using its virtual address (ASSUMES PAGING ACTIVE or special setup)
-     uint32_t pde = g_kernel_page_directory_virt[pd_idx];
- 
-     // If PDE not present, we need to create a new page table
-     if (!(pde & PAGE_PRESENT)) {
-         // Allocate a new page table using frame allocator (NOT early allocator here, assumes buddy is up)
-         uintptr_t new_pt_phys = frame_alloc();
-         if (new_pt_phys == 0) {
-             // *** FORMAT FIX: %u for uintptr_t ***
-             terminal_printf("[KMapUnsafe] Error: Failed to allocate PT for VAddr 0x%u\n", (unsigned long)vaddr);
-             return -1;
-         }
- 
-         // Map the PT in the page directory
-         // Ensure flags don't include user bit unless explicitly intended
-         g_kernel_page_directory_virt[pd_idx] = (new_pt_phys & PAGING_ADDR_MASK) | PAGE_PRESENT | PAGE_RW; // Kernel RW default
-         paging_invalidate_page((void*)vaddr); // Invalidate old mapping potentially covering this vaddr range
- 
-         // Now we need to clear the new PT - use recursive mapping to access it
-         uint32_t* new_pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
- 
-         // Clear the PT
-         // Use memset for efficiency if available and mapped RW
-          memset(new_pt_virt, 0, PAGE_SIZE);
-         // Fallback loop if memset isn't safe/available
-         // for (int i = 0; i < PAGES_PER_TABLE; i++) {
-         //     new_pt_virt[i] = 0;
-         // }
- 
-         // Now set the specific PTE entry
-         new_pt_virt[pt_idx] = (paddr & PAGING_ADDR_MASK) | (flags & PAGING_FLAG_MASK) | PAGE_PRESENT;
-         paging_invalidate_page((void*)vaddr); // Invalidate the specific vaddr
-         return 0;
-     }
- 
-     // Check if this is a 4MB page
-     if (pde & PAGE_SIZE_4MB) {
-         // *** FORMAT FIX: %u for uintptr_t ***
-         terminal_printf("[KMapUnsafe] Error: Cannot map 4KB page into existing 4MB PDE V=0x%u\n", (unsigned long)vaddr);
-         return -1;
-     }
- 
-     // PDE exists and points to a 4KB page table
-     // Use recursive mapping to access the existing PT
-     uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
- 
-     // Check if PTE already exists
-     if (pt_virt[pt_idx] & PAGE_PRESENT) {
-         uintptr_t existing_paddr = pt_virt[pt_idx] & PAGING_ADDR_MASK;
-         if (existing_paddr != (paddr & PAGING_ADDR_MASK)) {
-             // *** FORMAT FIX: %u for uintptr_t ***
-             terminal_printf("[KMapUnsafe] Warning: Overwriting existing PTE for V=0x%u (Old P=0x%u, New P=0x%u)\n",
-                             (unsigned long)vaddr, (unsigned long)existing_paddr, (unsigned long)paddr);
-         }
-         // Allow overwriting identical mapping or changing flags
-     }
- 
-     // Set the PTE entry
-     pt_virt[pt_idx] = (paddr & PAGING_ADDR_MASK) | (flags & PAGING_FLAG_MASK) | PAGE_PRESENT;
-     paging_invalidate_page((void*)vaddr);
-     return 0;
- } // *** END OF kernel_map_virtual_to_physical_unsafe ***
+    // *** ADDED ENTRY PRINT ***
+    PAGING_DEBUG_PRINTF("Enter: vaddr=%p, paddr=%#x, flags=%#x\n", (void*)vaddr, (unsigned long)paddr, flags);
+
+    if (!g_kernel_page_directory_virt) {
+        terminal_printf("[KMapUnsafe] Warning: Kernel PD Virt not set (may be okay pre-activation)\n");
+        if (!g_kernel_page_directory_virt) return -1; // Hard fail if called post-activation without valid virt ptr
+    }
+
+    // Check alignment and range
+    if ((vaddr % PAGE_SIZE != 0) || (paddr % PAGE_SIZE != 0)) {
+        terminal_printf("[KMapUnsafe] Error: Unaligned addresses V=%p P=%#x\n", (void*)vaddr, (unsigned long)paddr);
+        return -1;
+    }
+
+    uint32_t pd_idx = PDE_INDEX(vaddr);
+    uint32_t pt_idx = PTE_INDEX(vaddr);
+    // *** ADDED INDEX PRINT ***
+    PAGING_DEBUG_PRINTF("Calculated: pd_idx=%u, pt_idx=%u\n", (unsigned long)pd_idx, (unsigned long)pt_idx);
+
+
+    // Access kernel PD using its virtual address (ASSUMES PAGING ACTIVE or special setup)
+    // *** ADDED PD ACCESS PRINT ***
+    PAGING_DEBUG_PRINTF("Accessing kernel PD virt %p at index %u\n", g_kernel_page_directory_virt, (unsigned long)pd_idx);
+    uint32_t pde = g_kernel_page_directory_virt[pd_idx];
+    PAGING_DEBUG_PRINTF("Read PDE value: %#x\n", (unsigned long)pde);
+
+    // If PDE not present, we need to create a new page table
+    if (!(pde & PAGE_PRESENT)) {
+        PAGING_DEBUG_PRINTF("PDE not present. Allocating new PT...\n");
+        // Allocate a new page table using frame allocator (NOT early allocator here, assumes buddy is up)
+        uintptr_t new_pt_phys = frame_alloc();
+        if (new_pt_phys == 0) {
+            terminal_printf("[KMapUnsafe] Error: Failed to allocate PT for VAddr %p\n", (void*)vaddr);
+            return -1;
+        }
+        PAGING_DEBUG_PRINTF("Allocated new PT frame at P=%#x\n", (unsigned long)new_pt_phys);
+
+        // Map the PT in the page directory
+        // Ensure flags don't include user bit unless explicitly intended
+        uint32_t pde_flags_for_pt = PAGE_PRESENT | PAGE_RW; // Kernel RW default for new PT
+        // Inherit User flag if the final mapping needs it
+        if (flags & PAGE_USER) {
+            pde_flags_for_pt |= PAGE_USER;
+        }
+        uint32_t new_pde_val = (new_pt_phys & PAGING_ADDR_MASK) | pde_flags_for_pt;
+        PAGING_DEBUG_PRINTF("Setting PDE[%u] = %#x\n", (unsigned long)pd_idx, (unsigned long)new_pde_val);
+        g_kernel_page_directory_virt[pd_idx] = new_pde_val;
+        paging_invalidate_page((void*)vaddr); // Invalidate old mapping potentially covering this vaddr range
+
+        // Now we need to clear the new PT - use recursive mapping to access it
+        uint32_t* new_pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
+        PAGING_DEBUG_PRINTF("Clearing new PT via recursive mapping at %p...\n", new_pt_virt);
+
+        // Clear the PT
+        memset(new_pt_virt, 0, PAGE_SIZE);
+
+        // Now set the specific PTE entry
+        uint32_t new_pte_val = (paddr & PAGING_ADDR_MASK) | (flags & PAGING_FLAG_MASK) | PAGE_PRESENT;
+        PAGING_DEBUG_PRINTF("Setting PTE[%u] in new PT = %#x\n", (unsigned long)pt_idx, (unsigned long)new_pte_val);
+        new_pt_virt[pt_idx] = new_pte_val;
+        paging_invalidate_page((void*)vaddr); // Invalidate the specific vaddr
+        PAGING_DEBUG_PRINTF("Exit OK (new PT path)\n");
+        return 0;
+    }
+
+    // Check if this is a 4MB page
+    if (pde & PAGE_SIZE_4MB) {
+        terminal_printf("[KMapUnsafe] Error: Cannot map 4KB page into existing 4MB PDE V=%p\n", (void*)vaddr);
+        return -1;
+    }
+
+    // PDE exists and points to a 4KB page table
+    // Use recursive mapping to access the existing PT
+    uintptr_t pt_phys_addr = pde & PAGING_ADDR_MASK; // Get PT phys addr for debug
+    uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
+    PAGING_DEBUG_PRINTF("PDE exists, accessing existing PT via recursive mapping %p (Phys %#x)\n", pt_virt, (unsigned long)pt_phys_addr);
+
+    // Check if PTE already exists
+    if (pt_virt[pt_idx] & PAGE_PRESENT) {
+        uintptr_t existing_paddr = pt_virt[pt_idx] & PAGING_ADDR_MASK;
+        if (existing_paddr != (paddr & PAGING_ADDR_MASK)) {
+            terminal_printf("[KMapUnsafe] Warning: Overwriting existing PTE for V=%p (Old P=%#x, New P=%#x)\n",
+                            (void*)vaddr, (unsigned long)existing_paddr, (unsigned long)paddr);
+        }
+        // Allow overwriting identical mapping or changing flags
+    }
+
+    // Set the PTE entry
+    uint32_t new_pte_val = (paddr & PAGING_ADDR_MASK) | (flags & PAGING_FLAG_MASK) | PAGE_PRESENT;
+    PAGING_DEBUG_PRINTF("Setting PTE[%lu] in existing PT = %#x\n", (unsigned long)pt_idx, (unsigned long)new_pte_val);
+    pt_virt[pt_idx] = new_pte_val;
+    paging_invalidate_page((void*)vaddr);
+    PAGING_DEBUG_PRINTF("Exit OK (existing PT path)\n");
+    return 0;
+} // *** END OF kernel_map_virtual_to_physical_unsafe ***
  
  
  // --- Early Memory Allocation ---
@@ -218,7 +239,7 @@
              tag->size < 8 ||                                              // Minimum tag size
              current_tag_addr + tag->size > info_end) {                    // Ensure full tag fits within total_size
              // *** FORMAT FIX: %u (address), %u (type), %lu (size) ***
-             terminal_printf("[MB Early] Invalid tag found at 0x%u (type %u, size %lu)\n", (unsigned long)current_tag_addr, (unsigned int)tag->type, (unsigned long)tag->size);
+             terminal_printf("[MB Early] Invalid tag found at 0x%u (type %u, size %u)\n", (unsigned long)current_tag_addr, (unsigned int)tag->type, (unsigned long)tag->size);
              return NULL; // Invalid tag structure
          }
  
@@ -1081,11 +1102,11 @@
 
             if (current_pde & PAGE_PRESENT) {
                 if (current_pde == new_pde_val_4mb) return 0; // Identical mapping exists
-                terminal_printf("[Map Internal] Error: PDE[%lu] already present (value 0x%lx), cannot map 4MB page at V=%p\n",
+                terminal_printf("[Map Internal] Error: PDE[%u] already present (value 0x%x), cannot map 4MB page at V=%p\n",
                                 (unsigned long)pd_idx, (unsigned long)current_pde, (void*)aligned_vaddr);
                 return -1; // Use KERN_EEXIST or similar
             }
-            // terminal_printf("MAP_INT DEBUG 4MB: V=%p -> P=0x%lx | Setting PDE[%lu] = 0x%08lx\n",
+            // terminal_printf("MAP_INT DEBUG 4MB: V=%p -> P=0x%x | Setting PDE[%lu] = 0x%08x\n",
             //                 (void*)aligned_vaddr, (unsigned long)aligned_paddr, (unsigned long)pd_idx, (unsigned long)new_pde_val_4mb);
             g_kernel_page_directory_virt[pd_idx] = new_pde_val_4mb;
             paging_invalidate_page((void*)aligned_vaddr);
@@ -1113,7 +1134,7 @@
                                             | (pde_final_flags & ~PAGE_SIZE_4MB) // Ensure PS bit is 0
                                             | PAGE_PRESENT;
 
-                terminal_printf("MAP_INT DEBUG NEW_PT: V=%p | Setting PDE[%lu] = 0x%08lx (PT Phys=0x%lx)\n",
+                terminal_printf("MAP_INT DEBUG NEW_PT: V=%p | Setting PDE[%u] = 0x%08x (PT Phys=0x%x)\n",
                                 (void*)aligned_vaddr, (unsigned long)pd_idx, (unsigned long)pde_value_to_write, (unsigned long)pt_phys_addr);
 
                 g_kernel_page_directory_virt[pd_idx] = pde_value_to_write;
@@ -1125,7 +1146,7 @@
 
             } else if (pde & PAGE_SIZE_4MB) {
                  // Cannot map 4KB page over existing 4MB page
-                 terminal_printf("[Map Internal] Error: Attempted 4KB map over existing 4MB page at V=%p (PDE[%lu]=0x%lx)\n",
+                 terminal_printf("[Map Internal] Error: Attempted 4KB map over existing 4MB page at V=%p (PDE[%u]=0x%x)\n",
                                  (void*)aligned_vaddr, (unsigned long)pd_idx, (unsigned long)pde);
                 return -1; // Use KERN_EPERM
             } else {
@@ -1146,7 +1167,7 @@
                                                | needed_pde_flags          // Add required flags
                                                | PAGE_PRESENT;             // Ensure present
 
-                     // terminal_printf("MAP_INT DEBUG PROMOTE_PDE: V=%p | Promoting PDE[%lu] from 0x%lx to 0x%lx\n",
+                     // terminal_printf("MAP_INT DEBUG PROMOTE_PDE: V=%p | Promoting PDE[%lu] from 0x%x to 0x%x\n",
                      //                 (void*)aligned_vaddr, (unsigned long)pd_idx, (unsigned long)pde, (unsigned long)promoted_pde_val);
 
                      g_kernel_page_directory_virt[pd_idx] = promoted_pde_val;
@@ -1165,7 +1186,7 @@
                 if (existing_phys == (aligned_paddr & PAGING_ADDR_MASK)) {
                     // Mapping exists, check if flags need updating
                     if (existing_pte_val != new_pte_val_4kb) {
-                        // terminal_printf("MAP_INT DEBUG 4KB_UPDATE: V=%p -> P=0x%lx | Updating PTE[%lu] in PT@0x%lx from 0x%08lx to 0x%08lx\n",
+                        // terminal_printf("MAP_INT DEBUG 4KB_UPDATE: V=%p -> P=0x%x | Updating PTE[%lu] in PT@0x%x from 0x%08x to 0x%08x\n",
                         //                 (void*)aligned_vaddr, (unsigned long)aligned_paddr, (unsigned long)pt_idx, (unsigned long)pt_phys_addr, (unsigned long)existing_pte_val, (unsigned long)new_pte_val_4kb);
                         pt_virt[pt_idx] = new_pte_val_4kb; // Update flags
                         paging_invalidate_page((void*)aligned_vaddr);
@@ -1173,7 +1194,7 @@
                     return 0; // Success (already mapped or flags updated)
                 } else {
                      // Error: PTE exists but points elsewhere
-                     terminal_printf("[Map Internal] Error: PTE[%lu] already present for V=%p but maps to different P=0x%lx (tried P=0x%lx)\n",
+                     terminal_printf("[Map Internal] Error: PTE[%u] already present for V=%p but maps to different P=0x%x (tried P=0x%x)\n",
                                      (unsigned long)pt_idx, (void*)aligned_vaddr, (unsigned long)existing_phys, (unsigned long)aligned_paddr);
                     // If we allocated the PT in this call, free it before returning error
                     if (pt_allocated_here) {
@@ -1186,7 +1207,7 @@
             }
 
             // PTE was not present, set the new PTE
-            // terminal_printf("MAP_INT DEBUG 4KB_SET: V=%p -> P=0x%lx | Setting PTE[%lu] in PT@0x%lx = 0x%08lx\n",
+            // terminal_printf("MAP_INT DEBUG 4KB_SET: V=%p -> P=0x%x | Setting PTE[%lu] in PT@0x%x = 0x%08x\n",
             //                 (void*)aligned_vaddr, (unsigned long)aligned_paddr, (unsigned long)pt_idx, (unsigned long)pt_phys_addr, (unsigned long)new_pte_val_4kb);
             pt_virt[pt_idx] = new_pte_val_4kb;
             paging_invalidate_page((void*)aligned_vaddr);
@@ -1218,10 +1239,10 @@
         if (use_large_page) {
             uint32_t new_pde_val_4mb = (aligned_paddr & PAGING_PDE_ADDR_MASK_4MB) | pde_final_flags;
             if (pde & PAGE_PRESENT) {
-                terminal_printf("[Map Internal] Error: OTHER PD 4MB conflict at PDE[%lu] V=%p\n", (unsigned long)pd_idx, (void*)aligned_vaddr);
+                terminal_printf("[Map Internal] Error: OTHER PD 4MB conflict at PDE[%u] V=%p\n", (unsigned long)pd_idx, (void*)aligned_vaddr);
                 ret = -1; // Use KERN_EEXIST
             } else {
-                // terminal_printf("MAP_INT OTHER_PD DEBUG 4MB: V=%p -> P=0x%lx | Setting PDE[%lu] = 0x%08lx\n",
+                // terminal_printf("MAP_INT OTHER_PD DEBUG 4MB: V=%p -> P=0x%x | Setting PDE[%lu] = 0x%08x\n",
                 //                 (void*)aligned_vaddr, (unsigned long)aligned_paddr, (unsigned long)pd_idx, (unsigned long)new_pde_val_4mb);
                 target_pd_virt_temp[pd_idx] = new_pde_val_4mb;
                 ret = 0; // Success
@@ -1233,7 +1254,7 @@
             if (pde & PAGE_PRESENT) {
                 // PDE exists, check if it's a conflicting 4MB page
                 if (pde & PAGE_SIZE_4MB) {
-                    terminal_printf("[Map Internal] Error: OTHER PD 4KB conflict w 4MB at PDE[%lu] V=%p\n", (unsigned long)pd_idx, (void*)aligned_vaddr);
+                    terminal_printf("[Map Internal] Error: OTHER PD 4KB conflict w 4MB at PDE[%u] V=%p\n", (unsigned long)pd_idx, (void*)aligned_vaddr);
                     ret = -1; // Use KERN_EPERM
                     goto cleanup_other_pd;
                 }
@@ -1244,7 +1265,7 @@
                 uint32_t current_pde_flags = pde & (PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_PWT | PAGE_PCD);
                 if ((current_pde_flags & needed_pde_flags) != needed_pde_flags) {
                     uint32_t promoted_pde_val = (pde & PAGING_ADDR_MASK) | current_pde_flags | needed_pde_flags | PAGE_PRESENT;
-                    // terminal_printf("MAP_INT OTHER_PD DEBUG PROMOTE_PDE: V=%p | Promoting PDE[%lu] from 0x%lx to 0x%lx\n",
+                    // terminal_printf("MAP_INT OTHER_PD DEBUG PROMOTE_PDE: V=%p | Promoting PDE[%lu] from 0x%x to 0x%x\n",
                     //                 (void*)aligned_vaddr, (unsigned long)pd_idx, (unsigned long)pde, (unsigned long)promoted_pde_val);
                     target_pd_virt_temp[pd_idx] = promoted_pde_val;
                     // No TLB flush needed here as target PD is not active
@@ -1263,7 +1284,7 @@
                 // Temporarily map the new PT frame to zero it out
                 void* temp_pt_zero_vaddr = paging_temp_map(pt_phys);
                 if (!temp_pt_zero_vaddr) {
-                    terminal_printf("[Map Internal] Error: OTHER PD failed temp map new PT 0x%lx for zeroing\n", (unsigned long)pt_phys);
+                    terminal_printf("[Map Internal] Error: OTHER PD failed temp map new PT 0x%x for zeroing\n", (unsigned long)pt_phys);
                     put_frame(pt_phys); // Clean up allocated frame
                     ret = -1;
                     goto cleanup_other_pd;
@@ -1276,7 +1297,7 @@
                                             | (pde_final_flags & ~PAGE_SIZE_4MB) // Ensure PS bit is 0
                                             | PAGE_PRESENT;
 
-                // terminal_printf("MAP_INT OTHER_PD DEBUG NEW_PT: V=%p | Setting PDE[%lu] = 0x%08lx (PT Phys=0x%lx)\n",
+                // terminal_printf("MAP_INT OTHER_PD DEBUG NEW_PT: V=%p | Setting PDE[%lu] = 0x%08x (PT Phys=0x%x)\n",
                 //                 (void*)aligned_vaddr, (unsigned long)pd_idx, (unsigned long)pde_value_to_write, (unsigned long)pt_phys);
                 target_pd_virt_temp[pd_idx] = pde_value_to_write;
             }
@@ -1284,7 +1305,7 @@
             // 3. Map target PT temporarily (writable) to set the PTE
             target_pt_virt_temp = paging_temp_map(pt_phys);
             if (!target_pt_virt_temp) {
-                terminal_printf("[Map Internal] Error: OTHER PD failed temp map existing PT 0x%lx for V=%p\n", (unsigned long)pt_phys, (void*)aligned_vaddr);
+                terminal_printf("[Map Internal] Error: OTHER PD failed temp map existing PT 0x%x for V=%p\n", (unsigned long)pt_phys, (void*)aligned_vaddr);
                 if (pt_allocated_here) {
                     // If we allocated the PT but can't map it, clear the PDE and free the PT frame
                     target_pd_virt_temp[pd_idx] = 0;
@@ -1304,14 +1325,14 @@
                 if (existing_phys == (aligned_paddr & PAGING_ADDR_MASK)) {
                     // PTE exists for same frame, update flags if needed
                     if (current_pte != new_pte_val_4kb) {
-                        // terminal_printf("MAP_INT OTHER_PD DEBUG 4KB_UPDATE: V=%p -> P=0x%lx | Updating PTE[%lu] in PT@0x%lx from 0x%08lx to 0x%08lx\n",
+                        // terminal_printf("MAP_INT OTHER_PD DEBUG 4KB_UPDATE: V=%p -> P=0x%x | Updating PTE[%lu] in PT@0x%x from 0x%08x to 0x%08x\n",
                         //                 (void*)aligned_vaddr, (unsigned long)aligned_paddr, (unsigned long)pt_idx, (unsigned long)pt_phys, (unsigned long)current_pte, (unsigned long)new_pte_val_4kb);
                         target_pt_virt_temp[pt_idx] = new_pte_val_4kb;
                     }
                     ret = 0; // Success
                 } else {
                     // Error: PTE exists but points elsewhere
-                    terminal_printf("[Map Internal] Error: OTHER PD PTE[%lu] conflict for V=%p\n", (unsigned long)pt_idx, (void*)aligned_vaddr);
+                    terminal_printf("[Map Internal] Error: OTHER PD PTE[%u] conflict for V=%p\n", (unsigned long)pt_idx, (void*)aligned_vaddr);
                     ret = -1; // Use KERN_EEXIST
                     // If we allocated the PT in this call, clean it up
                     if (pt_allocated_here) {
@@ -1321,7 +1342,7 @@
                 }
             } else {
                 // PTE was not present, set the new PTE
-                // terminal_printf("MAP_INT OTHER_PD DEBUG 4KB_SET: V=%p -> P=0x%lx | Setting PTE[%lu] in PT@0x%lx = 0x%08lx\n",
+                // terminal_printf("MAP_INT OTHER_PD DEBUG 4KB_SET: V=%p -> P=0x%x | Setting PTE[%lu] in PT@0x%x = 0x%08x\n",
                 //                 (void*)aligned_vaddr, (unsigned long)aligned_paddr, (unsigned long)pt_idx, (unsigned long)pt_phys, (unsigned long)new_pte_val_4kb);
                 target_pt_virt_temp[pt_idx] = new_pte_val_4kb;
                 ret = 0; // Success
@@ -1998,24 +2019,6 @@
      PAGING_PANIC("remove_current_task returned after page fault kill!");
  }
  
- /**
-  * paging_clear_kernel_pte_unsafe - Improved version with better validation
-  * This function unmaps a virtual address in the kernel's address space
-  */
-  #include <paging.h>
-  #include <terminal.h> // For terminal_printf
-  #include <frame.h>    // For put_frame
-  #include <libc/stdint.h> // For uintptr_t, uint32_t
-  #include <libc/stdbool.h> // For bool
-  #include <libc/stddef.h> // For NULL
-  
-  // Assume PAGE_SIZE, TABLES_PER_DIR, PAGES_PER_TABLE, PDE_INDEX, PTE_INDEX,
-  // PAGE_PRESENT, PAGE_SIZE_4MB, PAGING_PDE_ADDR_MASK_4KB, PAGING_PTE_ADDR_MASK,
-  // PAGING_FLAG_MASK, RECURSIVE_PDE_VADDR are defined correctly in paging.h
-  // Assume g_kernel_page_directory_virt points to the virtual address of the kernel PD.
-  // Assume paging_invalidate_page(void*) is defined.
-  // Assume is_page_table_empty(uint32_t* pt_virt) is defined and correct.
-  
   /**
    * @brief Unmaps a single 4KB virtual page from the kernel address space.
    * @warning This function is UNSAFE. It directly manipulates kernel page tables
@@ -2028,6 +2031,7 @@
    * @return 0 on success, -1 on error (e.g., alignment, invalid address, not mapped).
    */
    int paging_clear_kernel_pte_unsafe(uintptr_t vaddr) {
+   terminal_printf("[ClearKpteUnsafe ENTRY] Received VAddr = %p\n", (void*)vaddr);
 
     // Basic checks before attempting operation
     if (!g_kernel_page_directory_virt) {
@@ -2042,25 +2046,19 @@
         return KERN_EINVAL;
     }
 
-    // Ensure operation is within kernel space if required (optional check)
-    // if (vaddr < KERNEL_SPACE_VIRT_START) {
-    //     terminal_printf("[ClearKpteUnsafe] Error: Attempt to clear PTE for non-kernel VAddr %p.\n", (void*)vaddr);
-    //     return KERN_EPERM;
-    // }
-
     // Get PDE/PTE indices
     uint32_t pd_idx = PDE_INDEX(vaddr);
     uint32_t pt_idx = PTE_INDEX(vaddr);
 
     // Validate PDE index
     if (pd_idx >= TABLES_PER_DIR) {
-        terminal_printf("[ClearKpteUnsafe] Error: Invalid PDE index %lu for vaddr %p\n",
-                          (unsigned long)pd_idx, (void*)vaddr);
+        terminal_printf("[ClearKpteUnsafe] Error: Invalid PDE index %u for vaddr %p\n",
+                        (unsigned long)pd_idx, (void*)vaddr);
         return KERN_EINVAL;
     }
     // Prevent modification of the recursive mapping entry itself
     if (pd_idx == RECURSIVE_PDE_INDEX) {
-         terminal_printf("[ClearKpteUnsafe] Error: Attempt to modify recursive PDE slot %lu.\n", (unsigned long)pd_idx);
+         terminal_printf("[ClearKpteUnsafe] Error: Attempt to modify recursive PDE slot %u.\n", (unsigned long)pd_idx);
          return KERN_EPERM;
     }
 
@@ -2080,22 +2078,30 @@
 
     // Check if it's a 4MB page - cannot clear a 4KB PTE within it
     if (pde & PAGE_SIZE_4MB) {
-        terminal_printf("[ClearKpteUnsafe] Error: Cannot clear 4KB PTE for VAddr %p; it's part of a 4MB mapping (PDE[%lu]=0x%lx).\n",
-                          (void*)vaddr, (unsigned long)pd_idx, (unsigned long)pde);
+        terminal_printf("[ClearKpteUnsafe] Error: Cannot clear 4KB PTE for VAddr %p; it's part of a 4MB mapping (PDE[%u]=0x%x).\n",
+                        (void*)vaddr, (unsigned long)pd_idx, (unsigned long)pde);
         return KERN_EPERM;
     }
 
     // Get physical address of the page table from PDE
     uintptr_t pt_phys = pde & PAGING_PDE_ADDR_MASK_4KB;
     if (pt_phys == 0) {
-         terminal_printf("[ClearKpteUnsafe] Error: Zero PT physical address in present PDE[%lu]=0x%lx for VAddr %p\n",
-                           (unsigned long)pd_idx, (unsigned long)pde, (void*)vaddr);
+         terminal_printf("[ClearKpteUnsafe] Error: Zero PT physical address in present PDE[%u]=0x%x for VAddr %p\n",
+                         (unsigned long)pd_idx, (unsigned long)pde, (void*)vaddr);
          // This indicates potential page table corruption
          return KERN_EPERM; // Or a specific corruption error code
     }
 
     // Calculate virtual address of the page table using recursive mapping
     uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
+
+    // *** ADDED DEBUG PRINT ***
+    terminal_printf("[ClearKpteUnsafe DEBUG] VAddr=%p, PDE[%u]=0x%x, PT_Phys=0x%x, PT_Virt=%p, PTE_Idx=%u\n",
+                    (void*)vaddr,
+                    (unsigned long)pd_idx, (unsigned long)pde,
+                    (unsigned long)pt_phys,
+                    (void*)pt_virt,
+                    (unsigned long)pt_idx);
 
     // --- Access the Page Table ---
     // (Potential fault here if recursive mapping is broken or pt_virt is otherwise invalid)
@@ -2104,8 +2110,25 @@
 
     // Check if PTE is present before clearing
     if (pte & PAGE_PRESENT) {
+        // *** ADDED DEBUG PRINT ***
+        terminal_printf("[ClearKpteUnsafe DEBUG] PTE[%u] is PRESENT. Value before clear: 0x%x\n",
+                        (unsigned long)pt_idx, (unsigned long)pte);
+
         // Clear the PTE by writing zero
         pt_virt[pt_idx] = 0;
+
+        // *** ADDED READ-BACK CHECK ***
+        volatile uint32_t pte_after_clear = pt_virt[pt_idx]; // Use volatile to ensure read
+        if (pte_after_clear != 0) {
+             terminal_printf("[ClearKpteUnsafe CRITICAL] PTE clear failed! Read back 0x%x after writing 0 to PTE[%u] at PT_Virt %p.\n",
+                            (unsigned long)pte_after_clear, (unsigned long)pt_idx, (void*)pt_virt);
+             // Use KERNEL_ASSERT to halt if desired, otherwise return error
+             KERNEL_ASSERT(pte_after_clear == 0, "PTE clear failed - read back non-zero!");
+             // return -1; // Indicate failure if not asserting
+        } else {
+             // *** ADDED DEBUG PRINT ***
+             terminal_printf("[ClearKpteUnsafe DEBUG] PTE[%u] cleared successfully (read back 0).\n", (unsigned long)pt_idx);
+        }
 
         // Invalidate TLB entry for the specific virtual address
         // This is crucial to ensure the CPU doesn't use a stale mapping.
@@ -2115,13 +2138,9 @@
         // and DO NOT free the page table frame (pt_phys) here.
         // Lifetime management of PT frames is handled elsewhere.
 
-        // Optional: Log the successful clearing
-        // terminal_printf("[ClearKpteUnsafe] Cleared PTE[%lu] for VAddr %p (was 0x%lx).\n",
-        //                 (unsigned long)pt_idx, (void*)vaddr, (unsigned long)pte);
-
     } else {
         // PTE was already not present. Considered success for a clear operation.
-        // terminal_printf("[ClearKpteUnsafe] Info: PTE[%lu] for VAddr %p already not present.\n", (unsigned long)pt_idx, (void*)vaddr);
+        terminal_printf("[ClearKpteUnsafe DEBUG] PTE[%u] for VAddr %p already not present.\n", (unsigned long)pt_idx, (void*)vaddr);
     }
 
     // --- CRITICAL SECTION END (Assumes caller releases lock) ---
@@ -2210,28 +2229,41 @@ static bool is_page_table_empty(uint32_t *pt_virt) {
 
 
  void* paging_temp_map(uintptr_t phys_addr) {
+    PAGING_DEBUG_PRINTF("Enter: phys_addr=%#x\n", (unsigned long)phys_addr);
     // Validate physical address alignment
     if (phys_addr % PAGE_SIZE != 0) {
-        terminal_printf("[Paging Temp Map] Error: Physical address 0x%u is not page-aligned.\n", (unsigned long)phys_addr);
+        terminal_printf("[Paging Temp Map] Error: Physical address %#x is not page-aligned.\n", (unsigned long)phys_addr);
         return NULL;
     }
 
     // Use the unsafe kernel mapping function. Assumes kernel RW permissions are okay.
-    // You might want specific flags depending on usage.
+    // *** ADDED PRINT BEFORE CALL ***
+    PAGING_DEBUG_PRINTF("Calling kernel_map_virtual_to_physical_unsafe(vaddr=%p, paddr=%#x, flags=%#x)\n",
+                        (void*)TEMP_MAP_ADDR_GENERIC, (unsigned long)phys_addr, PTE_KERNEL_DATA_FLAGS);
+
     int result = kernel_map_virtual_to_physical_unsafe(
         TEMP_MAP_ADDR_GENERIC, // The predefined temporary virtual address
         phys_addr,
         PTE_KERNEL_DATA_FLAGS // Kernel Read/Write flags
     );
 
+    // *** ADDED PRINT AFTER CALL ***
+    PAGING_DEBUG_PRINTF("kernel_map_virtual_to_physical_unsafe returned %d\n", result);
+
     if (result != 0) {
-        terminal_printf("[Paging Temp Map] Error: Failed to map paddr 0x%u to temp vaddr 0x%u.\n",
-                        (unsigned long)phys_addr, (unsigned long)TEMP_MAP_ADDR_GENERIC);
+        terminal_printf("[Paging Temp Map] Error: Failed to map paddr %#x to temp vaddr %p.\n",
+                        (unsigned long)phys_addr, (void*)TEMP_MAP_ADDR_GENERIC);
         return NULL;
     }
 
-    // terminal_printf("[Paging Temp Map] Mapped P=0x%u -> V=%p\n", (unsigned long)phys_addr, (void*)TEMP_MAP_ADDR_GENERIC);
-    return (void*)TEMP_MAP_ADDR_GENERIC;
+    // *** PROBLEM AREA: THIS SHOULD RETURN TEMP_MAP_ADDR_GENERIC ***
+    // *** BUT LOGS SHOW IT RETURNS 0xe0000000 ***
+    // *** The bug must be inside kernel_map_virtual_to_physical_unsafe ***
+    // *** OR the value TEMP_MAP_ADDR_GENERIC is somehow corrupted ***
+    // *** Let's explicitly return the correct constant for now ***
+    // terminal_printf("[Paging Temp Map] Mapped P=%#x -> V=%p\n", (unsigned long)phys_addr, (void*)TEMP_MAP_ADDR_GENERIC);
+    PAGING_DEBUG_PRINTF("Exit OK, returning %p\n", (void*)TEMP_MAP_ADDR_GENERIC);
+    return (void*)TEMP_MAP_ADDR_GENERIC; // Explicitly return the intended address
 }
 
 /**

@@ -15,9 +15,9 @@ struct mm_struct;
 #define PROCESS_KSTACK_SIZE (PAGE_SIZE * 4) // Example: 4 pages (16KB)
 
 // Define User Stack Layout Constants
-#define USER_STACK_PAGES        4                                  // Example: 4 pages
-#define USER_STACK_SIZE         (USER_STACK_PAGES * PAGE_SIZE)     // Example: 16KB
-#define USER_STACK_TOP_VIRT_ADDR (KERNEL_SPACE_VIRT_START)         // Stack grows down from just below kernel space
+#define USER_STACK_PAGES        4                       // Example: 4 pages
+#define USER_STACK_SIZE         (USER_STACK_PAGES * PAGE_SIZE)    // Example: 16KB
+#define USER_STACK_TOP_VIRT_ADDR (KERNEL_SPACE_VIRT_START)        // Stack grows down from just below kernel space
 #define USER_STACK_BOTTOM_VIRT  (USER_STACK_TOP_VIRT_ADDR - USER_STACK_SIZE) // Lowest valid stack address
 
 #ifdef __cplusplus
@@ -33,7 +33,12 @@ typedef struct pcb {
 
     // Kernel Stack Info (Used when process is in kernel mode)
     uint32_t kernel_stack_phys_base; // Physical address of the base frame (for potential debugging/info)
-    uint32_t *kernel_stack_vaddr_top; // Virtual address of the top of the kernel stack (used for TSS or context switch setup)
+    uint32_t *kernel_stack_vaddr_top; // Virtual address of the top of the kernel stack (highest address + 1)
+
+    // *** ADDED FIELD ***
+    // Stores the kernel stack pointer (ESP) after the initial IRET frame has been pushed.
+    // Used by the context switch mechanism for the first switch to this process.
+    uint32_t kernel_esp_for_switch;
 
     // Memory Management Info
     struct mm_struct *mm;           // Pointer to the memory structure (VMAs, page dir etc.)
@@ -42,11 +47,12 @@ typedef struct pcb {
     // int state;                   // e.g., PROC_RUNNING, PROC_READY, PROC_SLEEPING
     // int priority;
     // struct pcb *next;            // For linking in scheduler queues
+    // struct tcb *tcb;             // Link to associated Task Control Block if separate
 
     // === CPU Context ===
-    // Stores the register state when the process is not running.
-    // IMPORTANT: Use the correct struct type that matches your context switch code!
-    // Using registers_t based on previous paging.h. Change if needed.
+    // Stores the register state when the process is context-switched OUT.
+    // This is typically filled by the context switch assembly code.
+    // The initial state for the *first* run is prepared on the kernel stack, not here.
     registers_t context;
 
 } pcb_t;
