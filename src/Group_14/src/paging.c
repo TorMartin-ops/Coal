@@ -43,6 +43,11 @@
  extern uint8_t _kernel_rodata_end_phys[];
  extern uint8_t _kernel_data_start_phys[];
  extern uint8_t _kernel_data_end_phys[];
+
+
+#define KERN_EINVAL -1 // Invalid argument (e.g., alignment)
+#define KERN_ENOENT -2 // Entry not found / Not mapped
+#define KERN_EPERM  -3 // Operation not permitted (e.g., on 4MB page)
  
  // --- Multiboot Info ---
  extern uint32_t g_multiboot_info_phys_addr_global;
@@ -1242,7 +1247,7 @@
                      goto cleanup_other_pd;
                  }
                  memset((void*)TEMP_MAP_ADDR_PT_DST, 0, PAGE_SIZE);
-                 kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_DST);
+                 paging_clear_kernel_pte_unsafe(TEMP_MAP_ADDR_PT_DST);
  
                  uint32_t pde_value_to_write = (pt_phys & PAGING_ADDR_MASK) | pde_final_flags | PAGE_PRESENT;
                   // *** FORMAT FIX: %u, %lu ***
@@ -1290,11 +1295,11 @@
                  target_pt_virt_temp[pt_idx] = new_pte_val_4kb;
                  ret = 0; // Success
              }
-             kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_DST); // Unmap temp PT
+             paging_clear_kernel_pte_unsafe(TEMP_MAP_ADDR_PT_DST); // Unmap temp PT
          } // End 4KB page handling for other PD
  
      cleanup_other_pd:
-         if (target_pd_virt_temp) { kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PD_DST); }
+         if (target_pd_virt_temp) { paging_clear_kernel_pte_unsafe(TEMP_MAP_ADDR_PD_DST); }
          return ret;
  
      } // End handling non-current PD
@@ -1533,10 +1538,10 @@
      cleanup_get_phys:
      // 7. Unmap temporary PT and PD
      if (target_pt_virt_temp) {
-         kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_SRC);
+         paging_clear_kernel_pte_unsafe(TEMP_MAP_ADDR_PT_SRC);
      }
      if (target_pd_virt_temp) {
-         kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PD_SRC);
+         paging_clear_kernel_pte_unsafe(TEMP_MAP_ADDR_PD_SRC);
      }
      return ret;
  }
@@ -1600,7 +1605,7 @@
                          }
                          // No need to clear PTE here, we free the whole PT below
                      }
-                     kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_DST); // Unmap the PT
+                     paging_clear_kernel_pte_unsafe(TEMP_MAP_ADDR_PT_DST); // Unmap the PT
                   } else {
                        // *** FORMAT FIX: %u (address), %zu (index) ***
                        terminal_printf("[FreeUser] Warning: Failed to temp map PT 0x%u from PDE[%zu] - frames leak!\n", (unsigned long)pt_phys, i);
@@ -1615,7 +1620,7 @@
      }
  
      // Unmap the target PD
-     kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PD_DST);
+     paging_clear_kernel_pte_unsafe(TEMP_MAP_ADDR_PD_DST);
      // Note: Does not free the PD frame itself, caller must do that.
       // *** FORMAT FIX: %p for pointer ***
       terminal_printf("[FreeUser] User space mappings cleared for PD Phys %p\n", (void*)page_directory_phys);
@@ -1712,7 +1717,7 @@
          if (kernel_map_virtual_to_physical_unsafe(TEMP_MAP_ADDR_PT_DST, dst_pt_phys, PTE_KERNEL_DATA_FLAGS) != 0) {
              // *** FORMAT FIX: %u for address ***
              terminal_printf("[CloneDir] Error: Failed to map destination PT 0x%u.\n", (unsigned long)dst_pt_phys);
-             kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_SRC);
+             paging_clear_kernel_pte_unsafe(TEMP_MAP_ADDR_PT_SRC);
              error_occurred = 1; goto cleanup_clone_err;
          }
          dst_pt_virt_temp = (uint32_t*)TEMP_MAP_ADDR_PT_DST;
@@ -1730,15 +1735,15 @@
              }
          }
  
-         kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_DST);
-         kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PT_SRC);
+         paging_clear_kernel_pte_unsafe(TEMP_MAP_ADDR_PT_DST);
+         paging_clear_kernel_pte_unsafe(TEMP_MAP_ADDR_PT_SRC);
          // Set the PDE in the destination PD
          dst_pd_virt_temp[i] = (dst_pt_phys & PAGING_ADDR_MASK) | (src_pde & PAGING_FLAG_MASK);
      }
  
  cleanup_clone_err:
-     if (src_pd_virt_temp) kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PD_SRC);
-     if (dst_pd_virt_temp) kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_PD_DST);
+     if (src_pd_virt_temp) paging_clear_kernel_pte_unsafe(TEMP_MAP_ADDR_PD_SRC);
+     if (dst_pd_virt_temp) paging_clear_kernel_pte_unsafe(TEMP_MAP_ADDR_PD_DST);
  
      if (error_occurred) {
          terminal_printf("[CloneDir] Error occurred. Cleaning up allocations...\n");
@@ -1958,7 +1963,7 @@
  }
  
  /**
-  * kernel_unmap_virtual_unsafe - Improved version with better validation
+  * paging_clear_kernel_pte_unsafe - Improved version with better validation
   * This function unmaps a virtual address in the kernel's address space
   */
   #include <paging.h>
@@ -1986,174 +1991,129 @@
    * @param vaddr The page-aligned virtual address to unmap.
    * @return 0 on success, -1 on error (e.g., alignment, invalid address, not mapped).
    */
-   int kernel_unmap_virtual_unsafe(uintptr_t vaddr) {
-    // Use standard format specifiers for portability and clarity
-    // PRIxPTR requires <inttypes.h>, using "%#zx" as a common alternative for uintptr_t hex
-    // Assuming uintptr_t fits within unsigned long long for printing purposes if PRIxPTR not available
-    // Using %u for uint32_t indices
+   int paging_clear_kernel_pte_unsafe(uintptr_t vaddr) {
 
-    // Basic checks before attempting unmapping
+    // Basic checks before attempting operation
     if (!g_kernel_page_directory_virt) {
-        terminal_printf("[KUnmapUnsafe] Error: Kernel PD Virt (g_kernel_page_directory_virt) is NULL!\n");
-        return -1;
+        terminal_printf("[ClearKpteUnsafe] Error: Kernel PD Virt is NULL!\n");
+        // Cannot proceed without kernel PD access
+        // KERNEL_PANIC_HALT("Kernel PD virtual pointer is NULL in unsafe PTE clear.");
+        return KERN_EPERM; // Or some other critical error
     }
 
     if (vaddr % PAGE_SIZE != 0) {
-        terminal_printf("[KUnmapUnsafe] Error: VAddr %#zx not page aligned.\n", vaddr);
-        return -1;
+        terminal_printf("[ClearKpteUnsafe] Error: VAddr %p not page aligned.\n", (void*)vaddr);
+        return KERN_EINVAL;
     }
+
+    // Ensure operation is within kernel space if required (optional check)
+    // if (vaddr < KERNEL_SPACE_VIRT_START) {
+    //     terminal_printf("[ClearKpteUnsafe] Error: Attempt to clear PTE for non-kernel VAddr %p.\n", (void*)vaddr);
+    //     return KERN_EPERM;
+    // }
 
     // Get PDE/PTE indices
     uint32_t pd_idx = PDE_INDEX(vaddr);
     uint32_t pt_idx = PTE_INDEX(vaddr);
 
-    // Validate PDE index against bounds
+    // Validate PDE index
     if (pd_idx >= TABLES_PER_DIR) {
-        terminal_printf("[KUnmapUnsafe] Error: Invalid PDE index %u for vaddr %#zx\n",
-                          pd_idx, vaddr);
-        return -1;
+        terminal_printf("[ClearKpteUnsafe] Error: Invalid PDE index %lu for vaddr %p\n",
+                          (unsigned long)pd_idx, (void*)vaddr);
+        return KERN_EINVAL;
+    }
+    // Prevent modification of the recursive mapping entry itself
+    if (pd_idx == RECURSIVE_PDE_INDEX) {
+         terminal_printf("[ClearKpteUnsafe] Error: Attempt to modify recursive PDE slot %lu.\n", (unsigned long)pd_idx);
+         return KERN_EPERM;
     }
 
-    // --- CRITICAL SECTION START (Assumes caller holds lock) ---
 
-    // Get PDE entry value
+    // --- CRITICAL SECTION START (Assumes caller holds appropriate lock) ---
+
+    // Get PDE entry value from kernel page directory
     uint32_t pde = g_kernel_page_directory_virt[pd_idx];
 
-    // Check if PDE is present *before* trying to use it
+    // Check if PDE is present
     if (!(pde & PAGE_PRESENT)) {
-        // Already not mapped at PDE level, consider this success for unmap
-        // terminal_printf("[KUnmapUnsafe] Info: PDE[%u] for VAddr %#zx already not present.\n", pd_idx, vaddr);
+        // Address is not mapped at the Page Directory level. PTE doesn't exist.
+        // Consider this success for an "unmap" or "clear" operation.
+        // terminal_printf("[ClearKpteUnsafe] Info: PDE[%lu] for VAddr %p already not present.\n", (unsigned long)pd_idx, (void*)vaddr);
         return 0;
     }
 
-    // Check if it's a 4MB page (cannot unmap 4KB within it)
+    // Check if it's a 4MB page - cannot clear a 4KB PTE within it
     if (pde & PAGE_SIZE_4MB) {
-        terminal_printf("[KUnmapUnsafe] Error: Cannot unmap 4KB page VAddr %#zx; it's part of a 4MB mapping (PDE[%u]=%#08x).\n",
-                          vaddr, pd_idx, pde);
-        return -1;
+        terminal_printf("[ClearKpteUnsafe] Error: Cannot clear 4KB PTE for VAddr %p; it's part of a 4MB mapping (PDE[%lu]=0x%lx).\n",
+                          (void*)vaddr, (unsigned long)pd_idx, (unsigned long)pde);
+        return KERN_EPERM;
     }
 
     // Get physical address of the page table from PDE
     uintptr_t pt_phys = pde & PAGING_PDE_ADDR_MASK_4KB;
-
-    // Validate PT physical address derived from PDE
-    // (Should always be page-aligned if set by mapping functions)
     if (pt_phys == 0) {
-         terminal_printf("[KUnmapUnsafe] Error: Zero PT physical address in present PDE[%u]=%#08x for VAddr %#zx\n",
-                           pd_idx, pde, vaddr);
-         // This indicates page table corruption or invalid PDE state
-         return -1;
+         terminal_printf("[ClearKpteUnsafe] Error: Zero PT physical address in present PDE[%lu]=0x%lx for VAddr %p\n",
+                           (unsigned long)pd_idx, (unsigned long)pde, (void*)vaddr);
+         // This indicates potential page table corruption
+         return KERN_EPERM; // Or a specific corruption error code
     }
-    // Optional stricter check: (pt_phys % PAGE_SIZE != 0), but mask should ensure this.
-
 
     // Calculate virtual address of the page table using recursive mapping
-    // Note: RECURSIVE_PDE_VADDR must be the *base* virtual address mapping the start of the page directory's page table pointers.
-    // e.g., 0xFFC00000 if recursive entry is PDE[1023]
     uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
 
-    /*
-     * Removed the explicit validation check on `pt_virt` range here.
-     * If `pd_idx` is valid (0-1023, excluding recursive index if needed) and
-     * `RECURSIVE_PDE_VADDR` is correct, the calculation should yield a valid address
-     * within the 4MB virtual range managed by the recursive PDE.
-     * The previous error `Invalid PT virtual address 0xfff80000 for PDE[896]`
-     * likely indicated that accessing this address *failed* because the
-     * underlying PDE[1023] mapping was bad, OR PDE[896] became non-present
-     * between the check above and access here (race condition -> need locks),
-     * OR the hardware raised a fault for some other reason when accessing pt_virt.
-     * Relying on the hardware fault or ensuring locks are held by the caller is
-     * more robust than this specific range check.
-     */
-
     // --- Access the Page Table ---
+    // (Potential fault here if recursive mapping is broken or pt_virt is otherwise invalid)
     // Read PTE entry value
-    // (Potential fault here if pt_virt is invalid due to reasons above)
     uint32_t pte = pt_virt[pt_idx];
-
 
     // Check if PTE is present before clearing
     if (pte & PAGE_PRESENT) {
-        // Optional: Check for reserved bits being set (indicates corruption)
-        // Mask includes typical flags (P, RW, US, PWT, PCD, A, D, PAT, G) and address.
-        // If any other bits are set, it's suspicious.
-        // Note: Define PAGING_PTE_RESERVED_MASK appropriately for your architecture/needs.
-        // if (pte & PAGING_PTE_RESERVED_MASK) {
-        //     terminal_printf("[KUnmapUnsafe] Warning: PTE[%u] at VAddr %#zx has unexpected bits set: %#08x\n",
-        //                       pt_idx, vaddr, pte);
-        // }
-
-        uintptr_t frame_phys = pte & PAGING_PTE_ADDR_MASK; // Get physical frame being unmapped
-
-        // Clear the PTE
+        // Clear the PTE by writing zero
         pt_virt[pt_idx] = 0;
 
         // Invalidate TLB entry for the specific virtual address
+        // This is crucial to ensure the CPU doesn't use a stale mapping.
         paging_invalidate_page((void*)vaddr);
 
-        // Optional: Decrement refcount for the physical frame if applicable
-        // This function is "unsafe" and might not do this, relying on caller.
-        // If refcounting is used: put_frame(frame_phys); // <<<<<<<< IMPORTANT IF USING REFCOUNTS
+        // NOTE: We explicitly DO NOT check if the page table is empty
+        // and DO NOT free the page table frame (pt_phys) here.
+        // Lifetime management of PT frames is handled elsewhere.
 
-        // Check if the page table is now empty
-        // Assumes is_page_table_empty iterates through pt_virt[0..PAGES_PER_TABLE-1]
-        bool pt_is_empty = is_page_table_empty(pt_virt);
+        // Optional: Log the successful clearing
+        // terminal_printf("[ClearKpteUnsafe] Cleared PTE[%lu] for VAddr %p (was 0x%lx).\n",
+        //                 (unsigned long)pt_idx, (void*)vaddr, (unsigned long)pte);
 
-        // If the page table is empty, free it and clear the PDE
-        if (pt_is_empty) {
-            terminal_printf("[KUnmapUnsafe] Info: PT at Phys %#zx (PDE[%u]) became empty after unmapping VAddr %#zx. Freeing PT.\n",
-                              pt_phys, pd_idx, vaddr);
-
-            // Clear the PDE entry in the kernel page directory
-            g_kernel_page_directory_virt[pd_idx] = 0;
-
-            // Invalidate TLB again (potentially affects wider range due to PDE change)
-            // Using the same address should suffice, as TLB invalidation might be broader
-            // or the CPU handles PDE changes correctly with INVLPG on an address within its range.
-            // For safety, a full TLB flush might be considered, but often INVLPG is enough.
-             paging_invalidate_page((void*)vaddr); // Or full flush if needed
-
-            // Free the physical frame that held the page table itself
-            // IMPORTANT: Ensure this doesn't conflict with refcounting if PT frames are refcounted.
-             put_frame(pt_phys);
-        }
     } else {
-        // PTE was already not present, nothing to unmap. Considered success.
-        // terminal_printf("[KUnmapUnsafe] Info: PTE[%u] for VAddr %#zx already not present.\n", pt_idx, vaddr);
+        // PTE was already not present. Considered success for a clear operation.
+        // terminal_printf("[ClearKpteUnsafe] Info: PTE[%lu] for VAddr %p already not present.\n", (unsigned long)pt_idx, (void*)vaddr);
     }
 
     // --- CRITICAL SECTION END (Assumes caller releases lock) ---
 
     return 0; // Success
 }
- 
- 
- /**
-  * is_page_table_empty - Improved function to check if a page table is empty
-  * Adds validation and safety checks
-  */
-  static bool is_page_table_empty(uint32_t *pt_virt) {
-    // Validate the PT pointer
+
+
+// --- Potentially keep is_page_table_empty if used elsewhere, but ensure its logic is correct ---
+/**
+ * @brief Checks if all entries in a given Page Table are zero.
+ * @param pt_virt Virtual address of the Page Table to check.
+ * @return true if all PTEs are 0, false otherwise.
+ */
+static bool is_page_table_empty(uint32_t *pt_virt) {
     if (!pt_virt) {
         terminal_printf("[is_page_table_empty] Warning: NULL page table pointer provided\n");
-        // Treat NULL PT as empty for safety, though this indicates a caller issue.
+        // Consider NULL PT as empty, although indicates caller issue.
         return true;
     }
-
-    // Check all entries in the page table.
-    // The table is considered empty only if ALL entries are zero.
     for (size_t i = 0; i < PAGES_PER_TABLE; ++i) {
-        // Check the raw value. Any non-zero entry means the table isn't empty.
-        // This is stricter than just checking PAGE_PRESENT, ensuring truly clean tables.
+        // A non-zero entry means the table isn't truly empty (might have flags set even if not present)
         if (pt_virt[i] != 0) {
-            return false; // Found a non-zero entry, table is not empty
+            return false;
         }
     }
-
-    // If the loop completes without finding any non-zero entries, the table is empty.
     return true;
 }
- 
  
  // --- TLB Flushing ---
  
@@ -2255,7 +2215,7 @@ void paging_temp_unmap(void* temp_vaddr) {
     }
 
     // Use the unsafe kernel unmapping function
-    kernel_unmap_virtual_unsafe(TEMP_MAP_ADDR_GENERIC);
+    paging_clear_kernel_pte_unsafe(TEMP_MAP_ADDR_GENERIC);
     // terminal_printf("[Paging Temp Unmap] Unmapped V=%p\n", (void*)TEMP_MAP_ADDR_GENERIC);
 }
 
