@@ -40,4 +40,15 @@
 #endif
 
 
+#ifndef KERNEL_PANIC_HALT // Avoid redefinition if defined elsewhere
+#define KERNEL_PANIC_HALT(msg) do { \
+    asm volatile ("cli"); /* Disable interrupts */ \
+    terminal_printf("\n[KERNEL PANIC] %s\n", msg); \
+    terminal_printf("  at %s:%d\n", __FILE__, __LINE__); \
+    terminal_printf("System Halted.\n"); \
+    while(1) { asm volatile ("hlt"); } /* Halt the CPU */ \
+} while(0)
+#endif // KERNEL_PANIC_HALT
+
+
 #endif // ASSERT_H
