@@ -29,9 +29,7 @@
  #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
  #endif
 
- #ifndef MIN
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
-#endif
+ #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
  // Define a dedicated virtual address for temporary mappings.
  // Ensure this address doesn't conflict with kernel, heap, stacks, or MMIO.
@@ -1411,7 +1409,7 @@
                for (size_t f = 0; f < PAGES_PER_TABLE; ++f) {
                    uintptr_t frame_addr_to_inc = frame_base + f * PAGE_SIZE;
                    if (frame_addr_to_inc < frame_base) break;
-                   get_frame(frame_addr_to_inc);
+                   frame_incref(frame_addr_to_inc);
                }
               continue;
           }
@@ -1452,7 +1450,7 @@
               uint32_t src_pte = src_pt_virt_temp[j];
               if (src_pte & PAGE_PRESENT) {
                   uintptr_t frame_phys = src_pte & PAGING_PTE_ADDR_MASK;
-                  get_frame(frame_phys);
+                  frame_incref(frame_phys);
                   dst_pt_virt_temp[j] = src_pte;
               } else {
                   dst_pt_virt_temp[j] = 0;

@@ -1,12 +1,14 @@
 /**
  * @file buddy.c
- * @brief Power-of-Two Buddy Allocator Implementation (Revised v4)
+ * @brief Power-of-Two Buddy Allocator Implementation (Revised v4.1 - Build Fixes)
  *
  * Manages a virtually contiguous region mapped to physical memory, returning
  * VIRTUAL addresses to callers. Includes robust checks, SMP safety via spinlocks,
  * and optional debugging features (canaries, leak tracking).
  *
- * Key Improvements (v4):
+ * Key Improvements (v4.1):
+ * - Fixed printf format specifiers for size_t/uintptr_t.
+ * - Removed duplicate function definition.
  * - Corrected physical address calculation for alignment assertions.
  * - Enhanced error handling and robustness checks.
  * - Improved comments and code clarity.
@@ -21,6 +23,7 @@
 #include <libc/stdint.h>      // Fixed-width types, SIZE_MAX, UINTPTR_MAX
 #include "paging.h"           // For PAGE_SIZE, KERNEL_SPACE_VIRT_START
 #include <string.h>           // For memset (use kernel's version)
+#include "assert.h"           // For BUDDY_PANIC, BUDDY_ASSERT
 
 // === Configuration & Constants ===
 
@@ -70,23 +73,9 @@ typedef struct buddy_header {
 #define BUDDY_HEADER_SIZE 0 // No header in debug builds
 #endif // !DEBUG_BUDDY
 
-// --- Panic & Assert Macros ---
-#ifndef BUDDY_PANIC
-#define BUDDY_PANIC(msg) do { \
-    terminal_printf("\n[BUDDY PANIC] %s at %s:%d. System Halted.\n", msg, __FILE__, __LINE__); \
-    /* TODO: Add allocator state dump here if feasible */ \
-    while (1) { asm volatile("cli; hlt"); } \
-} while(0)
-#endif
-
-#ifndef BUDDY_ASSERT
-#define BUDDY_ASSERT(condition, msg) do { \
-    if (!(condition)) { \
-        terminal_printf("\n[BUDDY ASSERT FAILED] %s at %s:%d\n", msg, __FILE__, __LINE__); \
-        BUDDY_PANIC("Assertion failed"); \
-    } \
-} while (0)
-#endif
+// --- Panic & Assert Macros (Defined in assert.h, aliased for context) ---
+#define BUDDY_PANIC KERNEL_PANIC_HALT
+#define BUDDY_ASSERT KERNEL_ASSERT
 
 // --- Free List Structure ---
 /**
@@ -340,7 +329,7 @@ static int buddy_block_size_to_order(size_t block_size) {
 void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
     uintptr_t heap_region_phys_start = (uintptr_t)heap_region_phys_start_ptr;
     terminal_printf("[Buddy] Initializing...\n");
-    terminal_printf(" Input Region Phys Start: %#lx, Size: %lu bytes\n", (unsigned long)heap_region_phys_start, (unsigned long)region_size);
+    terminal_printf(" Input Region Phys Start: %#lx, Size: %lu bytes\n", (unsigned long)heap_region_phys_start, region_size); // Use %lu for size_t
 
     // 1. Basic Sanity Checks
     if (heap_region_phys_start == 0 || region_size < MIN_BLOCK_SIZE_INTERNAL) {
@@ -368,7 +357,8 @@ void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
 
     // Check if enough space remains after alignment
     if (adjustment >= region_size || (region_size - adjustment) < MIN_BLOCK_SIZE_INTERNAL) {
-        terminal_printf("[Buddy] Error: Not enough space in region after aligning start to %u bytes.\n", max_block_alignment);
+        // Use %lu for size_t
+        terminal_printf("[Buddy] Error: Not enough space in region after aligning start to %lu bytes.\n", max_block_alignment);
         g_heap_start_virt_addr = 0; g_heap_end_virt_addr = 0; // Mark as uninitialized
         return;
     }
@@ -382,8 +372,10 @@ void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
     }
 
     g_heap_end_virt_addr = g_heap_start_virt_addr; // Tentative end, adjusted below
-    terminal_printf("  Aligned Phys Start: 0x%x, Corresponding Virt Start: 0x%x\n", g_buddy_heap_phys_start_addr, g_heap_start_virt_addr);
-    terminal_printf("  Available Size after alignment: %u bytes\n", available_size);
+    // Use %lx for uintptr_t addresses
+    terminal_printf("  Aligned Phys Start: 0x%lx, Corresponding Virt Start: 0x%lx\n", g_buddy_heap_phys_start_addr, g_heap_start_virt_addr);
+    // Use %lu for size_t
+    terminal_printf("  Available Size after alignment: %lu bytes\n", available_size);
 
     // 4. Populate Free Lists with Initial Blocks (using VIRTUAL addresses)
     g_buddy_total_managed_size = 0;
@@ -435,10 +427,13 @@ void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
         g_heap_end_virt_addr = UINTPTR_MAX;
     }
 
-    terminal_printf("[Buddy] Init done. Managed VIRT Range: [0x%x - 0x%x)\n", g_heap_start_virt_addr, g_heap_end_virt_addr);
-    terminal_printf("  Total Managed: %u bytes, Initially Free: %u bytes\n", g_buddy_total_managed_size, g_buddy_free_bytes);
+    // Use %lx for uintptr_t addresses
+    terminal_printf("[Buddy] Init done. Managed VIRT Range: [0x%lx - 0x%lx)\n", g_heap_start_virt_addr, g_heap_end_virt_addr);
+    // Use %lu for size_t
+    terminal_printf("  Total Managed: %lu bytes, Initially Free: %lu bytes\n", g_buddy_total_managed_size, g_buddy_free_bytes);
     if (remaining_size > 0) {
-        terminal_printf("  (Note: %u bytes unused at end of region due to alignment/size)\n", remaining_size);
+        // Use %lu for size_t
+        terminal_printf("  (Note: %lu bytes unused at end of region due to alignment/size)\n", remaining_size);
     }
 }
 
@@ -454,6 +449,8 @@ void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
  * @note Assumes the buddy lock is held by the caller.
  */
 static void* buddy_alloc_impl(int requested_order, const char* file, int line) {
+    terminal_printf("[Buddy Alloc Impl] Enter: Request order %d. File: %s Line: %d\n", requested_order, file, line); // LOG ENTRY
+
     // Find the smallest available block order >= requested_order
     int order = requested_order;
     while (order <= MAX_ORDER) {
@@ -470,6 +467,7 @@ static void* buddy_alloc_impl(int requested_order, const char* file, int line) {
         #else
         // terminal_printf("[Buddy OOM] Order %d requested.\n", requested_order); // Optional non-debug log
         #endif
+        terminal_printf("[Buddy Alloc Impl] Exit: OOM for order %d. Returning NULL.\n", requested_order); // LOG OOM EXIT
         return NULL;
     }
 
@@ -507,8 +505,9 @@ static void* buddy_alloc_impl(int requested_order, const char* file, int line) {
         uintptr_t physical_addr = g_buddy_heap_phys_start_addr + offset_in_heap;
 
         // Debug print before assertion
-        // terminal_printf("[Buddy Assert Check] Order=%d, Virt=0x%x, Phys=0x%x, PhysStart=0x%x, PSize=%u\n",
-        //                 requested_order, block_addr_virt, physical_addr, g_buddy_heap_phys_start_addr, PAGE_SIZE);
+        // Use %lx for addresses, %u for integers, %lu for size_t
+        // terminal_printf("[Buddy Assert Check] Order=%d, Virt=0x%lx, Phys=0x%lx, PhysStart=0x%lx, PSize=%lu\n",
+        //                 requested_order, block_addr_virt, physical_addr, g_buddy_heap_phys_start_addr, (unsigned long)PAGE_SIZE);
 
         // Assert physical alignment
         BUDDY_ASSERT((physical_addr % PAGE_SIZE) == 0,
@@ -520,6 +519,7 @@ static void* buddy_alloc_impl(int requested_order, const char* file, int line) {
     }
     #endif
 
+    terminal_printf("[Buddy Alloc Impl] Exit: Allocated block %p for order %d.\n", (void*)block, requested_order); // LOG SUCCESS EXIT
     // Return the VIRTUAL address of the allocated block
     return (void*)block;
 }
@@ -565,7 +565,8 @@ static void buddy_free_impl(void *block_addr_virt, int block_order, const char* 
             // Increase order for the next level of potential coalescing
             block_order++;
             #ifdef DEBUG_BUDDY
-            // terminal_printf("  [Buddy Free Debug %s:%d] Coalesced order %d->%d V=0x%x\n", file, line, block_order-1, block_order, addr_virt);
+            // use %lx for address
+            // terminal_printf("  [Buddy Free Debug %s:%d] Coalesced order %d->%d V=0x%lx\n", file, line, block_order-1, block_order, addr_virt);
             #endif
         } else {
             break; // Buddy not found in free list, cannot coalesce further
@@ -591,7 +592,7 @@ void *buddy_alloc_internal(size_t size, const char* file, int line) {
 
     int req_order = buddy_required_order(size);
     if (req_order > MAX_ORDER) {
-        terminal_printf("[Buddy DEBUG %s:%d] Error: Size %u too large (req order %d > max %d).\n", file, line, size, req_order, MAX_ORDER);
+        terminal_printf("[Buddy DEBUG %s:%d] Error: Size %lu too large (req order %d > max %d).\n", file, line, size, req_order, MAX_ORDER); // %lu for size_t
         // Acquire lock just to update stats safely
         uintptr_t flags = spinlock_acquire_irqsave(&g_buddy_lock);
         g_failed_alloc_count++;
@@ -650,8 +651,9 @@ void buddy_free_internal(void *ptr, const char* file, int line) {
 
     uintptr_t addr = (uintptr_t)ptr;
     // Check range FIRST (user address should match block address in debug)
+    // Use %lx for addresses
     if (addr < g_heap_start_virt_addr || addr >= g_heap_end_virt_addr) {
-        terminal_printf("[Buddy DEBUG %s:%d] Error: Freeing 0x%p outside heap [0x%x - 0x%x).\n",
+        terminal_printf("[Buddy DEBUG %s:%d] Error: Freeing 0x%p outside heap [0x%lx - 0x%lx).\n",
                         file, line, ptr, g_heap_start_virt_addr, g_heap_end_virt_addr);
         BUDDY_PANIC("Freeing pointer outside heap!");
         return;
@@ -672,20 +674,21 @@ void buddy_free_internal(void *ptr, const char* file, int line) {
     bool canary_ok = true;
 
     // Validate canaries based on block_ptr and block_size
+    // Use %lu for size_t
     if (block_size >= sizeof(uint32_t) * 2) {
         if (*(volatile uint32_t*)block_ptr != DEBUG_CANARY_START) {
-            terminal_printf("[Buddy DEBUG %s:%d] CORRUPTION: Start canary fail block 0x%p (size %u, order %d) freed from 0x%p! Alloc@ %s:%d\n",
+            terminal_printf("[Buddy DEBUG %s:%d] CORRUPTION: Start canary fail block 0x%p (size %lu, order %d) freed from 0x%p! Alloc@ %s:%d\n",
                             file, line, block_ptr, block_size, block_order, ptr, tracker->source_file, tracker->source_line);
             canary_ok = false;
         }
         if (*(volatile uint32_t*)((uintptr_t)block_ptr + block_size - sizeof(uint32_t)) != DEBUG_CANARY_END) {
-             terminal_printf("[Buddy DEBUG %s:%d] CORRUPTION: End canary fail block 0x%p (size %u, order %d) freed from 0x%p! Alloc@ %s:%d\n",
+             terminal_printf("[Buddy DEBUG %s:%d] CORRUPTION: End canary fail block 0x%p (size %lu, order %d) freed from 0x%p! Alloc@ %s:%d\n",
                             file, line, block_ptr, block_size, block_order, ptr, tracker->source_file, tracker->source_line);
             canary_ok = false;
         }
     } else if (block_size >= sizeof(uint32_t)) {
          if (*(volatile uint32_t*)block_ptr != DEBUG_CANARY_START) {
-            terminal_printf("[Buddy DEBUG %s:%d] CORRUPTION: Start canary fail (small block) block 0x%p (size %u, order %d) freed from 0x%p! Alloc@ %s:%d\n",
+            terminal_printf("[Buddy DEBUG %s:%d] CORRUPTION: Start canary fail (small block) block 0x%p (size %lu, order %d) freed from 0x%p! Alloc@ %s:%d\n",
                             file, line, block_ptr, block_size, block_order, ptr, tracker->source_file, tracker->source_line);
             canary_ok = false;
          }
@@ -727,7 +730,8 @@ void buddy_dump_leaks(void) {
     } else {
         terminal_write("Detected potential memory leaks (unfreed blocks):\n");
         while(current) {
-            terminal_printf("  - User Addr: 0x%p, Block Addr: 0x%p, Block Size: %u bytes (Order %d), Allocated at: %s:%d\n",
+            // Use %lu for size_t
+            terminal_printf("  - User Addr: 0x%p, Block Addr: 0x%p, Block Size: %lu bytes (Order %d), Allocated at: %s:%d\n",
                             current->user_addr, current->block_addr, current->block_size, current->order,
                             current->source_file ? current->source_file : "<unknown>",
                             current->source_line);
@@ -735,7 +739,8 @@ void buddy_dump_leaks(void) {
             leak_bytes += current->block_size;
             current = current->next;
         }
-        terminal_printf("Total Leaks: %d blocks, %u bytes (buddy block size)\n", leak_count, leak_bytes);
+        // Use %lu for size_t
+        terminal_printf("Total Leaks: %d blocks, %lu bytes (buddy block size)\n", leak_count, leak_bytes);
     }
     terminal_write("----------------------------------\n");
     spinlock_release_irqrestore(&g_alloc_tracker_lock, tracker_irq_flags);
@@ -778,8 +783,9 @@ void buddy_free(void *ptr) {
     uintptr_t user_addr = (uintptr_t)ptr;
 
     // Check range FIRST, considering header size
+    // Use %lx for addresses
     if (user_addr < (g_heap_start_virt_addr + BUDDY_HEADER_SIZE) || user_addr >= g_heap_end_virt_addr) {
-        terminal_printf("[Buddy] Error: Freeing 0x%p outside heap or before header [0x%x - 0x%x).\n",
+        terminal_printf("[Buddy] Error: Freeing 0x%p outside heap or before header [0x%lx - 0x%lx).\n",
                         ptr, g_heap_start_virt_addr + BUDDY_HEADER_SIZE, g_heap_end_virt_addr);
         BUDDY_PANIC("Freeing pointer outside heap!");
         return;
@@ -799,8 +805,9 @@ void buddy_free(void *ptr) {
 
     // Validate alignment based on order from header
     size_t block_size = (size_t)1 << block_order;
+    // Use %lx for addresses
     if ((block_addr - g_heap_start_virt_addr) % block_size != 0) {
-        terminal_printf("[Buddy] Error: Freeing misaligned pointer 0x%p (derived block 0x%x, order %d)\n", ptr, block_addr, block_order);
+        terminal_printf("[Buddy] Error: Freeing misaligned pointer 0x%p (derived block 0x%lx, order %d)\n", ptr, block_addr, block_order);
         BUDDY_PANIC("Freeing pointer yielding misaligned block!");
         return;
     }
@@ -817,24 +824,23 @@ void buddy_free(void *ptr) {
  * @param order The exact buddy order to allocate (MIN_ORDER to MAX_ORDER).
  * @return Virtual address of the allocated block, or NULL on failure.
  */
-void* buddy_alloc_raw(int order) {
-    // Basic validation on order
+ void* buddy_alloc_raw(int order) {
+    terminal_printf("[Buddy Raw Alloc] Requesting order %d\n", order); // LOG ENTRY
     if (order < MIN_INTERNAL_ORDER || order > MAX_ORDER) {
-        terminal_printf("[Buddy Raw Alloc] Error: Invalid order %d requested.\n", order);
-        // Use the global failed count even for raw allocs
-        uintptr_t flags = spinlock_acquire_irqsave(&g_buddy_lock);
-        g_failed_alloc_count++;
-        spinlock_release_irqrestore(&g_buddy_lock, flags);
-        return NULL;
+         terminal_printf("[Buddy Raw Alloc] Error: Invalid order %d requested.\n", order);
+         // Acquire lock just to update stats safely
+         uintptr_t flags = spinlock_acquire_irqsave(&g_buddy_lock);
+         g_failed_alloc_count++;
+         spinlock_release_irqrestore(&g_buddy_lock, flags);
+         return NULL; // Return NULL on invalid order
     }
 
     uintptr_t buddy_irq_flags = spinlock_acquire_irqsave(&g_buddy_lock);
-    // Call internal implementation (pass dummy file/line for potential debug traces inside)
-    void *block_ptr = buddy_alloc_impl(order, __FILE__, __LINE__);
+    terminal_printf("[Buddy Raw Alloc] Lock acquired. Calling buddy_alloc_impl for order %d\n", order); // LOG BEFORE IMPL
+    void *block_ptr = buddy_alloc_impl(order, __FILE__, __LINE__); // Pass file/line even in non-debug for OOM trace
+    terminal_printf("[Buddy Raw Alloc] buddy_alloc_impl returned %p for order %d\n", block_ptr, order); // LOG AFTER IMPL
     spinlock_release_irqrestore(&g_buddy_lock, buddy_irq_flags);
-
-    // Note: buddy_alloc_impl already increments g_alloc_count on success
-    // and g_failed_alloc_count on failure within the lock.
+    terminal_printf("[Buddy Raw Alloc] Lock released. Returning %p\n", block_ptr); // LOG EXIT
     return block_ptr;
 }
 
@@ -854,8 +860,9 @@ void buddy_free_raw(void* block_addr_virt, int order) {
          return;
      }
       uintptr_t addr = (uintptr_t)block_addr_virt;
+      // Use %lx for addresses
       if (addr < g_heap_start_virt_addr || addr >= g_heap_end_virt_addr) {
-          terminal_printf("[Buddy Raw Free] Error: Freeing 0x%p outside heap [0x%x - 0x%x).\n", block_addr_virt, g_heap_start_virt_addr, g_heap_end_virt_addr);
+          terminal_printf("[Buddy Raw Free] Error: Freeing 0x%p outside heap [0x%lx - 0x%lx).\n", block_addr_virt, g_heap_start_virt_addr, g_heap_end_virt_addr);
           BUDDY_PANIC("Freeing pointer outside heap in buddy_free_raw");
           return;
       }

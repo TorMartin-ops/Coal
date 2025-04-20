@@ -11,6 +11,7 @@
 #include <string.h>           // For memset
 #include "types.h"            // For uintptr_t, size_t, bool
 #include "multiboot2.h"       // For memory map parsing
+#include "assert.h"
 
 // Make sure PAGE_SIZE is defined via paging.h
 #ifndef PAGE_SIZE
@@ -238,43 +239,57 @@ int frame_init(struct multiboot_tag_mmap *mmap_tag_virt,
 // frame_alloc, get_frame, put_frame, get_frame_refcount
 //-------------------------------------------------------------------
 uintptr_t frame_alloc(void) {
-    // Use defined PAGE_ORDER
     int page_req_order = PAGE_ORDER;
 
-    // Call buddy_alloc_raw (handles locking internally)
+    terminal_printf("[Frame Alloc] Calling buddy_alloc_raw for order %d\n", page_req_order); // LOG BEFORE BUDDY
     void* block_virt = buddy_alloc_raw(page_req_order);
-    if (!block_virt) { terminal_write("[Frame Alloc] Buddy allocation failed!\n"); return 0; }
+    terminal_printf("[Frame Alloc] buddy_alloc_raw returned %p\n", block_virt); // LOG AFTER BUDDY
+
+    if (!block_virt) {
+        terminal_write("[Frame Alloc] Buddy allocation failed!\n");
+        return 0;
+    }
 
     uintptr_t block_phys = (uintptr_t)block_virt - KERNEL_SPACE_VIRT_START;
+    // Verify physical alignment AFTER calculating it
     FRAME_ASSERT((block_phys % PAGE_SIZE) == 0, "frame_alloc got non-page-aligned phys address from buddy_alloc_raw");
 
     size_t pfn = addr_to_pfn(block_phys);
+    // Verify PFN calculation AFTER calculating it
     FRAME_ASSERT(pfn < g_total_frames, "PFN out of range in frame_alloc");
 
-    // Update refcount (use frame lock)
     uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
 
-    terminal_printf("[Frame Alloc DEBUG] Checking PFN %u (Phys: 0x%x). Current refcount = %u\n",
-                    (unsigned)pfn, (unsigned)block_phys, (unsigned)g_frame_refcounts[pfn]);
+    // --- ADDED LOGS around refcount access ---
+    terminal_printf("[Frame Alloc] PFN=%lu (Phys=%#lx), Reading refcount...\n", (unsigned long)pfn, (unsigned long)block_phys);
+    // Check bounds AGAIN before accessing array, just in case pfn calculation was weird
+    if (pfn >= g_total_frames) {
+         spinlock_release_irqrestore(&g_frame_lock, irq_flags);
+         terminal_printf("[Frame Alloc] PANIC: PFN %lu >= g_total_frames %lu\n", (unsigned long)pfn, (unsigned long)g_total_frames);
+         KERNEL_PANIC_HALT("PFN out of bounds before refcount access");
+    }
+    uint32_t current_refcount = g_frame_refcounts[pfn]; // Read refcount
+    terminal_printf("[Frame Alloc] PFN=%lu, Current refcount=%lu\n", (unsigned long)pfn, (unsigned long)current_refcount);
+    // --------------------------------------------
 
-    FRAME_ASSERT(g_frame_refcounts[pfn] == 0, "Allocating frame that already has non-zero refcount!");
+    FRAME_ASSERT(current_refcount == 0, "Allocating frame that already has non-zero refcount!");
 
     g_frame_refcounts[pfn] = 1; // Mark as allocated (refcount 1)
+
+    // --- ADDED LOG ---
+    terminal_printf("[Frame Alloc] PFN=%lu, Refcount set to 1.\n", (unsigned long)pfn);
+    // -----------------
+
     spinlock_release_irqrestore(&g_frame_lock, irq_flags);
+
+    // Debug print moved inside the main function block
+    // terminal_printf("[Frame Alloc DEBUG] Checking PFN %u (Phys: 0x%x). Current refcount = %u\n",
+    //                 (unsigned)pfn, (unsigned)block_phys, 1); // Log refcount AFTER setting
 
     return block_phys;
 }
 
-void get_frame(uintptr_t phys_addr) {
-    if ((phys_addr % PAGE_SIZE) != 0) { phys_addr = PAGE_ALIGN_DOWN(phys_addr); }
-    size_t pfn = addr_to_pfn(phys_addr);
-    if (pfn >= g_total_frames) { return; }
-    uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
-    FRAME_ASSERT(g_frame_refcounts[pfn] > 0, "get_frame called on unallocated frame!");
-    FRAME_ASSERT(g_frame_refcounts[pfn] < UINT32_MAX, "Frame reference count overflow!");
-    g_frame_refcounts[pfn]++;
-    spinlock_release_irqrestore(&g_frame_lock, irq_flags);
-}
+
 
 void put_frame(uintptr_t phys_addr) {
     if ((phys_addr % PAGE_SIZE) != 0) { phys_addr = PAGE_ALIGN_DOWN(phys_addr); }
@@ -313,4 +328,34 @@ int get_frame_refcount(uintptr_t phys_addr) {
     int count = (int)g_frame_refcounts[pfn];
     spinlock_release_irqrestore(&g_frame_lock, irq_flags);
     return count;
+}
+
+void frame_incref(uintptr_t phys_addr) {
+    if ((phys_addr % PAGE_SIZE) != 0) {
+        phys_addr = PAGE_ALIGN_DOWN(phys_addr);
+    }
+    size_t pfn = addr_to_pfn(phys_addr);
+
+    if (pfn >= g_total_frames) {
+         FRAME_PANIC("frame_incref called with invalid PFN!");
+         return;
+    }
+
+    uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
+
+    // Check bounds before accessing array
+    if (pfn >= g_total_frames) {
+         spinlock_release_irqrestore(&g_frame_lock, irq_flags);
+         FRAME_PANIC("PFN out of bounds in frame_incref");
+         return;
+    }
+
+    uint32_t old_count = g_frame_refcounts[pfn];
+    FRAME_ASSERT(old_count > 0, "Incrementing refcount of frame that should be allocated (count was 0)!");
+    FRAME_ASSERT(old_count < UINT32_MAX, "Frame reference count overflow!");
+
+    g_frame_refcounts[pfn]++;
+    // terminal_printf("[Frame Incref] PFN=%lu, Count %lu->%lu\n", (unsigned long)pfn, (unsigned long)old_count, (unsigned long)g_frame_refcounts[pfn]); // Optional Debug
+
+    spinlock_release_irqrestore(&g_frame_lock, irq_flags);
 }

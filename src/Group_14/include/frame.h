@@ -80,6 +80,8 @@ int get_frame_refcount(uintptr_t phys_addr);
 static inline void frame_free(uintptr_t phys_addr) {
     put_frame(phys_addr);
 }
+
+void frame_incref(uintptr_t phys_addr); // +++ ADD THIS LINE +++
 // <<< END ADDED >>>
 
 
