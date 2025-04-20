@@ -251,7 +251,7 @@
              }
  
              // Temporarily map this physical page into kernel space
-             void *temp_mapped_page = paging_temp_map(phys_addr);
+             void *temp_mapped_page = paging_temp_map_vaddr(PAGING_TEMP_VADDR, phys_addr, PTE_KERNEL_DATA_FLAGS);
              if (!temp_mapped_page) {
                  terminal_printf("[elf_loader] Error: Failed to temporarily map paddr 0x%lx (Seg %d).\n", (unsigned long)phys_addr, i);
                  ret = -1;
@@ -281,7 +281,7 @@
              }
  
              // Unmap the temporary page
-             paging_temp_unmap(temp_mapped_page);
+             paging_temp_unmap_vaddr(temp_mapped_page);
  
              bytes_processed += bytes_to_process_this_page;
              current_vaddr += bytes_to_process_this_page;

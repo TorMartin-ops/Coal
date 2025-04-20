@@ -637,9 +637,9 @@
      // --- Initialize Page Directory ---
      PROC_DEBUG_PRINTF("Step 3: Initialize Page Directory (PD Phys=%#lx)\n", (unsigned long)pd_phys);
      PROC_DEBUG_PRINTF("  Calling paging_temp_map_vaddr...\n");
-      proc_pd_virt_temp = paging_temp_map_vaddr(TEMP_MAP_ADDR_PD, // Specific temp vaddr for PDs
-                                              pd_phys,
-                                              PTE_KERNEL_DATA_FLAGS); // Kernel RW flags
+      proc_pd_virt_temp = paging_temp_map_vaddr(PAGING_TEMP_VADDR, // Use the defined temporary VAddr
+                                          pd_phys,
+                                          PTE_KERNEL_DATA_FLAGS); // Kernel RW flags
      PROC_DEBUG_PRINTF("  paging_temp_map_vaddr returned %p\n", proc_pd_virt_temp);
      if (proc_pd_virt_temp == NULL) {
          terminal_printf("[Process] ERROR: Failed to temp map new PD for PID %lu.\n", (unsigned long)proc->pid);
