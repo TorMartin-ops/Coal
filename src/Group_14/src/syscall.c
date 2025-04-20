@@ -4,100 +4,131 @@
 #include "terminal.h"
 #include "process.h"    // For get_current_process()
 #include "scheduler.h"  // For remove_current_task_with_code()
-#include "sys_file.h"   // For sys_write() and potentially others
-#include "mm.h"         // For mm_struct and potentially memory syscalls
-// Include frame.h if syscalls need to interact with frames (e.g., mmap/munmap)
-#include "frame.h"      // To call frame functions if needed by syscalls
+#include "sys_file.h"   // For file-related syscall implementations (if any)
+#include "mm.h"         // For mm_struct
+#include "frame.h"
+#include "paging.h"     // For KERNEL_SPACE_VIRT_START
+#include "kmalloc.h"    // For kmalloc/kfree
+#include "string.h"     // For memcpy
+#include "uaccess.h"    // Use the new user access functions
+#include "assert.h"     // <<< Added include for KERNEL_PANIC_HALT
 
 /**
  * syscall_handler
  *
  * The main C entry point for system calls invoked via INT 0x80.
  * Dispatches the call based on the syscall number in ctx->eax.
+ * Validates arguments and uses copy_from/to_user where appropriate.
  *
  * @param ctx Pointer to the saved register context from the interrupt.
  * @return Value to place in EAX for the user process (syscall return value).
  */
 int syscall_handler(syscall_context_t *ctx) {
-    int syscall_num = ctx->eax; // Syscall number passed in EAX
+    int syscall_num = ctx->eax;
+    pcb_t* current_proc = get_current_process(); // Get current process for context
+
+    // Check if process context is valid for syscalls needing it
+    if (!current_proc && syscall_num != SYS_EXIT) {
+         terminal_printf("[Syscall] Error: Syscall %d invoked without valid process context!\n", syscall_num);
+         return -EFAULT; // Use a standard error code if defined
+    }
 
     switch (syscall_num) {
         case SYS_WRITE: {
-            // SYS_WRITE ( fd, buf, count )
-            // Args expected in EBX, ECX, EDX (typical convention)
-            // Although ctx has registers saved, accessing directly might be easier
-            // if the calling convention is well-defined. Let's assume args are
-            // pushed or in standard registers before INT 0x80.
-            // For simplicity, let's assume EBX=fd, ECX=buf, EDX=count was setup.
-            // NOTE: This is a simplistic view, real OS passes args on user stack.
-
+            // Args: fd (EBX), user_buf (ECX), count (EDX)
             int fd = ctx->ebx;
-            const char *buf = (const char *)ctx->ecx;
+            const void *user_buf = (const void*)ctx->ecx;
             size_t count = ctx->edx;
+            char* kernel_buf = NULL;
+            size_t bytes_copied = 0;
+            int ret_val = -1; // Default to error
 
-            // Basic validation (should be more robust)
-            if (fd == 1) { // Assume fd 1 is stdout
-                // Need to verify user pointer 'buf' is valid!
-                // For now, just write to terminal directly.
-                // A real implementation would use sys_write from sys_file.c
-                // which interacts with VFS.
-                 for (size_t i = 0; i < count; i++) {
-                     // TODO: Add pointer validation check here!
-                     terminal_write_char(buf[i]);
-                 }
-                ctx->eax = count; // Return number of bytes written
-            } else {
-                 terminal_printf("[Syscall] SYS_WRITE: Unsupported fd %d\n", fd);
-                ctx->eax = -1; // Return error
+            // Use %d for int, %p for pointer, %lu for size_t, %u for uint32_t PID
+            // terminal_printf("[Syscall] PID %u: SYS_WRITE(fd=%d, buf=%p, count=%lu)\n",
+            //                current_proc ? current_proc->pid : 0,
+            //                fd, user_buf, (unsigned long)count);
+
+            // --- Argument Validation ---
+            if (fd != 1) {
+                 // terminal_printf("[Syscall] SYS_WRITE: Unsupported fd %d\n", fd);
+                 ret_val = -EBADF;
+                 goto sys_write_cleanup;
             }
+            if (count == 0) {
+                ret_val = 0;
+                goto sys_write_cleanup;
+            }
+            const size_t MAX_WRITE_SIZE = 4096;
+            if (count > MAX_WRITE_SIZE) {
+                 // terminal_printf("[Syscall] SYS_WRITE: Count %lu exceeds limit %lu.\n", (unsigned long)count, (unsigned long)MAX_WRITE_SIZE);
+                 ret_val = -EINVAL;
+                 goto sys_write_cleanup;
+            }
+
+            // --- Validate User Pointer with access_ok ---
+            if (!access_ok(VERIFY_READ, user_buf, count)) {
+                // terminal_printf("[Syscall] SYS_WRITE: Invalid user buffer read access [addr=%p, size=%lu).\n",
+                //                user_buf, (unsigned long)count);
+                ret_val = -EFAULT;
+                goto sys_write_cleanup;
+            }
+
+            // --- Allocate Kernel Buffer ---
+            kernel_buf = kmalloc(count);
+            if (!kernel_buf) {
+                // terminal_printf("[Syscall] SYS_WRITE: Failed to allocate kernel buffer (size %lu).\n", (unsigned long)count);
+                ret_val = -ENOMEM;
+                goto sys_write_cleanup;
+            }
+
+            // --- Copy Data From User using (stubbed) copy_from_user ---
+            size_t failed_bytes = copy_from_user(kernel_buf, user_buf, count);
+
+            if (failed_bytes > 0) {
+                bytes_copied = count - failed_bytes;
+                // terminal_printf("[Syscall] SYS_WRITE: copy_from_user failed after copying %lu bytes.\n", (unsigned long)bytes_copied);
+                ret_val = -EFAULT;
+                goto sys_write_cleanup;
+            }
+            bytes_copied = count;
+
+            // --- Perform Actual Write (to terminal in this case) ---
+            for (size_t i = 0; i < bytes_copied; i++) {
+                terminal_write_char(kernel_buf[i]);
+            }
+
+            ret_val = (int)bytes_copied; // Return bytes successfully written
+
+        sys_write_cleanup:
+            if (kernel_buf) {
+                kfree(kernel_buf);
+            }
+            ctx->eax = ret_val;
             break;
-        }
+
+        } // end case SYS_WRITE
 
         case SYS_EXIT: {
-            // SYS_EXIT ( code )
-            // Arg expected in EBX
             int exit_code = ctx->ebx;
-             pcb_t* current_proc = get_current_process();
-             terminal_printf("[Syscall] Process PID %d requested SYS_EXIT with code %d.\n",
-                            current_proc ? current_proc->pid : 0, exit_code);
-
-            // This function should not return to the caller process.
-            // It removes the task and schedules the next one.
+            // <<< Corrected format specifier for PID to %u >>>
+            terminal_printf("[Syscall] Process PID %u requested SYS_EXIT with code %d.\n",
+                           current_proc ? current_proc->pid : 0, exit_code);
             remove_current_task_with_code(exit_code);
-
-            // Should not be reached:
-            terminal_write("[Syscall] ERROR: remove_current_task_with_code returned!\n");
-             ctx->eax = -1; // Indicate error if somehow reached
+            // Should not return here
+            KERNEL_PANIC_HALT("Returned from remove_current_task_with_code!"); // <<< Needs assert.h
+            // ctx->eax = -EFAULT; // Unreachable
             break;
         }
 
-        case SYS_MMAP:
-            terminal_write("[Syscall] SYS_MMAP: Not implemented.\n");
-            ctx->eax = -1; // Return error (e.g., ENOSYS)
-            break;
-
-        case SYS_MUNMAP:
-            terminal_write("[Syscall] SYS_MUNMAP: Not implemented.\n");
-            ctx->eax = -1;
-            break;
-
-        case SYS_BRK:
-            terminal_write("[Syscall] SYS_BRK: Not implemented.\n");
-            ctx->eax = -1;
-            break;
-
-        // Add cases for other system calls (SYS_OPEN, SYS_READ, SYS_CLOSE, SYS_LSEEK etc.)
-        // They would likely call functions from sys_file.c after validating arguments.
+        // Add other syscall cases here...
 
         default:
-             pcb_t* current_proc_def = get_current_process();
-            terminal_printf("[Syscall] Error: Unknown syscall number %d requested by PID %d.\n",
-                           syscall_num, current_proc_def ? current_proc_def->pid : 0);
-            ctx->eax = -1; // Return error (e.g., ENOSYS)
+            // <<< Corrected format specifier for PID to %u >>>
+            terminal_printf("[Syscall] Error: Unknown syscall number %d requested by PID %u.\n",
+                           syscall_num, current_proc ? current_proc->pid : 0);
+            ctx->eax = -ENOSYS;
             break;
     }
 
-    // The return value is placed in ctx->eax by the case handlers.
-    // The assembly stub will ensure this gets returned to the user process.
     return ctx->eax;
 }
