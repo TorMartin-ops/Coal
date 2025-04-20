@@ -1,361 +1,604 @@
-// src/frame.c
+/**
+ * @file frame.c
+ * @brief Physical Memory Frame Allocator (Page Allocator)
+ *
+ * Manages physical memory frames (pages) using a reference counting system.
+ * Relies on the buddy allocator for underlying physical block allocation/deallocation.
+ * Responsible for tracking usage of all physical frames in the system.
+ */
 
-// Includes (ensure buddy.h and paging.h are high up)
-#include "paging.h"           // For PAGE_SIZE, KERNEL_SPACE_VIRT_START, PAGE_ALIGN_DOWN, etc.
+// Essential Includes (Order matters for dependencies)
+#include "paging.h"           // Defines PAGE_SIZE, KERNEL_SPACE_VIRT_START, virt_to_phys, etc.
 #include "buddy.h"            // For buddy_alloc_raw, buddy_free_raw, MIN_ORDER, MAX_ORDER
-#include "kmalloc_internal.h" // For ALIGN_UP, DEFAULT_ALIGNMENT
-#include "frame.h"
-#include "terminal.h"
-#include "spinlock.h"
+#include "kmalloc_internal.h" // For ALIGN_UP, DEFAULT_ALIGNMENT (Check if still needed)
+#include "frame.h"            // Public interface for this module
+#include "terminal.h"         // For kernel logging (terminal_printf, etc.)
+#include "spinlock.h"         // For protecting shared frame allocator state
 #include <libc/stdint.h>      // For SIZE_MAX, uintXX_t, UINTPTR_MAX, UINT64_MAX
-#include <string.h>           // For memset
+#include <libc/string.h>      // For memset
 #include "types.h"            // For uintptr_t, size_t, bool
-#include "multiboot2.h"       // For memory map parsing
-#include "assert.h"
+#include "multiboot2.h"       // For parsing the memory map provided by the bootloader
+#include "assert.h"           // For KERNEL_ASSERT and KERNEL_PANIC_HALT
 
-// Make sure PAGE_SIZE is defined via paging.h
+// --- Compile-time Sanity Checks ---
 #ifndef PAGE_SIZE
-#error "PAGE_SIZE not defined! Include paging.h"
+#error "PAGE_SIZE is not defined! Ensure paging.h is included and defines it."
 #endif
 
-// --- Define PAGE_ORDER based on PAGE_SIZE ---
+#ifndef KERNEL_SPACE_VIRT_START
+#error "KERNEL_SPACE_VIRT_START is not defined! Ensure paging.h defines the kernel's virtual base address."
+#endif
+
+// Determine the buddy order corresponding to a single page frame
 #if (PAGE_SIZE == 4096)
-#define PAGE_ORDER 12
+#define FRAME_BUDDY_ORDER 12
 #elif (PAGE_SIZE == 8192)
-#define PAGE_ORDER 13
+#define FRAME_BUDDY_ORDER 13
+#elif (PAGE_SIZE == 16384)
+#define FRAME_BUDDY_ORDER 14
+// Add other common page sizes if needed
 #else
-#error "Unsupported PAGE_SIZE for buddy allocator PAGE_ORDER calculation."
+#error "Unsupported PAGE_SIZE for frame allocator buddy order calculation."
 #endif
 
-// Use MIN_ORDER and MAX_ORDER from buddy.h
 #ifndef MIN_ORDER
 #error "MIN_ORDER is not defined (include buddy.h)"
 #endif
 #ifndef MAX_ORDER
 #error "MAX_ORDER is not defined (include buddy.h)"
 #endif
-#define MIN_INTERNAL_ORDER MIN_ORDER
-#define MIN_BLOCK_SIZE_INTERNAL (1 << MIN_INTERNAL_ORDER)
 
-//-------------------------------------------------------------------
-// Panic & Assert macros
-//-------------------------------------------------------------------
-#ifndef FRAME_PANIC
-#define FRAME_PANIC(msg) do { \
-    terminal_printf("\n[FRAME PANIC] %s at %s:%d. System Halted.\n", msg, __FILE__, __LINE__); \
-    while (1) { asm volatile("cli; hlt"); } \
-} while(0)
+//----------------------------------------------------------------------------
+// Internal Macros for Logging
+//----------------------------------------------------------------------------
+// Define FRAME_DEBUG_LEVEL to 1 or higher in your build system (e.g., CMakeLists.txt)
+// to enable detailed frame allocation/free logging.
+#ifndef FRAME_DEBUG_LEVEL
+#define FRAME_DEBUG_LEVEL 0 // 0=Off, 1=Basic, 2=Verbose
 #endif
 
-#ifndef FRAME_ASSERT
-#define FRAME_ASSERT(condition, msg) do { \
-    if (!(condition)) { \
-        terminal_printf("\n[FRAME ASSERT FAILED] %s at %s:%d\n", msg, __FILE__, __LINE__); \
-        FRAME_PANIC("Assertion failed"); \
-    } \
-} while(0)
-#endif
+// Use %lu for size_t/uintptr_t, %lu for uint32_t (since warning indicated it's long unsigned)
+#define FRAME_PRINT(level, fmt, ...) \
+    do { if (FRAME_DEBUG_LEVEL >= (level)) terminal_printf(fmt, ##__VA_ARGS__); } while(0)
 
-//-------------------------------------------------------------------
-// Globals
-//-------------------------------------------------------------------
-static volatile uint32_t *g_frame_refcounts = NULL;  // VIRTUAL address after mapping
-static uintptr_t g_frame_refcounts_phys = 0;         // PHYSICAL address of the allocation
+// Simplified FRAME_PANIC/ASSERT using the corrected KERNEL_* macros from assert.h
+#define FRAME_PANIC(msg) KERNEL_PANIC_HALT("FRAME PANIC: " msg)
+#define FRAME_ASSERT(condition, msg) KERNEL_ASSERT((condition), "FRAME ASSERT FAILED: " msg)
+
+
+//----------------------------------------------------------------------------
+// Module Globals
+//----------------------------------------------------------------------------
+// VIRTUAL address of the reference count array (lives in kernel heap).
+static volatile uint32_t *g_frame_refcounts = NULL;
+// PHYSICAL address where the reference count array was allocated.
+static uintptr_t g_frame_refcounts_phys = 0;
+// Total number of page frames representable by the highest physical address.
 static size_t g_total_frames = 0;
-static uintptr_t g_highest_address = 0;              // Highest physical address detected
-static spinlock_t g_frame_lock;                      // Lock for the frame allocator itself
-static size_t g_refcount_array_alloc_size = 0;       // Buddy-allocated size
-extern uintptr_t g_kernel_page_directory_phys;       // from paging code (declared extern in paging.h)
+// Highest physical address detected + 1 page (aligned).
+static uintptr_t g_highest_address_aligned = 0;
+// Spinlock protecting access to the refcount array and related globals.
+static spinlock_t g_frame_lock;
+// Actual size allocated by the buddy allocator for the refcount array.
+static size_t g_refcount_array_alloc_size = 0;
 
-//-------------------------------------------------------------------
-// Helper Functions
-//-------------------------------------------------------------------
-// Convert address <-> PFN
+// External dependency (provided by paging subsystem)
+extern uint32_t g_kernel_page_directory_phys; // Physical address of initial PD
+
+//----------------------------------------------------------------------------
+// Internal Helper Functions
+//----------------------------------------------------------------------------
+
+/**
+ * @brief Converts a physical address to its corresponding Page Frame Number (PFN).
+ * @param addr Physical address.
+ * @return PFN, or potentially SIZE_MAX/PFN_MAX on overflow (though unlikely with uintptr_t).
+ */
 static inline size_t addr_to_pfn(uintptr_t addr) {
-    FRAME_ASSERT(PAGE_SIZE != 0, "PAGE_SIZE is zero in addr_to_pfn");
-    if (addr == UINTPTR_MAX) { return (UINTPTR_MAX / PAGE_SIZE); }
+    // Use KERNEL_ASSERT for internal sanity checks now
+    KERNEL_ASSERT(PAGE_SIZE != 0, "PAGE_SIZE cannot be zero");
+    // Basic division, relies on PAGE_SIZE being a power of 2.
     return addr / PAGE_SIZE;
 }
+
+/**
+ * @brief Converts a Page Frame Number (PFN) to its corresponding physical address.
+ * @param pfn Page Frame Number.
+ * @return Physical address, or potentially UINTPTR_MAX on overflow.
+ */
 static inline uintptr_t pfn_to_addr(size_t pfn) {
-    if (pfn > (UINTPTR_MAX / PAGE_SIZE)) { return UINTPTR_MAX; }
-    return (pfn * PAGE_SIZE);
+    // Check for potential multiplication overflow before performing it.
+    if (pfn > (UINTPTR_MAX / PAGE_SIZE)) {
+        FRAME_PRINT(1, "[PFN to Addr WARN] PFN %lu too large, would overflow uintptr_t\n", (unsigned long)pfn);
+        return UINTPTR_MAX; // Indicate overflow
+    }
+    return pfn * PAGE_SIZE;
 }
 
-// Basic power-of-2 buddy size rounding (must match buddy.c)
-static size_t get_buddy_allocation_size(size_t total_size) {
+/**
+ * @brief Calculates the required buddy block size for a given allocation request.
+ * Ensures the size is a power of 2 within the buddy system's limits.
+ * NOTE: This is a simplified version, ensure it matches buddy.c's logic if complex.
+ * @param total_size The desired allocation size in bytes.
+ * @return The appropriate power-of-2 buddy block size, or SIZE_MAX on error/overflow.
+ */
+static size_t get_required_buddy_allocation_size(size_t total_size) {
     if (total_size == 0) return 0;
-    const size_t min_block = (1 << MIN_ORDER);
-    const size_t max_block = (1 << MAX_ORDER);
-    size_t min_practical_block = (min_block > DEFAULT_ALIGNMENT) ? min_block : DEFAULT_ALIGNMENT;
 
-    if (total_size < min_practical_block) total_size = min_practical_block;
-    size_t power_of_2 = min_practical_block;
+    const size_t min_block = (1UL << MIN_ORDER); // Use unsigned long literal for shifts
+    const size_t max_block = (1UL << MAX_ORDER);
+
+    // Ensure we request at least the minimum block size
+    if (total_size < min_block) total_size = min_block;
+
+    // Find the next power of 2 >= total_size
+    size_t power_of_2 = min_block;
     while (power_of_2 < total_size) {
+        // Check for overflow before shifting
         if (power_of_2 > (SIZE_MAX >> 1)) return SIZE_MAX;
         power_of_2 <<= 1;
     }
+
+    // Ensure the required size doesn't exceed the maximum allowable block size
     if (power_of_2 > max_block) return SIZE_MAX;
+
     return power_of_2;
 }
 
-// Reserve a range
+/**
+ * @brief Marks a physical memory range as reserved in the refcount array.
+ * Used during initialization to prevent allocation of critical areas.
+ * @param start Physical start address of the range.
+ * @param end Physical end address of the range (exclusive).
+ * @param name Descriptive name of the reserved region for logging.
+ */
 static void mark_reserved_range(uintptr_t start, uintptr_t end, const char* name) {
-    FRAME_ASSERT(g_frame_refcounts != NULL, "Refcount array not yet allocated");
+    FRAME_ASSERT(g_frame_refcounts != NULL, "Refcount array must be allocated before marking reserved");
+    // Allow start == end for edge cases, but not start > end
+    KERNEL_ASSERT(start <= end, "Reserved range start must be less than or equal to end");
+    if (start == end) return; // Nothing to reserve
+
     uintptr_t aligned_start = PAGE_ALIGN_DOWN(start);
     uintptr_t aligned_end   = ALIGN_UP(end, PAGE_SIZE);
-    if (aligned_end < end) aligned_end = UINTPTR_MAX;
+
+    // Handle potential overflow with ALIGN_UP
+    if (aligned_end < end) {
+        FRAME_PRINT(1, "[Mark Reserved WARN] Alignment overflow for end address %#lx\n", (unsigned long)end);
+        aligned_end = UINTPTR_MAX; // Align up to the maximum possible address
+    }
+
     size_t start_pfn = addr_to_pfn(aligned_start);
     size_t end_pfn   = addr_to_pfn(aligned_end);
-    terminal_printf("      Reserving %s PFNs [%u - %u) Addr [0x%x - 0x%x)\n",
-                    name, (unsigned)start_pfn, (unsigned)end_pfn,
-                    (unsigned)aligned_start, (unsigned)aligned_end);
-    if (end_pfn > g_total_frames) end_pfn = g_total_frames;
-    if (start_pfn >= end_pfn) return;
+
+    terminal_printf("      Reserving %-12s: PFNs [%6lu - %6lu) Addr [%#010lx - %#010lx)\n",
+                      name, (unsigned long)start_pfn, (unsigned long)end_pfn,
+                      (unsigned long)aligned_start, (unsigned long)aligned_end);
+
+    // Clamp end_pfn to the actual total number of frames we manage
+    if (end_pfn > g_total_frames) {
+        FRAME_PRINT(1, "[Mark Reserved INFO] Clamping end PFN from %lu to %lu for %s\n",
+                      (unsigned long)end_pfn, (unsigned long)g_total_frames, name);
+        end_pfn = g_total_frames;
+    }
+
+    if (start_pfn >= end_pfn) return; // Nothing to reserve in the valid range
+
+    // Atomically mark each frame as reserved (refcount=1)
+    uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
     for (size_t pfn = start_pfn; pfn < end_pfn; ++pfn) {
-        // Check bounds just in case PFN calculation had issues
+        // Double-check bounds *inside* the loop before array access
         if (pfn < g_total_frames) {
-             g_frame_refcounts[pfn] = 1;
+             // Only mark if not already marked (prevents double-counting issues)
+             // Although init should zero first, this is safer if called later.
+            if (g_frame_refcounts[pfn] == 0) {
+                g_frame_refcounts[pfn] = 1; // 1 indicates reserved/allocated
+            } else {
+                 // Use %lu for uint32_t based on previous compiler warning
+                 FRAME_PRINT(1, "[Mark Reserved WARN] PFN %lu for %s already has refcount %lu\n",
+                                (unsigned long)pfn, name, (unsigned long)g_frame_refcounts[pfn]);
+            }
         } else {
-            terminal_printf("[Mark Reserved] Warning: Calculated PFN %lu exceeds g_total_frames %lu\n", (unsigned long)pfn, (unsigned long)g_total_frames);
+            // This should technically not happen if end_pfn was clamped correctly, but assert defensively.
+            FRAME_ASSERT(false, "PFN calculation error during reservation - PFN exceeded total frames");
         }
     }
+    spinlock_release_irqrestore(&g_frame_lock, irq_flags);
 }
 
-//-------------------------------------------------------------------
-// frame_init
-//-------------------------------------------------------------------
+//----------------------------------------------------------------------------
+// Initialization Function: frame_init
+//----------------------------------------------------------------------------
+
 int frame_init(struct multiboot_tag_mmap *mmap_tag_virt,
                uintptr_t kernel_phys_start, uintptr_t kernel_phys_end,
                uintptr_t buddy_heap_phys_start, uintptr_t buddy_heap_phys_end)
 {
-    terminal_write("[Frame] Initializing physical frame manager (World Class Edition v4)...\n");
+    terminal_write("[Frame] Initializing physical frame manager...\n");
     spinlock_init(&g_frame_lock);
 
-    // 1. Validate multiboot map
-    if (!mmap_tag_virt) { FRAME_PANIC("Multiboot MMAP tag virtual address is NULL!"); }
-    if (mmap_tag_virt->size < (sizeof(struct multiboot_tag_mmap) + sizeof(multiboot_memory_map_t)) ||
-        mmap_tag_virt->entry_size < sizeof(multiboot_memory_map_t)) {
-        FRAME_PANIC("Multiboot MMAP tag structure invalid (size or entry_size)");
-    }
-    terminal_printf("  Using MMAP tag at VIRTUAL address: 0x%p\n", mmap_tag_virt);
+    // --- Step 1: Validate Multiboot Memory Map ---
+    KERNEL_ASSERT(mmap_tag_virt != NULL, "Multiboot MMAP tag is NULL");
+    KERNEL_ASSERT(mmap_tag_virt->type == MULTIBOOT_TAG_TYPE_MMAP, "Invalid Multiboot tag type for MMAP");
+    KERNEL_ASSERT(mmap_tag_virt->entry_size >= sizeof(multiboot_memory_map_t), "MMAP entry size too small");
+    FRAME_PRINT(1, "   Using MMAP tag @ VIRT=%#lx (Size=%u, EntrySize=%u, Ver=%u)\n",
+                (unsigned long)mmap_tag_virt, (unsigned)mmap_tag_virt->size,
+                (unsigned)mmap_tag_virt->entry_size, (unsigned)mmap_tag_virt->entry_version);
 
-    // 2. Determine total physical memory span
-    g_highest_address = 0;
+    // --- Step 2: Determine Total Physical Memory Span ---
+    uintptr_t highest_detected_addr = 0;
+    uintptr_t mmap_base_virt = (uintptr_t)mmap_tag_virt->entries;
     uintptr_t mmap_end_virt = (uintptr_t)mmap_tag_virt + mmap_tag_virt->size;
-    multiboot_memory_map_t *mmap_entry = mmap_tag_virt->entries;
-    while ((uintptr_t)mmap_entry < mmap_end_virt) {
-        if (mmap_tag_virt->entry_size == 0) { break; } // Safety break
-        if ((uintptr_t)mmap_entry + mmap_tag_virt->entry_size > mmap_end_virt) { break; } // Bounds check
 
-        uint64_t r_start64 = mmap_entry->addr; uint64_t r_len64 = mmap_entry->len;
-        uint64_t r_end64 = r_start64 + r_len64; if (r_end64 < r_start64) r_end64 = UINT64_MAX;
-        uintptr_t r_phys_end_ptr = (r_end64 > UINTPTR_MAX) ? UINTPTR_MAX : (uintptr_t)r_end64;
-        if (r_phys_end_ptr > g_highest_address) g_highest_address = r_phys_end_ptr;
-        mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag_virt->entry_size);
+    for (uintptr_t entry_ptr = mmap_base_virt;
+         entry_ptr + mmap_tag_virt->entry_size <= mmap_end_virt; // Ensure entry fits within tag bounds
+         entry_ptr += mmap_tag_virt->entry_size)
+    {
+        multiboot_memory_map_t *entry = (multiboot_memory_map_t *)entry_ptr;
+        uint64_t region_start = entry->addr;
+        uint64_t region_len   = entry->len;
+        uint64_t region_end   = region_start + region_len;
+
+        // Check for overflow in region_end calculation
+        if (region_end < region_start) region_end = UINT64_MAX;
+
+        // Track the highest address seen across all regions
+        if (region_end > highest_detected_addr) {
+            // Clamp to uintptr_t max if necessary
+            highest_detected_addr = (region_end > UINTPTR_MAX) ? UINTPTR_MAX : (uintptr_t)region_end;
+        }
     }
 
-    if (g_highest_address == 0) { FRAME_PANIC("Failed to determine highest physical address from MMAP!"); }
-    uintptr_t aligned_highest = ALIGN_UP(g_highest_address, PAGE_SIZE); if (aligned_highest == 0 && g_highest_address > 0) aligned_highest = UINTPTR_MAX;
-    g_highest_address = aligned_highest;
-    g_total_frames = addr_to_pfn(g_highest_address); if (g_total_frames == 0) { FRAME_PANIC("Total frame count is zero!"); }
-    terminal_printf(" Detected highest physical address (aligned): %#lx (%lu total frames)\n", (unsigned long)g_highest_address, (unsigned long)g_total_frames);
-    // 3. Allocate physical memory for refcount array
-    if (g_total_frames > (SIZE_MAX / sizeof(uint32_t))) { FRAME_PANIC("Refcount array size calculation overflows size_t!"); }
+    KERNEL_ASSERT(highest_detected_addr > 0, "Failed to detect highest physical address from MMAP");
+
+    // Align the highest address *up* to the next page boundary to get the total span
+    g_highest_address_aligned = ALIGN_UP(highest_detected_addr, PAGE_SIZE);
+    if (g_highest_address_aligned < highest_detected_addr) { // Handle overflow from ALIGN_UP
+        g_highest_address_aligned = UINTPTR_MAX;
+    }
+
+    g_total_frames = addr_to_pfn(g_highest_address_aligned);
+    KERNEL_ASSERT(g_total_frames > 0, "Calculated total frame count is zero");
+
+    terminal_printf("   Detected highest physical address (aligned up): %#lx (%lu total frames potentially addressable)\n",
+                     (unsigned long)g_highest_address_aligned, (unsigned long)g_total_frames);
+
+    // --- Step 3: Allocate Physical Memory for Reference Count Array ---
+    // Check for overflow before multiplying
+    if (g_total_frames > (SIZE_MAX / sizeof(uint32_t))) {
+        FRAME_PANIC("Refcount array size calculation overflows size_t");
+    }
     size_t refcount_array_size_bytes = g_total_frames * sizeof(uint32_t);
-    g_refcount_array_alloc_size = get_buddy_allocation_size(refcount_array_size_bytes);
-    if (g_refcount_array_alloc_size == SIZE_MAX || g_refcount_array_alloc_size == 0) { FRAME_PANIC("Failed to determine valid buddy block size for refcount array!"); }
-    terminal_printf("  Attempting to allocate %u bytes (fits in buddy block size %u) for refcount array...\n",
-                    (unsigned)refcount_array_size_bytes, (unsigned)g_refcount_array_alloc_size);
 
-    // Call buddy_alloc_raw (determine order first)
-    int required_order = -1;
-    size_t temp_size   = (1 << MIN_ORDER); int temp_order = MIN_ORDER;
-    while (temp_order <= MAX_ORDER) { if (temp_size >= g_refcount_array_alloc_size) { required_order = temp_order; break; } if (temp_size > (SIZE_MAX >> 1)) break; temp_size <<= 1; temp_order++; }
-    if (required_order == -1) { FRAME_PANIC("Could not determine required order for refcount array"); }
+    g_refcount_array_alloc_size = get_required_buddy_allocation_size(refcount_array_size_bytes);
+    if (g_refcount_array_alloc_size == SIZE_MAX || g_refcount_array_alloc_size == 0) {
+        FRAME_PANIC("Failed to determine valid buddy block size for refcount array");
+    }
 
-    // Use the raw allocation function
+    // Determine the required buddy order for the allocation
+    int required_order = 0; // Start from MIN_ORDER implicitly
+    size_t block_size = (1UL << MIN_ORDER);
+    while(block_size < g_refcount_array_alloc_size && required_order <= MAX_ORDER) {
+        if (block_size > (SIZE_MAX >> 1)) { required_order = -1; break; } // Prevent overflow
+        block_size <<= 1;
+        required_order++;
+    }
+     // Adjust required_order as it represents the exponent (MIN_ORDER is order 0 conceptually for loop)
+    required_order += MIN_ORDER;
+
+    if (required_order > MAX_ORDER || required_order < MIN_ORDER) {
+         FRAME_PANIC("Could not determine valid buddy order for refcount array");
+    }
+
+
+    terminal_printf("   Attempting buddy_alloc_raw(order=%d) for %lu bytes refcount array (fits in block size %lu)...\n",
+                      required_order, (unsigned long)refcount_array_size_bytes, (unsigned long)g_refcount_array_alloc_size);
+
+    // Allocate using the raw buddy function (returns virtual address)
     void* refcount_array_virt_ptr = buddy_alloc_raw(required_order);
-    if (!refcount_array_virt_ptr) { FRAME_PANIC("buddy_alloc_raw failed for refcount array!"); }
+    if (!refcount_array_virt_ptr) { FRAME_PANIC("buddy_alloc_raw failed for refcount array"); }
 
-    // Calculate Physical Address & Verify Alignment
+    // --- Step 4: Calculate Physical Address & Verify Alignment ---
+    // This conversion assumes the buddy heap lives in the direct-mapped kernel virtual space
+    KERNEL_ASSERT(KERNEL_SPACE_VIRT_START != 0, "KERNEL_SPACE_VIRT_START must be defined for virt->phys conversion");
     g_frame_refcounts_phys = (uintptr_t)refcount_array_virt_ptr - KERNEL_SPACE_VIRT_START;
-    terminal_printf("  Allocated refcount array at VIRT 0x%p, corresponding PHYS 0x%x (Size: %u)\n",
-                    refcount_array_virt_ptr, (unsigned)g_frame_refcounts_phys, (unsigned)g_refcount_array_alloc_size);
-    if ((g_frame_refcounts_phys % PAGE_SIZE) != 0) { FRAME_PANIC("Physical address for refcount array is not page-aligned! (Buddy internal error)"); }
-    else { terminal_printf("  Physical address 0x%x is confirmed page-aligned (%u).\n", (unsigned)g_frame_refcounts_phys, PAGE_SIZE); }
 
-    // 4. Use the VIRTUAL address for access
+    terminal_printf("   Refcount array allocated: VIRT=%#lx -> PHYS=%#lx (Buddy Block Size=%lu)\n",
+                     (unsigned long)refcount_array_virt_ptr, (unsigned long)g_frame_refcounts_phys,
+                     (unsigned long)g_refcount_array_alloc_size);
+
+    // Critical check: The physical frame allocator *needs* the refcount array to be page-aligned.
+    // The buddy allocator should guarantee this for allocations >= PAGE_SIZE.
+    KERNEL_ASSERT((g_frame_refcounts_phys % PAGE_SIZE) == 0, "Physical address for refcount array is not page-aligned! Buddy error?");
+
+    // --- Step 5: Use the VIRTUAL address for access and Initialize ---
     g_frame_refcounts = (volatile uint32_t*)refcount_array_virt_ptr;
-    terminal_printf("  Using VIRT address 0x%p for refcount array access.\n", g_frame_refcounts);
+    terminal_printf("   Using VIRT address %#lx for refcount array access.\n", (unsigned long)g_frame_refcounts);
 
-    // 5. Initialize Reference Counts
-    terminal_write("  Initializing reference counts (zeroing, then marking reserved)...\n");
-    terminal_printf("   Zeroing refcount array (%u bytes) at virt 0x%p...\n", (unsigned)refcount_array_size_bytes, g_frame_refcounts);
+    terminal_write("   Initializing reference counts (zeroing, then marking reserved regions)...\n");
+    terminal_printf("      Zeroing refcount array (%lu actual bytes) @ VIRT=%#lx...\n",
+                      (unsigned long)refcount_array_size_bytes, (unsigned long)g_frame_refcounts);
     memset((void*)g_frame_refcounts, 0, refcount_array_size_bytes);
-    terminal_write("   Refcount array zeroed.\n");
+    terminal_write("      Refcount array zeroed.\n");
 
-    terminal_write("   Marking reserved physical regions (excluding buddy heap/refcount array itself)...\n");
-    uintptr_t kernel_phys_aligned_start = PAGE_ALIGN_DOWN(kernel_phys_start); /*...*/ uintptr_t kernel_phys_aligned_end = ALIGN_UP(kernel_phys_end, PAGE_SIZE);
-    uintptr_t pd_phys_aligned_start = 0; /*...*/ uintptr_t pd_phys_aligned_end = 0; if (g_kernel_page_directory_phys != 0) { pd_phys_aligned_start = PAGE_ALIGN_DOWN(g_kernel_page_directory_phys); pd_phys_aligned_end = ALIGN_UP(g_kernel_page_directory_phys + PAGE_SIZE, PAGE_SIZE); }
-    if (kernel_phys_aligned_end < kernel_phys_end) kernel_phys_aligned_end = UINTPTR_MAX; /*...*/ if (pd_phys_aligned_end < (g_kernel_page_directory_phys + PAGE_SIZE) && g_kernel_page_directory_phys != 0) pd_phys_aligned_end = UINTPTR_MAX;
-    terminal_printf("    Physical Ranges Marked Reserved:\n");
-    mark_reserved_range(0x0, 0x100000, "First MB");
-    mark_reserved_range(kernel_phys_aligned_start, kernel_phys_aligned_end, "Kernel Image");
-    if (pd_phys_aligned_end > 0) { mark_reserved_range(pd_phys_aligned_start, pd_phys_aligned_end, "Initial PD"); }
-    // Buddy Heap and Refcount Array are NOT marked reserved here
+    // Mark known reserved physical memory regions
+    terminal_write("      Marking known reserved physical memory regions...\n");
+    mark_reserved_range(0x0, 0x100000, "Low 1MB"); // Includes BIOS, VGA, etc.
+    mark_reserved_range(kernel_phys_start, kernel_phys_end, "Kernel Image");
+    if (g_kernel_page_directory_phys != 0) {
+        mark_reserved_range(g_kernel_page_directory_phys, g_kernel_page_directory_phys + PAGE_SIZE, "Initial PD");
+    }
+    // Add any other known hardware regions or special areas here if necessary.
 
-    // 6. Final Sanity Check - Count available frames
-    terminal_write("  Verifying available frame count based on MMAP and reservations...\n");
+    // --- Step 6: Final Sanity Check (Optional but Recommended) ---
+    FRAME_PRINT(1, "   Verifying available frame count post-init (based on MMAP & reservations)...\n");
     size_t available_count = 0;
-    mmap_entry = mmap_tag_virt->entries;
-    while ((uintptr_t)mmap_entry < mmap_end_virt) {
-        // --- FIX: Separate checks with curly braces for clarity ---
-        if (mmap_tag_virt->entry_size == 0) { break; }
-        if ((uintptr_t)mmap_entry + mmap_tag_virt->entry_size > mmap_end_virt) { break; }
-        // --- End Fix ---
-        if (mmap_entry->type == MULTIBOOT_MEMORY_AVAILABLE) {
-            uint64_t r_start64 = mmap_entry->addr; uint64_t r_end64 = r_start64 + mmap_entry->len; if (r_end64 < r_start64) r_end64 = UINT64_MAX;
-            uintptr_t first_addr = ALIGN_UP((uintptr_t)r_start64, PAGE_SIZE); uintptr_t last_addr = PAGE_ALIGN_DOWN((uintptr_t)r_end64);
-            if (first_addr < last_addr) {
-                size_t first_pfn = addr_to_pfn(first_addr); size_t last_pfn = addr_to_pfn(last_addr);
-                for (size_t pfn = first_pfn; (pfn < last_pfn) && (pfn < g_total_frames); ++pfn) {
-                     // Check bounds before accessing array
-                     if (pfn < g_total_frames && g_frame_refcounts[pfn] == 0) {
-                         available_count++;
-                     }
-                 }
+    size_t usable_buddy_frames = 0;
+    mmap_base_virt = (uintptr_t)mmap_tag_virt->entries; // Reset pointer
+
+    for (uintptr_t entry_ptr = mmap_base_virt;
+         entry_ptr + mmap_tag_virt->entry_size <= mmap_end_virt;
+         entry_ptr += mmap_tag_virt->entry_size)
+    {
+        multiboot_memory_map_t *entry = (multiboot_memory_map_t *)entry_ptr;
+        if (entry->type == MULTIBOOT_MEMORY_AVAILABLE) {
+            uint64_t r_start64 = entry->addr;
+            uint64_t r_end64 = r_start64 + entry->len;
+            if (r_end64 < r_start64) r_end64 = UINT64_MAX; // Overflow check
+
+            // Align region boundaries to pages for frame counting
+            uintptr_t first_addr = ALIGN_UP((uintptr_t)r_start64, PAGE_SIZE);
+            uintptr_t last_addr = PAGE_ALIGN_DOWN((uintptr_t)r_end64);
+
+             if (first_addr < last_addr) { // Ensure valid range after alignment
+                size_t first_pfn = addr_to_pfn(first_addr);
+                size_t last_pfn = addr_to_pfn(last_addr);
+
+                for (size_t pfn = first_pfn; pfn < last_pfn && pfn < g_total_frames; ++pfn) {
+                    // Check bounds before accessing array!
+                    if (pfn < g_total_frames) {
+                        if (g_frame_refcounts[pfn] == 0) {
+                            available_count++;
+                            // Check if this available frame falls within the buddy heap's *physical* range
+                            uintptr_t current_addr = pfn_to_addr(pfn);
+                            if (current_addr >= buddy_heap_phys_start && current_addr < buddy_heap_phys_end) {
+                                usable_buddy_frames++;
+                            }
+                        }
+                    } else { FRAME_ASSERT(false, "PFN out of range during available count check"); }
+                }
             }
         }
-        mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag_virt->entry_size);
     }
-    terminal_printf("  Final available frame count: %u\n", (unsigned)available_count);
-    if (available_count == 0 && g_total_frames > 256) { terminal_write("  [WARNING] Zero available frames detected after initialization!\n"); }
+    // Use %lu for size_t
+    terminal_printf("   Sanity Check: Found %lu frames marked available (refcount=0).\n", (unsigned long)available_count);
+    terminal_printf("                 Of those, %lu frames fall within the physical buddy heap range [%#lx - %#lx).\n",
+                      (unsigned long)usable_buddy_frames, buddy_heap_phys_start, buddy_heap_phys_end);
+    if (available_count == 0 && g_total_frames > 256) {
+        terminal_write("   [WARNING] Zero available frames detected after initialization!\n");
+    }
 
     terminal_write("[Frame] Frame manager initialization complete.\n");
-    return 0; // success
+    return 0; // Success
 }
 
-//-------------------------------------------------------------------
-// frame_alloc, get_frame, put_frame, get_frame_refcount
-//-------------------------------------------------------------------
-uintptr_t frame_alloc(void) {
-    int page_req_order = PAGE_ORDER;
+//----------------------------------------------------------------------------
+// Core Allocation/Deallocation Functions
+//----------------------------------------------------------------------------
 
-    terminal_printf("[Frame Alloc] Calling buddy_alloc_raw for order %d\n", page_req_order); // LOG BEFORE BUDDY
-    void* block_virt = buddy_alloc_raw(page_req_order);
-    terminal_printf("[Frame Alloc] buddy_alloc_raw returned %p\n", block_virt); // LOG AFTER BUDDY
+/**
+ * @brief Allocates a single physical page frame.
+ * @return The physical address of the allocated frame, or 0 on failure.
+ */
+uintptr_t frame_alloc(void) {
+    const int frame_req_order = FRAME_BUDDY_ORDER; // Use defined constant
+
+    FRAME_PRINT(2, "[Frame Alloc] Requesting order %d from buddy allocator...\n", frame_req_order);
+    void* block_virt = buddy_alloc_raw(frame_req_order);
+    FRAME_PRINT(2, "[Frame Alloc] buddy_alloc_raw returned VIRT=%p\n", block_virt);
 
     if (!block_virt) {
-        terminal_write("[Frame Alloc] Buddy allocation failed!\n");
-        return 0;
+        FRAME_PRINT(0, "[Frame Alloc ERR] Buddy allocation failed (out of memory?)!\n");
+        return 0; // Indicate failure
     }
 
-    uintptr_t block_phys = (uintptr_t)block_virt - KERNEL_SPACE_VIRT_START;
-    // Verify physical alignment AFTER calculating it
-    FRAME_ASSERT((block_phys % PAGE_SIZE) == 0, "frame_alloc got non-page-aligned phys address from buddy_alloc_raw");
+    // --- Convert Virtual to Physical and Validate ---
+    FRAME_ASSERT(KERNEL_SPACE_VIRT_START != 0, "KERNEL_SPACE_VIRT_START is not defined/zero");
+    uintptr_t virt_addr_received = (uintptr_t)block_virt;
+    uintptr_t assumed_kernel_start = KERNEL_SPACE_VIRT_START; // Capture for logging
+    uintptr_t block_phys = virt_addr_received - assumed_kernel_start;
 
+    FRAME_PRINT(1, "[Frame Alloc DBG] Received VIRT=%#lx, Assumed KERN_START=%#lx -> Calculated PHYS=%#lx\n",
+                  (unsigned long)virt_addr_received, (unsigned long)assumed_kernel_start, (unsigned long)block_phys);
+
+    // Assert alignment *after* calculating physical address
+    FRAME_ASSERT((block_phys % PAGE_SIZE) == 0, "Buddy returned non-page-aligned physical address");
+
+    // --- Calculate PFN and Check Boundary ---
     size_t pfn = addr_to_pfn(block_phys);
-    // Verify PFN calculation AFTER calculating it
-    FRAME_ASSERT(pfn < g_total_frames, "PFN out of range in frame_alloc");
+    size_t current_g_total_frames = g_total_frames; // Capture current boundary value
 
+    FRAME_PRINT(1, "[Frame Alloc DBG] Calculated PFN=%lu, Checking against g_total_frames=%lu\n",
+                  (unsigned long)pfn, (unsigned long)current_g_total_frames);
+
+    // Perform the critical boundary check
+    FRAME_ASSERT(pfn < current_g_total_frames, "Calculated PFN is out of range!");
+
+    // --- Update Reference Count Atomically ---
     uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
 
-    // --- ADDED LOGS around refcount access ---
-    terminal_printf("[Frame Alloc] PFN=%lu (Phys=%#lx), Reading refcount...\n", (unsigned long)pfn, (unsigned long)block_phys);
-    // Check bounds AGAIN before accessing array, just in case pfn calculation was weird
-    if (pfn >= g_total_frames) {
-         spinlock_release_irqrestore(&g_frame_lock, irq_flags);
-         terminal_printf("[Frame Alloc] PANIC: PFN %lu >= g_total_frames %lu\n", (unsigned long)pfn, (unsigned long)g_total_frames);
-         KERNEL_PANIC_HALT("PFN out of bounds before refcount access");
+    // Check PFN bounds *again* just before array access (defense in depth)
+    if (pfn >= current_g_total_frames) {
+        spinlock_release_irqrestore(&g_frame_lock, irq_flags);
+        // Use KERNEL_PANIC_HALT directly as FRAME_PANIC might cause issues here
+        KERNEL_PANIC_HALT("FRAME PANIC: PFN out of bounds right before refcount access!");
     }
-    uint32_t current_refcount = g_frame_refcounts[pfn]; // Read refcount
-    terminal_printf("[Frame Alloc] PFN=%lu, Current refcount=%lu\n", (unsigned long)pfn, (unsigned long)current_refcount);
-    // --------------------------------------------
 
+    FRAME_PRINT(2, "[Frame Alloc] PFN=%lu (Phys=%#lx), Reading refcount...\n", (unsigned long)pfn, (unsigned long)block_phys);
+    uint32_t current_refcount = g_frame_refcounts[pfn]; // Read current refcount
+    // Use %lu for uint32_t (aka unsigned long)
+    FRAME_PRINT(2, "[Frame Alloc] PFN=%lu, Current refcount=%lu\n", (unsigned long)pfn, (unsigned long)current_refcount);
+
+    // This assertion is vital: We should only be allocating frames that are currently free (refcount 0).
     FRAME_ASSERT(current_refcount == 0, "Allocating frame that already has non-zero refcount!");
 
-    g_frame_refcounts[pfn] = 1; // Mark as allocated (refcount 1)
-
-    // --- ADDED LOG ---
-    terminal_printf("[Frame Alloc] PFN=%lu, Refcount set to 1.\n", (unsigned long)pfn);
-    // -----------------
+    g_frame_refcounts[pfn] = 1; // Mark as allocated (set refcount to 1)
+    FRAME_PRINT(1, "[Frame Alloc] PFN=%lu, Refcount set to 1.\n", (unsigned long)pfn);
 
     spinlock_release_irqrestore(&g_frame_lock, irq_flags);
 
-    // Debug print moved inside the main function block
-    // terminal_printf("[Frame Alloc DEBUG] Checking PFN %u (Phys: 0x%x). Current refcount = %u\n",
-    //                 (unsigned)pfn, (unsigned)block_phys, 1); // Log refcount AFTER setting
-
-    return block_phys;
+    return block_phys; // Return the physical address
 }
 
-
-
+/**
+ * @brief Decrements the reference count for a physical page frame.
+ * If the count reaches zero, the frame is freed back to the buddy allocator.
+ * @param phys_addr The physical address of the frame to release/decrement.
+ * Must be page-aligned.
+ */
 void put_frame(uintptr_t phys_addr) {
-    if ((phys_addr % PAGE_SIZE) != 0) { phys_addr = PAGE_ALIGN_DOWN(phys_addr); }
+    // Ensure the address is page-aligned before proceeding.
+    FRAME_ASSERT((phys_addr % PAGE_SIZE) == 0, "put_frame called with non-page-aligned address");
+    if ((phys_addr % PAGE_SIZE) != 0) {
+         FRAME_PRINT(0, "[Put Frame WARN] Received non-aligned address %#lx, aligning down to %#lx\n",
+                       (unsigned long)phys_addr, (unsigned long)PAGE_ALIGN_DOWN(phys_addr));
+         phys_addr = PAGE_ALIGN_DOWN(phys_addr); // Align down for safety
+    }
+
     size_t pfn = addr_to_pfn(phys_addr);
-    if (pfn >= g_total_frames) { return; }
+
+    // Basic check: Don't try to operate on PFNs outside our known range.
+    if (pfn >= g_total_frames) {
+         FRAME_PRINT(0, "[Put Frame ERR] Attempted to free PFN %lu (from Phys %#lx) which is out of range (max %lu)\n",
+                       (unsigned long)pfn, (unsigned long)phys_addr, (unsigned long)g_total_frames);
+         KERNEL_ASSERT(false, "put_frame called with PFN out of range"); // Trigger assert/panic
+         return;
+    }
 
     uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
-    if (g_frame_refcounts[pfn] == 0) {
+
+    // Check PFN bounds again inside lock
+    if (pfn >= g_total_frames) {
+        spinlock_release_irqrestore(&g_frame_lock, irq_flags);
+        KERNEL_PANIC_HALT("FRAME PANIC: PFN out of bounds in put_frame before refcount access");
+    }
+
+    uint32_t current_refcount = g_frame_refcounts[pfn];
+    // Use %lu for uint32_t
+    FRAME_PRINT(2, "[Put Frame] PFN=%lu (Phys=%#lx), Current refcount=%lu\n",
+                  (unsigned long)pfn, (unsigned long)phys_addr, (unsigned long)current_refcount);
+
+    // Critical check: Ensure we are not decrementing a count that's already zero (double free).
+    if (current_refcount == 0) {
         spinlock_release_irqrestore(&g_frame_lock, irq_flags);
         FRAME_PANIC("Double free detected in put_frame!");
-        return;
+        return; // Should not be reached if PANIC halts
     }
+
+    // Decrement the reference count
     g_frame_refcounts[pfn]--;
+    uint32_t new_refcount = g_frame_refcounts[pfn]; // Read back the new value
 
-    if (g_frame_refcounts[pfn] == 0) {
+    // Use %lu for uint32_t
+    FRAME_PRINT(1, "[Put Frame] PFN=%lu, Decremented refcount to %lu.\n", (unsigned long)pfn, (unsigned long)new_refcount);
+
+    // If the reference count is now zero, free the frame back to the buddy system
+    if (new_refcount == 0) {
+        // Convert physical address back to the virtual address the buddy system expects
         uintptr_t virt_addr = phys_addr + KERNEL_SPACE_VIRT_START;
-        if (virt_addr < phys_addr || virt_addr < KERNEL_SPACE_VIRT_START) { /* Handle overflow */ spinlock_release_irqrestore(&g_frame_lock, irq_flags); FRAME_PANIC("Virtual address overflow during put_frame conversion!"); return; }
-        spinlock_release_irqrestore(&g_frame_lock, irq_flags); // Release frame lock before calling buddy
+        // Check for overflow during virt conversion
+        if (virt_addr < phys_addr || virt_addr < KERNEL_SPACE_VIRT_START) {
+             spinlock_release_irqrestore(&g_frame_lock, irq_flags);
+             FRAME_PANIC("Virtual address overflow during put_frame phys->virt conversion!");
+        }
 
-        int page_req_order = PAGE_ORDER;
+        // Release the frame lock *before* calling the buddy allocator,
+        // as the buddy allocator has its own internal locking.
+        spinlock_release_irqrestore(&g_frame_lock, irq_flags);
 
-        // Call buddy_free_raw (handles its own locking)
-        buddy_free_raw((void*)virt_addr, page_req_order);
+        FRAME_PRINT(2, "[Put Frame] Refcount is zero, freeing VIRT=%p (order %d) to buddy system.\n",
+                      (void*)virt_addr, FRAME_BUDDY_ORDER);
+        buddy_free_raw((void*)virt_addr, FRAME_BUDDY_ORDER);
 
     } else {
-        // Frame still in use, just release lock
+        // Frame is still referenced by others, just release the lock
         spinlock_release_irqrestore(&g_frame_lock, irq_flags);
     }
 }
 
+//----------------------------------------------------------------------------
+// Reference Count Management Functions
+//----------------------------------------------------------------------------
+
+/**
+ * @brief Gets the current reference count of a physical page frame.
+ * @param phys_addr The physical address of the frame (must be page-aligned).
+ * @return The reference count, or -1 if the PFN is out of range.
+ */
 int get_frame_refcount(uintptr_t phys_addr) {
-    if ((phys_addr % PAGE_SIZE) != 0) phys_addr = PAGE_ALIGN_DOWN(phys_addr);
+    FRAME_ASSERT((phys_addr % PAGE_SIZE) == 0, "get_frame_refcount requires page-aligned address");
+    if ((phys_addr % PAGE_SIZE) != 0) phys_addr = PAGE_ALIGN_DOWN(phys_addr); // Align defensively
+
     size_t pfn = addr_to_pfn(phys_addr);
-    if (pfn >= g_total_frames) return -1;
+
+    // Check if PFN is valid before acquiring lock/accessing array
+    if (pfn >= g_total_frames) {
+         FRAME_PRINT(1, "[Get Refcount WARN] PFN %lu (from Phys %#lx) out of range (max %lu)\n",
+                       (unsigned long)pfn, (unsigned long)phys_addr, (unsigned long)g_total_frames);
+        return -1; // Indicate error
+    }
+
     uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
+    // Check bounds again inside lock
+    if (pfn >= g_total_frames) {
+         spinlock_release_irqrestore(&g_frame_lock, irq_flags);
+         FRAME_PRINT(0, "[Get Refcount ERR] PFN %lu became invalid under lock?\n", (unsigned long)pfn);
+         return -1;
+    }
+    // Read refcount (cast to int for return type compatibility)
     int count = (int)g_frame_refcounts[pfn];
     spinlock_release_irqrestore(&g_frame_lock, irq_flags);
+
+    FRAME_PRINT(2, "[Get Refcount] PFN=%lu (Phys=%#lx) -> Count=%d\n", (unsigned long)pfn, (unsigned long)phys_addr, count);
     return count;
 }
 
+/**
+ * @brief Increments the reference count for a physical page frame.
+ * The frame MUST already be allocated (refcount > 0).
+ * @param phys_addr The physical address of the frame to increment (must be page-aligned).
+ */
 void frame_incref(uintptr_t phys_addr) {
-    if ((phys_addr % PAGE_SIZE) != 0) {
-        phys_addr = PAGE_ALIGN_DOWN(phys_addr);
-    }
+    FRAME_ASSERT((phys_addr % PAGE_SIZE) == 0, "frame_incref requires page-aligned address");
+     if ((phys_addr % PAGE_SIZE) != 0) phys_addr = PAGE_ALIGN_DOWN(phys_addr); // Align defensively
+
     size_t pfn = addr_to_pfn(phys_addr);
 
+    // Check PFN validity upfront
     if (pfn >= g_total_frames) {
-         FRAME_PANIC("frame_incref called with invalid PFN!");
-         return;
+        FRAME_PANIC("frame_incref called with PFN out of range!");
+        return; // Should not be reached if PANIC halts
     }
 
     uintptr_t irq_flags = spinlock_acquire_irqsave(&g_frame_lock);
 
-    // Check bounds before accessing array
+    // Check bounds again inside lock
     if (pfn >= g_total_frames) {
          spinlock_release_irqrestore(&g_frame_lock, irq_flags);
-         FRAME_PANIC("PFN out of bounds in frame_incref");
-         return;
+         FRAME_PANIC("PFN out of bounds in frame_incref under lock!");
     }
 
     uint32_t old_count = g_frame_refcounts[pfn];
-    FRAME_ASSERT(old_count > 0, "Incrementing refcount of frame that should be allocated (count was 0)!");
-    FRAME_ASSERT(old_count < UINT32_MAX, "Frame reference count overflow!");
+    // Use %lu for uint32_t
+    FRAME_PRINT(2, "[Frame Incref] PFN=%lu (Phys=%#lx), Old count=%lu\n",
+                  (unsigned long)pfn, (unsigned long)phys_addr, (unsigned long)old_count);
+
+    // Critical assertions:
+    FRAME_ASSERT(old_count > 0, "Incrementing refcount of a frame that is supposedly free (count was 0)!");
+    FRAME_ASSERT(old_count < UINT32_MAX, "Frame reference count overflow during increment!");
 
     g_frame_refcounts[pfn]++;
-    // terminal_printf("[Frame Incref] PFN=%lu, Count %lu->%lu\n", (unsigned long)pfn, (unsigned long)old_count, (unsigned long)g_frame_refcounts[pfn]); // Optional Debug
+    // Use %lu for uint32_t
+    FRAME_PRINT(1, "[Frame Incref] PFN=%lu, Count %lu -> %lu\n", (unsigned long)pfn, (unsigned long)old_count, (unsigned long)g_frame_refcounts[pfn]);
 
     spinlock_release_irqrestore(&g_frame_lock, irq_flags);
 }
