@@ -130,7 +130,7 @@
  
      // Check alignment and range
      if ((vaddr % PAGE_SIZE != 0) || (paddr % PAGE_SIZE != 0)) {
-         terminal_printf("[KMapUnsafe] Error: Unaligned addresses V=%p P=%#lx\n", (void*)vaddr, (unsigned long)paddr);
+        terminal_printf("[KMapUnsafe] Error: Unaligned addresses V=%#lx P=%#lx\n", (unsigned long)vaddr, (unsigned long)paddr);
          return -1;
      }
  
@@ -900,7 +900,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
               //               (pde & PAGE_NX_BIT) ? 1 : 0); // Note: NX bit only meaningful in PTE
  
               if (pde & PAGE_SIZE_4MB) {
-                  terminal_printf(" Frame=0x%#lx)\n", (unsigned long)(pde & PAGING_PDE_ADDR_MASK_4MB)); // Line 874 Fix
+                terminal_printf(" Frame=%#lx)\n", (unsigned long)(pde & PAGING_PDE_ADDR_MASK_4MB)); // Line 874 Fix
               } else {
                   terminal_printf(" PT=0x%#lx)\n", (unsigned long)(pde & PAGING_PDE_ADDR_MASK_4KB)); // Line 876 Fix
               }
@@ -1045,7 +1045,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
         return -1; // Should not be reached
     }
     if (!target_page_directory_phys || ((uintptr_t)target_page_directory_phys % PAGE_SIZE) != 0) {
-        terminal_printf("[Map Internal] Invalid target PD phys %p\n", (void*)target_page_directory_phys);
+        terminal_printf("[Map Internal] Invalid target PD phys %#lx\n", (unsigned long)target_page_directory_phys);
         return KERN_EINVAL; // Use KERN_EINVAL if defined
     }
 
@@ -1257,7 +1257,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
         uintptr_t pt_phys = 0;
 
         // 1. Map target PD temporarily (writable)
-        target_pd_virt_temp = paging_temp_map_vaddr(PAGING_TEMP_VADDR, (uintptr_t)target_page_directory_phys, PTE_KERNEL_DATA_FLAGS);
+        void* temp_pd_map = paging_temp_map((uintptr_t)page_directory_phys, PTE_KERNEL_READONLY_FLAGS);
         if (!target_pd_virt_temp) {
              terminal_printf("[Map Internal] Error: Failed temp map DST PD %p\n", (void*)target_page_directory_phys);
              return -1; // Cannot proceed
@@ -1346,8 +1346,8 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
             // --- Map target PT temporarily (if not already mapped from allocation) ---
             // --- and write the PTE ---
             if (!temp_pt_vaddr) { // If we didn't just allocate and map it
-                target_pt_virt_temp = paging_temp_map_vaddr(PAGING_TEMP_VADDR, pt_phys, PTE_KERNEL_DATA_FLAGS);
-                 if (!target_pt_virt_temp) {
+                oid* temp_pt_map = paging_temp_map(pt_phys, PTE_KERNEL_READONLY_FLAGS);
+                 if (!(uint32_t*)temp_pt_map) {
                      // Line 1308 Fix: %#lx, %p
                      terminal_printf("[Map Internal] Error: OTHER PD failed temp map existing PT 0x%#lx for V=%p\n", (unsigned long)pt_phys, (void*)aligned_vaddr);
                      // NOTE: pt_allocated_here cannot be true here if temp_pt_vaddr is NULL
@@ -2113,53 +2113,8 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
       PAGING_PANIC("remove_current_task returned after page fault kill!");
  }
  
-  /**
-    * @brief Unmaps a single 4KB virtual page from the kernel address space.
-    * @warning This function is UNSAFE. It directly manipulates kernel page tables
-    * without considering higher-level memory management (VMAs) or
-    * reference counting. It MUST be called with appropriate locks held
-    * to protect the kernel page directory/tables.
-    * It will free the underlying page table if it becomes empty.
-    *
-    * @param vaddr The page-aligned virtual address to unmap.
-    * @return 0 on success, -1 on error (e.g., alignment, invalid address, not mapped).
-    */
-    int paging_clear_kernel_pte_unsafe(uintptr_t vaddr) {
-    terminal_printf("[ClearKpteUnsafe ENTRY] Received VAddr = %p\n", (void*)vaddr);
+
  
-    // Basic checks before attempting operation
-    if (!g_kernel_page_directory_virt) {
-        terminal_printf("[ClearKpteUnsafe] Error: Kernel PD Virt is NULL!\n");
-        // Cannot proceed without kernel PD access
-        // KERNEL_PANIC_HALT("Kernel PD virtual pointer is NULL in unsafe PTE clear.");
-        return KERN_EPERM; // Or some other critical error
-    }
- 
-    if (vaddr % PAGE_SIZE != 0) {
-        terminal_printf("[ClearKpteUnsafe] Error: VAddr %p not page aligned.\n", (void*)vaddr);
-        return KERN_EINVAL;
-    }
- 
-    // Get PDE/PTE indices
-    uint32_t pd_idx = PDE_INDEX(vaddr);
-    uint32_t pt_idx = PTE_INDEX(vaddr);
- 
-    // Validate PDE index
-    if (pd_idx >= TABLES_PER_DIR) {
-        // Line 2094 Fix: %lu, %p
-        terminal_printf("[ClearKpteUnsafe] Error: Invalid PDE index %lu for vaddr %p\n",
-        (unsigned long)pd_idx, (void*)vaddr);
-        return KERN_EINVAL;
-    }
-    // Prevent modification of the recursive mapping entry itself
-    if (pd_idx == RECURSIVE_PDE_INDEX) {
-        // Line 2100 Fix: %lu
-        terminal_printf("[ClearKpteUnsafe] Error: Attempt to modify recursive PDE slot %lu.\n", (unsigned long)pd_idx);
-         return KERN_EPERM;
-    }
- 
- 
-    // --- CRITICAL SECTION START (Assumes caller holds appropriate lock) ---
  
     // Get PDE entry value from kernel page directory
     uint32_t pde = g_kernel_page_directory_virt[pd_idx];
@@ -2328,116 +2283,242 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
  }
  
  
- void* paging_temp_map_vaddr(uintptr_t temp_vaddr, uintptr_t phys_addr, uint32_t flags) {
-    PAGING_DEBUG_PRINTF("Enter: V=%p <- P=%#lx Flags=%#lx\n", (void*)temp_vaddr, (unsigned long)phys_addr, flags);
+// --- Dynamic Temporary Mapping State (Add within paging.c) ---
+static spinlock_t g_temp_va_lock;
+static uint32_t g_temp_va_bitmap[KERNEL_TEMP_MAP_COUNT / 32]; // Bitmap for ~4096 slots
+static bool g_temp_va_initialized = false;
+
+// Helper function to set/clear/test bits in the bitmap
+static inline void bitmap_set(uint32_t* map, int bit) {
+    map[bit / 32] |= (1 << (bit % 32));
+}
+static inline void bitmap_clear(uint32_t* map, int bit) {
+    map[bit / 32] &= ~(1 << (bit % 32));
+}
+static inline bool bitmap_test(uint32_t* map, int bit) {
+    return (map[bit / 32] & (1 << (bit % 32))) != 0;
+}
+
+/**
+ * @brief Initializes the dynamic temporary virtual address allocator.
+ */
+int paging_temp_map_init(void) {
+    terminal_write("[Paging TempVA] Initializing dynamic temporary mapping allocator...\n");
+    spinlock_init(&g_temp_va_lock);
+    memset(g_temp_va_bitmap, 0, sizeof(g_temp_va_bitmap));
+    g_temp_va_initialized = true;
+    terminal_printf("  Temp VA Range: [%p - %p), Slots: %u\n",
+                    (void*)KERNEL_TEMP_MAP_START, (void*)KERNEL_TEMP_MAP_END, KERNEL_TEMP_MAP_COUNT);
+    return 0;
+}
+
+/**
+ * @brief Allocates a free virtual address from the temporary range.
+ * @return The allocated virtual address, or 0 if none available.
+ */
+static uintptr_t temp_vaddr_alloc(void) {
+    if (!g_temp_va_initialized) {
+        KERNEL_PANIC_HALT("Temporary VA allocator used before initialization!");
+    }
+
+    uintptr_t irq_flags = spinlock_acquire_irqsave(&g_temp_va_lock);
+    uintptr_t allocated_vaddr = 0;
+
+    for (int i = 0; i < KERNEL_TEMP_MAP_COUNT; ++i) {
+        if (!bitmap_test(g_temp_va_bitmap, i)) {
+            bitmap_set(g_temp_va_bitmap, i);
+            allocated_vaddr = KERNEL_TEMP_MAP_START + (i * PAGE_SIZE);
+            break;
+        }
+    }
+
+    spinlock_release_irqrestore(&g_temp_va_lock, irq_flags);
+
+    if (allocated_vaddr == 0) {
+        terminal_printf("[TempVA Alloc] Warning: Out of temporary virtual addresses!\n");
+    }
+    return allocated_vaddr;
+}
+
+/**
+ * @brief Frees a previously allocated temporary virtual address.
+ * @param vaddr The virtual address to free.
+ */
+static void temp_vaddr_free(uintptr_t vaddr) {
+     if (!g_temp_va_initialized) {
+        // Should not happen if alloc worked, but defensive check
+        return;
+    }
+    // Basic validation
+    if (vaddr < KERNEL_TEMP_MAP_START || vaddr >= KERNEL_TEMP_MAP_END || (vaddr % PAGE_SIZE != 0)) {
+        terminal_printf("[TempVA Free] Warning: Attempt to free invalid or out-of-range address %p\n", (void*)vaddr);
+        return;
+    }
+
+    int bit = (vaddr - KERNEL_TEMP_MAP_START) / PAGE_SIZE;
+
+    uintptr_t irq_flags = spinlock_acquire_irqsave(&g_temp_va_lock);
+
+    if (!bitmap_test(g_temp_va_bitmap, bit)) {
+         // Trying to free an already free slot - indicates double free or logic error
+        terminal_printf("[TempVA Free] Warning: Double free detected for address %p (bit %d)\n", (void*)vaddr, bit);
+        // Optionally panic here: KERNEL_PANIC_HALT("Double free of temporary virtual address!");
+    } else {
+        bitmap_clear(g_temp_va_bitmap, bit);
+    }
+
+    spinlock_release_irqrestore(&g_temp_va_lock, irq_flags);
+}
+
+
+/**
+ * @brief Temporarily maps a physical page into a dynamically allocated kernel
+ * virtual address from the KERNEL_TEMP_MAP range.
+ * This function handles allocation/creation of Page Tables within the kernel PD if needed.
+ *
+ * @param phys_addr The physical address of the page frame to map (must be page-aligned).
+ * @param flags     The desired page table entry flags (e.g., PTE_KERNEL_DATA_FLAGS).
+ * @return A kernel virtual address where the page is mapped, or NULL on failure.
+ */
+void* paging_temp_map(uintptr_t phys_addr, uint32_t flags) {
+    // PAGING_DEBUG_PRINTF("Enter: P=%#lx Flags=%#lx\n", phys_addr, flags);
 
     if (!g_kernel_page_directory_virt) {
-        terminal_printf("[TempMapV] Error: Kernel PD not ready.\n");
+        terminal_printf("[TempMap] Error: Kernel PD not ready.\n");
         return NULL;
     }
-    if ((phys_addr % PAGE_SIZE != 0) || (temp_vaddr % PAGE_SIZE != 0)) {
-        terminal_printf("[TempMapV] Error: Address not page-aligned (V=%p, P=%#lx).\n", (void*)temp_vaddr, (unsigned long)phys_addr);
+    if (phys_addr % PAGE_SIZE != 0) {
+        terminal_printf("[TempMap] Error: Physical address %#lx not page-aligned.\n", phys_addr);
         return NULL;
     }
-    // Ensure the temp address is in kernel space and not overlapping critical areas
-    if (temp_vaddr < KERNEL_SPACE_VIRT_START || temp_vaddr >= RECURSIVE_PDE_VADDR) {
-         terminal_printf("[TempMapV] Error: Invalid temporary virtual address %p.\n", (void*)temp_vaddr);
-         return NULL;
+
+    // 1. Allocate a temporary virtual address
+    uintptr_t vaddr = temp_vaddr_alloc();
+    if (vaddr == 0) {
+        return NULL; // Out of temporary virtual addresses
     }
+    // PAGING_DEBUG_PRINTF("  Allocated Temp VA: %p\n", (void*)vaddr);
 
-
-    uint32_t pd_idx = PDE_INDEX(temp_vaddr);
-    uint32_t pt_idx = PTE_INDEX(temp_vaddr);
-
-    // Access the specific Page Table using recursive mapping from the *kernel's* PD
-    uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
+    // 2. Ensure Page Table exists for this VAddr in the kernel PD
+    uint32_t pd_idx = PDE_INDEX(vaddr);
     uint32_t pde = g_kernel_page_directory_virt[pd_idx];
 
-    // Ensure the PDE for the temp area exists and is NOT a 4MB page
-    // The PT frame itself MUST be allocated beforehand if it doesn't exist.
-    // This function assumes the PT frame exists for the given temp_vaddr PDE slot.
     if (!(pde & PAGE_PRESENT)) {
-       terminal_printf("[TempMapV] Error: PDE[%lu] for temporary mapping address V=%p is not present!\n",
-                        (unsigned long)pd_idx, (void*)temp_vaddr);
-        return NULL;
-    }
-     if (pde & PAGE_SIZE_4MB) {
-       terminal_printf("[TempMapV] Error: PDE[%lu] for temporary mapping address V=%p is a 4MB page!\n",
-                        (unsigned long)pd_idx, (void*)temp_vaddr);
+        // PDE not present, need to allocate a PT frame
+        // PAGING_DEBUG_PRINTF("  PDE[%u] for VA %p not present. Allocating PT...\n", pd_idx, (void*)vaddr);
+        uintptr_t pt_phys = frame_alloc();
+        if (pt_phys == 0) {
+            terminal_printf("[TempMap] Error: Failed to allocate PT frame for V=%p.\n", (void*)vaddr);
+            temp_vaddr_free(vaddr); // Free the VA we allocated
+            return NULL;
+        }
+        // Map the PT frame temporarily to zero it
+        void* temp_pt_map = paging_temp_map(pt_phys, PTE_KERNEL_DATA_FLAGS); // Recursive call! Okay if VA allocator works.
+        if (!temp_pt_map) {
+             terminal_printf("[TempMap] Error: Failed to temp map new PT frame %#lx for zeroing.\n", pt_phys);
+             put_frame(pt_phys); // Free the frame we allocated
+             temp_vaddr_free(vaddr);
+             return NULL;
+        }
+        memset(temp_pt_map, 0, PAGE_SIZE);
+        paging_temp_unmap(temp_pt_map); // Unmap the PT after zeroing
+
+        // Set the PDE in the kernel page directory
+        // Ensure flags allow User access if the final PTE might need it, but temp maps are usually kernel-only.
+        uint32_t pde_flags = PAGE_PRESENT | PAGE_RW | PAGE_NX_BIT; // Kernel RW, NX=1
+        g_kernel_page_directory_virt[pd_idx] = (pt_phys & PAGING_ADDR_MASK) | pde_flags;
+        // Invalidate TLB for the PDE range (might affect other CPUs) - use broad flush or specific invalidation
+        paging_invalidate_page((void*)vaddr); // Invalidate page within the range affected by PDE change
+        // PAGING_DEBUG_PRINTF("  Created PT at %#lx and set PDE[%u] = %#lx\n", pt_phys, pd_idx, g_kernel_page_directory_virt[pd_idx]);
+    } else if (pde & PAGE_SIZE_4MB) {
+        // This part of the temporary VA range is covered by a 4MB page - invalid setup!
+        terminal_printf("[TempMap] Error: Temporary VA range V=%p overlaps with a 4MB kernel page!\n", (void*)vaddr);
+        temp_vaddr_free(vaddr);
         return NULL;
     }
 
-    // Check if the temporary slot is already in use - THIS IS STILL A RACE CONDITION
-    // Proper solution needs locking or dynamic VA allocation. This provides basic check.
-    volatile uint32_t current_pte = pt_virt[pt_idx]; // Use volatile for read
-    if (current_pte & PAGE_PRESENT) {
-         uintptr_t existing_p = current_pte & PAGING_ADDR_MASK;
-         terminal_printf("[TempMapV] Warning: Temporary mapping slot (V=%p) already in use (maps P=%#lx)! Overwriting.\n",
-                         (void*)temp_vaddr, (unsigned long)existing_p);
-         // Overwriting is dangerous but allowed by this simple implementation.
+    // 3. Map the physical address into the allocated virtual address
+    // Access the specific Page Table using recursive mapping
+    uint32_t pt_idx = PTE_INDEX(vaddr);
+    uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
+
+    // Check if the PTE slot is unexpectedly already in use (shouldn't be if VA allocator is correct)
+    if (pt_virt[pt_idx] & PAGE_PRESENT) {
+        terminal_printf("[TempMap] CRITICAL Error: PTE[%u] for dynamically allocated VA %p is already present (%#lx)!\n",
+                        pt_idx, (void*)vaddr, pt_virt[pt_idx]);
+        // This indicates a bug in the VA allocator or elsewhere.
+        // We cannot safely proceed. Free the VA and fail.
+        temp_vaddr_free(vaddr);
+        // Optionally panic: KERNEL_PANIC_HALT("Temporary VA PTE slot conflict!");
+        return NULL;
     }
 
-    // Set the PTE for the temporary virtual address using provided flags
-    // Ensure PAGE_PRESENT is set. Mask other flags if needed.
+    // Set the PTE
     uint32_t final_flags = (flags | PAGE_PRESENT) & PAGING_FLAG_MASK; // Ensure present, use valid flag bits
     uint32_t new_pte = (phys_addr & PAGING_ADDR_MASK) | final_flags;
     pt_virt[pt_idx] = new_pte;
 
-    // Invalidate the TLB for the specific temporary virtual address
-    paging_invalidate_page((void*)temp_vaddr);
+    // Invalidate TLB for the specific virtual address mapped
+    paging_invalidate_page((void*)vaddr);
 
-    PAGING_DEBUG_PRINTF("Mapped P=%#lx -> V=%p (PTE[%lu] in PT@V=%p set to %#lx)\n",
-       (unsigned long)phys_addr, (void*)temp_vaddr, (unsigned long)pt_idx, (void*)pt_virt, (unsigned long)new_pte);
+    // PAGING_DEBUG_PRINTF("  Mapped P=%#lx -> V=%p (PTE[%u] in PT@V=%p set to %#lx)\n",
+    //    phys_addr, (void*)vaddr, pt_idx, (void*)pt_virt, new_pte);
 
-   return (void*)temp_vaddr; // Return the virtual address used
+    return (void*)vaddr; // Return the dynamically allocated virtual address
 }
 
 /**
- * @brief Unmaps a specific temporary virtual address.
+ * @brief Unmaps a previously allocated temporary virtual address.
+ *
+ * @param temp_vaddr The virtual address returned by paging_temp_map.
  */
- void paging_temp_unmap_vaddr(void* temp_vaddr) {
+void paging_temp_unmap(void* temp_vaddr) {
+    uintptr_t vaddr = (uintptr_t)temp_vaddr;
+    // PAGING_DEBUG_PRINTF("Enter: V=%p\n", temp_vaddr);
+
     // Validate the address being unmapped
-    if (temp_vaddr == NULL || ((uintptr_t)temp_vaddr % PAGE_SIZE != 0)) {
-        terminal_printf("[TempUnmapV] Warning: Invalid address %p provided for unmap.\n", temp_vaddr);
+    if (vaddr < KERNEL_TEMP_MAP_START || vaddr >= KERNEL_TEMP_MAP_END || (vaddr % PAGE_SIZE != 0)) {
+        terminal_printf("[TempUnmap] Warning: Invalid or out-of-range temporary address %p provided for unmap.\n", temp_vaddr);
         return;
     }
-     // Check bounds
-     if ((uintptr_t)temp_vaddr < KERNEL_SPACE_VIRT_START || (uintptr_t)temp_vaddr >= RECURSIVE_PDE_VADDR) {
-         terminal_printf("[TempUnmapV] Warning: Address %p is outside expected temporary range.\n", temp_vaddr);
-         // Allow unmapping attempt anyway, might be harmless if PTE doesn't exist
-     }
+    if (!g_kernel_page_directory_virt) {
+        terminal_printf("[TempUnmap] Error: Kernel PD not ready.\n");
+        return;
+    }
+    if (!g_temp_va_initialized) {
+        // Should not happen if map worked, but defensive check
+        return;
+    }
 
-     if (!g_kernel_page_directory_virt) {
-         terminal_printf("[TempUnmapV] Error: Kernel PD not ready.\n");
-         return;
-     }
-
-    uint32_t pd_idx = PDE_INDEX(temp_vaddr);
-    uint32_t pt_idx = PTE_INDEX(temp_vaddr);
+    uint32_t pd_idx = PDE_INDEX(vaddr);
+    uint32_t pt_idx = PTE_INDEX(vaddr);
     uint32_t pde = g_kernel_page_directory_virt[pd_idx];
 
-    // Ensure PDE is present and not 4MB
+    // Ensure PDE is present and not 4MB (should be if mapping worked)
     if (!(pde & PAGE_PRESENT) || (pde & PAGE_SIZE_4MB)) {
-        terminal_printf("[TempUnmapV] Warning: PDE for temp area invalid (PDE[%lu]=0x%lx) during unmap of V=%p.\n",
+        terminal_printf("[TempUnmap] Warning: PDE for temp area invalid (PDE[%lu]=%#lx) during unmap of V=%p.\n",
                         (unsigned long)pd_idx, (unsigned long)pde, temp_vaddr);
-         return; // Cannot access PT
-    }
-
-    // Access the specific Page Table using recursive mapping
-    uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
-
-    // Check if PTE is actually present before clearing
-    if (pt_virt[pt_idx] & PAGE_PRESENT) {
-        // Clear the PTE
-        pt_virt[pt_idx] = 0;
-        // Invalidate the TLB entry
-        paging_invalidate_page(temp_vaddr);
-         PAGING_DEBUG_PRINTF("Unmapped V=%p\n", temp_vaddr);
+        // Proceed to free the VA slot anyway, as the mapping is likely already gone/invalid.
     } else {
-         // PAGING_DEBUG_PRINTF("Temp PTE for V=%p was already clear.\n", temp_vaddr);
+         // Access the specific Page Table using recursive mapping
+        uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
+
+        // Check if PTE is actually present before clearing
+        if (pt_virt[pt_idx] & PAGE_PRESENT) {
+            // Clear the PTE
+            pt_virt[pt_idx] = 0;
+            // Invalidate the TLB entry
+            paging_invalidate_page(temp_vaddr);
+            // PAGING_DEBUG_PRINTF("  Unmapped PTE for V=%p\n", temp_vaddr);
+        } else {
+            // PAGING_DEBUG_PRINTF("  Temp PTE for V=%p was already clear.\n", temp_vaddr);
+        }
     }
+
+    // Free the virtual address back to the allocator pool
+    temp_vaddr_free(vaddr);
+    // PAGING_DEBUG_PRINTF("  Freed Temp VA: %p\n", temp_vaddr);
 }
- 
  
  /**
   * @brief Copies kernel-space Page Directory Entries (PDEs) from the master

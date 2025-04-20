@@ -179,7 +179,7 @@ vma_struct_t* insert_vma(mm_struct_t *mm, uintptr_t start, uintptr_t end,
                          uint32_t vm_flags, uint32_t page_prot,
                          file_t* file, size_t offset)
 {
-    if (!mm || start >= end || (start % PAGE_SIZE) != 0 || (end % PAGE_SIZE) != 0) {
+    if (!mm || start > end || (start % PAGE_SIZE) != 0 || (end % PAGE_SIZE) != 0) {
         terminal_write("[MM] insert_vma: Invalid parameters.\n");
         return NULL;
     }

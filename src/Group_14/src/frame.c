@@ -152,6 +152,7 @@ int frame_init(struct multiboot_tag_mmap *mmap_tag_virt,
         if (r_phys_end_ptr > g_highest_address) g_highest_address = r_phys_end_ptr;
         mmap_entry = (multiboot_memory_map_t *)((uintptr_t)mmap_entry + mmap_tag_virt->entry_size);
     }
+
     if (g_highest_address == 0) { FRAME_PANIC("Failed to determine highest physical address from MMAP!"); }
     uintptr_t aligned_highest = ALIGN_UP(g_highest_address, PAGE_SIZE); if (aligned_highest == 0 && g_highest_address > 0) aligned_highest = UINTPTR_MAX;
     g_highest_address = aligned_highest;
@@ -290,7 +291,7 @@ void put_frame(uintptr_t phys_addr) {
 
     if (g_frame_refcounts[pfn] == 0) {
         uintptr_t virt_addr = phys_addr + KERNEL_SPACE_VIRT_START;
-        if (virt_addr < KERNEL_SPACE_VIRT_START) { /* Handle overflow */ spinlock_release_irqrestore(&g_frame_lock, irq_flags); FRAME_PANIC("Virtual address overflow during put_frame conversion!"); return; }
+        if (virt_addr < phys_addr || virt_addr < KERNEL_SPACE_VIRT_START) { /* Handle overflow */ spinlock_release_irqrestore(&g_frame_lock, irq_flags); FRAME_PANIC("Virtual address overflow during put_frame conversion!"); return; }
         spinlock_release_irqrestore(&g_frame_lock, irq_flags); // Release frame lock before calling buddy
 
         int page_req_order = PAGE_ORDER;

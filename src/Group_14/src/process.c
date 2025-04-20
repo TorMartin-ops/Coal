@@ -247,9 +247,8 @@
 
      // Temporarily map the physical frame into kernel space
      PROC_DEBUG_PRINTF("Calling paging_temp_map_vaddr for P=%#lx\n", (unsigned long)frame_paddr);
-     void* temp_vaddr =  paging_temp_map_vaddr(TEMP_MAP_ADDR_PF,          // <<< Arg 1: Specific Temp VAddr
-                                             frame_paddr,               // <<< Arg 2: Physical Addr
-                                             PTE_KERNEL_DATA_FLAGS);    // <<< Arg 3: Flags (Kernel RW)
+     void* temp_vaddr = paging_temp_map_vaddr(PAGING_TEMP_VADDR, frame_paddr, PTE_KERNEL_DATA_FLAGS);
+     
      if (temp_vaddr == NULL) {
          terminal_printf("[Process] copy_elf_segment_data: ERROR: paging_temp_map_vaddr failed (paddr=%#lx).\n", (unsigned long)frame_paddr);
          return -1;

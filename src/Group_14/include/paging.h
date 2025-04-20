@@ -61,10 +61,9 @@ extern "C" {
 #define PAGING_PDE_ADDR_MASK_4KB  PAGING_ADDR_MASK // Mask for PDE pointing to 4KB PT address portion
 #define PAGING_PDE_ADDR_MASK_4MB  0xFFC00000 // Upper 10 bits are PFN for 4MB page (bits 22-31)
 
-// <<< ADDED PAGING MASK DEFINITIONS >>>
+// Mask helpers
 #define PAGING_PAGE_MASK   (~(PAGE_SIZE - 1u)) // Align down mask (e.g., 0xFFFFF000)
 #define PAGING_OFFSET_MASK (PAGE_SIZE - 1u)   // Offset mask (e.g., 0x00000FFF)
-// <<< END ADDED >>>
 
 
 // --- Virtual Memory Layout ---
@@ -80,7 +79,7 @@ extern "C" {
 #define PTE_INDEX(addr)  (((uintptr_t)(addr) >> PAGING_PTE_SHIFT) & 0x3FFu) // Index: bits 12-21
 #define PAGE_OFFSET(addr) ((uintptr_t)(addr) & (PAGE_SIZE - 1))           // Offset: bits 0-11
 
-// Calculate index based on KERNEL_SPACE_VIRT_START (ensure it's defined first)
+// Calculate index based on KERNEL_SPACE_VIRT_START
 #define KERNEL_PDE_INDEX PDE_INDEX(KERNEL_SPACE_VIRT_START) // Index of the PDE covering the kernel base
 
 
@@ -100,11 +99,8 @@ extern "C" {
 // Maps the last PDE to point back to the Page Directory base address
 #define RECURSIVE_PDE_INDEX 1023u // Index of the last PDE (0x3FF)
 // Base virtual address for accessing Page Tables via recursive mapping:
-// VAddr = RECURSIVE_PDE_VADDR + PDE_INDEX * PAGE_SIZE + PTE_INDEX * sizeof(pte) -> Accesses PTE
-// VAddr = RECURSIVE_PDE_VADDR + PDE_INDEX * PAGE_SIZE -> Base address of Page Table PDE_INDEX
 #define RECURSIVE_PDE_VADDR 0xFFC00000u
 // Base virtual address for accessing the Page Directory itself via recursive mapping:
-// VAddr = RECURSIVE_PD_VADDR + PDE_INDEX * sizeof(pde) -> Accesses PDE
 #define RECURSIVE_PD_VADDR  0xFFFFF000u // Points to the PD itself (last 4KB of address space)
 
 
@@ -118,20 +114,12 @@ extern "C" {
 #endif
 
 
-// --- Temporary Kernel Mapping Address ---
-// Define a dedicated virtual address for temporary mappings.
-// Ensure this address doesn't conflict with kernel, heap, stacks, or MMIO.
-// Placed just below the recursive mapping area (maps PT 1022).
-#define PAGING_TEMP_VADDR 0xFFBFF000 // Last page in PT mapped by PDE 1022
-
-// Old temporary addresses - Should NOT be used by the new paging_temp_map/unmap
-// #define TEMP_MAP_ADDR_GENERIC 0xE0000000 // Example temporary virtual address - REMOVED
-// #define TEMP_MAP_ADDR_PD_SRC  0xE0001000 // Example for source PD - REMOVED
-// #define TEMP_MAP_ADDR_PT_SRC  0xE0002000 // Example for source PT - REMOVED
-// #define TEMP_MAP_ADDR_PD_DST  0xE0003000 // Example for dest PD - REMOVED
-// #define TEMP_MAP_ADDR_PT_DST  0xE0004000 // Example for dest PT - REMOVED
-// #define TEMP_MAP_ADDR_PF     (KERNEL_SPACE_VIRT_START - 5u * PAGE_SIZE) // Example - REMOVED
-
+// --- Temporary Kernel Mapping Area ---
+// Define a RANGE of virtual addresses for dynamic temporary mappings
+#define KERNEL_TEMP_MAP_START 0xFE000000u  // Start of the temporary mapping VA range (16MB)
+#define KERNEL_TEMP_MAP_END   0xFF000000u  // End of the temporary mapping VA range
+#define KERNEL_TEMP_MAP_SIZE  (KERNEL_TEMP_MAP_END - KERNEL_TEMP_MAP_START)
+#define KERNEL_TEMP_MAP_COUNT (KERNEL_TEMP_MAP_SIZE / PAGE_SIZE) // Number of temp slots (4096)
 
 // --- CPU Features / Control Register Bits / MSRs ---
 // CR4 Bits
@@ -154,7 +142,6 @@ extern "C" {
 
 
 // --- CPU State Structure (Used by Page Fault Handler) ---
-// This structure defines the layout of registers pushed by the ISR stubs.
 typedef struct registers {
     // Pushed by 'pushad' instruction (in reverse order)
     uint32_t edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax; // esp_dummy is ESP *before* pushad
@@ -178,6 +165,7 @@ extern uint32_t g_kernel_page_directory_phys; // Physical address of the kernel'
 
 // --- Public Paging Function Prototypes ---
 
+// Initialization and Activation
 bool check_and_enable_pse(void);
 void paging_set_kernel_directory(uint32_t* pd_virt, uint32_t pd_phys);
 int paging_initialize_directory(uintptr_t* out_pd_phys);
@@ -185,42 +173,49 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
                             uintptr_t kernel_phys_start, uintptr_t kernel_phys_end,
                             uintptr_t heap_phys_start, size_t heap_size);
 int paging_finalize_and_activate(uintptr_t page_directory_phys, uintptr_t total_memory_bytes);
-int paging_map_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr, uintptr_t phys_start_addr, size_t memsz, uint32_t flags);
-int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr, size_t memsz); // Add if implemented
-void paging_invalidate_page(void *vaddr); // Implemented in ASM
-void tlb_flush_range(void* start, size_t size);
 void paging_activate(uint32_t *page_directory_phys); // Implemented in ASM
+
+// Mapping and Unmapping
+int paging_map_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr, uintptr_t phys_start_addr, size_t memsz, uint32_t flags);
+int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr, size_t memsz);
+int paging_map_single_4k(uint32_t *page_directory_phys, uintptr_t vaddr, uintptr_t paddr, uint32_t flags);
+
+// Utilities and Process Management
 void page_fault_handler(registers_t *regs);
 void paging_free_user_space(uint32_t *page_directory_phys);
 uintptr_t paging_clone_directory(uint32_t* src_pd_phys);
 int paging_get_physical_address(uint32_t *page_directory_phys, uintptr_t vaddr, uintptr_t *paddr);
-int paging_map_single_4k(uint32_t *page_directory_phys, uintptr_t vaddr, uintptr_t paddr, uint32_t flags);
+void copy_kernel_pde_entries(uint32_t *new_pd_virt);
+int paging_clear_kernel_pte_unsafe(uintptr_t vaddr); // Consider removing/refactoring if possible
 
-// *** ADDED PROTOTYPE HERE ***
-void copy_kernel_pde_entries(uint32_t *new_pd_virt); // Confirmed void return type
+// TLB Management
+void paging_invalidate_page(void *vaddr); // Implemented in ASM
+void tlb_flush_range(void* start, size_t size);
 
-// <<< ADDED TEMPORARY MAPPING PROTOTYPES >>>
+// --- NEW Dynamic Temporary Mapping ---
 /**
- * @brief Temporarily maps a physical page into the kernel's virtual address space.
- * Uses a predefined temporary virtual address (PAGING_TEMP_VADDR).
- * WARNING: This mapping is temporary and should be unmapped quickly.
- * Not inherently thread-safe if the same temp address is used concurrently.
- *
- * @param phys_addr The physical address of the page frame to map.
- * @return The kernel virtual address where the page was mapped (PAGING_TEMP_VADDR), or NULL on failure.
+ * @brief Initializes the dynamic temporary virtual address allocator.
+ * Must be called after paging is active and kmalloc is initialized.
  */
-void* paging_temp_map_vaddr(uintptr_t temp_vaddr, uintptr_t phys_addr, uint32_t flags);
-
+int paging_temp_map_init(void);
 
 /**
- * @brief Unmaps the dedicated temporary virtual address (PAGING_TEMP_VADDR).
+ * @brief Temporarily maps a physical page into a dynamically allocated kernel
+ * virtual address from the KERNEL_TEMP_MAP range.
  *
- * @param temp_vaddr The virtual address returned by paging_temp_map (MUST be PAGING_TEMP_VADDR).
+ * @param phys_addr The physical address of the page frame to map (must be page-aligned).
+ * @param flags     The desired page table entry flags (e.g., PTE_KERNEL_DATA_FLAGS).
+ * @return A kernel virtual address where the page is mapped, or NULL on failure
+ * (e.g., out of temporary virtual addresses, mapping failed).
  */
- void paging_temp_unmap_vaddr(void* temp_vaddr);
-// <<< END ADDED >>>
+void* paging_temp_map(uintptr_t phys_addr, uint32_t flags);
 
-int paging_clear_kernel_pte_unsafe(uintptr_t vaddr);
+/**
+ * @brief Unmaps a previously allocated temporary virtual address.
+ *
+ * @param temp_vaddr The virtual address returned by paging_temp_map.
+ */
+void paging_temp_unmap(void* temp_vaddr);
 
 
 #ifdef __cplusplus
