@@ -136,8 +136,8 @@ vma_struct_t *find_vma(mm_struct_t *mm, uintptr_t addr) {
 static vma_struct_t* insert_vma_locked(mm_struct_t *mm, vma_struct_t* new_vma) {
     // Check for overlap using RB Tree
     if (rbtree_find_overlap(mm->vma_tree.root, new_vma->vm_start, new_vma->vm_end)) {
-         terminal_printf("[MM] Error: VMA overlap detected for range [0x%x-0x%x)\n",
-                        new_vma->vm_start, new_vma->vm_end);
+         terminal_printf("[MM] Error: VMA overlap detected for range [0x%lx-0x%lx)\n",
+                        (unsigned long)new_vma->vm_start, (unsigned long)new_vma->vm_end);
          return NULL;
     }
 
@@ -226,7 +226,6 @@ static uint32_t* get_pte_ptr(mm_struct_t *mm, uintptr_t vaddr, bool allocate_pt)
         return NULL;
     }
 
-
     uint32_t pd_idx = PDE_INDEX(vaddr);
     uint32_t pt_idx = PTE_INDEX(vaddr);
     uint32_t* proc_pd_virt = NULL; // Temp VAddr for target PD
@@ -236,7 +235,7 @@ static uint32_t* get_pte_ptr(mm_struct_t *mm, uintptr_t vaddr, bool allocate_pt)
     bool allocated_pt_frame = false;
 
     // 1. Map Target PD temporarily to TEMP_MAP_ADDR_PD
-    proc_pd_virt = paging_temp_map_vaddr(TEMP_MAP_ADDR_PD, (uintptr_t)mm->pgd_phys, PTE_KERNEL_DATA_FLAGS); // Use new func
+    proc_pd_virt = paging_temp_map((uintptr_t)mm->pgd_phys, PTE_KERNEL_DATA_FLAGS);
     if (!proc_pd_virt) {
         terminal_printf("[get_pte_ptr] Error: Failed to temp map target PD %#lx.\n", (unsigned long)mm->pgd_phys);
         return NULL; // Cannot proceed
@@ -247,7 +246,7 @@ static uint32_t* get_pte_ptr(mm_struct_t *mm, uintptr_t vaddr, bool allocate_pt)
 
     // 3. Check PDE and Handle PT Allocation if needed
     if (!(pde & PAGE_PRESENT)) {
-        // PDE not present
+        // PDE Not Present: Allocate and setup new PT
         if (!allocate_pt) {
             // terminal_printf("[get_pte_ptr] Info: PDE[%lu] not present and allocation not requested.\n", pd_idx);
             goto fail_gpp; // PT doesn't exist, fail
@@ -263,13 +262,13 @@ static uint32_t* get_pte_ptr(mm_struct_t *mm, uintptr_t vaddr, bool allocate_pt)
         // terminal_printf("[get_pte_ptr] Allocated new PT frame %#lx for PDE[%lu]\n", pt_phys_addr_val, pd_idx);
 
         // Map the NEW PT frame temporarily to zero it out
-        pt_virt = paging_temp_map_vaddr(TEMP_MAP_ADDR_PT, pt_phys_addr_val, PTE_KERNEL_DATA_FLAGS); // Use new func
+        pt_virt = paging_temp_map(pt_phys_addr_val, PTE_KERNEL_DATA_FLAGS);
         if (!pt_virt) {
             terminal_printf("[get_pte_ptr] Error: Failed to temp map new PT frame %#lx for zeroing.\n", (unsigned long)pt_phys_addr_val);
             goto fail_gpp; // Free frame in cleanup
         }
         memset(pt_virt, 0, PAGE_SIZE);
-        paging_temp_unmap_vaddr(pt_virt); // Unmap after zeroing
+        paging_temp_unmap(pt_virt); // Unmap after zeroing
         pt_virt = NULL; // Reset pointer
 
         // Set the PDE in the temporarily mapped target PD
@@ -292,7 +291,7 @@ static uint32_t* get_pte_ptr(mm_struct_t *mm, uintptr_t vaddr, bool allocate_pt)
     }
 
     // 4. Map the target Page Table (either existing or newly created) to TEMP_MAP_ADDR_PT
-    pt_virt = paging_temp_map_vaddr(TEMP_MAP_ADDR_PT, pt_phys_addr_val, PTE_KERNEL_DATA_FLAGS); // Use new func
+    pt_virt = paging_temp_map(pt_phys_addr_val, PTE_KERNEL_DATA_FLAGS);
     if (!pt_virt) {
         terminal_printf("[get_pte_ptr] Error: Failed to temp map target PT frame %#lx.\n", (unsigned long)pt_phys_addr_val);
         goto fail_gpp;
@@ -304,7 +303,7 @@ static uint32_t* get_pte_ptr(mm_struct_t *mm, uintptr_t vaddr, bool allocate_pt)
     //                 pte_ptr, pt_virt, pt_phys_addr_val);
 
     // Cleanup the PD mapping, leave PT mapped for caller
-    paging_temp_unmap_vaddr(proc_pd_virt);
+    paging_temp_unmap(proc_pd_virt);
     return pte_ptr; // Success! Caller must unmap TEMP_MAP_ADDR_PT
 
 fail_gpp:
@@ -314,11 +313,11 @@ fail_gpp:
     }
     // Cleanup temporary PD mapping
     if (proc_pd_virt) {
-        paging_temp_unmap_vaddr(proc_pd_virt);
+        paging_temp_unmap(proc_pd_virt);
     }
     // Ensure temporary PT mapping is also cleaned up on failure
     if (pt_virt) { // Check if PT was mapped before failure
-        paging_temp_unmap_vaddr(pt_virt);
+        paging_temp_unmap(pt_virt);
     }
     return NULL; // Indicate failure
 }
@@ -376,21 +375,21 @@ fail_gpp:
                 if (!phys_page) { ret = -FS_ERR_OUT_OF_MEMORY; goto cleanup_cow; }
 
                 // Map source and destination frames temporarily for copy
-                void* temp_src = paging_temp_map_vaddr(TEMP_MAP_ADDR_COW_SRC, src_phys_page, PTE_KERNEL_READONLY_FLAGS);
-                void* temp_dst = paging_temp_map_vaddr(TEMP_MAP_ADDR_COW_DST, phys_page, PTE_KERNEL_DATA_FLAGS);
+                void* temp_src = paging_temp_map(src_phys_page, PTE_KERNEL_READONLY_FLAGS);
+                void* temp_dst = paging_temp_map(phys_page, PTE_KERNEL_DATA_FLAGS);
 
                 if (!temp_src || !temp_dst) {
                     terminal_printf("[PF COW] Error: Failed to temp map frames for copy (src=%p, dst=%p)\n", temp_src, temp_dst);
-                    if (temp_src) paging_temp_unmap_vaddr(temp_src);
-                    if (temp_dst) paging_temp_unmap_vaddr(temp_dst);
+                    if (temp_src) paging_temp_unmap(temp_src);
+                    if (temp_dst) paging_temp_unmap(temp_dst);
                     put_frame(phys_page); // Free the allocated frame
                     ret = -FS_ERR_INTERNAL; goto cleanup_cow;
                 }
 
                 memcpy(temp_dst, temp_src, PAGE_SIZE); // Copy data
 
-                paging_temp_unmap_vaddr(temp_dst); // Unmap temporary pages
-                paging_temp_unmap_vaddr(temp_src);
+                paging_temp_unmap(temp_dst); // Unmap temporary pages
+                paging_temp_unmap(temp_src);
 
                 // Update the PTE to point to the new frame with RW permission
                 *pte_ptr = (phys_page & PAGING_ADDR_MASK) | (pte & PAGING_FLAG_MASK) | PAGE_RW | PAGE_PRESENT;
@@ -399,7 +398,7 @@ fail_gpp:
             }
         cleanup_cow:
             if (pte_ptr) { // Unmap the PT that get_pte_ptr mapped
-                paging_temp_unmap_vaddr((void*)TEMP_MAP_ADDR_PT); // Use the specific PT temp address
+                paging_temp_unmap((void*)TEMP_MAP_ADDR_PT); // Use the specific PT temp address
             }
             if (ret == 0) { paging_invalidate_page((void*)page_addr); } // Invalidate TLB on success
             return ret;
@@ -417,7 +416,7 @@ fail_gpp:
     // terminal_printf("  Allocated phys frame: %#lx\n", phys_page);
 
     // 2. Map frame temporarily into kernel to populate using TEMP_MAP_ADDR_PF
-    temp_addr_for_copy = paging_temp_map_vaddr(TEMP_MAP_ADDR_PF, phys_page, PTE_KERNEL_DATA_FLAGS); // Use new func
+    temp_addr_for_copy = paging_temp_map(phys_page, PTE_KERNEL_DATA_FLAGS);
     if (!temp_addr_for_copy) {
         put_frame(phys_page); return -FS_ERR_IO;
     }
@@ -434,7 +433,7 @@ fail_gpp:
     }
 
     // 4. Unmap temporary kernel mapping
-    paging_temp_unmap_vaddr(temp_addr_for_copy); // Use new func
+    paging_temp_unmap(temp_addr_for_copy);
 
     // 5. Map frame into process space via PTE
     pte_ptr = get_pte_ptr(mm, page_addr, true); // Allocate PT if needed
@@ -454,7 +453,7 @@ fail_gpp:
 
 
     // 6. Unmap the temporary PT mapping created by get_pte_ptr
-    paging_temp_unmap_vaddr((void*)TEMP_MAP_ADDR_PT);
+    paging_temp_unmap((void*)TEMP_MAP_ADDR_PT);
 
     // 7. Invalidate TLB for the specific user page
     paging_invalidate_page((void*)page_addr);

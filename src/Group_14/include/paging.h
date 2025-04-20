@@ -186,7 +186,6 @@ void paging_free_user_space(uint32_t *page_directory_phys);
 uintptr_t paging_clone_directory(uint32_t* src_pd_phys);
 int paging_get_physical_address(uint32_t *page_directory_phys, uintptr_t vaddr, uintptr_t *paddr);
 void copy_kernel_pde_entries(uint32_t *new_pd_virt);
-int paging_clear_kernel_pte_unsafe(uintptr_t vaddr); // Consider removing/refactoring if possible
 
 // TLB Management
 void paging_invalidate_page(void *vaddr); // Implemented in ASM

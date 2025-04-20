@@ -123,9 +123,10 @@
  
              if (page_end <= page_start) continue; // Should not happen if memsz > 0
  
-             total_pages_needed += (uint32_t)((page_end - page_start) / PAGE_SIZE);
-             terminal_printf("[elf_loader] Segment %d (vaddr 0x%x, memsz %u) needs %u pages.\n",
-                             i, vaddr_start, phdr->p_memsz, (unsigned int)((page_end - page_start) / PAGE_SIZE));
+             uint32_t pages_needed = (page_end - page_start) / PAGE_SIZE;
+             total_pages_needed += pages_needed;
+             terminal_printf("[elf_loader] Segment %d (vaddr 0x%lx, memsz %lu) needs %u pages.\n",
+                            i, (unsigned long)vaddr_start, (unsigned long)phdr->p_memsz, pages_needed);
          }
      }
  
@@ -134,7 +135,7 @@
          ret = 0; // No segments to load, technically successful? Or return error?
          goto cleanup_file;
      }
-     terminal_printf("[elf_loader] Total pages to allocate: %u\n", total_pages_needed);
+     terminal_printf("[elf_loader] Total pages to allocate: %lu\n", (unsigned long)total_pages_needed);
  
      // 4. Allocate tracking array for physical frames
      phys_frames = kmalloc(total_pages_needed * sizeof(allocated_page_info_t));
@@ -251,7 +252,7 @@
              }
  
              // Temporarily map this physical page into kernel space
-             void *temp_mapped_page = paging_temp_map_vaddr(PAGING_TEMP_VADDR, phys_addr, PTE_KERNEL_DATA_FLAGS);
+             void *temp_mapped_page = paging_temp_map(phys_addr, PTE_KERNEL_DATA_FLAGS);
              if (!temp_mapped_page) {
                  terminal_printf("[elf_loader] Error: Failed to temporarily map paddr 0x%lx (Seg %d).\n", (unsigned long)phys_addr, i);
                  ret = -1;
@@ -281,7 +282,7 @@
              }
  
              // Unmap the temporary page
-             paging_temp_unmap_vaddr(temp_mapped_page);
+             paging_temp_unmap(temp_mapped_page);
  
              bytes_processed += bytes_to_process_this_page;
              current_vaddr += bytes_to_process_this_page;
@@ -330,4 +331,31 @@
           terminal_printf("[elf_loader] load_elf_binary failed (code %d).\n", ret);
      }
      return ret;
+ }
+ 
+ /**
+  * @brief Loads a 32-bit ELF file into the given process address space.
+  *
+  * @param path          Path to the ELF file in your filesystem
+  * @param mm            Pointer to the process memory manager (page directory, etc.)
+  * @param entry_point   [out] Receives the ELF's entry point
+  * @param initial_brk   [out] Receives the initial brk (heap start)
+  * @return 0 on success, negative on failure
+  */
+ int load_elf_and_init_memory(const char *path,
+                              mm_struct_t *mm,
+                              uint32_t *entry_point,
+                              uintptr_t *initial_brk) {
+     // This is a wrapper function that delegates to load_elf_binary
+     // and adds any additional memory setup needed
+     
+     // Implementation to be added based on process.c functionality
+     // This would include:
+     // 1. Call load_elf_binary to load segments
+     // 2. Calculate initial_brk based on highest loaded address
+     // 3. Initialize heap/stack/other VMAs as needed
+     
+     // For now, just return not implemented
+     terminal_printf("[elf_loader] load_elf_and_init_memory is not fully implemented.\n");
+     return -1;
  }

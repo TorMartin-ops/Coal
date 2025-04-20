@@ -247,7 +247,7 @@
 
      // Temporarily map the physical frame into kernel space
      PROC_DEBUG_PRINTF("Calling paging_temp_map_vaddr for P=%#lx\n", (unsigned long)frame_paddr);
-     void* temp_vaddr = paging_temp_map_vaddr(PAGING_TEMP_VADDR, frame_paddr, PTE_KERNEL_DATA_FLAGS);
+     void* temp_vaddr = paging_temp_map(frame_paddr, PTE_KERNEL_DATA_FLAGS);
      
      if (temp_vaddr == NULL) {
          terminal_printf("[Process] copy_elf_segment_data: ERROR: paging_temp_map_vaddr failed (paddr=%#lx).\n", (unsigned long)frame_paddr);
@@ -269,7 +269,7 @@
 
      // Unmap the specific temporary kernel mapping
     PROC_DEBUG_PRINTF("Calling paging_temp_unmap_vaddr for V=%p", temp_vaddr);
-    paging_temp_unmap_vaddr(temp_vaddr); // Use new function
+    paging_temp_unmap(temp_vaddr);
     PROC_DEBUG_PRINTF("Exit OK");
     return 0; // success
  }
@@ -636,9 +636,7 @@
      // --- Initialize Page Directory ---
      PROC_DEBUG_PRINTF("Step 3: Initialize Page Directory (PD Phys=%#lx)\n", (unsigned long)pd_phys);
      PROC_DEBUG_PRINTF("  Calling paging_temp_map_vaddr...\n");
-      proc_pd_virt_temp = paging_temp_map_vaddr(PAGING_TEMP_VADDR, // Use the defined temporary VAddr
-                                          pd_phys,
-                                          PTE_KERNEL_DATA_FLAGS); // Kernel RW flags
+     proc_pd_virt_temp = paging_temp_map(pd_phys, PTE_KERNEL_DATA_FLAGS);
      PROC_DEBUG_PRINTF("  paging_temp_map_vaddr returned %p\n", proc_pd_virt_temp);
      if (proc_pd_virt_temp == NULL) {
          terminal_printf("[Process] ERROR: Failed to temp map new PD for PID %lu.\n", (unsigned long)proc->pid);
@@ -655,7 +653,7 @@
      // Set up recursive mapping entry for the new PD itself
      ((uint32_t*)proc_pd_virt_temp)[RECURSIVE_PDE_INDEX] = (pd_phys & PAGING_ADDR_MASK) | PAGE_PRESENT | PAGE_RW | PAGE_NX_BIT; // Kernel RW, NX ok
      PROC_DEBUG_PRINTF("  Calling paging_temp_unmap_vaddr for %p...\n", proc_pd_virt_temp);
-     paging_temp_unmap_vaddr(proc_pd_virt_temp); // <<< FIX: Call new function
+     paging_temp_unmap(proc_pd_virt_temp);
      pd_mapped_temp = false;
      proc_pd_virt_temp = NULL;
      PROC_DEBUG_PRINTF("  PD Initialization complete.\n");
@@ -796,7 +794,8 @@
      // Ensure temporary PD mapping is undone if it was active
      if (pd_mapped_temp && proc_pd_virt_temp != NULL) {
          PROC_DEBUG_PRINTF("  Cleaning up temporary PD mapping %p\n", proc_pd_virt_temp);
-         paging_temp_unmap_vaddr(proc_pd_virt_temp);
+         paging_temp_unmap(proc_pd_virt_temp);
+
      }
 
      // Free the initial user stack physical frame ONLY if it was allocated but mapping FAILED
