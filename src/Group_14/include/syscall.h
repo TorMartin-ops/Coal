@@ -1,43 +1,57 @@
-#pragma once
 #ifndef SYSCALL_H
 #define SYSCALL_H
 
-#include "types.h"
+#include <libc/stdint.h> // For uint32_t etc.
 
-// System call numbers.
-enum {
-    SYS_WRITE  = 1,
-    SYS_EXIT   = 2,
-    SYS_MMAP   = 3,
-    SYS_MUNMAP = 4,
-    SYS_BRK    = 5, // Added brk syscall number
-    // Add more syscalls up to MAX_SYSCALL
-};
+// Define system call numbers
+#define SYS_EXIT    1
+#define SYS_FORK    2   // Example
+#define SYS_READ    3   // Example
+#define SYS_WRITE   4
+// Add other syscall numbers...
+#define SYS_OPEN    5   // Example
+#define SYS_CLOSE   6   // Example
+// ... up to your maximum number
 
-// --- mmap protection flags ---
-#define PROT_NONE       0x0     /* Page cannot be accessed */
-#define PROT_READ       0x1     /* Page can be read */
-#define PROT_WRITE      0x2     /* Page can be written */
-#define PROT_EXEC       0x4     /* Page can be executed */
-
-// --- mmap mapping flags ---
-#define MAP_SHARED      0x01    /* Share changes */
-#define MAP_PRIVATE     0x02    /* Changes are private (copy-on-write) */
-#define MAP_FIXED       0x10    /* Interpret addr exactly */
-#define MAP_ANONYMOUS   0x20    /* Don't use a file */
-// Add other flags like MAP_NORESERVE, MAP_POPULATE as needed
-
-
+/**
+ * @brief Structure holding the register context saved by the syscall handler stub.
+ * The order MUST exactly match the order of registers pushed by the
+ * syscall assembly handler (`syscall_handler_asm` in syscall.asm).
+ * Typically corresponds to `pusha` order plus segments and original stack ptrs.
+ */
 typedef struct syscall_context {
-    // Pushed by syscall_handler_asm (order: pusha, segments)
-    uint32_t gs, fs, es, ds;
-    uint32_t edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax;
+    // Registers saved by pusha (adjust order/content based on syscall.asm!)
+    uint32_t edi;
+    uint32_t esi;
+    uint32_t ebp;
+    uint32_t esp_dummy; // ESP value before pusha, often ignored
+    uint32_t ebx;
+    uint32_t edx;
+    uint32_t ecx;
+    uint32_t eax;       // Syscall number input, return value output
 
-    // Pushed by CPU during interrupt
-    uint32_t eip, cs, eflags, user_esp, user_ss;
-} syscall_context_t;
+    // Segment registers saved manually (if needed)
+    uint32_t ds;
+    uint32_t es;
+    uint32_t fs;
+    uint32_t gs;
 
+    // Information pushed by CPU during interrupt/trap (if syscall uses INT)
+    // uint32_t eip;    // User EIP
+    // uint32_t cs;     // User CS
+    // uint32_t eflags; // User EFLAGS
+    // uint32_t esp_user; // User ESP (if privilege change)
+    // uint32_t ss_user;  // User SS (if privilege change)
 
+} __attribute__((packed)) syscall_context_t; // Use packed if needed
+
+/**
+ * @brief The main C entry point for system calls.
+ * Called by the assembly stub (`syscall_handler_asm`).
+ *
+ * @param ctx Pointer to the saved register context.
+ * @return Value to place back into the user process's EAX register.
+ */
 int syscall_handler(syscall_context_t *ctx);
 
 #endif // SYSCALL_H

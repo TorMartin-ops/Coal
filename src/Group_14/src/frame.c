@@ -115,7 +115,7 @@ static void mark_reserved_range(uintptr_t start, uintptr_t end, const char* name
         if (pfn < g_total_frames) {
              g_frame_refcounts[pfn] = 1;
         } else {
-             terminal_printf("[Mark Reserved] Warning: Calculated PFN %u exceeds g_total_frames %u\n", pfn, g_total_frames);
+            terminal_printf("[Mark Reserved] Warning: Calculated PFN %lu exceeds g_total_frames %lu\n", (unsigned long)pfn, (unsigned long)g_total_frames);
         }
     }
 }
@@ -156,8 +156,7 @@ int frame_init(struct multiboot_tag_mmap *mmap_tag_virt,
     uintptr_t aligned_highest = ALIGN_UP(g_highest_address, PAGE_SIZE); if (aligned_highest == 0 && g_highest_address > 0) aligned_highest = UINTPTR_MAX;
     g_highest_address = aligned_highest;
     g_total_frames = addr_to_pfn(g_highest_address); if (g_total_frames == 0) { FRAME_PANIC("Total frame count is zero!"); }
-    terminal_printf("  Detected highest physical address (aligned): 0x%x (%u total frames)\n", g_highest_address, g_total_frames);
-
+    terminal_printf(" Detected highest physical address (aligned): %#lx (%lu total frames)\n", (unsigned long)g_highest_address, (unsigned long)g_total_frames);
     // 3. Allocate physical memory for refcount array
     if (g_total_frames > (SIZE_MAX / sizeof(uint32_t))) { FRAME_PANIC("Refcount array size calculation overflows size_t!"); }
     size_t refcount_array_size_bytes = g_total_frames * sizeof(uint32_t);

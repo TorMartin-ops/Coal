@@ -299,8 +299,7 @@
      // Note: objs_this_slab might be smaller than cache->objs_per_slab_max due to coloring
      uintptr_t data_end = data_start + (slab->objs_this_slab * cache->internal_slot_size);
      if (obj_addr < data_start || obj_addr >= data_end || ((obj_addr - data_start) % cache->internal_slot_size) != 0) {
-         terminal_printf("[Slab] Cache '%s': ERROR freeing obj 0x%x - Addr out of range/misaligned for slab 0x%x (color %d)!\n",
-                         cache->name, obj_addr, slab_base, slab->color_offset);
+        terminal_printf("[Syscall] Error: PID %lu requested unknown syscall number %lu.\n", (unsigned long)current_pid, (unsigned long)syscall_num);
          spinlock_release_irqrestore(&cache->lock, irq_flags); return;
      }
  

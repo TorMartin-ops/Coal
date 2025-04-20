@@ -1,89 +1,46 @@
 #ifndef UACCESS_H
 #define UACCESS_H
 
-#include "types.h"
-#include "mm.h" // <<< Corrected include: Use mm.h directly
+#include <libc/stddef.h> // For size_t
+#include <libc/stdbool.h> // For bool
+#include <libc/stdint.h> // For uintptr_t (if using C99 standard, otherwise define appropriately)
 
-// Access verification flags (permissions requested)
-#define VERIFY_READ  0x01
-#define VERIFY_WRITE 0x02
-
-// Standard Linux-like error codes (define these centrally if possible)
-#ifndef EFAULT
-#define EFAULT 14  // Bad address
-#endif
-#ifndef EINVAL
-#define EINVAL 22  // Invalid argument
-#endif
-#ifndef ENOMEM
-#define ENOMEM 12 // Out of memory
-#endif
-#ifndef EACCES
-#define EACCES 13 // Permission denied
-#endif
-#ifndef ENOSYS
-#define ENOSYS 38 // Function not implemented
-#endif
-#ifndef EBADF
-#define EBADF 9 // Bad file descriptor
-#endif
-
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+// Verification type flags for access_ok
+#define VERIFY_READ  1
+#define VERIFY_WRITE 2
 
 /**
- * @brief Checks if a userspace memory range is accessible for read/write.
- * Verifies that the entire range falls within valid VMAs of the current process
- * and has the appropriate permissions (VM_READ or VM_WRITE). Checks against
- * kernel space boundaries and potential overflows.
+ * @brief Checks if a userspace memory range is potentially accessible based on VMAs.
+ * WARNING: Does NOT guarantee pages are mapped or present.
  *
- * @param type Bitmask of VERIFY_READ and/or VERIFY_WRITE.
- * @param uaddr Start address in userspace.
- * @param size Size of the memory range.
- * @return true if the entire range is accessible with the specified type, false otherwise.
+ * @param type VERIFY_READ, VERIFY_WRITE, or (VERIFY_READ | VERIFY_WRITE).
+ * @param uaddr The starting user virtual address (32-bit).
+ * @param size The size of the memory range in bytes.
+ * @return true if the range is covered by valid VMAs with correct permissions, false otherwise.
  */
 bool access_ok(int type, const void *uaddr, size_t size);
 
 /**
- * @brief Copies a block of memory from userspace to kernelspace.
- * Includes address validation via access_ok.
+ * @brief Copies 'n' bytes from userspace 'u_src' to kernelspace 'k_dst'.
+ * Handles page faults during the copy using the exception table mechanism.
  *
- * WARNING: THIS IS CURRENTLY AN UNSAFE STUB IMPLEMENTATION.
- * A production kernel requires architecture-specific assembly or page fault
- * handling mechanisms (e.g., exception tables) to safely handle faults
- * during the copy process itself. This stub uses memcpy and will likely
- * cause a kernel panic if 'u_src' points to an unmapped page within an
- * otherwise valid VMA range.
- *
- * @param k_dst Destination buffer in kernelspace. Must be non-NULL and large enough.
- * @param u_src Source buffer in userspace. Must be validated by caller or internally.
+ * @param k_dst Kernel destination buffer. Must be valid kernel memory.
+ * @param u_src User source buffer. Access is checked.
  * @param n Number of bytes to copy.
- * @return Number of bytes NOT copied (0 on success, >0 on failure).
- * On failure, the contents of k_dst beyond successfully copied bytes are undefined.
+ * @return 0 on success, or the number of bytes *that could not be copied* on failure (due to fault).
  */
 size_t copy_from_user(void *k_dst, const void *u_src, size_t n);
 
 /**
- * @brief Copies a block of memory from kernelspace to userspace.
- * Includes address validation via access_ok.
+ * @brief Copies 'n' bytes from kernelspace 'k_src' to userspace 'u_dst'.
+ * Handles page faults during the copy using the exception table mechanism.
  *
- * WARNING: THIS IS CURRENTLY AN UNSAFE STUB IMPLEMENTATION. See copy_from_user.
- * A production kernel requires fault handling. This stub uses memcpy and
- * will likely cause a kernel panic if 'u_dst' points to an unmapped or
- * read-only page within an otherwise valid VMA range.
- *
- * @param u_dst Destination buffer in userspace. Must be validated by caller or internally.
- * @param k_src Source buffer in kernelspace. Must be non-NULL.
+ * @param u_dst User destination buffer. Access is checked.
+ * @param k_src Kernel source buffer. Must be valid kernel memory.
  * @param n Number of bytes to copy.
- * @return Number of bytes NOT copied (0 on success, >0 on failure).
+ * @return 0 on success, or the number of bytes *that could not be copied* on failure (due to fault).
  */
 size_t copy_to_user(void *u_dst, const void *k_src, size_t n);
 
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif // UACCESS_H

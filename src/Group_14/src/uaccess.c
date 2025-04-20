@@ -1,151 +1,134 @@
 #include "uaccess.h"
-#include "paging.h"     // For KERNEL_SPACE_VIRT_START
-#include "process.h"    // For get_current_process()
-#include "mm.h"         // For find_vma, VM_READ, VM_WRITE
-#include "terminal.h"   // For debugging output
-#include "assert.h"     // For KERNEL_ASSERT
-#include "string.h"     // For memcpy (in the unsafe stub)
+#include "paging.h"     // For KERNEL_SPACE_VIRT_START definition
+#include "process.h"    // For get_current_process(), pcb_t
+#include "mm.h"         // For mm_struct_t, vma_struct_t, find_vma, VM_READ, VM_WRITE
+#include "terminal.h"   // For debugging output (optional)
+#include "assert.h"     // For KERNEL_ASSERT (optional)
+#include "fs_errno.h"   // For error codes like EFAULT
+
+// External assembly routine prototypes
+extern size_t _raw_copy_from_user(void *k_dst, const void *u_src, size_t n);
+extern size_t _raw_copy_to_user(void *u_dst, const void *k_src, size_t n);
+
 
 /**
- * @brief Checks if a userspace memory range is accessible for read/write.
- * (Implementation of the function declared in uaccess.h)
+ * @brief Checks if a userspace memory range is potentially accessible based on VMAs.
+ * (Implementation assumes find_vma and process structures exist as used below)
  */
 bool access_ok(int type, const void *uaddr_void, size_t size) {
-    uintptr_t uaddr = (uintptr_t)uaddr_void;
-    uintptr_t end_addr;
+    uint32_t uaddr = (uint32_t)(uintptr_t)uaddr_void; // Use 32-bit address
+    uint32_t end_addr;
 
-    // Basic checks: NULL pointer, kernel address space, size overflow
-    if (!uaddr_void) {
-        // terminal_write("[access_ok] Error: NULL pointer provided.\n");
-        return false;
-    }
-    if (uaddr >= KERNEL_SPACE_VIRT_START) {
-        // terminal_printf("[access_ok] Error: Start address 0x%lx is not in user space.\n", (unsigned long)uaddr);
-        return false;
-    }
-    if (size == 0) {
-        return true; // Zero size range is trivially OK
-    }
-    // Check for overflow when calculating end address
-    if (__builtin_add_overflow(uaddr, size, &end_addr)) {
-        // terminal_printf("[access_ok] Error: Overflow calculating end address for 0x%lx + %lu\n", (unsigned long)uaddr, (unsigned long)size);
-        return false;
-    }
-    // Check if end address (exclusive) crosses into kernel space or wraps around
-    if (end_addr > KERNEL_SPACE_VIRT_START || end_addr <= uaddr) {
-         // terminal_printf("[access_ok] Error: Range [0x%lx - 0x%lx) crosses boundary or wraps.\n", (unsigned long)uaddr, (unsigned long)end_addr);
-         return false;
-    }
+    // 1. Basic Pointer and Range Checks
+    if (!uaddr_void && size > 0) { return false; }
+    if (size == 0) { return true; }
 
-    // Get current process and its memory map
+    // Check if start address is in kernel space. Ensure KERNEL_SPACE_VIRT_START is defined correctly.
+    #ifndef KERNEL_SPACE_VIRT_START
+    #error "KERNEL_SPACE_VIRT_START is not defined! Check paging.h"
+    #endif
+    if (uaddr >= KERNEL_SPACE_VIRT_START) { return false; }
+
+    // Check for arithmetic overflow (32-bit).
+    if (__builtin_add_overflow(uaddr, size, &end_addr)) { return false; }
+
+    // Check if the range ends in kernel space or wraps around. End address is exclusive.
+    if (end_addr > KERNEL_SPACE_VIRT_START || end_addr <= uaddr) { return false; }
+
+    // 2. VMA Checks
     pcb_t *current_proc = get_current_process();
     if (!current_proc || !current_proc->mm) {
-        // terminal_printf("[access_ok] Error: No current process or mm_struct for validation.\n");
-        return false; // Cannot verify without process context
+        // Cannot verify VMAs without process context. Safer to deny access.
+        // terminal_printf("[access_ok] Warning: No current process or mm_struct.\n");
+        return false;
     }
     mm_struct_t *mm = current_proc->mm;
 
-    // Check VMA coverage and permissions for the entire range
-    uintptr_t current_check_addr = uaddr;
+    // Iterate through the required range, checking VMA coverage and permissions.
+    uint32_t current_check_addr = uaddr;
     while (current_check_addr < end_addr) {
+        // Assuming find_vma takes mm_struct_t* and a 32-bit address
         vma_struct_t *vma = find_vma(mm, current_check_addr);
 
-        // Check if address is covered by *any* VMA
         if (!vma || current_check_addr < vma->vm_start) {
-            // terminal_printf("[access_ok] Error: Address 0x%lx not covered by any VMA.\n", (unsigned long)current_check_addr);
-            return false; // Address is outside any defined user memory region
+            // terminal_printf("[access_ok] Error: Address 0x%x not in VMA.\n", current_check_addr);
+            return false; // Gap in VMA coverage.
         }
 
-        // Check permissions required by 'type' against VMA flags
-        uint32_t vma_flags = vma->vm_flags;
-        // Verify read permission if VERIFY_READ is requested
-        bool read_ok = !(type & VERIFY_READ) || (vma_flags & VM_READ);
-        // Verify write permission if VERIFY_WRITE is requested
-        bool write_ok = !(type & VERIFY_WRITE) || (vma_flags & VM_WRITE);
-
+        // Check VMA permissions. Assuming VM_READ/VM_WRITE flags exist.
+        bool read_needed = (type & VERIFY_READ);
+        bool write_needed = (type & VERIFY_WRITE);
+        bool read_ok = !read_needed || (vma->vm_flags & VM_READ);
+        bool write_ok = !write_needed || (vma->vm_flags & VM_WRITE);
 
         if (!read_ok || !write_ok) {
-            // terminal_printf("[access_ok] Error: VMA [%#lx-%#lx) lacks required permission(s) (R:%d, W:%d requested type %d) for address 0x%lx.\n",
-            //                (unsigned long)vma->vm_start, (unsigned long)vma->vm_end,
-            //                (vma_flags & VM_READ) ? 1 : 0, (vma_flags & VM_WRITE) ? 1: 0, type,
-            //                (unsigned long)current_check_addr);
+            // terminal_printf("[access_ok] Error: VMA lacks permissions for 0x%x.\n", current_check_addr);
             return false;
         }
 
-        // Advance check address to the end of this VMA, capped by the requested end_addr
-        uintptr_t next_check_boundary = vma->vm_end;
+        // Advance check address to the end of this VMA or the requested end, whichever comes first.
+        uint32_t next_check_boundary = vma->vm_end;
         if (next_check_boundary > end_addr) {
             next_check_boundary = end_addr;
         }
-        // Basic check to prevent infinite loops if vma->vm_end isn't advancing
         if (next_check_boundary <= current_check_addr) {
-             // terminal_printf("[access_ok] Error: VMA end address logic error.\n");
-             // This likely indicates a corrupted VMA list or logic error in find_vma/insert_vma
-             return false;
+            // terminal_printf("[access_ok] FATAL: VMA loop error near 0x%x.\n", current_check_addr);
+            return false; // Prevent infinite loop
         }
         current_check_addr = next_check_boundary;
     }
-
-    // If loop completed, the entire range is covered by VMAs with sufficient permissions
-    return true;
+    return true; // Entire range covered by VMAs with correct permissions.
 }
 
 
-// ========================================================================
-// WARNING: UNSAFE STUB IMPLEMENTATION of copy_from_user
-// ========================================================================
-// A production kernel MUST replace this with an architecture-specific,
-// fault-handling routine (e.g., using assembly and exception tables).
-// This version will cause a KERNEL PAGE FAULT if u_src points to an
-// unmapped page within an otherwise valid VMA range.
-// ========================================================================
+/**
+ * @brief Copies 'n' bytes from userspace 'u_src' to kernelspace 'k_dst'.
+ * Handles page faults using assembly helper and exception table.
+ */
 size_t copy_from_user(void *k_dst, const void *u_src, size_t n) {
-    // Basic checks
-    if (!k_dst || !u_src) return n;
+    // Check basic conditions
     if (n == 0) return 0;
+    if (!k_dst) return n; // Invalid kernel buffer
 
-    // Use access_ok for validation (caller should ideally do this too)
-    // This check is crucial but does NOT guarantee pages are mapped/readable.
+    // Check VMA permissions *before* attempting the potentially faulting copy.
+    // This avoids calling the assembly if the VMA setup itself prohibits access.
     if (!access_ok(VERIFY_READ, u_src, n)) {
-         return n; // Indicate all bytes failed
+        // terminal_printf("[CopyFromUser] access_ok failed src=%p size=%u\n", u_src, n);
+        return n; // Return 'n' indicating all 'n' bytes failed (due to bad VMA).
     }
 
-    // --- THE UNSAFE PART ---
-    // This memcpy will PANIC THE KERNEL if a page fault occurs reading u_src.
-    memcpy(k_dst, u_src, n);
-    // --- END UNSAFE PART ---
+    // Call the assembly routine which handles potential faults.
+    // It returns the number of bytes *not* copied.
+    size_t not_copied = _raw_copy_from_user(k_dst, u_src, n);
 
-    // If memcpy didn't fault, this stub returns 0 (success).
-    // A real implementation returns the number of bytes *not* copied if a fault occurred.
-    return 0;
+    // if (not_copied > 0) {
+    //     terminal_printf("[CopyFromUser] Faulted after copying %u bytes from %p\n", n - not_copied, u_src);
+    // }
+
+    return not_copied; // 0 on success, >0 on partial copy due to fault
 }
 
-// ========================================================================
-// WARNING: UNSAFE STUB IMPLEMENTATION of copy_to_user
-// ========================================================================
-// A production kernel MUST replace this with an architecture-specific,
-// fault-handling routine (e.g., using assembly and exception tables).
-// This version will cause a KERNEL PAGE FAULT if u_dst points to an
-// unmapped or read-only page within an otherwise valid VMA range.
-// ========================================================================
+/**
+ * @brief Copies 'n' bytes from kernelspace 'k_src' to userspace 'u_dst'.
+ * Handles page faults using assembly helper and exception table.
+ */
 size_t copy_to_user(void *u_dst, const void *k_src, size_t n) {
-    // Basic checks
-    if (!k_src || !u_dst) return n;
-     if (n == 0) return 0;
+    // Check basic conditions
+    if (n == 0) return 0;
+    if (!k_src) return n; // Invalid kernel buffer
 
-    // Use access_ok for validation (caller should ideally do this too)
-    // This check is crucial but does NOT guarantee pages are mapped/writable.
+    // Check VMA permissions *before* attempting the potentially faulting copy.
     if (!access_ok(VERIFY_WRITE, u_dst, n)) {
-        return n; // Indicate all bytes failed
+        // terminal_printf("[CopyToUser] access_ok failed dst=%p size=%u\n", u_dst, n);
+        return n; // Return 'n' indicating all 'n' bytes failed (due to bad VMA).
     }
 
-    // --- THE UNSAFE PART ---
-    // This memcpy will PANIC THE KERNEL if a page fault occurs writing to u_dst
-    // (e.g., page not present, write protection violation).
-    memcpy(u_dst, k_src, n);
-    // --- END UNSAFE PART ---
+    // Call the assembly routine which handles potential faults.
+    size_t not_copied = _raw_copy_to_user(u_dst, k_src, n);
 
-    // If memcpy didn't fault, this stub returns 0 (success).
-    // A real implementation returns the number of bytes *not* copied if a fault occurred.
-    return 0;
+    // if (not_copied > 0) {
+    //     terminal_printf("[CopyToUser] Faulted after copying %u bytes to %p\n", n - not_copied, u_dst);
+    // }
+
+    return not_copied; // 0 on success, >0 on partial copy due to fault
 }

@@ -209,14 +209,15 @@ void copy_kernel_pde_entries(uint32_t *new_pd_virt); // Confirmed void return ty
  * @param phys_addr The physical address of the page frame to map.
  * @return The kernel virtual address where the page was mapped (PAGING_TEMP_VADDR), or NULL on failure.
  */
-void* paging_temp_map(uintptr_t phys_addr);
+void* paging_temp_map_vaddr(uintptr_t temp_vaddr, uintptr_t phys_addr, uint32_t flags);
+
 
 /**
  * @brief Unmaps the dedicated temporary virtual address (PAGING_TEMP_VADDR).
  *
  * @param temp_vaddr The virtual address returned by paging_temp_map (MUST be PAGING_TEMP_VADDR).
  */
-void paging_temp_unmap(void* temp_vaddr);
+ void paging_temp_unmap_vaddr(void* temp_vaddr);
 // <<< END ADDED >>>
 
 int paging_clear_kernel_pte_unsafe(uintptr_t vaddr);

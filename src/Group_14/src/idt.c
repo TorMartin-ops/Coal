@@ -75,9 +75,9 @@
         // --- FATAL KERNEL EXCEPTION DURING INIT/IDLE ---
         // No process context exists, cannot terminate gracefully. This is critical.
         terminal_printf("\n--- KERNEL PANIC (via Default Handler) ---\n");
-        terminal_printf(" Unhandled Exception/Interrupt: %u (Error Code: 0x%x)\n", regs->int_no, regs->err_code); // Use %u for int_no
+        terminal_printf(" Unhandled Exception/Interrupt: %lu (Error Code: %#lx)\n",(unsigned long)regs->int_no, (unsigned long)regs->err_code);// Use %u for int_no
         terminal_printf(" Occurred before scheduler context switch (current_process is NULL).\n");
-        terminal_printf(" EIP: 0x%x CS: 0x%x EFLAGS: 0x%x\n", regs->eip, regs->cs, regs->eflags);
+        terminal_printf(" EIP: %p CS: %#x EFLAGS: %#lx\n", (void*)regs->eip, (unsigned int)regs->cs, (unsigned long)regs->eflags);
          if (regs->cs & 0x3) { // Check if CPU *thought* it was user mode (due to corruption)
              terminal_printf(" UserESP: 0x%x UserSS: 0x%x (Note: CPU was in user mode flag!)\n", regs->user_esp, regs->user_ss);
          } else {

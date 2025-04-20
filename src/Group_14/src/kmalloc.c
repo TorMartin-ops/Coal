@@ -232,7 +232,7 @@ void kfree(void *ptr) {
 
     #ifdef KMALLOC_HEADER_MAGIC
     if (header->magic != KMALLOC_HEADER_MAGIC) {
-        terminal_printf("[kfree] Error: Invalid magic number on free at 0x%x (header 0x%x)!\n", (uintptr_t)ptr, (uintptr_t)header);
+        terminal_printf("[kfree] Error: Invalid magic number on free at %p (header %p)!\n", ptr, header);
         // Optionally: Panic or log more details
         return; // Don't proceed with free
     }

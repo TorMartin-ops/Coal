@@ -1,46 +1,55 @@
-; syscall.asm
-; Assembly stub for system calls via INT 0x80.
-
-global syscall_handler_asm
-extern syscall_handler  ; The C-level function we call.
+; src/syscall.asm - System Call Handler Stub (e.g., for int 0x80)
 
 section .text
+global syscall_handler_asm  ; Export symbol for IDT registration (if using INT)
+extern syscall_handler      ; C handler function
 
-; 
-; syscall_handler_asm - Interrupt Service Routine for INT 0x80.
-; Saves CPU registers and segments, sets DS/ES/FS/GS to known values,
-; then calls C function `syscall_handler(syscall_context_t *ctx)`.
-; The stack layout at entry (x86 cdecl):
-;   [ESP] = EIP to return from
-;   [ESP+4..] saved by CPU for iret, but we push them in pushad, etc.
-;
+; Define kernel data segment selector (must match your GDT)
+%define KERNEL_DATA_SELECTOR 0x10
 
 syscall_handler_asm:
-    pusha                      ; Save general-purpose registers (EDI, ESI, EBP, ESP, EBX, EDX, ECX, EAX).
+    ; This handler is typically invoked via 'int 0x80' from user space.
+    ; CPU pushes: EFLAGS, CS (user), EIP (user), [SS (user), ESP (user) if priv change]
+    ; Stack top -> bottom: [UserSS], [UserESP], EIP, CS, EFLAGS
+    ; NO Error Code is pushed for 'int n'.
+
+    ; 1. Save general registers using pusha (ensure order matches syscall_context_t)
+    pusha               ; edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax (Syscall number is in EAX)
+
+    ; 2. Save segment registers used by kernel (DS, ES important, FS/GS maybe too)
     push ds
     push es
     push fs
     push gs
 
-    ; (Optional) Set known data segments if you use ring 3 or want consistent segments.
-    mov ax, 0x10              ; 0x10 is the kernel data selector (index=2 in GDT).
+    ; 3. Set up Kernel Data Segments
+    ; The CPU might have loaded user segments on entry. Load kernel segments.
+    mov ax, KERNEL_DATA_SELECTOR
     mov ds, ax
     mov es, ax
-    mov fs, ax
-    mov gs, ax
+    ; FS/GS setup might depend on your kernel's usage (e.g., TLS, Per-CPU data)
+    ; mov fs, ax ; Example if needed
+    ; mov gs, ax ; Example if needed
 
-    ; At this point, ESP points to the top of the "syscall context" structure:
-    ;   struct syscall_context_t + saved EIP, code segment, EFLAGS, ...
-    ; We'll pass the pointer to the structure to our C handler.
-    mov eax, esp              ; EAX = &saved registers
-    push eax                  ; push as an argument to syscall_handler(...)
 
-    call syscall_handler      ; EAX = return value from C (optionally stored in ctx->eax).
-    add esp, 4                ; pop the argument from stack
+    ; 4. Call the C syscall handler
+    ; Pass ESP (pointing to the saved state) as the argument (pointer to syscall_context_t)
+    push esp            ; Push pointer to context structure
+    call syscall_handler
+    add esp, 4          ; Clean up argument from stack
 
+    ; EAX now holds the return value from the C handler. It will remain in EAX for the user.
+
+    ; 5. Restore segment registers (in reverse order)
     pop gs
     pop fs
     pop es
     pop ds
-    popa                      ; Restore general-purpose registers
-    iret                      ; Return from interrupt => resume caller
+
+    ; 6. Restore general registers (EAX contains the return value, popa restores it)
+    popa
+
+    ; 7. Return to user space
+    ; The CPU state (EIP, CS, EFLAGS, User ESP, User SS) is already on the stack
+    ; from the initial 'int 0x80'. IRET will pop them automatically.
+    iret

@@ -246,13 +246,15 @@
      KERNEL_ASSERT(size_to_copy + zero_padding <= PAGE_SIZE, "ELF copy + zero exceeds frame");
 
      // Temporarily map the physical frame into kernel space
-     PROC_DEBUG_PRINTF("Calling paging_temp_map for P=%#lx\n", (unsigned long)frame_paddr);
-     void* temp_vaddr = paging_temp_map(frame_paddr);
+     PROC_DEBUG_PRINTF("Calling paging_temp_map_vaddr for P=%#lx\n", (unsigned long)frame_paddr);
+     void* temp_vaddr =  paging_temp_map_vaddr(TEMP_MAP_ADDR_PF,          // <<< Arg 1: Specific Temp VAddr
+                                             frame_paddr,               // <<< Arg 2: Physical Addr
+                                             PTE_KERNEL_DATA_FLAGS);    // <<< Arg 3: Flags (Kernel RW)
      if (temp_vaddr == NULL) {
-         terminal_printf("[Process] copy_elf_segment_data: ERROR: paging_temp_map failed (paddr=%#lx).\n", (unsigned long)frame_paddr);
+         terminal_printf("[Process] copy_elf_segment_data: ERROR: paging_temp_map_vaddr failed (paddr=%#lx).\n", (unsigned long)frame_paddr);
          return -1;
      }
-     PROC_DEBUG_PRINTF("paging_temp_map returned V=%p\n", temp_vaddr);
+     PROC_DEBUG_PRINTF("paging_temp_map_vaddr returned V=%p\n", temp_vaddr);
 
      // Copy data from ELF file buffer
      if (size_to_copy > 0) {
@@ -266,11 +268,11 @@
          memset((uint8_t*)temp_vaddr + size_to_copy, 0, zero_padding);
      }
 
-     // Unmap the temporary kernel mapping
-     PROC_DEBUG_PRINTF("Calling paging_temp_unmap for V=%p\n", temp_vaddr);
-     paging_temp_unmap(temp_vaddr); // Crucial for releasing the temporary virtual address
-     PROC_DEBUG_PRINTF("Exit OK\n");
-     return 0; // success
+     // Unmap the specific temporary kernel mapping
+    PROC_DEBUG_PRINTF("Calling paging_temp_unmap_vaddr for V=%p", temp_vaddr);
+    paging_temp_unmap_vaddr(temp_vaddr); // Use new function
+    PROC_DEBUG_PRINTF("Exit OK");
+    return 0; // success
  }
 
 
@@ -634,9 +636,11 @@
 
      // --- Initialize Page Directory ---
      PROC_DEBUG_PRINTF("Step 3: Initialize Page Directory (PD Phys=%#lx)\n", (unsigned long)pd_phys);
-     PROC_DEBUG_PRINTF("  Calling paging_temp_map...\n");
-     proc_pd_virt_temp = paging_temp_map(pd_phys); // Maps pd_phys -> TEMP_MAP_ADDR_GENERIC
-     PROC_DEBUG_PRINTF("  paging_temp_map returned %p\n", proc_pd_virt_temp);
+     PROC_DEBUG_PRINTF("  Calling paging_temp_map_vaddr...\n");
+      proc_pd_virt_temp = paging_temp_map_vaddr(TEMP_MAP_ADDR_PD, // Specific temp vaddr for PDs
+                                              pd_phys,
+                                              PTE_KERNEL_DATA_FLAGS); // Kernel RW flags
+     PROC_DEBUG_PRINTF("  paging_temp_map_vaddr returned %p\n", proc_pd_virt_temp);
      if (proc_pd_virt_temp == NULL) {
          terminal_printf("[Process] ERROR: Failed to temp map new PD for PID %lu.\n", (unsigned long)proc->pid);
          ret_status = -2;
@@ -651,8 +655,8 @@
      PROC_DEBUG_PRINTF("  Setting recursive entry in temp PD mapping %p...\n", proc_pd_virt_temp);
      // Set up recursive mapping entry for the new PD itself
      ((uint32_t*)proc_pd_virt_temp)[RECURSIVE_PDE_INDEX] = (pd_phys & PAGING_ADDR_MASK) | PAGE_PRESENT | PAGE_RW | PAGE_NX_BIT; // Kernel RW, NX ok
-     PROC_DEBUG_PRINTF("  Calling paging_temp_unmap for %p...\n", proc_pd_virt_temp);
-     paging_temp_unmap(proc_pd_virt_temp); // Unmap the temporary PD mapping
+     PROC_DEBUG_PRINTF("  Calling paging_temp_unmap_vaddr for %p...\n", proc_pd_virt_temp);
+     paging_temp_unmap_vaddr(proc_pd_virt_temp); // <<< FIX: Call new function
      pd_mapped_temp = false;
      proc_pd_virt_temp = NULL;
      PROC_DEBUG_PRINTF("  PD Initialization complete.\n");
@@ -793,7 +797,7 @@
      // Ensure temporary PD mapping is undone if it was active
      if (pd_mapped_temp && proc_pd_virt_temp != NULL) {
          PROC_DEBUG_PRINTF("  Cleaning up temporary PD mapping %p\n", proc_pd_virt_temp);
-         paging_temp_unmap(proc_pd_virt_temp);
+         paging_temp_unmap_vaddr(proc_pd_virt_temp);
      }
 
      // Free the initial user stack physical frame ONLY if it was allocated but mapping FAILED

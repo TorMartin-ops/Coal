@@ -44,6 +44,57 @@ typedef enum fs_error {
     // Add additional error codes as needed.
 } fs_error_t;
 
+
+// --- POSIX Style Error Definitions ---
+// Define standard names used in syscall.c and map them to appropriate *positive* values.
+// System calls traditionally return the *negative* of these values on error.
+
+#define EPERM        1  /* Operation not permitted */
+#define ENOENT       2  /* No such file or directory */
+#define ESRCH        3  /* No such process */
+#define EINTR        4  /* Interrupted system call */
+#define EIO          5  /* I/O error */
+#define ENXIO        6  /* No such device or address */
+#define E2BIG        7  /* Argument list too long */
+#define ENOEXEC      8  /* Exec format error */
+#define EBADF        9  /* Bad file number (maps reasonably to FS_ERR_BAD_F) */
+#define ECHILD      10  /* No child processes */
+#define EAGAIN      11  /* Try again */
+#define ENOMEM      12  /* Out of memory (maps to FS_ERR_OUT_OF_MEMORY) */
+#define EACCES      13  /* Permission denied (maps to FS_ERR_PERMISSION_DENIED) */
+#define EFAULT      14  /* Bad address (maps reasonably to FS_ERR_BOUNDS_VIOLATION or FS_ERR_OUT_OF_BOUNDS) */
+#define ENOTBLK     15  /* Block device required */
+#define EBUSY       16  /* Device or resource busy (maps to FS_ERR_BUSY) */
+#define EEXIST      17  /* File exists (maps to FS_ERR_FILE_EXISTS) */
+#define EXDEV       18  /* Cross-device link */
+#define ENODEV      19  /* No such device */
+#define ENOTDIR     20  /* Not a directory (maps to FS_ERR_NOT_A_DIRECTORY) */
+#define EISDIR      21  /* Is a directory (maps to FS_ERR_IS_A_DIRECTORY) */
+#define EINVAL      22  /* Invalid argument (maps to FS_ERR_INVALID_PARAM) */
+#define ENFILE      23  /* File table overflow */
+#define EMFILE      24  /* Too many open files */
+#define ENOTTY      25  /* Not a typewriter */
+#define ETXTBSY     26  /* Text file busy */
+#define EFBIG       27  /* File too large */
+#define ENOSPC      28  /* No space left on device (maps to FS_ERR_NO_SPACE) */
+#define ESPIPE      29  /* Illegal seek */
+#define EROFS       30  /* Read-only file system (maps to FS_ERR_READ_ONLY) */
+#define EMLINK      31  /* Too many links */
+#define EPIPE       32  /* Broken pipe */
+#define EDOM        33  /* Math argument out of domain of func */
+#define ERANGE      34  /* Math result not representable (maps to FS_ERR_OVERFLOW) */
+#define EDEADLK     35  /* Resource deadlock would occur */
+#define ENAMETOOLONG 36 /* File name too long (maps to FS_ERR_NAMETOOLONG) */
+#define ENOLCK      37  /* No record locks available */
+#define ENOSYS      38  /* Function not implemented (maps to FS_ERR_NOT_SUPPORTED) */
+#define ENOTEMPTY   39  /* Directory not empty */
+#define ELOOP       40  /* Too many symbolic links encountered */
+
+
+// Map specific errors needed by syscall.c if not directly covered above
+// (Example: EFAULT is 14, ENOSYS is 38, EBADF is 9, EINVAL is 22, ENOMEM is 12)
+// The above definitions should cover the errors reported in your build log.
+
 /**
  * fs_strerror
  *

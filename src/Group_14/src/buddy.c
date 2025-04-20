@@ -340,7 +340,7 @@ static int buddy_block_size_to_order(size_t block_size) {
 void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
     uintptr_t heap_region_phys_start = (uintptr_t)heap_region_phys_start_ptr;
     terminal_printf("[Buddy] Initializing...\n");
-    terminal_printf("  Input Region Phys Start: 0x%x, Size: %u bytes\n", heap_region_phys_start, region_size);
+    terminal_printf(" Input Region Phys Start: %#lx, Size: %lu bytes\n", (unsigned long)heap_region_phys_start, (unsigned long)region_size);
 
     // 1. Basic Sanity Checks
     if (heap_region_phys_start == 0 || region_size < MIN_BLOCK_SIZE_INTERNAL) {

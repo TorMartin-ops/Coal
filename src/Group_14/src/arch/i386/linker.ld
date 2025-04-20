@@ -53,4 +53,16 @@ SECTIONS {
     . = ALIGN(4K); /* Optional: Align the end symbol */
     end = .;                  /* Standard symbol for the end */
     _kernel_end_phys = .;     /* Physical end address of the kernel */
+
+
+     /* === ADD THIS SECTION === */
+    /* Exception Table for safe user memory access */
+    . = ALIGN(4); /* Ensure alignment */
+    .ex_table : ALIGN(4) {
+        __start_ex_table = .; /* Symbol marking the start */
+        *(.ex_table)          /* Link all .ex_table sections from .o files */
+        __stop_ex_table = .;  /* Symbol marking the end */
+    }
+    /* === END OF ADDED SECTION === */
+
 }

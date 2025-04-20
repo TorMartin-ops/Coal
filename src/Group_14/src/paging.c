@@ -1257,7 +1257,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
         uintptr_t pt_phys = 0;
 
         // 1. Map target PD temporarily (writable)
-        target_pd_virt_temp = paging_temp_map((uintptr_t)target_page_directory_phys);
+        target_pd_virt_temp = paging_temp_map_vaddr((uintptr_t)target_page_directory_phys);
         if (!target_pd_virt_temp) {
              terminal_printf("[Map Internal] Error: Failed temp map DST PD %p\n", (void*)target_page_directory_phys);
              return -1; // Cannot proceed
@@ -1320,7 +1320,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
 
                 // ********************* FIX START *********************
                 // Temporarily map the new PT frame to zero it out AND write PTE
-                temp_pt_vaddr = paging_temp_map(pt_phys);
+                temp_pt_vaddr = paging_temp_map_vaddr(pt_phys);
                 if (!temp_pt_vaddr) {
                     // Line 1287 Fix: %#lx
                     terminal_printf("[Map Internal] Error: OTHER PD failed temp map new PT 0x%#lx\n", (unsigned long)pt_phys);
@@ -1330,7 +1330,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
                 }
                 memset(temp_pt_vaddr, 0, PAGE_SIZE);
                 // --- DO NOT UNMAP YET ---
-                // paging_temp_unmap(temp_pt_vaddr); // <-- REMOVED premature unmap
+                // paging_temp_unmap_vaddr(temp_pt_vaddr); // <-- REMOVED premature unmap
 
                 // --- FIX: Explicitly mask out PAGE_SIZE_4MB ---
                 uint32_t pde_value_to_write = (pt_phys & PAGING_ADDR_MASK)
@@ -1346,7 +1346,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
             // --- Map target PT temporarily (if not already mapped from allocation) ---
             // --- and write the PTE ---
             if (!temp_pt_vaddr) { // If we didn't just allocate and map it
-                 target_pt_virt_temp = paging_temp_map(pt_phys);
+                 target_pt_virt_temp = paging_temp_map_vaddr(pt_phys);
                  if (!target_pt_virt_temp) {
                      // Line 1308 Fix: %#lx, %p
                      terminal_printf("[Map Internal] Error: OTHER PD failed temp map existing PT 0x%#lx for V=%p\n", (unsigned long)pt_phys, (void*)aligned_vaddr);
@@ -1384,7 +1384,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
                         put_frame(pt_phys);
                         // Need to unmap the temp PT mapping if it's still active
                         if(temp_pt_vaddr) {
-                            paging_temp_unmap(temp_pt_vaddr);
+                            paging_temp_unmap_vaddr(temp_pt_vaddr);
                             temp_pt_vaddr = NULL; // Prevent double unmap in cleanup
                         }
                     }
@@ -1399,7 +1399,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
 
             // --- Unmap the temporary PT mapping (whether existing or newly allocated) ---
             if (target_pt_virt_temp) { // Check if it was successfully mapped
-                paging_temp_unmap(target_pt_virt_temp);
+                paging_temp_unmap_vaddr(target_pt_virt_temp);
             }
 
         } // End 4KB page handling for other PD
@@ -1407,7 +1407,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
     cleanup_other_pd:
         // Unmap the temporary PD mapping
         if (target_pd_virt_temp) {
-            paging_temp_unmap(target_pd_virt_temp); // Use the safe unmap
+            paging_temp_unmap_vaddr(target_pd_virt_temp); // Use the safe unmap
         }
         return ret;
 
@@ -1631,7 +1631,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
      }
      // --- Case 2: Looking up in a DIFFERENT Page Directory ---
      else {
-         // Original logic using temporary mappings (ensure it uses paging_temp_map/unmap safely)
+         // Original logic using temporary mappings (ensure it uses paging_temp_map_vaddr/unmap safely)
          if (!page_directory_phys) return KERN_EINVAL;
          // Assumes paging is active for temporary mapping to work
          if (!g_kernel_page_directory_virt) return KERN_EPERM; // Temp mapping relies on active kernel paging
@@ -1641,7 +1641,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
          uint32_t* target_pt_virt_temp = NULL;
  
          // 1. Map target PD temporarily (Read-Only is sufficient for lookup)
-         target_pd_virt_temp = paging_temp_map((uintptr_t)page_directory_phys);
+         target_pd_virt_temp = paging_temp_map_vaddr((uintptr_t)page_directory_phys);
          if (!target_pd_virt_temp) {
              // terminal_printf("[GetPhys] Failed to temp map target PD %p\n", (void*)page_directory_phys);
              return KERN_EPERM; // Use a suitable error code
@@ -1664,7 +1664,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
                  uintptr_t pt_phys = pde & PAGING_PDE_ADDR_MASK_4KB;
  
                  // 4. Map target PT temporarily (Read-Only)
-                 target_pt_virt_temp = paging_temp_map(pt_phys);
+                 target_pt_virt_temp = paging_temp_map_vaddr(pt_phys);
                  if (!target_pt_virt_temp) {
                      // terminal_printf("[GetPhys] Failed to temp map target PT %#lx for V=%p\n", (unsigned long)pt_phys, (void*)vaddr);
                       ret = KERN_EPERM; // Failed to map PT
@@ -1682,13 +1682,13 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
                      } // else: PTE not present, ret remains KERN_ENOENT
  
                      // 7. Unmap temporary PT
-                     paging_temp_unmap(target_pt_virt_temp);
+                     paging_temp_unmap_vaddr(target_pt_virt_temp);
                  }
              }
          } // else: PDE not present, ret remains KERN_ENOENT
  
          // 8. Unmap temporary PD
-         paging_temp_unmap(target_pd_virt_temp);
+         paging_temp_unmap_vaddr(target_pd_virt_temp);
          return ret;
      }
  }
@@ -1711,7 +1711,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
  
       // Map the target PD temporarily for modification
       // Use the safe temporary mapping functions
-      target_pd_virt_temp = paging_temp_map((uintptr_t)page_directory_phys);
+      target_pd_virt_temp = paging_temp_map_vaddr((uintptr_t)page_directory_phys);
       if (!target_pd_virt_temp) {
           // *** FORMAT FIX: %p for pointer ***
           terminal_printf("[FreeUser] Error: Failed to temp map target PD %p\n", (void*)page_directory_phys);
@@ -1742,7 +1742,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
                   uint32_t* target_pt_virt_temp = NULL;
  
                   // Map the user PT temporarily
-                  target_pt_virt_temp = paging_temp_map(pt_phys);
+                  target_pt_virt_temp = paging_temp_map_vaddr(pt_phys);
                   if (target_pt_virt_temp) {
                        // Iterate through PTEs in this table
                        for (size_t j = 0; j < PAGES_PER_TABLE; ++j) {
@@ -1753,7 +1753,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
                            }
                            // No need to clear PTE here, we free the whole PT below
                        }
-                       paging_temp_unmap(target_pt_virt_temp); // Unmap the PT
+                       paging_temp_unmap_vaddr(target_pt_virt_temp); // Unmap the PT
                    } else {
                        // *** FORMAT FIX: %#lx (address), %zu (index) *** Line 1707 Fix
                        terminal_printf("[FreeUser] Warning: Failed to temp map PT 0x%#lx from PDE[%zu] - frames leak!\n", (unsigned long)pt_phys, i);
@@ -1768,7 +1768,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
       }
  
       // Unmap the target PD
-      paging_temp_unmap(target_pd_virt_temp);
+      paging_temp_unmap_vaddr(target_pd_virt_temp);
       // Note: Does not free the PD frame itself, caller must do that.
        // *** FORMAT FIX: %p for pointer ***
        terminal_printf("[FreeUser] User space mappings cleared for PD Phys %p\n", (void*)page_directory_phys);
@@ -1798,14 +1798,14 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
       memset(allocated_pt_phys, 0, sizeof(allocated_pt_phys));
  
       // Use safe temporary mapping functions
-      src_pd_virt_temp = paging_temp_map((uintptr_t)src_pd_phys_addr);
+      src_pd_virt_temp = paging_temp_map_vaddr((uintptr_t)src_pd_phys_addr);
       if (!src_pd_virt_temp) {
           // *** FORMAT FIX: %p for pointer ***
           terminal_printf("[CloneDir] Error: Failed to map source PD %p.\n", (void*)src_pd_phys_addr);
           error_occurred = 1; goto cleanup_clone_err;
       }
  
-      dst_pd_virt_temp = paging_temp_map(new_pd_phys);
+      dst_pd_virt_temp = paging_temp_map_vaddr(new_pd_phys);
       if (!dst_pd_virt_temp) {
           // *** FORMAT FIX: %#lx for address *** Line 1757 Fix
           terminal_printf("[CloneDir] Error: Failed to map destination PD 0x%#lx.\n", (unsigned long)new_pd_phys);
@@ -1856,18 +1856,18 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
           uint32_t* src_pt_virt_temp = NULL;
           uint32_t* dst_pt_virt_temp = NULL;
  
-          src_pt_virt_temp = paging_temp_map(src_pt_phys);
+          src_pt_virt_temp = paging_temp_map_vaddr(src_pt_phys);
           if (!src_pt_virt_temp) {
               // *** FORMAT FIX: %#lx for address *** Line 1808 Fix
               terminal_printf("[CloneDir] Error: Failed to map source PT 0x%#lx.\n", (unsigned long)src_pt_phys);
               error_occurred = 1; goto cleanup_clone_err;
           }
  
-          dst_pt_virt_temp = paging_temp_map(dst_pt_phys);
+          dst_pt_virt_temp = paging_temp_map_vaddr(dst_pt_phys);
           if (!dst_pt_virt_temp) {
               // *** FORMAT FIX: %#lx for address *** Line 1815 Fix
               terminal_printf("[CloneDir] Error: Failed to map destination PT 0x%#lx.\n", (unsigned long)dst_pt_phys);
-              paging_temp_unmap(src_pt_virt_temp); // Unmap src PT first
+              paging_temp_unmap_vaddr(src_pt_virt_temp); // Unmap src PT first
               error_occurred = 1; goto cleanup_clone_err;
           }
  
@@ -1884,15 +1884,15 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
               }
           }
  
-          paging_temp_unmap(dst_pt_virt_temp);
-          paging_temp_unmap(src_pt_virt_temp);
+          paging_temp_unmap_vaddr(dst_pt_virt_temp);
+          paging_temp_unmap_vaddr(src_pt_virt_temp);
           // Set the PDE in the destination PD
           dst_pd_virt_temp[i] = (dst_pt_phys & PAGING_ADDR_MASK) | (src_pde & PAGING_FLAG_MASK);
       }
  
   cleanup_clone_err:
-      if (src_pd_virt_temp) paging_temp_unmap(src_pd_virt_temp);
-      if (dst_pd_virt_temp) paging_temp_unmap(dst_pd_virt_temp);
+      if (src_pd_virt_temp) paging_temp_unmap_vaddr(src_pd_virt_temp);
+      if (dst_pd_virt_temp) paging_temp_unmap_vaddr(dst_pd_virt_temp);
  
       if (error_occurred) {
           terminal_printf("[CloneDir] Error occurred. Cleaning up allocations...\n");
@@ -2328,116 +2328,115 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
  }
  
  
-  void* paging_temp_map(uintptr_t phys_addr) {
-     PAGING_DEBUG_PRINTF("Enter: phys_addr=%#lx\n", (unsigned long)phys_addr);
- 
+ void* paging_temp_map_vaddr_vaddr(uintptr_t temp_vaddr, uintptr_t phys_addr, uint32_t flags) {
+    PAGING_DEBUG_PRINTF("Enter: V=%p <- P=%#lx Flags=%#lx\n", (void*)temp_vaddr, (unsigned long)phys_addr, flags);
+
+    if (!g_kernel_page_directory_virt) {
+        terminal_printf("[TempMapV] Error: Kernel PD not ready.\n");
+        return NULL;
+    }
+    if ((phys_addr % PAGE_SIZE != 0) || (temp_vaddr % PAGE_SIZE != 0)) {
+        terminal_printf("[TempMapV] Error: Address not page-aligned (V=%p, P=%#lx).\n", (void*)temp_vaddr, (unsigned long)phys_addr);
+        return NULL;
+    }
+    // Ensure the temp address is in kernel space and not overlapping critical areas
+    if (temp_vaddr < KERNEL_SPACE_VIRT_START || temp_vaddr >= RECURSIVE_PDE_VADDR) {
+         terminal_printf("[TempMapV] Error: Invalid temporary virtual address %p.\n", (void*)temp_vaddr);
+         return NULL;
+    }
+
+
+    uint32_t pd_idx = PDE_INDEX(temp_vaddr);
+    uint32_t pt_idx = PTE_INDEX(temp_vaddr);
+
+    // Access the specific Page Table using recursive mapping from the *kernel's* PD
+    uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
+    uint32_t pde = g_kernel_page_directory_virt[pd_idx];
+
+    // Ensure the PDE for the temp area exists and is NOT a 4MB page
+    // The PT frame itself MUST be allocated beforehand if it doesn't exist.
+    // This function assumes the PT frame exists for the given temp_vaddr PDE slot.
+    if (!(pde & PAGE_PRESENT)) {
+       terminal_printf("[TempMapV] Error: PDE[%lu] for temporary mapping address V=%p is not present!\n",
+                        (unsigned long)pd_idx, (void*)temp_vaddr);
+        return NULL;
+    }
+     if (pde & PAGE_SIZE_4MB) {
+       terminal_printf("[TempMapV] Error: PDE[%lu] for temporary mapping address V=%p is a 4MB page!\n",
+                        (unsigned long)pd_idx, (void*)temp_vaddr);
+        return NULL;
+    }
+
+    // Check if the temporary slot is already in use - THIS IS STILL A RACE CONDITION
+    // Proper solution needs locking or dynamic VA allocation. This provides basic check.
+    volatile uint32_t current_pte = pt_virt[pt_idx]; // Use volatile for read
+    if (current_pte & PAGE_PRESENT) {
+         uintptr_t existing_p = current_pte & PAGING_ADDR_MASK;
+         terminal_printf("[TempMapV] Warning: Temporary mapping slot (V=%p) already in use (maps P=%#lx)! Overwriting.\n",
+                         (void*)temp_vaddr, (unsigned long)existing_p);
+         // Overwriting is dangerous but allowed by this simple implementation.
+    }
+
+    // Set the PTE for the temporary virtual address using provided flags
+    // Ensure PAGE_PRESENT is set. Mask other flags if needed.
+    uint32_t final_flags = (flags | PAGE_PRESENT) & PAGING_FLAG_MASK; // Ensure present, use valid flag bits
+    uint32_t new_pte = (phys_addr & PAGING_ADDR_MASK) | final_flags;
+    pt_virt[pt_idx] = new_pte;
+
+    // Invalidate the TLB for the specific temporary virtual address
+    paging_invalidate_page((void*)temp_vaddr);
+
+    PAGING_DEBUG_PRINTF("Mapped P=%#lx -> V=%p (PTE[%lu] in PT@V=%p set to %#lx)\n",
+       (unsigned long)phys_addr, (void*)temp_vaddr, (unsigned long)pt_idx, (void*)pt_virt, (unsigned long)new_pte);
+
+   return (void*)temp_vaddr; // Return the virtual address used
+}
+
+/**
+ * @brief Unmaps a specific temporary virtual address.
+ */
+ void paging_temp_unmap_vaddr_vaddr(void* temp_vaddr) {
+    // Validate the address being unmapped
+    if (temp_vaddr == NULL || ((uintptr_t)temp_vaddr % PAGE_SIZE != 0)) {
+        terminal_printf("[TempUnmapV] Warning: Invalid address %p provided for unmap.\n", temp_vaddr);
+        return;
+    }
+     // Check bounds
+     if ((uintptr_t)temp_vaddr < KERNEL_SPACE_VIRT_START || (uintptr_t)temp_vaddr >= RECURSIVE_PDE_VADDR) {
+         terminal_printf("[TempUnmapV] Warning: Address %p is outside expected temporary range.\n", temp_vaddr);
+         // Allow unmapping attempt anyway, might be harmless if PTE doesn't exist
+     }
+
      if (!g_kernel_page_directory_virt) {
-         terminal_printf("[Paging Temp Map] Error: Kernel PD not ready.\n");
-         return NULL;
+         terminal_printf("[TempUnmapV] Error: Kernel PD not ready.\n");
+         return;
      }
-     if (phys_addr % PAGE_SIZE != 0) {
-         terminal_printf("[Paging Temp Map] Error: Physical address %#lx is not page-aligned.\n", (unsigned long)phys_addr);
-         return NULL;
-     }
- 
-     uint32_t pd_idx = PDE_INDEX(PAGING_TEMP_VADDR);
-     uint32_t pt_idx = PTE_INDEX(PAGING_TEMP_VADDR);
- 
-     // Access the specific Page Table using recursive mapping
-     uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
-     uint32_t pde = g_kernel_page_directory_virt[pd_idx];
- 
-     // Ensure the PDE for the temp area exists (should be set up during init if using this method)
-     if (!(pde & PAGE_PRESENT)) {
-        terminal_printf("[Paging Temp Map] Error: PDE[%lu] for temporary mapping area (V=%p) is not present!\n",
-                         pd_idx, (void*)PAGING_TEMP_VADDR);
-         // Maybe allocate the PT here if it's guaranteed safe? Risky.
-         // Best practice is to ensure this PDE/PT exists after paging init.
-         return NULL;
-     }
-      if (pde & PAGE_SIZE_4MB) {
-        terminal_printf("[Paging Temp Map] Error: PDE[%lu] for temporary mapping area (V=%p) is a 4MB page!\n",
-                         pd_idx, (void*)PAGING_TEMP_VADDR);
-         return (void*)PAGING_TEMP_VADDR;
-     }
- 
- 
-     // Check if the temporary slot is already in use (optional, but safer)
-     if (pt_virt[pt_idx] & PAGE_PRESENT) {
-          uintptr_t existing_p = pt_virt[pt_idx] & PAGING_ADDR_MASK;
-          terminal_printf("[Paging Temp Map] Warning: Temporary mapping slot (V=%p) already in use (maps P=%#lx)! Overwriting.\n",
-                          (void*)PAGING_TEMP_VADDR, (unsigned long)existing_p);
-          // Overwriting might be acceptable if the previous user guarantees unmapping,
-          // but it's risky. Consider adding a lock or usage flag for safety in SMP/preemption.
-     }
- 
-     // Set the PTE for the temporary virtual address
-     uint32_t flags = PTE_KERNEL_DATA_FLAGS; // Kernel RW, Present
-     uint32_t new_pte = (phys_addr & PAGING_ADDR_MASK) | flags;
-     pt_virt[pt_idx] = new_pte;
- 
-     // Invalidate the TLB for the temporary virtual address
-     paging_invalidate_page((void*)PAGING_TEMP_VADDR);
- 
-     PAGING_DEBUG_PRINTF("Mapped P=%#lx -> V=%p (PTE[%lu] in PT@V=%p set to %#lx)\n", // <-- ADD COMMA HERE
-        (unsigned long)phys_addr,
-        (void*)PAGING_TEMP_VADDR,
-        pt_idx,
-        pt_virt,
-        new_pte);
- 
-    return (void*)PAGING_TEMP_VADDR; // Add missing return for success path
- }
- 
- /**
-  * @brief Unmaps the predefined temporary virtual address.
-  *
-  * @param temp_vaddr The virtual address that was returned by paging_temp_map.
-  * This is validated against the known temporary address.
-  */
-  void paging_temp_unmap(void* temp_vaddr) {
- 
-     // Validate the address being unmapped
-     if ((uintptr_t)temp_vaddr != PAGING_TEMP_VADDR) {
-         terminal_printf("[Paging Temp Unmap] Warning: Attempting to unmap unexpected address %p (expected %p).\n",
-                         temp_vaddr, (void*)PAGING_TEMP_VADDR);
-         // Decide if this should be fatal or just a warning. Let's ignore for now.
-         // return; // Optionally return early if address doesn't match
-     }
- 
-      if (!g_kernel_page_directory_virt) {
-          // Cannot unmap if paging isn't ready
-          terminal_printf("[Paging Temp Unmap] Error: Kernel PD not ready.\n");
-          return;
-      }
- 
-     uint32_t pd_idx = PDE_INDEX(PAGING_TEMP_VADDR);
-     uint32_t pt_idx = PTE_INDEX(PAGING_TEMP_VADDR);
-     uint32_t pde = g_kernel_page_directory_virt[pd_idx];
- 
-     // Ensure PDE is present and not 4MB
-     if (!(pde & PAGE_PRESENT) || (pde & PAGE_SIZE_4MB)) {
-         // Line 2359 Fix: %u, %lx
-         terminal_printf("[Paging Temp Unmap] Warning: PDE for temp area invalid (PDE[%u]=0x%lx) during unmap.\n", (unsigned int)pd_idx, (unsigned long)pde);
-          return; // Cannot access PT
-     }
- 
-     // Access the specific Page Table using recursive mapping
-     uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
- 
-     // Check if PTE is actually present before clearing
-     if (pt_virt[pt_idx] & PAGE_PRESENT) {
-         // Clear the PTE
-         pt_virt[pt_idx] = 0;
-         // Invalidate the TLB entry
-         paging_invalidate_page((void*)PAGING_TEMP_VADDR);
-          PAGING_DEBUG_PRINTF("Unmapped V=%p\n", (void*)PAGING_TEMP_VADDR);
-     } else {
-          // Optional: Log if trying to unmap an already clear PTE
-          // PAGING_DEBUG_PRINTF("Temp PTE for V=%p was already clear.\n", (void*)PAGING_TEMP_VADDR);
-     }
-     // No explicit return needed for void function
- }
+
+    uint32_t pd_idx = PDE_INDEX(temp_vaddr);
+    uint32_t pt_idx = PTE_INDEX(temp_vaddr);
+    uint32_t pde = g_kernel_page_directory_virt[pd_idx];
+
+    // Ensure PDE is present and not 4MB
+    if (!(pde & PAGE_PRESENT) || (pde & PAGE_SIZE_4MB)) {
+        terminal_printf("[TempUnmapV] Warning: PDE for temp area invalid (PDE[%lu]=0x%lx) during unmap of V=%p.\n",
+                        (unsigned long)pd_idx, (unsigned long)pde, temp_vaddr);
+         return; // Cannot access PT
+    }
+
+    // Access the specific Page Table using recursive mapping
+    uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
+
+    // Check if PTE is actually present before clearing
+    if (pt_virt[pt_idx] & PAGE_PRESENT) {
+        // Clear the PTE
+        pt_virt[pt_idx] = 0;
+        // Invalidate the TLB entry
+        paging_invalidate_page(temp_vaddr);
+         PAGING_DEBUG_PRINTF("Unmapped V=%p\n", temp_vaddr);
+    } else {
+         // PAGING_DEBUG_PRINTF("Temp PTE for V=%p was already clear.\n", temp_vaddr);
+    }
+}
  
  
  /**
@@ -2509,7 +2508,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
  
      if (!is_current_pd) {
          // Map the target PD temporarily if it's not the current one
-         target_pd_virt = paging_temp_map((uintptr_t)page_directory_phys);
+         target_pd_virt = paging_temp_map_vaddr((uintptr_t)page_directory_phys);
          if (!target_pd_virt) {
              terminal_printf("[Unmap Range] Error: Failed to temp map target PD %p.\n", (void*)page_directory_phys);
              return -1;
@@ -2546,7 +2545,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
              // This implementation currently does not support unmapping ranges overlapping 4MB pages.
              // Line 2482 Fix: %#lx
              terminal_printf("[Unmap Range] Error: Cannot unmap range overlapping 4MB page at V=0x%#lx.\n", (unsigned long)v_addr);
-             if (!is_current_pd) paging_temp_unmap(target_pd_virt);
+             if (!is_current_pd) paging_temp_unmap_vaddr(target_pd_virt);
              return -1;
          }
  
@@ -2559,13 +2558,13 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
          if (is_current_pd) {
               pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
          } else {
-              pt_virt = paging_temp_map(pt_phys);
+              pt_virt = paging_temp_map_vaddr(pt_phys);
               if (!pt_virt) {
                   // Line 2498 Fix: %p, %#lx
                   terminal_printf("[Unmap Range] Error: Failed to temp map target PT %p for V=0x%#lx.\n", (void*)pt_phys, (unsigned long)v_addr);
                    // Continue to next PDE, but leak the PT for now? Or return error?
                    // Returning error is safer to signal incomplete unmap.
-                   if (!is_current_pd) paging_temp_unmap(target_pd_virt);
+                   if (!is_current_pd) paging_temp_unmap_vaddr(target_pd_virt);
                    return -1;
               }
               pt_mapped_here = true;
@@ -2607,7 +2606,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
  
                  // If we temp mapped the PT, we need to unmap it *before* moving to next v_addr
                  if (pt_mapped_here) {
-                     paging_temp_unmap(pt_virt);
+                     paging_temp_unmap_vaddr(pt_virt);
                      pt_mapped_here = false; // Mark as unmapped
                      pt_virt = NULL;
                  }
@@ -2628,7 +2627,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
  
          // Unmap the temporary PT mapping if we created one for this iteration
          if (pt_mapped_here) {
-             paging_temp_unmap(pt_virt);
+             paging_temp_unmap_vaddr(pt_virt);
          }
  
          // Check for overflow before incrementing loop variable
@@ -2640,7 +2639,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
  
      // Unmap the target PD if we mapped it temporarily
      if (!is_current_pd) {
-         paging_temp_unmap(target_pd_virt);
+         paging_temp_unmap_vaddr(target_pd_virt);
      }
  
      terminal_printf("[Unmap Range] Finished. Unmapped approx %d pages.\n", unmapped_count);
