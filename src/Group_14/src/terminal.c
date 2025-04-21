@@ -708,4 +708,42 @@
  void terminal_write_char(char c) { terminal_putchar(c); }
 
  /* ------------------------------------------------------------------------- */
+ /* terminal_backspace implementation                                        */
+ /* ------------------------------------------------------------------------- */
+ void terminal_backspace(void) // Definition for the function declared in terminal.h
+ {
+     uintptr_t flags = spinlock_acquire_irqsave(&terminal_lock); // Protect state
+
+     // Get current cursor position using the public function
+     int x = 0;
+     int y = 0;
+     terminal_get_cursor_pos(&x, &y); // Use the function declared in terminal.h
+
+     if (x > 0) {
+         // Simple case: move back one column on the same line
+         x--;
+     } else if (y > 0) {
+         // Move to the end of the previous line
+         y--;
+         x = VGA_COLS - 1; // <<< Use VGA_COLS constant
+     } else {
+         // At position 0,0 - cannot backspace further
+         spinlock_release_irqrestore(&terminal_lock, flags);
+         return;
+     }
+
+     // Update cursor position using the public function
+     terminal_set_cursor_pos(x, y); // Use the function declared in terminal.h
+
+     // Erase the character at the new cursor position on screen
+     // Use the static helper put_char_at (since it's internal logic)
+     put_char_at(' ', terminal_color, x, y); // <<< Use static variable terminal_color
+
+     // Hardware cursor update is handled within terminal_set_cursor_pos
+
+     spinlock_release_irqrestore(&terminal_lock, flags); // Release lock
+ }
+
+
+ /* ------------------------------------------------------------------------- */
  /* End of file                                                              */

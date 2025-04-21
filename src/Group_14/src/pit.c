@@ -1,39 +1,105 @@
 /**
  * pit.c
  * Programmable Interval Timer (PIT) driver for x86 (32-bit).
- * This implementation integrates preemptive scheduling by calling schedule()
- * unconditionally on every timer tick (PIT IRQ). The scheduler itself
- * determines if it's ready to perform a context switch.
+ * Updated to use isr_frame_t and aggressive workaround for 64-bit division.
  */
 
  #include "pit.h"
  #include "idt.h"       // Needed for register_int_handler
+ #include <isr_frame.h>  // Include the frame definition
  #include "terminal.h"
  #include "port_io.h"
- #include "scheduler.h" // Need schedule() declaration
+ #include "scheduler.h" // Need schedule() declaration (if used)
  #include "types.h"     // Ensure bool is defined via types.h -> stdbool.h
  #include "assert.h"    // For KERNEL_ASSERT
+ #include <libc/stdint.h> // For UINT32_MAX
  
  // Global state variables
  static volatile uint32_t pit_ticks = 0;
  
+ // Define TARGET_FREQUENCY if not defined elsewhere (e.g., in pit.h or build system)
+ #ifndef TARGET_FREQUENCY
+ #define TARGET_FREQUENCY 1000 // Default to 1000 Hz if not defined
+ #endif
+ 
+ // --- Revised Workaround Helper ---
+ // Calculates approximately (ms * freq_hz) / 1000 using only 32-bit math.
+ // May lose precision compared to 64-bit calculation.
+ static inline uint32_t calculate_ticks_32bit(uint32_t ms, uint32_t freq_hz) {
+     if (ms == 0) return 0;
+     if (freq_hz == 0) return 0; // Avoid division by zero later
+ 
+     // Simplest case: Freq is multiple of 1000
+     if ((freq_hz % 1000) == 0) {
+         uint32_t ticks_per_ms = freq_hz / 1000;
+         // Check for potential overflow before multiplying
+         if (ticks_per_ms > 0 && ms > UINT32_MAX / ticks_per_ms) {
+             return UINT32_MAX; // Return max ticks on overflow
+         }
+         return ms * ticks_per_ms;
+     }
+ 
+     // Try calculating (ms / 1000) * freq_hz first (loses precision if ms < 1000)
+     // This avoids large intermediate values.
+     uint32_t ms_div_1000 = ms / 1000;
+     uint32_t ticks_from_whole_seconds = 0;
+     if (ms_div_1000 > 0) {
+          // Check for overflow
+          if (freq_hz > 0 && ms_div_1000 > UINT32_MAX / freq_hz) {
+               return UINT32_MAX;
+          }
+          ticks_from_whole_seconds = ms_div_1000 * freq_hz;
+     }
+ 
+     // Now handle the remaining milliseconds (ms % 1000)
+     uint32_t remaining_ms = ms % 1000;
+     uint32_t ticks_from_remaining_ms = 0;
+     if (remaining_ms > 0) {
+         // Calculate (remaining_ms * freq_hz) / 1000
+         // Check for overflow before intermediate multiplication
+         if (freq_hz > 0 && remaining_ms > UINT32_MAX / freq_hz) {
+              // Intermediate would overflow 32 bits, hard to calculate precisely without 64 bits.
+              // Return max as a safe fallback.
+              return UINT32_MAX;
+         }
+         // Perform the multiplication *carefully*
+         // Since we know remaining_ms < 1000, the 64-bit intermediate MIGHT not
+         // have been the problem, but the division itself. Let's try integer division.
+         // This calculation (A*B)/C can be done by scaling tricks if needed,
+         // but let's try direct 32-bit approach first.
+         // If freq_hz is very large, remaining_ms * freq_hz might still overflow 32 bits.
+         // We checked for that above.
+         uint32_t intermediate_product = remaining_ms * freq_hz;
+         ticks_from_remaining_ms = intermediate_product / 1000;
+ 
+         // Add rounding based on the remainder of the division
+         if ((intermediate_product % 1000) >= 500) {
+              ticks_from_remaining_ms++;
+         }
+     }
+ 
+     // Combine the two parts, checking for overflow
+     if (ticks_from_remaining_ms > UINT32_MAX - ticks_from_whole_seconds) {
+         return UINT32_MAX;
+     }
+     uint32_t total_ticks = ticks_from_whole_seconds + ticks_from_remaining_ms;
+ 
+     // Ensure at least 1 tick for small non-zero ms
+     if (total_ticks == 0 && ms > 0) {
+         total_ticks = 1;
+     }
+ 
+     return total_ticks;
+ }
+ 
+ 
  /**
   * PIT IRQ handler:
-  * Increments the tick counter and calls the scheduler unconditionally.
+  * Increments the tick counter.
   */
- static void pit_irq_handler(registers_t *regs) {
-      (void)regs; // Mark regs as unused
- 
-      // Increment tick counter safely
+ static void pit_irq_handler(isr_frame_t *frame) {
+      (void)frame;
       pit_ticks++;
- 
-      // Log periodically to avoid console spam (optional)
-      // if (pit_ticks % 1000 == 0) {
-      //     terminal_printf("[PIT] Tick count: %lu\n", (unsigned long)pit_ticks);
-      // }
- 
-      // Call scheduler unconditionally. The scheduler itself will check
-      // if it's ready (g_scheduler_ready flag) before switching context.
       //schedule();
  }
  
@@ -46,184 +112,91 @@
  
  /**
   * Configures the PIT frequency.
-  *
-  * @param freq Desired frequency in Hz
+  * (No changes needed in this function body)
   */
  static void set_pit_frequency(uint32_t freq) {
-      // Validate frequency
-      if (freq == 0) {
-          terminal_printf("[PIT] Warning: Invalid frequency value 0, using 1 Hz instead.\n");
-          freq = 1; // Avoid division by zero
-      }
+      if (freq == 0) { freq = 1; }
+      if (freq > PIT_BASE_FREQUENCY) { freq = PIT_BASE_FREQUENCY; }
  
-      // Sanity check - frequencies should be within reasonable limits
-      if (freq > PIT_BASE_FREQUENCY) {
-          terminal_printf("[PIT] Warning: Requested frequency %lu exceeds PIT max, clamping.\n",
-                          (unsigned long)freq);
-          freq = PIT_BASE_FREQUENCY;
-      } else if (freq < 1) { // Also check minimum reasonable frequency
-           terminal_printf("[PIT] Warning: Requested frequency %lu too low, using 1 Hz.\n",
-                           (unsigned long)freq);
-           freq = 1;
-      }
- 
-      // Calculate divisor
       uint32_t divisor = PIT_BASE_FREQUENCY / freq;
-      // Ensure divisor is within the 16-bit range (1 to 65535). 0 maps to 65536.
-      if (divisor == 0) divisor = 0x10000; // Use max divisor if freq is too low (approx 18.2 Hz minimum)
-      if (divisor > 0xFFFF) divisor = 0xFFFF; // Clamp to max 16-bit value if freq is slightly too low
-      if (divisor < 1) divisor = 1;          // Clamp to min 1 if freq is too high
+      if (divisor == 0) divisor = 0x10000;
+      if (divisor > 0xFFFF) divisor = 0xFFFF;
+      if (divisor < 1) divisor = 1;
  
-      terminal_printf("[PIT] Setting frequency to %lu Hz (Calculated Divisor: %lu)\n",
-                      (unsigned long)freq, (unsigned long)divisor);
- 
-      // Program the PIT
-      // Channel 0, lobyte/hibyte access mode, mode 3 (square wave generator)
       outb(PIT_CMD_PORT, 0x36);
- 
-      // Send the divisor (low byte, then high byte)
-      outb(PIT_CHANNEL0_PORT, (uint8_t)(divisor & 0xFF));
-      outb(PIT_CHANNEL0_PORT, (uint8_t)((divisor >> 8) & 0xFF));
- 
-      terminal_printf("[PIT] Frequency set (Target=%lu Hz, Divisor=%lu)\n",
-                      (unsigned long)freq, (unsigned long)divisor);
+      uint16_t divisor_16 = (uint16_t)divisor;
+      outb(PIT_CHANNEL0_PORT, (uint8_t)(divisor_16 & 0xFF));
+      io_wait();
+      outb(PIT_CHANNEL0_PORT, (uint8_t)((divisor_16 >> 8) & 0xFF));
  }
  
  
- /* Function pit_set_scheduler_ready() removed */
- /* Function pit_is_scheduler_ready() removed */
- 
  /**
   * Initializes the PIT:
-  * - Registers the IRQ handler for vector 32 (PIT IRQ).
-  * - Sets the PIT to the TARGET_FREQUENCY.
+  * (No changes needed in this function body)
   */
  void init_pit(void) {
-      // Initialize state
       pit_ticks = 0;
- 
-      // Register IRQ handler (IRQ0 = vector 32)
-      // Use the literal vector number 32 for PIT IRQ0
-      register_int_handler(32, pit_irq_handler, NULL); // <<< FIXED: Use 32 instead of IRQ0
- 
-      // Set frequency
+      register_int_handler(32, pit_irq_handler, NULL);
       set_pit_frequency(TARGET_FREQUENCY);
- 
       terminal_printf("[PIT] Initialized (Target Frequency: %lu Hz)\n", (unsigned long)TARGET_FREQUENCY);
  }
  
  /**
   * Busy-wait sleep (high CPU usage).
-  *
-  * @param milliseconds Duration to sleep
+  * Uses the 32-bit workaround calculation.
   */
  void sleep_busy(uint32_t milliseconds) {
-      // Basic check for TICKS_PER_MS validity
-      KERNEL_ASSERT(TICKS_PER_MS > 0 || TARGET_FREQUENCY < 1000, "TICKS_PER_MS calculation error");
- 
-      // Calculate ticks to wait
-      uint32_t ticks_to_wait = 0;
-      if (TARGET_FREQUENCY >= 1000) {
-          ticks_to_wait = milliseconds * (TARGET_FREQUENCY / 1000); // Use defined TICKS_PER_MS implicitly
-      } else { // Handle frequencies < 1000 Hz
-           // Calculate carefully to avoid integer division truncation
-           ticks_to_wait = ((uint64_t)milliseconds * TARGET_FREQUENCY) / 1000;
-      }
- 
- 
-      if (ticks_to_wait == 0 && milliseconds > 0) {
-          ticks_to_wait = 1; // Ensure at least one tick for small durations
-      }
- 
-      // Record start time
+      uint32_t ticks_to_wait = calculate_ticks_32bit(milliseconds, TARGET_FREQUENCY); // <<< USE 32-BIT WORKAROUND
       uint32_t start = get_pit_ticks();
+      if (ticks_to_wait == UINT32_MAX) return; // Avoid infinite loop if calculation capped
  
-      // Wait until enough ticks have passed
-      // Handle potential wrap-around of pit_ticks (though unlikely for short sleeps)
       uint32_t target_ticks = start + ticks_to_wait;
-      bool wrapped = target_ticks < start; // Check if target tick count wrapped around
+      bool wrapped = target_ticks < start;
  
       while (true) {
-         uint32_t current = get_pit_ticks();
-         if (wrapped) {
-             // If wrapped, wait until current ticks also wrap OR exceed target
-             if (current < start && current >= target_ticks) break;
-         } else {
-             // Normal case: wait until current ticks reach or exceed target
-             if (current >= target_ticks) break;
-         }
-         // Busy-wait
-         asm volatile("pause"); // Hint to CPU that we're spinning
+          uint32_t current = get_pit_ticks();
+          bool condition_met = false;
+          if (wrapped) { condition_met = (current < start && current >= target_ticks); }
+          else { condition_met = (current >= target_ticks); }
+          if (condition_met) break;
+          asm volatile("pause");
       }
  }
  
  /**
   * Sleep using interrupts (low CPU usage).
-  * Caution: Basic implementation, assumes single CPU and simple interrupt model.
-  *
-  * @param milliseconds Duration to sleep
+  * Uses the 32-bit workaround calculation.
   */
  void sleep_interrupt(uint32_t milliseconds) {
-      // Save current interrupt state
       uint32_t eflags;
       asm volatile("pushf; pop %0" : "=r"(eflags));
-      // Use the literal mask 0x200 for the interrupt flag
-      bool interrupts_were_enabled = (eflags & 0x200) != 0; // <<< FIXED: Use 0x200
+      bool interrupts_were_enabled = (eflags & 0x200) != 0;
  
-      // Basic check for TICKS_PER_MS validity
-      KERNEL_ASSERT(TICKS_PER_MS > 0 || TARGET_FREQUENCY < 1000, "TICKS_PER_MS calculation error");
- 
-      // Calculate ticks to wait
-      uint32_t ticks_to_wait = 0;
-      if (TARGET_FREQUENCY >= 1000) {
-           ticks_to_wait = milliseconds * (TARGET_FREQUENCY / 1000); // Use defined TICKS_PER_MS implicitly
-      } else { // Handle frequencies < 1000 Hz
-           // Calculate carefully to avoid integer division truncation
-           ticks_to_wait = ((uint64_t)milliseconds * TARGET_FREQUENCY) / 1000;
+      uint32_t ticks_to_wait = calculate_ticks_32bit(milliseconds, TARGET_FREQUENCY); // <<< USE 32-BIT WORKAROUND
+      if (ticks_to_wait == UINT32_MAX) {
+          if (interrupts_were_enabled) asm volatile("sti");
+          return; // Avoid infinite loop if calculation capped
       }
  
- 
-      if (ticks_to_wait == 0 && milliseconds > 0) {
-          ticks_to_wait = 1; // Ensure at least one tick for small durations
-      }
- 
-      // Calculate end time
       uint32_t start = get_pit_ticks();
       uint32_t end_ticks = start + ticks_to_wait;
-      bool wrapped = end_ticks < start; // Check for wrap-around
+      bool wrapped = end_ticks < start;
  
-      // Loop until the target tick count is reached
       while (true) {
-         uint32_t current = get_pit_ticks();
-         bool condition_met = false;
+          uint32_t current = get_pit_ticks();
+          bool condition_met = false;
+          if (wrapped) { condition_met = (current < start && current >= end_ticks); }
+          else { condition_met = (current >= end_ticks); }
+          if (condition_met) break;
  
-         if (wrapped) {
-             // If wrapped, condition is met if current ticks also wrapped AND passed the end_ticks
-             condition_met = (current < start && current >= end_ticks);
-         } else {
-             // Normal case: condition met if current ticks reach or exceed end_ticks
-             condition_met = (current >= end_ticks);
-         }
- 
-         if (condition_met) {
-             break; // Exit loop
-         }
- 
-         // Enable interrupts and halt until next interrupt
-         // Note: This assumes HLT doesn't interfere with other critical sections
-         // and that the PIT interrupt is the primary wakeup source.
-         asm volatile("sti");
-         asm volatile("hlt");
-         // Interrupts are disabled by CPU on entry to handler.
-         // They might be re-enabled by IRET, so CLI after HLT might be needed
-         // if subsequent code relies on interrupts being off, but usually
-         // the loop condition check is sufficient.
+          if (interrupts_were_enabled) {
+               asm volatile("sti; hlt; cli");
+          } else {
+               asm volatile("hlt"); // Or pause/yield
+          }
       }
  
-      // Restore original interrupt state carefully
-      if (interrupts_were_enabled) {
-          asm volatile("sti");
-      } else {
-          asm volatile("cli");
-      }
+      if (interrupts_were_enabled) { asm volatile("sti"); }
+      // else: remain cli
  }

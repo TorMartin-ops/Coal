@@ -4,6 +4,7 @@
 
 #include "types.h"
 #include "spinlock.h" // Include for spinlock_t
+#include <isr_frame.h>
 
 // --- Error Codes ---
 #define BLOCK_ERR_OK          0
@@ -16,6 +17,7 @@
 #define BLOCK_ERR_UNSUPPORTED -7 // Feature/command not supported by drive
 #define BLOCK_ERR_LOCKED     -8 // Could not acquire lock
 #define BLOCK_ERR_INTERNAL   -9 // Internal driver error
+#define BLOCK_ERR_IO         -10 // Generic I/O Error (e.g., DRQ not set when expected)
 
 // --- Device Structure ---
 typedef struct {
@@ -46,5 +48,7 @@ int block_device_read(block_device_t *dev, uint64_t lba, void *buffer, size_t co
 // Writes sectors using best available method (MULTIPLE or single PIO)
 // LBA is now uint64_t
 int block_device_write(block_device_t *dev, uint64_t lba, const void *buffer, size_t count);
+
+void ata_primary_irq_handler(isr_frame_t* frame); // <<< ADDED DECLARATION
 
 #endif /* BLOCK_DEVICE_H */

@@ -162,5 +162,7 @@ void terminal_complete_input(void);
  */
 void terminal_write_char(char c); // Keep this if keyboard.c specifically uses it
 
+// Add this declaration in terminal.h
+void terminal_backspace(void);
 
 #endif // TERMINAL_H

@@ -16,6 +16,7 @@
  #include "types.h"        // For uintN_t types, bool, size_t
  #include "fs_errno.h"     // For error codes (FS_ERR_*, BLOCK_ERR_*)
  #include "libc/limits.h"  // For UINTPTR_MAX
+ #include <isr_frame.h>
  
  // <<<< NOTE: ASSERT calls have been removed from this version to allow linking. >>>>
  // <<<< It is STRONGLY recommended to implement a proper ASSERT mechanism     >>>>
@@ -97,6 +98,10 @@
  // --- Global Locks per Channel ---
  static spinlock_t g_ata_primary_lock;
  static spinlock_t g_ata_secondary_lock;
+
+ static volatile bool g_ata_primary_irq_fired = false;
+static volatile uint8_t g_ata_primary_last_status = 0;
+static volatile uint8_t g_ata_primary_last_error = 0;
  
  // Define for detailed per-command logging (comment out to disable)
  // #define BLOCK_DEVICE_DEBUG
@@ -147,36 +152,68 @@
  
  // --- Core Operations ---
  
- /**
-  * @brief Selects the specified drive on the channel and waits for it to be ready.
-  * @param dev Pointer to the block_device_t structure.
-  * @return BLOCK_ERR_OK on success, error code otherwise.
-  */
+/**
+ * @brief Selects the specified drive on the channel and waits for it to be ready.
+ * Ensures the channel is not busy (BSY=0) before selecting the drive.
+ * After selection, performs a 400ns delay and polls again for BSY=0,
+ * finally checking DRDY=1 to confirm the drive is ready.
+ *
+ * @param dev Pointer to the block_device_t structure.
+ * @return BLOCK_ERR_OK on success, error code otherwise (e.g., BLOCK_ERR_TIMEOUT, BLOCK_ERR_DEV_FAULT, BLOCK_ERR_NO_DEV).
+ */
  static int ata_select_drive(block_device_t *dev) {
-     // ASSERT(dev != NULL); // Removed ASSERT
-     if (!dev) return BLOCK_ERR_PARAMS; // Added NULL check instead
- 
-     int status = ata_poll_status(dev->io_base, ATA_SR_BSY | ATA_SR_DRQ, 0x00, ATA_TIMEOUT_PIO, "SelectWaitIdle");
-     if (status < 0) return BLOCK_ERR_TIMEOUT;
-     if (status & (ATA_SR_ERR | ATA_SR_DF)) {
-         terminal_printf("[ATA Select %s] Error/Fault before select (Status=%#x).\n", dev->device_name, status);
-         return BLOCK_ERR_DEV_FAULT;
-     }
- 
-     outb(dev->io_base + ATA_REG_HDDEVSEL, (dev->is_slave ? ATA_DEV_SLAVE : ATA_DEV_MASTER) | ATA_DEV_LBA);
-     ata_delay_400ns(dev->control_base + ATA_REG_ALTSTATUS);
- 
-     status = ata_poll_status(dev->io_base, ATA_SR_BSY, 0x00, ATA_TIMEOUT_PIO, "SelectWaitBSY");
-     if (status < 0) return BLOCK_ERR_TIMEOUT;
- 
-     status = inb(dev->io_base + ATA_REG_STATUS);
-     if (!(status & ATA_SR_DRDY) || (status & (ATA_SR_ERR | ATA_SR_DF))) {
-         terminal_printf("[ATA Select %s] Drive not ready/error after select (Status=%#x).\n", dev->device_name, status);
-         if (!(status & ATA_SR_DRDY)) return BLOCK_ERR_NO_DEV;
-         else return BLOCK_ERR_DEV_FAULT;
-     }
-     return BLOCK_ERR_OK;
- }
+    // Basic parameter check
+    if (!dev) {
+        // Cannot log device name if dev is NULL
+        terminal_printf("[ATA Select] Error: NULL device pointer provided.\n");
+        return BLOCK_ERR_PARAMS;
+    }
+
+    // 1. Wait for the channel to be NOT BUSY (BSY=0) before selecting.
+    //    We don't need to wait for DRQ to be clear here.
+    int poll_result = ata_poll_status(dev->io_base, ATA_SR_BSY, 0x00, ATA_TIMEOUT_PIO, "SelectWaitIdle (BSY=0)");
+    if (poll_result < 0) { // Check for -1 timeout return
+        terminal_printf("[ATA Select %s] Timeout waiting for BSY=0 before select.\n", dev->device_name);
+        return BLOCK_ERR_TIMEOUT;
+    }
+    uint8_t status = (uint8_t)poll_result; // Cast valid status
+
+    // Check for pre-existing error/fault condition even if BSY is clear
+    if (status & (ATA_SR_ERR | ATA_SR_DF)) {
+        terminal_printf("[ATA Select %s] Error/Fault detected before select (Status=%#x).\n", dev->device_name, status);
+        return BLOCK_ERR_DEV_FAULT;
+    }
+
+    // 2. Select the drive (Master/Slave) and set LBA mode bit.
+    uint8_t drive_select_command = (dev->is_slave ? ATA_DEV_SLAVE : ATA_DEV_MASTER) | ATA_DEV_LBA;
+    outb(dev->io_base + ATA_REG_HDDEVSEL, drive_select_command);
+
+    // 3. Wait 400ns for the selection to settle.
+    ata_delay_400ns(dev->control_base); // Pass control base, ALTSTATUS is offset 0
+
+    // 4. Poll again for BSY=0 after selection.
+    //    The drive might become busy briefly after selection.
+    poll_result = ata_poll_status(dev->io_base, ATA_SR_BSY, 0x00, ATA_TIMEOUT_PIO, "SelectWaitBSY (BSY=0)");
+    if (poll_result < 0) { // Check for -1 timeout return
+         terminal_printf("[ATA Select %s] Timeout waiting for BSY=0 after select.\n", dev->device_name);
+        return BLOCK_ERR_TIMEOUT;
+    }
+    // We don't need to check status bits here, the final status read covers it.
+
+    // 5. Read final status and check DRDY=1 and ERR=0, DF=0.
+    status = inb(dev->io_base + ATA_REG_STATUS);
+    if (!(status & ATA_SR_DRDY)) {
+        terminal_printf("[ATA Select %s] Drive not ready after select (Status=%#x, DRDY=0).\n", dev->device_name, status);
+        return BLOCK_ERR_NO_DEV; // Drive not responding correctly
+    }
+    if (status & (ATA_SR_ERR | ATA_SR_DF)) {
+        terminal_printf("[ATA Select %s] Drive error/fault after select (Status=%#x).\n", dev->device_name, status);
+        return BLOCK_ERR_DEV_FAULT; // Drive selected but reported an error
+    }
+
+    // If we reach here, BSY=0, DRDY=1, ERR=0, DF=0. Drive is selected and ready.
+    return BLOCK_ERR_OK;
+}
  
  /**
   * @brief Issues the IDENTIFY DEVICE command and parses key information.
@@ -481,140 +518,222 @@
   * @param write True for writing, false for reading.
   * @return BLOCK_ERR_OK (0) on success, or a negative BLOCK_ERR_* code on failure.
   */
- int block_device_transfer(block_device_t *dev, uint64_t lba, void *buffer, size_t count, bool write) {
-     // 1. Validate Parameters
-     if (!dev || !dev->initialized || !buffer || count == 0) {
-         // *** CORRECTED Format *** (Simplified message as compiler warning was confusing)
-          terminal_printf("[ATA %s RW] Error: Invalid parameters provided.\n", dev ? dev->device_name : "N/A");
+  int block_device_transfer(block_device_t *dev, uint64_t lba, void *buffer, size_t count, bool write) {
+    // 1. Validate Parameters (same as before)
+    if (!dev || !dev->initialized || !buffer || count == 0) {
+         terminal_printf("[ATA %s RW] Error: Invalid parameters provided.\n", dev ? dev->device_name : "N/A");
+        return BLOCK_ERR_PARAMS;
+    }
+    if (dev->sector_size == 0 || (dev->sector_size % 2 != 0)) {
+         terminal_printf("[ATA %s RW] Error: Invalid sector size (%lu) in device struct.\n",
+                         dev->device_name, (unsigned long)dev->sector_size);
          return BLOCK_ERR_PARAMS;
-     }
-     if (dev->sector_size == 0 || (dev->sector_size % 2 != 0)) {
-          // *** CORRECTED FORMAT: Use %lu for sector_size ***
-          terminal_printf("[ATA %s RW] Error: Invalid sector size (%u) in device struct.\n",
-                          dev->device_name, (unsigned long)dev->sector_size);
-          // *** FIXED ERROR CODE ***
-          return BLOCK_ERR_PARAMS;
-     }
-     if (lba >= dev->total_sectors || count > dev->total_sectors - lba) {
-         // *** CORRECTED FORMAT: %u, %zu, %u ***
-         terminal_printf("[ATA %s RW] Error: LBA %u + Count %zu out of bounds (Total %u).\n",
-                           dev->device_name, lba, count, dev->total_sectors);
-         return BLOCK_ERR_BOUNDS;
-     }
- 
-     // 2. Acquire Lock
-     uintptr_t irq_flags = spinlock_acquire_irqsave(dev->channel_lock);
-     int final_ret = BLOCK_ERR_OK;
-     size_t sectors_remaining = count;
-     uint64_t current_lba = lba;
-     uint8_t *current_buffer = (uint8_t *)buffer;
- 
-     // 3. Transfer Loop
-     while (sectors_remaining > 0) {
-         int current_ret = BLOCK_ERR_OK;
- 
-         // --- Determine parameters for this command ---
-         bool use_lba48 = dev->lba48_supported && (current_lba + sectors_remaining > 0x10000000ULL);
-         size_t max_sectors_per_ata_cmd = use_lba48 ? 65536 : 256;
-         bool try_multiple = (dev->multiple_sector_count > 0) && (sectors_remaining >= dev->multiple_sector_count);
- 
-         size_t sectors_this_cmd;
-         uint8_t command;
- 
-         if (try_multiple) sectors_this_cmd = dev->multiple_sector_count;
-         else              sectors_this_cmd = 1;
- 
-         if (sectors_this_cmd > sectors_remaining) sectors_this_cmd = sectors_remaining;
-         if (sectors_this_cmd > max_sectors_per_ata_cmd) sectors_this_cmd = max_sectors_per_ata_cmd;
- 
-         bool use_multiple_this_cmd = try_multiple && (sectors_this_cmd >= dev->multiple_sector_count);
-         if (try_multiple && !use_multiple_this_cmd) {
-              sectors_this_cmd = 1;
-              if (sectors_this_cmd > sectors_remaining) sectors_this_cmd = sectors_remaining;
-         }
- 
-         if (write) {
-             if (use_multiple_this_cmd) command = use_lba48 ? ATA_CMD_WRITE_MULTIPLE_EXT : ATA_CMD_WRITE_MULTIPLE;
-             else                       command = use_lba48 ? ATA_CMD_WRITE_PIO_EXT      : ATA_CMD_WRITE_PIO;
-         } else {
-             if (use_multiple_this_cmd) command = use_lba48 ? ATA_CMD_READ_MULTIPLE_EXT  : ATA_CMD_READ_MULTIPLE;
-             else                       command = use_lba48 ? ATA_CMD_READ_PIO_EXT       : ATA_CMD_READ_PIO;
-         }
- 
-         if (!use_lba48 && (current_lba + sectors_this_cmd > 0x10000000ULL)) {
-             terminal_printf("[ATA %s RW] Error: LBA28 command exceeds address limit (LBA %u, Count %zu).\n", dev->device_name, current_lba, sectors_this_cmd);
+    }
+    if (lba >= dev->total_sectors || count > dev->total_sectors - lba) {
+        terminal_printf("[ATA %s RW] Error: LBA %llu + Count %zu out of bounds (Total %llu).\n",
+                          dev->device_name, lba, count, dev->total_sectors);
+        return BLOCK_ERR_BOUNDS;
+    }
+
+    // Determine which channel/flag to use
+    volatile bool* irq_fired_flag;
+    volatile uint8_t* last_status_flag;
+    volatile uint8_t* last_error_flag;
+    bool primary_channel = (dev->io_base == ATA_PRIMARY_IO);
+
+    if (primary_channel) {
+        irq_fired_flag = &g_ata_primary_irq_fired;
+        last_status_flag = &g_ata_primary_last_status;
+        last_error_flag = &g_ata_primary_last_error;
+    } else {
+        // Setup for secondary channel if implemented
+        // irq_fired_flag = &g_ata_secondary_irq_fired;
+        // ...
+        terminal_printf("[ATA %s RW] Error: Secondary channel IRQ handling not implemented.\n", dev->device_name);
+        return BLOCK_ERR_UNSUPPORTED; // Or implement secondary channel handling
+    }
+
+    // 2. Acquire Lock
+    uintptr_t irq_flags = spinlock_acquire_irqsave(dev->channel_lock);
+    int final_ret = BLOCK_ERR_OK;
+    size_t sectors_remaining = count;
+    uint64_t current_lba = lba;
+    uint8_t *current_buffer = (uint8_t *)buffer;
+
+    // 3. Transfer Loop
+    while (sectors_remaining > 0) {
+        int current_ret = BLOCK_ERR_OK;
+
+        // --- Determine parameters for this command ---
+        // (Same logic as before to determine use_lba48, sectors_this_cmd, command etc.)
+        bool use_lba48 = dev->lba48_supported && (current_lba + sectors_remaining -1 >= 0x10000000ULL); // Check end LBA
+        size_t max_sectors_per_ata_cmd = use_lba48 ? 65536 : 256;
+        // Use multiple mode only if enabled and enough sectors remain for a full block
+        bool use_multiple_this_cmd = (dev->multiple_sector_count > 0) &&
+                                     (sectors_remaining >= dev->multiple_sector_count);
+
+        size_t sectors_this_cmd;
+        if (use_multiple_this_cmd) {
+            sectors_this_cmd = dev->multiple_sector_count;
+        } else {
+            sectors_this_cmd = 1;
+        }
+        // Clamp to remaining sectors and max command size
+        if (sectors_this_cmd > sectors_remaining) sectors_this_cmd = sectors_remaining;
+        if (sectors_this_cmd > max_sectors_per_ata_cmd) sectors_this_cmd = max_sectors_per_ata_cmd;
+
+        // Re-evaluate if multiple mode is still applicable after clamping
+        use_multiple_this_cmd = use_multiple_this_cmd && (sectors_this_cmd >= dev->multiple_sector_count);
+
+        uint8_t command;
+        if (write) {
+            if (use_multiple_this_cmd) command = use_lba48 ? ATA_CMD_WRITE_MULTIPLE_EXT : ATA_CMD_WRITE_MULTIPLE;
+            else                       command = use_lba48 ? ATA_CMD_WRITE_PIO_EXT      : ATA_CMD_WRITE_PIO;
+        } else {
+            if (use_multiple_this_cmd) command = use_lba48 ? ATA_CMD_READ_MULTIPLE_EXT  : ATA_CMD_READ_MULTIPLE;
+            else                       command = use_lba48 ? ATA_CMD_READ_PIO_EXT       : ATA_CMD_READ_PIO;
+        }
+
+        if (!use_lba48 && (current_lba + sectors_this_cmd -1 >= 0x10000000ULL)) {
+             terminal_printf("[ATA %s RW] Error: LBA28 command exceeds address limit (LBA %llu, Count %zu).\n", dev->device_name, current_lba, sectors_this_cmd);
              final_ret = BLOCK_ERR_BOUNDS;
              break;
          }
- 
-         // --- Execute Single ATA Command ---
-         current_ret = ata_select_drive(dev);
-         if (current_ret != BLOCK_ERR_OK) {
-             terminal_printf("[ATA %s RW %s] Select drive failed (LBA %u, Err %d)\n",
-                               dev->device_name, write ? "Write" : "Read", current_lba, current_ret);
-             final_ret = current_ret;
-             break;
-         }
- 
-         ata_setup_lba(dev, current_lba, sectors_this_cmd);
- 
-         #ifdef BLOCK_DEVICE_DEBUG
-         terminal_printf("[ATA %s Transfer] %s: LBA=%u, Count=%zu, Buf=%p, Cmd=%#x, Mult=%d, LBA48=%d\n",
-                         dev->device_name, write ? "WR" : "RD", current_lba, sectors_this_cmd, (void*)current_buffer,
-                         command, use_multiple_this_cmd, use_lba48);
-         #endif
- 
-         outb(dev->io_base + ATA_REG_COMMAND, command);
-         ata_delay_400ns(dev->control_base + ATA_REG_ALTSTATUS);
- 
-         current_ret = ata_pio_transfer_block(dev, current_buffer, sectors_this_cmd, write);
-         if (current_ret != BLOCK_ERR_OK) {
-             terminal_printf("[ATA %s RW %s] Transfer block failed (Cmd %#x, LBA %u, Count %zu, Err %d)\n",
-                               dev->device_name, write ? "Write" : "Read", command, current_lba, sectors_this_cmd, current_ret);
-             final_ret = current_ret;
-             break;
-         }
- 
-         // Advance state
-         sectors_remaining -= sectors_this_cmd;
-         current_lba += sectors_this_cmd;
-         uintptr_t buffer_advance = sectors_this_cmd * dev->sector_size;
-         if ((uintptr_t)current_buffer > UINTPTR_MAX - buffer_advance) {
-              terminal_printf("[ATA %s RW] Error: Buffer pointer overflow during transfer.\n", dev->device_name);
-              final_ret = FS_ERR_UNKNOWN;
-              break;
-         }
-         current_buffer += buffer_advance;
- 
-     } // End while(sectors_remaining > 0)
- 
-     // 4. Final Cache Flush
-     if (write && final_ret == BLOCK_ERR_OK) {
-         int sel_ret = ata_select_drive(dev);
-         if (sel_ret == BLOCK_ERR_OK) {
-             uint8_t flush_cmd = dev->lba48_supported ? ATA_CMD_FLUSH_CACHE_EXT : ATA_CMD_FLUSH_CACHE;
-             outb(dev->io_base + ATA_REG_COMMAND, flush_cmd);
-             ata_delay_400ns(dev->control_base + ATA_REG_ALTSTATUS);
- 
-             int flush_status = ata_poll_status(dev->io_base, ATA_SR_BSY, 0x00, ATA_TIMEOUT_PIO * 3, "FlushCache");
-             if (flush_status < 0) {
-                  terminal_printf("[ATA %s RW Write] FlushCache timeout.\n", dev->device_name);
-                  final_ret = BLOCK_ERR_TIMEOUT;
-             } else if (flush_status & (ATA_SR_ERR | ATA_SR_DF)) {
-                  uint8_t err_reg = (flush_status & ATA_SR_ERR) ? inb(dev->io_base + ATA_REG_ERROR) : 0;
-                  terminal_printf("[ATA %s RW Write] FlushCache error/fault (Status=%#x, Error=%#x).\n", dev->device_name, flush_status, err_reg);
-                  final_ret = BLOCK_ERR_DEV_FAULT;
+
+        // --- Execute Single ATA Command ---
+        current_ret = ata_select_drive(dev);
+        if (current_ret != BLOCK_ERR_OK) {
+            final_ret = current_ret; break; // Exit loop on select failure
+        }
+
+        ata_setup_lba(dev, current_lba, sectors_this_cmd);
+
+        // Clear the IRQ flag BEFORE sending the command
+        *irq_fired_flag = false;
+        *last_status_flag = 0;
+        *last_error_flag = 0;
+
+        // Send the command
+        outb(dev->io_base + ATA_REG_COMMAND, command);
+        ata_delay_400ns(dev->control_base + ATA_REG_ALTSTATUS); // Short delay after command
+
+        // --- Wait for IRQ instead of polling status ---
+        uint32_t wait_loops = ATA_TIMEOUT_PIO * 5; // Extend timeout significantly for IRQ waiting
+        bool timed_out = true;
+        while(wait_loops--) {
+             if (*irq_fired_flag) {
+                 timed_out = false;
+                 break;
              }
-         } else {
-              terminal_printf("[ATA %s RW Write] Select drive failed before FlushCache (Err %d).\n", dev->device_name, sel_ret);
-              if (final_ret == BLOCK_ERR_OK) final_ret = sel_ret;
-         }
-     }
- 
-     // 5. Release Lock and Return
-     spinlock_release_irqrestore(dev->channel_lock, irq_flags);
-     return final_ret;
- }
+             // --- Option A: Busy Wait (High CPU) ---
+              asm volatile ("pause");
+
+             // --- Option B: Yield CPU (if scheduler exists and is safe) ---
+             // spinlock_release_irqrestore(dev->channel_lock, irq_flags); // Release lock before yield
+             // schedule(); // Call scheduler to yield
+             // irq_flags = spinlock_acquire_irqsave(dev->channel_lock); // Re-acquire lock
+
+              // --- Option C: Halt CPU (Requires interrupts to be enabled!) ---
+              // Ensure interrupts are enabled before halting
+              // spinlock_release_irqrestore(dev->channel_lock, irq_flags); // Release lock
+              // asm volatile ("sti; hlt; cli"); // Enable, Halt, Disable immediately after
+              // irq_flags = spinlock_acquire_irqsave(dev->channel_lock); // Re-acquire lock
+        }
+
+        if (timed_out) {
+            terminal_printf("[ATA %s RW %s] Timeout waiting for IRQ (Cmd %#x, LBA %llu)\n",
+                              dev->device_name, write ? "Write" : "Read", command, current_lba);
+            final_ret = BLOCK_ERR_TIMEOUT;
+            // Attempt to read status anyway to see what happened
+            *last_status_flag = inb(dev->io_base + ATA_REG_STATUS);
+             terminal_printf(" -> Last Status before timeout: %#x\n", *last_status_flag);
+            break; // Exit transfer loop on timeout
+        }
+
+        // --- IRQ Fired - Check Status/Error captured by handler ---
+        uint8_t status = *last_status_flag;
+        uint8_t error = *last_error_flag;
+
+        if (status & (ATA_SR_ERR | ATA_SR_DF)) {
+            terminal_printf("[ATA %s RW %s] Error/Fault after IRQ (Cmd %#x, LBA %llu, Status=%#x, Error=%#x)\n",
+                              dev->device_name, write ? "Write" : "Read", command, current_lba, status, error);
+            final_ret = (status & ATA_SR_ERR) ? BLOCK_ERR_DEV_ERR : BLOCK_ERR_DEV_FAULT;
+            break; // Exit transfer loop on error
+        }
+
+        // --- Transfer Data (If command involves data transfer) ---
+        // Check DRQ bit - It SHOULD be set if status is okay and command expects data
+        if (command != ATA_CMD_FLUSH_CACHE && command != ATA_CMD_FLUSH_CACHE_EXT) {
+             if (!(status & ATA_SR_DRQ)) {
+                  terminal_printf("[ATA %s RW %s] IRQ fired but DRQ not set! (Cmd %#x, LBA %llu, Status=%#x)\n",
+                                    dev->device_name, write ? "Write" : "Read", command, current_lba, status);
+                  // This might indicate an unexpected state or early/late interrupt
+                  // Maybe retry waiting? Or fail? Let's fail for now.
+                  final_ret = BLOCK_ERR_IO;
+                  break;
+             }
+             // Transfer the actual data for the sectors in this command block
+             current_ret = ata_pio_transfer_block(dev, current_buffer, sectors_this_cmd, write);
+             if (current_ret != BLOCK_ERR_OK) {
+                 final_ret = current_ret;
+                 break; // Exit loop on transfer error
+             }
+        }
+        // --- End Data Transfer ---
+
+        // Advance state
+        sectors_remaining -= sectors_this_cmd;
+        current_lba += sectors_this_cmd;
+        current_buffer += sectors_this_cmd * dev->sector_size;
+
+    } // End while(sectors_remaining > 0)
+
+    // 4. Final Cache Flush (Unchanged, but now happens after interrupt-based waits)
+    if (write && final_ret == BLOCK_ERR_OK) {
+        // Clear flag before flush command
+        *irq_fired_flag = false;
+        *last_status_flag = 0;
+        *last_error_flag = 0;
+
+        int sel_ret = ata_select_drive(dev);
+        if (sel_ret == BLOCK_ERR_OK) {
+            uint8_t flush_cmd = dev->lba48_supported ? ATA_CMD_FLUSH_CACHE_EXT : ATA_CMD_FLUSH_CACHE;
+            outb(dev->io_base + ATA_REG_COMMAND, flush_cmd);
+            ata_delay_400ns(dev->control_base + ATA_REG_ALTSTATUS);
+
+            // Wait for flush completion IRQ
+            uint32_t wait_loops = ATA_TIMEOUT_PIO * 5; // Generous timeout for flush
+            bool timed_out = true;
+            while(wait_loops--) {
+                 if (*irq_fired_flag) {
+                     timed_out = false;
+                     break;
+                 }
+                  asm volatile ("pause"); // Or yield/hlt as above
+            }
+
+            if (timed_out) {
+                terminal_printf("[ATA %s RW Write] FlushCache timeout waiting for IRQ.\n", dev->device_name);
+                final_ret = BLOCK_ERR_TIMEOUT;
+            } else {
+                uint8_t flush_status = *last_status_flag;
+                uint8_t flush_error = *last_error_flag;
+                 if (flush_status & (ATA_SR_ERR | ATA_SR_DF)) {
+                      terminal_printf("[ATA %s RW Write] FlushCache error/fault after IRQ (Status=%#x, Error=%#x).\n", dev->device_name, flush_status, flush_error);
+                      final_ret = BLOCK_ERR_DEV_FAULT;
+                 }
+                 // Else: Flush completed successfully
+            }
+        } else {
+             terminal_printf("[ATA %s RW Write] Select drive failed before FlushCache (Err %d).\n", dev->device_name, sel_ret);
+             if (final_ret == BLOCK_ERR_OK) final_ret = sel_ret; // Report select error if no other error occurred
+        }
+    }
+
+    // 5. Release Lock and Return
+    spinlock_release_irqrestore(dev->channel_lock, irq_flags);
+    return final_ret;
+}
  
  /**
   * @brief Reads sectors from the block device.
@@ -631,5 +750,43 @@
  int block_device_write(block_device_t *dev, uint64_t lba, const void *buffer, size_t count) {
      return block_device_transfer(dev, lba, (void *)buffer, count, true);
  }
+
+ void ata_primary_irq_handler(isr_frame_t* frame) {
+    (void)frame;
+
+    // Acquire the lock specific to this channel IF state needs protection
+    // Note: Acquiring spinlock in IRQ handler requires careful design
+    // to avoid deadlocks if the main thread holds the lock while waiting.
+    // For this simple flag mechanism, we might risk it OR make flags atomic/careful.
+    // Let's skip the lock here for simplicity, assuming read/write to bool/uint8_t is atomic enough.
+    // uintptr_t irq_flags = spinlock_acquire_irqsave(&g_ata_primary_lock); // Be careful with this!
+
+    // Read status register - THIS ACKNOWLEDGES THE IRQ on the hardware
+    g_ata_primary_last_status = inb(ATA_PRIMARY_IO + ATA_REG_STATUS);
+
+    // Read error register ONLY if the error bit is set in the status
+    if (g_ata_primary_last_status & ATA_SR_ERR) {
+        g_ata_primary_last_error = inb(ATA_PRIMARY_IO + ATA_REG_ERROR);
+    } else {
+        g_ata_primary_last_error = 0; // Clear last error
+    }
+
+    // Signal that the IRQ has fired
+    g_ata_primary_irq_fired = true;
+
+    // --- Optional Debugging ---
+     serial_write("[IRQ14] ATA Primary Handled! Status: %#x Error: %#x\n",
+                   g_ata_primary_last_status, g_ata_primary_last_error);
+
+    // --- Future: Wake up waiting process ---
+    // if (waiting_process_primary) {
+    //     scheduler_wake(waiting_process_primary);
+    // }
+
+    // spinlock_release_irqrestore(&g_ata_primary_lock, irq_flags); // Release if acquired
+
+    // EOI is sent by isr_common_handler
+}
+
  
  // === END: Improved block_device.c (v5 - ASSERTs Removed) ===

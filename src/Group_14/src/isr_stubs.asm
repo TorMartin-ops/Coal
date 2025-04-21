@@ -1,117 +1,117 @@
-; src/isr_stubs.asm
- ; Defines basic Interrupt Service Routine (ISR) stubs for exceptions 0-19.
- ; Includes Double Fault handler (ISR 8) with debug print.
- ; Adds debug prints for #TS (10) and #SS (12).
- ; Corrected to pass ESP to int_handler.
+; Corrected src/isr_stubs.asm
+; Defines Interrupt Service Routine (ISR) stubs for exceptions 0-19.
+; Uses a common stub to ensure correct stack frame for the C handler.
+; ISR 14 (Page Fault) is now handled entirely by isr_pf.asm
 
- section .text
+section .text
 
- ; External C handler function
- extern int_handler
- extern serial_putc_asm
+; External C handler function
+extern isr_common_handler ; Make sure C code defines this function
+; External common stub (defined below or in irq_stubs.asm)
+; Remove 'extern common_interrupt_stub' if defined in this file
 
- ; Export ISR symbols for use in IDT setup
- global isr0, isr1, isr2, isr3, isr4, isr5, isr6, isr7, isr8
- global isr10, isr11, isr12, isr13
- global isr16, isr17, isr18, isr19
+; Export ISR symbols for use in IDT setup
+global isr0, isr1, isr2, isr3, isr4, isr5, isr6, isr7, isr8
+global isr10, isr11, isr12, isr13 ; isr14 is NOT exported from here
+global isr16, isr17, isr18, isr19
+; Add isr9, isr15, etc. if needed
 
- ; Common macro for ISRs without an error code
- %macro ISR_NOERRCODE 1
- isr%1:
-     pusha
-     push dword %1  ; Push vector number
+; Define Kernel Data Segment selector (Must match irq_stubs.asm and gdt.c)
+KERNEL_DATA_SEG equ 0x10
 
-     ; ---> FIX: Pass ESP as argument <---
-     mov eax, esp
-     push eax
-     call int_handler
-     add esp, 4     ; Clean up pushed ESP
-     ; ---> END FIX <---
+; Common macro for ISRs WITHOUT an error code pushed by CPU
+; We push a dummy error code 0.
+%macro ISR_NOERRCODE 1
+isr%1:
+    ; cli            ; Optional: Disable interrupts on entry
+    push dword 0   ; Push dummy error code
+    push dword %1  ; Push vector number
+    jmp common_interrupt_stub
+%endmacro
 
-     add esp, 4     ; Clean up pushed vector number
-     popa
-     iret
- %endmacro
+; Common macro for ISRs WITH an error code pushed by the CPU
+%macro ISR_ERRCODE 1
+isr%1:
+    ; cli            ; Optional: Disable interrupts on entry
+    ; Error code is already pushed by CPU
+    push dword %1  ; Push vector number
+    jmp common_interrupt_stub
+%endmacro
 
- ; Common macro for ISRs WITH an error code pushed by the CPU
- %macro ISR_ERRCODE 1
- isr%1:
-     ; --- DEBUG Prints for Specific Faults ---
- %if %1 == 8 ; Double Fault
-     pusha
-     mov al, 'D' ; Print 'D' for Double Fault
-     call serial_putc_asm
-     cli
- .halt_df: hlt
-     jmp .halt_df
-     popa ; Unreachable, but balances stack for assembler
- %elif %1 == 10 ; Invalid TSS
-     pusha
-     mov al, 'T' ; Print 'T' for Invalid TSS
-     call serial_putc_asm
-     popa
- %elif %1 == 11 ; Segment Not Present
-     pusha
-     mov al, 'N' ; Print 'N' for Segment Not Present (just in case)
-     call serial_putc_asm
-     popa
- %elif %1 == 12 ; Stack Segment Fault
-     pusha
-     mov al, '#' ; Print '#' for Stack Segment Fault
-     call serial_putc_asm
-     popa
- %elif %1 == 13 ; General Protection Fault
-     pusha
-     mov al, 'G' ; Print 'G' for GP Fault
-     call serial_putc_asm
-     popa
- %endif
-     ; --- End DEBUG ---
+; Define ISRs using the macros
+ISR_NOERRCODE 0   ; Divide By Zero Exception
+ISR_NOERRCODE 1   ; Debug Exception
+ISR_NOERRCODE 2   ; Non Maskable Interrupt Exception
+ISR_NOERRCODE 3   ; Breakpoint Exception
+ISR_NOERRCODE 4   ; Into Detected Overflow Exception
+ISR_NOERRCODE 5   ; Out of Bounds Exception
+ISR_NOERRCODE 6   ; Invalid Opcode Exception
+ISR_NOERRCODE 7   ; No Coprocessor Exception
 
-     pusha
-     push dword %1  ; Push vector number
+ISR_ERRCODE   8   ; Double Fault Exception (err code)
 
-     ; ---> FIX: Pass ESP as argument <---
-     mov eax, esp
-     push eax
-     call int_handler
-     add esp, 4     ; Clean up pushed ESP
-     ; ---> END FIX <---
+; ISR 9 is reserved or might need a stub
+; ISR_NOERRCODE 9
 
-     add esp, 4     ; Clean up pushed vector number
-     popa
-     add esp, 4     ; Pop original error code pushed by CPU
-     iret
- %endmacro
+ISR_ERRCODE   10  ; Invalid TSS Exception (err code)
+ISR_ERRCODE   11  ; Segment Not Present Exception (err code)
+ISR_ERRCODE   12  ; Stack Fault Exception (err code)
+ISR_ERRCODE   13  ; General Protection Fault Exception (err code)
 
- ; Define ISRs using the macros
- ISR_NOERRCODE 0   ; Divide By Zero Exception
- ISR_NOERRCODE 1   ; Debug Exception
- ISR_NOERRCODE 2   ; Non Maskable Interrupt Exception
- ISR_NOERRCODE 3   ; Breakpoint Exception
- ISR_NOERRCODE 4   ; Into Detected Overflow Exception
- ISR_NOERRCODE 5   ; Out of Bounds Exception
- ISR_NOERRCODE 6   ; Invalid Opcode Exception
- ISR_NOERRCODE 7   ; No Coprocessor Exception
+; ISR_ERRCODE   14  ; <<< THIS LINE IS REMOVED / COMMENTED OUT >>>
 
- ISR_ERRCODE   8   ; Double Fault Exception (err code) <<< Prints 'D' & HALTs
+; ISR 15 is reserved or might need a stub
+; ISR_NOERRCODE 15
 
- ; ISR 9 is reserved
+ISR_NOERRCODE 16  ; Floating Point Exception
 
- ISR_ERRCODE   10  ; Invalid TSS Exception (err code) <<< Prints 'T'
- ISR_ERRCODE   11  ; Segment Not Present Exception (err code) <<< Prints 'N'
- ISR_ERRCODE   12  ; Stack Fault Exception (err code) <<< Prints '#'
- ISR_ERRCODE   13  ; General Protection Fault Exception (err code) <<< Prints 'G'
+ISR_ERRCODE   17  ; Alignment Check Exception (err code)
+ISR_ERRCODE   18  ; Machine Check Exception (err code) - Note: MCE is complex
 
- ; *** REMEMBER: isr14 definition is likely in isr_pf.asm and needs the same fix ***
+ISR_NOERRCODE 19  ; SIMD Floating-Point Exception
 
- ; ISR 15 is reserved
+; Define stubs for reserved exceptions 20-31 if desired
+; e.g., ISR_NOERRCODE 20, ISR_NOERRCODE 21, ... ISR_NOERRCODE 31
 
- ISR_NOERRCODE 16  ; Floating Point Exception
 
- ISR_ERRCODE   17  ; Alignment Check Exception (err code)
- ISR_ERRCODE   18  ; Machine Check Exception (err code)
+; Common stub called by all ISRs and IRQs after pushing vector and error code.
+; Creates the stack frame expected by the C isr_common_handler(isr_frame_t* frame).
+; NOTE: This is duplicated from irq_stubs.asm for simplicity.
+common_interrupt_stub:
+    ; 1. Save all general purpose registers
+    pusha          ; Pushes EDI, ESI, EBP, ESP_dummy, EBX, EDX, ECX, EAX
 
- ISR_NOERRCODE 19  ; SIMD Floating-Point Exception
+    ; 2. Save segment registers (DS, ES, FS, GS)
+    push ds
+    push es
+    push fs
+    push gs
 
- ; ISRs 20-31 are reserved by Intel.
+    ; 3. Load kernel data segments into segment registers
+    mov ax, KERNEL_DATA_SEG
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax     ; GS is now saved and set
+
+    ; 4. Call the C handler, passing a pointer to the saved state.
+    mov eax, esp   ; Get pointer to the start of the isr_frame_t structure
+    push eax       ; Push pointer as argument for isr_common_handler
+    call isr_common_handler
+    add esp, 4     ; Clean up argument stack
+
+    ; 5. Restore segment registers
+    pop gs
+    pop fs
+    pop es
+    pop ds
+
+    ; 6. Restore general purpose registers
+    popa
+
+    ; 7. Clean up the vector number and error code pushed by the specific stub
+    add esp, 8
+
+    ; 8. Return from interrupt
+    ; sti
+    iret
