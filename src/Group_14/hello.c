@@ -1,8 +1,9 @@
 // hello.c - Simple user-space program for UiAOS
 
 // Syscall numbers (must match your kernel's syscall.h)
-#define SYS_WRITE 1
-#define SYS_EXIT  2
+#define SYS_WRITE     4  // Updated to match syscall.h
+#define SYS_EXIT      1  // Updated to match syscall.h
+#define STDOUT_FILENO 1  // Standard file descriptor for stdout
 
 // Crude strlen implementation (no libc)
 int my_strlen(const char* s) {
@@ -13,38 +14,27 @@ int my_strlen(const char* s) {
     return len;
 }
 
-// Crude syscall wrappers using inline assembly
-int syscall_write(const char *message) {
-    int len = my_strlen(message);
+// Crude syscall wrapper for write using inline assembly
+int syscall_write(int fd, const char *message, int len) {
     int result;
-    // EAX = syscall number (SYS_WRITE = 1)
-    // EBX = buffer pointer
-    // ECX = buffer length
+    // EAX = syscall number (SYS_WRITE = 4)
+    // EBX = file descriptor
+    // ECX = buffer pointer
+    // EDX = buffer length
     asm volatile (
-        "int $0x80"         // Invoke syscall interrupt
-        : "=a" (result)     // Output: result in EAX
-        : "a" (SYS_WRITE), "b" (message), "c" (len) // Inputs
-        : "memory", "cc"    // Clobbers: memory, condition codes
+        "int $0x80"          // Invoke syscall interrupt
+        : "=a" (result)      // Output: result in EAX
+        : "a" (SYS_WRITE), "b" (fd), "c" (message), "d" (len) // Inputs
+        : "memory", "cc"     // Clobbers: memory, condition codes
     );
     return result;
 }
 
-void syscall_exit(int code) {
-    // EAX = syscall number (SYS_EXIT = 2)
-    // EBX = exit code
-    asm volatile (
-        "int $0x80"
-        : // No output
-        : "a" (SYS_EXIT), "b" (code)
-        : "memory"
-    );
-    // This syscall should not return
-    while(1); // Loop forever if it somehow returns
-}
-
+// NOTE: syscall_exit function removed as it's handled by entry.asm
 
 // Main function for the user program
 int main() {
-    syscall_write("Hello from User Space!\n");
-    return 0; // Exit code 0
+    const char *msg = "Hello from User Space!\n";
+    syscall_write(STDOUT_FILENO, msg, my_strlen(msg));
+    return 0; // Exit code 0 (will be passed to SYS_EXIT by _start)
 }

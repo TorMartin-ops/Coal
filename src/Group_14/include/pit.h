@@ -25,7 +25,7 @@
  * PIC (Programmable Interrupt Controller) macros, if needed
  */
 #define PIC1_CMD_PORT        0x20
-#define PIC1_DATA_PORT       0x20
+#define PIC1_DATA_PORT       0x21
 #define PIC_EOI              0x20  /* End-of-interrupt command code */
 
 /**
@@ -38,7 +38,7 @@
 #define PIT_BASE_FREQUENCY   1193180
 #define TARGET_FREQUENCY     1000
 #define DIVIDER              (PIT_BASE_FREQUENCY / TARGET_FREQUENCY)
-#define TICKS_PER_MS         (TARGET_FREQUENCY / TARGET_FREQUENCY)
+#define TICKS_PER_MS         (TARGET_FREQUENCY / 1000)
 
 /**
  * init_pit
@@ -76,7 +76,22 @@ void sleep_busy(uint32_t milliseconds);
  */
 void sleep_interrupt(uint32_t milliseconds);
 
+/**
+ * pit_set_scheduler_ready
+ * 
+ * Marks the scheduler as ready to be called by the PIT handler.
+ * Should be called after scheduler init and first task add, before sti.
+ * Until this is called, the PIT will increment ticks but not call schedule().
+ */
 void pit_set_scheduler_ready(void);
 
+/**
+ * pit_is_scheduler_ready
+ * 
+ * Returns whether the scheduler has been marked as ready for PIT callbacks.
+ * 
+ * @return true if the scheduler has been marked ready, false otherwise.
+ */
+bool pit_is_scheduler_ready(void);
 
 #endif // PIT_H
