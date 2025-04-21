@@ -210,175 +210,195 @@ static void mark_reserved_range(uintptr_t start, uintptr_t end, const char* name
 //----------------------------------------------------------------------------
 
 int frame_init(struct multiboot_tag_mmap *mmap_tag_virt,
-               uintptr_t kernel_phys_start, uintptr_t kernel_phys_end,
-               uintptr_t buddy_heap_phys_start, uintptr_t buddy_heap_phys_end)
+    uintptr_t kernel_phys_start, uintptr_t kernel_phys_end,
+    uintptr_t buddy_heap_phys_start, uintptr_t buddy_heap_phys_end)
 {
-    terminal_write("[Frame] Initializing physical frame manager...\n");
-    spinlock_init(&g_frame_lock);
+terminal_write("[Frame] Initializing physical frame manager...\n");
+spinlock_init(&g_frame_lock);
 
-    // --- Step 1: Validate Multiboot Memory Map ---
-    KERNEL_ASSERT(mmap_tag_virt != NULL, "Multiboot MMAP tag is NULL");
-    KERNEL_ASSERT(mmap_tag_virt->type == MULTIBOOT_TAG_TYPE_MMAP, "Invalid Multiboot tag type for MMAP");
-    KERNEL_ASSERT(mmap_tag_virt->entry_size >= sizeof(multiboot_memory_map_t), "MMAP entry size too small");
-    FRAME_PRINT(1, "   Using MMAP tag @ VIRT=%#lx (Size=%u, EntrySize=%u, Ver=%u)\n",
-                (unsigned long)mmap_tag_virt, (unsigned)mmap_tag_virt->size,
-                (unsigned)mmap_tag_virt->entry_size, (unsigned)mmap_tag_virt->entry_version);
+// --- Step 1: Validate Multiboot Memory Map ---
+KERNEL_ASSERT(mmap_tag_virt != NULL, "Multiboot MMAP tag is NULL");
+KERNEL_ASSERT(mmap_tag_virt->type == MULTIBOOT_TAG_TYPE_MMAP, "Invalid Multiboot tag type for MMAP");
+KERNEL_ASSERT(mmap_tag_virt->entry_size >= sizeof(multiboot_memory_map_t), "MMAP entry size too small");
+FRAME_PRINT(1, "   Using MMAP tag @ VIRT=%#lx (Size=%u, EntrySize=%u, Ver=%u)\n",
+     (unsigned long)mmap_tag_virt, (unsigned)mmap_tag_virt->size,
+     (unsigned)mmap_tag_virt->entry_size, (unsigned)mmap_tag_virt->entry_version);
 
-    // --- Step 2: Determine Total Physical Memory Span ---
-    uintptr_t highest_detected_addr = 0;
-    uintptr_t mmap_base_virt = (uintptr_t)mmap_tag_virt->entries;
-    uintptr_t mmap_end_virt = (uintptr_t)mmap_tag_virt + mmap_tag_virt->size;
+// --- Step 2: Determine Total Physical Memory Span ---
+uintptr_t highest_detected_addr = 0;
+uintptr_t mmap_base_virt = (uintptr_t)mmap_tag_virt->entries;
+uintptr_t mmap_end_virt = (uintptr_t)mmap_tag_virt + mmap_tag_virt->size;
 
-    for (uintptr_t entry_ptr = mmap_base_virt;
-         entry_ptr + mmap_tag_virt->entry_size <= mmap_end_virt; // Ensure entry fits within tag bounds
-         entry_ptr += mmap_tag_virt->entry_size)
-    {
-        multiboot_memory_map_t *entry = (multiboot_memory_map_t *)entry_ptr;
-        uint64_t region_start = entry->addr;
-        uint64_t region_len   = entry->len;
-        uint64_t region_end   = region_start + region_len;
+for (uintptr_t entry_ptr = mmap_base_virt;
+entry_ptr + mmap_tag_virt->entry_size <= mmap_end_virt; // Ensure entry fits within tag bounds
+entry_ptr += mmap_tag_virt->entry_size)
+{
+multiboot_memory_map_t *entry = (multiboot_memory_map_t *)entry_ptr;
+uint64_t region_start = entry->addr;
+uint64_t region_len   = entry->len;
+uint64_t region_end   = region_start + region_len;
 
-        // Check for overflow in region_end calculation
-        if (region_end < region_start) region_end = UINT64_MAX;
+// Check for overflow in region_end calculation
+if (region_end < region_start) region_end = UINT64_MAX;
 
-        // Track the highest address seen across all regions
-        if (region_end > highest_detected_addr) {
-            // Clamp to uintptr_t max if necessary
-            highest_detected_addr = (region_end > UINTPTR_MAX) ? UINTPTR_MAX : (uintptr_t)region_end;
-        }
-    }
+// Track the highest address seen across all regions
+if (region_end > highest_detected_addr) {
+ // Clamp to uintptr_t max if necessary
+ highest_detected_addr = (region_end > UINTPTR_MAX) ? UINTPTR_MAX : (uintptr_t)region_end;
+}
+}
 
-    KERNEL_ASSERT(highest_detected_addr > 0, "Failed to detect highest physical address from MMAP");
+KERNEL_ASSERT(highest_detected_addr > 0, "Failed to detect highest physical address from MMAP");
 
-    // Align the highest address *up* to the next page boundary to get the total span
-    g_highest_address_aligned = ALIGN_UP(highest_detected_addr, PAGE_SIZE);
-    if (g_highest_address_aligned < highest_detected_addr) { // Handle overflow from ALIGN_UP
-        g_highest_address_aligned = UINTPTR_MAX;
-    }
+// Align the highest address *up* to the next page boundary to get the total span
+g_highest_address_aligned = ALIGN_UP(highest_detected_addr, PAGE_SIZE);
+if (g_highest_address_aligned < highest_detected_addr) { // Handle overflow from ALIGN_UP
+g_highest_address_aligned = UINTPTR_MAX;
+}
 
-    g_total_frames = addr_to_pfn(g_highest_address_aligned);
-    KERNEL_ASSERT(g_total_frames > 0, "Calculated total frame count is zero");
+g_total_frames = addr_to_pfn(g_highest_address_aligned);
+KERNEL_ASSERT(g_total_frames > 0, "Calculated total frame count is zero");
 
-    terminal_printf("   Detected highest physical address (aligned up): %#lx (%lu total frames potentially addressable)\n",
-                     (unsigned long)g_highest_address_aligned, (unsigned long)g_total_frames);
+terminal_printf("   Detected highest physical address (aligned up): %#lx (%lu total frames potentially addressable)\n",
+         (unsigned long)g_highest_address_aligned, (unsigned long)g_total_frames);
 
-    // --- Step 3: Allocate Physical Memory for Reference Count Array ---
-    // Check for overflow before multiplying
-    if (g_total_frames > (SIZE_MAX / sizeof(uint32_t))) {
-        FRAME_PANIC("Refcount array size calculation overflows size_t");
-    }
-    size_t refcount_array_size_bytes = g_total_frames * sizeof(uint32_t);
+// --- Step 3: Allocate Physical Memory for Reference Count Array ---
+// Check for overflow before multiplying
+if (g_total_frames > (SIZE_MAX / sizeof(uint32_t))) {
+FRAME_PANIC("Refcount array size calculation overflows size_t");
+}
+size_t refcount_array_size_bytes = g_total_frames * sizeof(uint32_t);
 
-    g_refcount_array_alloc_size = get_required_buddy_allocation_size(refcount_array_size_bytes);
-    if (g_refcount_array_alloc_size == SIZE_MAX || g_refcount_array_alloc_size == 0) {
-        FRAME_PANIC("Failed to determine valid buddy block size for refcount array");
-    }
+g_refcount_array_alloc_size = get_required_buddy_allocation_size(refcount_array_size_bytes);
+if (g_refcount_array_alloc_size == SIZE_MAX || g_refcount_array_alloc_size == 0) {
+FRAME_PANIC("Failed to determine valid buddy block size for refcount array");
+}
 
-    // Determine the required buddy order for the allocation
-    int required_order = 0; // Start from MIN_ORDER implicitly
-    size_t block_size = (1UL << MIN_ORDER);
-    while(block_size < g_refcount_array_alloc_size && required_order <= MAX_ORDER) {
-        if (block_size > (SIZE_MAX >> 1)) { required_order = -1; break; } // Prevent overflow
-        block_size <<= 1;
-        required_order++;
-    }
-     // Adjust required_order as it represents the exponent (MIN_ORDER is order 0 conceptually for loop)
-    required_order += MIN_ORDER;
+// Determine the required buddy order for the allocation
+int required_order = 0; // Start from MIN_ORDER implicitly
+size_t block_size = (1UL << MIN_ORDER);
+while(block_size < g_refcount_array_alloc_size && required_order <= MAX_ORDER) {
+if (block_size > (SIZE_MAX >> 1)) { required_order = -1; break; } // Prevent overflow
+block_size <<= 1;
+required_order++;
+}
+// Adjust required_order as it represents the exponent (MIN_ORDER is order 0 conceptually for loop)
+required_order += MIN_ORDER;
 
-    if (required_order > MAX_ORDER || required_order < MIN_ORDER) {
-         FRAME_PANIC("Could not determine valid buddy order for refcount array");
-    }
+if (required_order > MAX_ORDER || required_order < MIN_ORDER) {
+FRAME_PANIC("Could not determine valid buddy order for refcount array");
+}
+
+terminal_printf("   Attempting buddy_alloc_raw(order=%d) for %lu bytes refcount array (fits in block size %lu)...\n",
+         required_order, (unsigned long)refcount_array_size_bytes, (unsigned long)g_refcount_array_alloc_size);
+
+// Allocate using the raw buddy function (returns virtual address)
+void* refcount_array_virt_ptr = buddy_alloc_raw(required_order);
+if (!refcount_array_virt_ptr) { FRAME_PANIC("buddy_alloc_raw failed for refcount array"); }
+
+// --- Step 4: Calculate Physical Address & Verify Alignment ---
+// This conversion assumes the buddy heap lives in the direct-mapped kernel virtual space
+KERNEL_ASSERT(KERNEL_SPACE_VIRT_START != 0, "KERNEL_SPACE_VIRT_START must be defined for virt->phys conversion");
+// ***** IMPORTANT: Ensure this virt->phys conversion is correct for your buddy heap location *****
+// If buddy heap is NOT simply offset from KERNEL_SPACE_VIRT_START, this needs adjustment.
+// Based on boot log (`buddy_heap_phys_start` = 0x800000, `buddy_heap_virt_start` = 0xc0800000),
+// the offset seems to be `0xc0800000 - 0x800000 = 0xC0000000`, which matches KERNEL_SPACE_VIRT_START.
+// If the buddy allocator can return memory outside its initial designated heap (unlikely but possible
+// depending on implementation), this conversion might be unsafe. Assuming it stays within its mapped region:
+g_frame_refcounts_phys = (uintptr_t)refcount_array_virt_ptr - KERNEL_SPACE_VIRT_START;
 
 
-    terminal_printf("   Attempting buddy_alloc_raw(order=%d) for %lu bytes refcount array (fits in block size %lu)...\n",
-                      required_order, (unsigned long)refcount_array_size_bytes, (unsigned long)g_refcount_array_alloc_size);
+terminal_printf("   Refcount array allocated: VIRT=%#lx -> PHYS=%#lx (Buddy Block Size=%lu)\n",
+         (unsigned long)refcount_array_virt_ptr, (unsigned long)g_frame_refcounts_phys,
+         (unsigned long)g_refcount_array_alloc_size);
 
-    // Allocate using the raw buddy function (returns virtual address)
-    void* refcount_array_virt_ptr = buddy_alloc_raw(required_order);
-    if (!refcount_array_virt_ptr) { FRAME_PANIC("buddy_alloc_raw failed for refcount array"); }
+// Critical check: The physical frame allocator *needs* the refcount array to be page-aligned.
+// The buddy allocator should guarantee this for allocations >= PAGE_SIZE.
+KERNEL_ASSERT((g_frame_refcounts_phys % PAGE_SIZE) == 0, "Physical address for refcount array is not page-aligned! Buddy error?");
 
-    // --- Step 4: Calculate Physical Address & Verify Alignment ---
-    // This conversion assumes the buddy heap lives in the direct-mapped kernel virtual space
-    KERNEL_ASSERT(KERNEL_SPACE_VIRT_START != 0, "KERNEL_SPACE_VIRT_START must be defined for virt->phys conversion");
-    g_frame_refcounts_phys = (uintptr_t)refcount_array_virt_ptr - KERNEL_SPACE_VIRT_START;
+// --- Step 5: Use the VIRTUAL address for access and Initialize ---
+g_frame_refcounts = (volatile uint32_t*)refcount_array_virt_ptr;
+terminal_printf("   Using VIRT address %#lx for refcount array access.\n", (unsigned long)g_frame_refcounts);
 
-    terminal_printf("   Refcount array allocated: VIRT=%#lx -> PHYS=%#lx (Buddy Block Size=%lu)\n",
-                     (unsigned long)refcount_array_virt_ptr, (unsigned long)g_frame_refcounts_phys,
-                     (unsigned long)g_refcount_array_alloc_size);
+terminal_write("   Initializing reference counts (zeroing, then marking reserved regions)...\n");
+terminal_printf("        Zeroing refcount array (%lu actual bytes) @ VIRT=%#lx...\n",
+         (unsigned long)refcount_array_size_bytes, (unsigned long)g_frame_refcounts);
+memset((void*)g_frame_refcounts, 0, refcount_array_size_bytes);
+terminal_write("        Refcount array zeroed.\n");
 
-    // Critical check: The physical frame allocator *needs* the refcount array to be page-aligned.
-    // The buddy allocator should guarantee this for allocations >= PAGE_SIZE.
-    KERNEL_ASSERT((g_frame_refcounts_phys % PAGE_SIZE) == 0, "Physical address for refcount array is not page-aligned! Buddy error?");
+// Mark known reserved physical memory regions
+terminal_write("        Marking known reserved physical memory regions...\n");
+mark_reserved_range(0x0, 0x100000, "Low 1MB"); // Includes BIOS, VGA, etc.
+mark_reserved_range(kernel_phys_start, kernel_phys_end, "Kernel Image");
+if (g_kernel_page_directory_phys != 0) { // g_kernel_page_directory_phys is set in paging_init stage 1
+mark_reserved_range(g_kernel_page_directory_phys, g_kernel_page_directory_phys + PAGE_SIZE, "Initial PD");
+}
+// Add any other known hardware regions or special areas here if necessary.
 
-    // --- Step 5: Use the VIRTUAL address for access and Initialize ---
-    g_frame_refcounts = (volatile uint32_t*)refcount_array_virt_ptr;
-    terminal_printf("   Using VIRT address %#lx for refcount array access.\n", (unsigned long)g_frame_refcounts);
+// ***** ADDED: Mark the refcount array's own physical memory as reserved *****
+if (g_frame_refcounts_phys != 0 && g_refcount_array_alloc_size > 0) {
+mark_reserved_range(g_frame_refcounts_phys,
+                  g_frame_refcounts_phys + g_refcount_array_alloc_size,
+                  "Refcount Arr");
+}
+// ***** Optional: Mark the gap between kernel end and buddy start if significant *****
+// uintptr_t kernel_or_pd_end = (g_kernel_page_directory_phys > kernel_phys_end) ?
+//                             (g_kernel_page_directory_phys + PAGE_SIZE) : kernel_phys_end;
+// kernel_or_pd_end = ALIGN_UP(kernel_or_pd_end, PAGE_SIZE);
+// if (buddy_heap_phys_start > kernel_or_pd_end) {
+//     mark_reserved_range(kernel_or_pd_end, buddy_heap_phys_start, "Buddy Gap");
+// }
 
-    terminal_write("   Initializing reference counts (zeroing, then marking reserved regions)...\n");
-    terminal_printf("      Zeroing refcount array (%lu actual bytes) @ VIRT=%#lx...\n",
-                      (unsigned long)refcount_array_size_bytes, (unsigned long)g_frame_refcounts);
-    memset((void*)g_frame_refcounts, 0, refcount_array_size_bytes);
-    terminal_write("      Refcount array zeroed.\n");
+// --- Step 6: Final Sanity Check (Optional but Recommended) ---
+FRAME_PRINT(1, "   Verifying available frame count post-init (based on MMAP & reservations)...\n");
+size_t available_count = 0;
+size_t usable_buddy_frames = 0;
+mmap_base_virt = (uintptr_t)mmap_tag_virt->entries; // Reset pointer
 
-    // Mark known reserved physical memory regions
-    terminal_write("      Marking known reserved physical memory regions...\n");
-    mark_reserved_range(0x0, 0x100000, "Low 1MB"); // Includes BIOS, VGA, etc.
-    mark_reserved_range(kernel_phys_start, kernel_phys_end, "Kernel Image");
-    if (g_kernel_page_directory_phys != 0) {
-        mark_reserved_range(g_kernel_page_directory_phys, g_kernel_page_directory_phys + PAGE_SIZE, "Initial PD");
-    }
-    // Add any other known hardware regions or special areas here if necessary.
+for (uintptr_t entry_ptr = mmap_base_virt;
+entry_ptr + mmap_tag_virt->entry_size <= mmap_end_virt;
+entry_ptr += mmap_tag_virt->entry_size)
+{
+multiboot_memory_map_t *entry = (multiboot_memory_map_t *)entry_ptr;
+if (entry->type == MULTIBOOT_MEMORY_AVAILABLE) {
+ uint64_t r_start64 = entry->addr;
+ uint64_t r_end64 = r_start64 + entry->len;
+ if (r_end64 < r_start64) r_end64 = UINT64_MAX; // Overflow check
 
-    // --- Step 6: Final Sanity Check (Optional but Recommended) ---
-    FRAME_PRINT(1, "   Verifying available frame count post-init (based on MMAP & reservations)...\n");
-    size_t available_count = 0;
-    size_t usable_buddy_frames = 0;
-    mmap_base_virt = (uintptr_t)mmap_tag_virt->entries; // Reset pointer
+ // Align region boundaries to pages for frame counting
+ uintptr_t first_addr = ALIGN_UP((uintptr_t)r_start64, PAGE_SIZE);
+ uintptr_t last_addr = PAGE_ALIGN_DOWN((uintptr_t)r_end64);
 
-    for (uintptr_t entry_ptr = mmap_base_virt;
-         entry_ptr + mmap_tag_virt->entry_size <= mmap_end_virt;
-         entry_ptr += mmap_tag_virt->entry_size)
-    {
-        multiboot_memory_map_t *entry = (multiboot_memory_map_t *)entry_ptr;
-        if (entry->type == MULTIBOOT_MEMORY_AVAILABLE) {
-            uint64_t r_start64 = entry->addr;
-            uint64_t r_end64 = r_start64 + entry->len;
-            if (r_end64 < r_start64) r_end64 = UINT64_MAX; // Overflow check
+  if (first_addr < last_addr) { // Ensure valid range after alignment
+      size_t first_pfn = addr_to_pfn(first_addr);
+      size_t last_pfn = addr_to_pfn(last_addr);
 
-            // Align region boundaries to pages for frame counting
-            uintptr_t first_addr = ALIGN_UP((uintptr_t)r_start64, PAGE_SIZE);
-            uintptr_t last_addr = PAGE_ALIGN_DOWN((uintptr_t)r_end64);
+      for (size_t pfn = first_pfn; pfn < last_pfn && pfn < g_total_frames; ++pfn) {
+          // Check bounds before accessing array!
+          if (pfn < g_total_frames) {
+              if (g_frame_refcounts[pfn] == 0) {
+                  available_count++;
+                  // Check if this available frame falls within the buddy heap's *physical* range
+                  uintptr_t current_addr = pfn_to_addr(pfn);
+                  if (current_addr >= buddy_heap_phys_start && current_addr < buddy_heap_phys_end) {
+                      usable_buddy_frames++;
+                  }
+              }
+          } else { FRAME_ASSERT(false, "PFN out of range during available count check"); }
+      }
+  }
+}
+}
+// Use %lu for size_t
+terminal_printf("   Sanity Check: Found %lu frames marked available (refcount=0).\n", (unsigned long)available_count);
+terminal_printf("                 Of those, %lu frames fall within the physical buddy heap range [%#lx - %#lx).\n",
+         (unsigned long)usable_buddy_frames, buddy_heap_phys_start, buddy_heap_phys_end);
+if (available_count == 0 && g_total_frames > 256) {
+terminal_write("   [WARNING] Zero available frames detected after initialization!\n");
+}
 
-             if (first_addr < last_addr) { // Ensure valid range after alignment
-                size_t first_pfn = addr_to_pfn(first_addr);
-                size_t last_pfn = addr_to_pfn(last_addr);
-
-                for (size_t pfn = first_pfn; pfn < last_pfn && pfn < g_total_frames; ++pfn) {
-                    // Check bounds before accessing array!
-                    if (pfn < g_total_frames) {
-                        if (g_frame_refcounts[pfn] == 0) {
-                            available_count++;
-                            // Check if this available frame falls within the buddy heap's *physical* range
-                            uintptr_t current_addr = pfn_to_addr(pfn);
-                            if (current_addr >= buddy_heap_phys_start && current_addr < buddy_heap_phys_end) {
-                                usable_buddy_frames++;
-                            }
-                        }
-                    } else { FRAME_ASSERT(false, "PFN out of range during available count check"); }
-                }
-            }
-        }
-    }
-    // Use %lu for size_t
-    terminal_printf("   Sanity Check: Found %lu frames marked available (refcount=0).\n", (unsigned long)available_count);
-    terminal_printf("                 Of those, %lu frames fall within the physical buddy heap range [%#lx - %#lx).\n",
-                      (unsigned long)usable_buddy_frames, buddy_heap_phys_start, buddy_heap_phys_end);
-    if (available_count == 0 && g_total_frames > 256) {
-        terminal_write("   [WARNING] Zero available frames detected after initialization!\n");
-    }
-
-    terminal_write("[Frame] Frame manager initialization complete.\n");
-    return 0; // Success
+terminal_write("[Frame] Frame manager initialization complete.\n");
+return 0; // Success
 }
 
 //----------------------------------------------------------------------------

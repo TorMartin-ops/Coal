@@ -449,7 +449,7 @@ void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
  * @note Assumes the buddy lock is held by the caller.
  */
 static void* buddy_alloc_impl(int requested_order, const char* file, int line) {
-    terminal_printf("[Buddy Alloc Impl] Enter: Request order %d. File: %s Line: %d\n", requested_order, file, line); // LOG ENTRY
+    //terminal_printf("[Buddy Alloc Impl] Enter: Request order %d. File: %s Line: %d\n", requested_order, file, line); // LOG ENTRY
 
     // Find the smallest available block order >= requested_order
     int order = requested_order;
@@ -519,7 +519,7 @@ static void* buddy_alloc_impl(int requested_order, const char* file, int line) {
     }
     #endif
 
-    terminal_printf("[Buddy Alloc Impl] Exit: Allocated block %p for order %d.\n", (void*)block, requested_order); // LOG SUCCESS EXIT
+    //terminal_printf("[Buddy Alloc Impl] Exit: Allocated block %p for order %d.\n", (void*)block, requested_order); // LOG SUCCESS EXIT
     // Return the VIRTUAL address of the allocated block
     return (void*)block;
 }
@@ -825,7 +825,7 @@ void buddy_free(void *ptr) {
  * @return Virtual address of the allocated block, or NULL on failure.
  */
  void* buddy_alloc_raw(int order) {
-    terminal_printf("[Buddy Raw Alloc] Requesting order %d\n", order); // LOG ENTRY
+    //terminal_printf("[Buddy Raw Alloc] Requesting order %d\n", order); // LOG ENTRY
     if (order < MIN_INTERNAL_ORDER || order > MAX_ORDER) {
          terminal_printf("[Buddy Raw Alloc] Error: Invalid order %d requested.\n", order);
          // Acquire lock just to update stats safely
@@ -836,11 +836,11 @@ void buddy_free(void *ptr) {
     }
 
     uintptr_t buddy_irq_flags = spinlock_acquire_irqsave(&g_buddy_lock);
-    terminal_printf("[Buddy Raw Alloc] Lock acquired. Calling buddy_alloc_impl for order %d\n", order); // LOG BEFORE IMPL
+    //terminal_printf("[Buddy Raw Alloc] Lock acquired. Calling buddy_alloc_impl for order %d\n", order); // LOG BEFORE IMPL
     void *block_ptr = buddy_alloc_impl(order, __FILE__, __LINE__); // Pass file/line even in non-debug for OOM trace
-    terminal_printf("[Buddy Raw Alloc] buddy_alloc_impl returned %p for order %d\n", block_ptr, order); // LOG AFTER IMPL
+    //terminal_printf("[Buddy Raw Alloc] buddy_alloc_impl returned %p for order %d\n", block_ptr, order); // LOG AFTER IMPL
     spinlock_release_irqrestore(&g_buddy_lock, buddy_irq_flags);
-    terminal_printf("[Buddy Raw Alloc] Lock released. Returning %p\n", block_ptr); // LOG EXIT
+    //terminal_printf("[Buddy Raw Alloc] Lock released. Returning %p\n", block_ptr); // LOG EXIT
     return block_ptr;
 }
 

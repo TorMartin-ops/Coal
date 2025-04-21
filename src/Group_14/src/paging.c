@@ -679,19 +679,29 @@
           PAGING_PANIC("Failed to map VGA buffer!");
       }
 
-      terminal_write("  Pre-allocating Page Table for Temporary Mapping Area (PDE 1022)...\n");
-      uintptr_t temp_pt_phys = paging_alloc_early_frame_physical();
-      if (!temp_pt_phys) {
-          KERNEL_PANIC_HALT("Failed to allocate PT frame for temporary mapping area!");
-      }
-      volatile uint32_t* pd_phys_ptr = (volatile uint32_t*)page_directory_phys;
-      uint32_t temp_pde_flags = PAGE_PRESENT | PAGE_RW | PAGE_NX_BIT;
-      pd_phys_ptr[1022] = (temp_pt_phys & PAGING_ADDR_MASK) | temp_pde_flags;
-      terminal_printf("   Mapped PDE[1022] to PT Phys %#lx\n", (unsigned long)temp_pt_phys);
+    // Calculate the correct PDE index for the start of the temporary mapping area
+    const uint32_t temp_map_pde_index = PDE_INDEX(KERNEL_TEMP_MAP_START); // Should evaluate to 1016
 
-      terminal_write("[Paging Stage 2] Early memory maps configured.\n");
-      return 0; // Success
- }
+    terminal_printf("  Pre-allocating Page Table for Temporary Mapping Area (PDE %lu)...\n", (unsigned long)temp_map_pde_index);
+    uintptr_t temp_pt_phys = paging_alloc_early_frame_physical();
+    if (!temp_pt_phys) {
+        KERNEL_PANIC_HALT("Failed to allocate PT frame for temporary mapping area!");
+    }
+    volatile uint32_t* pd_phys_ptr = (volatile uint32_t*)page_directory_phys;
+    // Use kernel flags, ensure NX bit if supported
+    uint32_t temp_pde_flags = PAGE_PRESENT | PAGE_RW;
+    if (g_nx_supported) {
+         temp_pde_flags |= PAGE_NX_BIT;
+    }
+
+    // *** Use the CORRECT INDEX calculated above ***
+    pd_phys_ptr[temp_map_pde_index] = (temp_pt_phys & PAGING_ADDR_MASK) | temp_pde_flags;
+    // *** Use the CORRECT INDEX in the log message ***
+    terminal_printf("   Mapped PDE[%lu] to PT Phys %#lx\n", (unsigned long)temp_map_pde_index, (unsigned long)temp_pt_phys);
+
+    terminal_write("[Paging Stage 2] Early memory maps configured.\n");
+    return 0; // Success
+}
 
  static void debug_print_pd_entries(uint32_t* pd_ptr, uintptr_t vaddr_start, size_t count) {
       terminal_write("--- Debug PD Entries ---\n");

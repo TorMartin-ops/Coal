@@ -682,24 +682,32 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     }
 
     // === Start Scheduling ===
-    if (task_added) {
+    if (task_added) { // Check if hello.elf was successfully added
         terminal_write("[Kernel] Enabling preemptive scheduling via PIT...\n");
         pit_set_scheduler_ready(); // Allow PIT handler to call schedule()
     } else {
-        terminal_write("[Kernel] No user tasks scheduled. Entering idle loop.\n");
+        terminal_write("[Kernel] No user tasks scheduled. Enabling idle task via PIT.\n");
+        // Let scheduler run the idle task via PIT ticks
+         pit_set_scheduler_ready();
     }
 
-    terminal_write("\n[Kernel] Initialization complete. Enabling interrupts and entering idle task/scheduler.\n");
+    terminal_write("\n[Kernel] Initialization complete. Enabling interrupts and entering scheduler loop.\n");
     terminal_write("======================================================================\n");
 
-    // Enable interrupts - NOW the PIT timer will start firing and causing schedule() calls
+    // Enable interrupts - PIT timer will start firing -> schedule()
     asm volatile ("sti");
 
-    // Enter the idle loop. If tasks are scheduled, the PIT IRQ will trigger
-    // the scheduler to switch away from this idle loop. If no tasks are ready,
-    // it will continue to halt the CPU until an interrupt occurs.
-    kernel_idle_task();
+    // --- Enter the scheduler idle loop ---
+    // Let the scheduler perform the first context switch via the timer interrupt.
+    // This loop just waits for interrupts when the idle task TCB is running.
+    while(1) {
+        // Halt the CPU until the next interrupt (e.g., PIT tick) arrives.
+        // The PIT handler will call schedule() if ready.
+        asm volatile ("hlt");
+        // When schedule() switches back to the idle task TCB context,
+        // execution will resume here after the hlt. The loop continues.
+    }
 
-    // --- Code should not be reached beyond kernel_idle_task ---
+    // --- Code should not be reached ---
     KERNEL_PANIC_HALT("Reached end of main() unexpectedly!");
 }
