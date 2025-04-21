@@ -2,7 +2,7 @@
  * scheduler.c - Production-Quality Kernel Scheduler Implementation (Revised)
  *
  * Author: Group 14 (UiA) & Gemini
- * Version: 3.7
+ * Version: 3.8 (Fixed scheduler_ready flag issue)
  *
  * Implements a simple round-robin preemptive scheduler.
  * Handles task creation, termination (via ZOMBIE state), context switching,
@@ -25,7 +25,7 @@
 #include "idt.h"            // For interrupt control (saving/restoring flags)
 #include "gdt.h"            // For GDT selectors
 #include "assert.h"         // For KERNEL_ASSERT, KERNEL_PANIC_HALT
-#include "pit.h"            // For pit_set_scheduler_ready declaration (assumed)
+// #include "pit.h"         // No longer needed here
 #include "paging.h"         // For g_kernel_page_directory_phys (used by idle task)
 #include "tss.h"
 
@@ -49,7 +49,9 @@ static volatile tcb_t *current_task    = NULL;    // The currently RUNNING task 
 static uint32_t        task_count       = 0;       // Total tasks (any state)
 static uint32_t        context_switches = 0;       // Context switch counter
 static spinlock_t      scheduler_lock;             // Protects scheduler shared data
-static volatile bool   scheduler_ready  = false;   // Ready for preemptive switching
+
+// --- Global Scheduler Ready Flag (Defined Here) ---
+volatile bool g_scheduler_ready = false; // <<< MOVED & MADE GLOBAL
 
 // --- Idle Task Data ---
 static tcb_t idle_task_tcb;
@@ -160,7 +162,7 @@ void scheduler_init(void)
     current_task     = NULL;
     task_count       = 0;
     context_switches = 0;
-    scheduler_ready  = false;
+    g_scheduler_ready = false; // <<< Initialize the global flag
     spinlock_init(&scheduler_lock);
 
     // Initialize and add the mandatory idle task
@@ -308,8 +310,8 @@ static tcb_t* select_next_task(void)
  */
  void schedule(void)
 {
-    // Don't schedule if the timer hasn't marked the scheduler as ready
-    if (!scheduler_ready) {
+    // Don't schedule if the scheduler hasn't been started yet
+    if (!g_scheduler_ready) { // <<< CHECK THE GLOBAL FLAG
         return;
     }
 
@@ -554,7 +556,7 @@ void scheduler_cleanup_zombies(void)
             prev = current;
             current = current->next;
             checked_count++;
-            continue;
+            continue; // Skip idle task
         }
 
         tcb_t *next_task = current->next; // Save next pointer before potential free
@@ -568,9 +570,21 @@ void scheduler_cleanup_zombies(void)
             KERNEL_ASSERT(task_count >= 1, "Task count fell below 1 during zombie cleanup"); // Should always have idle task
 
             // If we removed the head's successor, and head might now point to itself
-            if (task_list_head->next == current) {
+            // Need to handle case where head itself was the only non-idle task and is removed.
+             if (task_list_head == current) {
+                 // This case should not happen if we always start checking *after* head
+                 // and the idle task (head) is never zombie. Re-asserting this logic:
+                 KERNEL_ASSERT(current->pid != IDLE_TASK_PID, "Zombie cleanup trying to remove idle task?");
+                 // If the head *was* somehow the zombie (which is an error),
+                 // we need to update the head pointer. Let's assume head is always idle task.
+                 // If the zombie was the *only* other task, prev->next is now head.
+                 // prev should be the idle task in this case.
+             } else if (task_list_head->next == current) {
+                 // If zombie was right after head, update head's next.
                  task_list_head->next = next_task;
-            }
+             }
+             // 'prev' correctly points to the node before the removed one ('current').
+             // Its next pointer was updated above.
 
             // --- Resource Freeing ---
             pcb_t* pcb_to_free = current->process;
@@ -592,7 +606,7 @@ void scheduler_cleanup_zombies(void)
             // Continue scan from the node *after* the removed one ('next_task')
             // 'prev' remains correct as it points to the node before 'next_task'
             current = next_task;
-            // Don't increment checked_count here, as we are restarting scan effectively from next_task
+            // Don't increment checked_count here, as we adjusted the list and need to re-evaluate 'current'
 
         } else {
             // Not a zombie, move pointers forward
@@ -601,13 +615,15 @@ void scheduler_cleanup_zombies(void)
             checked_count++;
         }
 
-         // Stop if we've looped back to the head
+         // Stop if we've looped back to the starting point of this pass
+         // Use the head as the loop termination point
          if (current == task_list_head) {
              break;
          }
-         // Safety break if list seems corrupted
-         if (current == NULL) {
-              SCHED_ERROR("NULL pointer encountered during zombie cleanup scan!");
+
+         // Safety break if list seems corrupted or checked too many times
+         if (current == NULL || checked_count > task_count + 1) { // Allow one extra check
+              SCHED_ERROR("NULL pointer or excessive checks during zombie cleanup scan!");
               break;
          }
 
@@ -638,5 +654,15 @@ void debug_scheduler_stats(uint32_t *out_task_count, uint32_t *out_switches)
 bool scheduler_is_ready(void)
 {
     // Volatile read, no lock needed for single bool
-    return scheduler_ready;
+    return g_scheduler_ready; // <<< Use the global flag
+}
+
+/**
+ * @brief Marks the scheduler as ready to perform preemptive context switching.
+ */
+void scheduler_start(void) { // <<< NEW FUNCTION
+    SCHED_LOG("Starting preemptive scheduling.");
+    // Consider if interrupts should be disabled here before setting flag?
+    // Assuming caller handles interrupt state appropriately (e.g., calls this before 'sti')
+    g_scheduler_ready = true; // <<< Set the global flag
 }

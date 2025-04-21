@@ -1,7 +1,7 @@
 #ifndef PIT_H
 #define PIT_H
 
-#include "types.h"
+#include "types.h" // Includes libc/stdint.h and libc/stdbool.h via types.h
 
 /**
  * PIT (Programmable Interval Timer) I/O port addresses
@@ -14,9 +14,9 @@
 
 /**
  * Default divisor if you want ~18.2 Hz:
- *   PIT_DEFAULT_DIVISOR = 0x4E20 (20000 decimal),
- *   1193180 / 20000 ≈ 18.2 Hz
- * 
+ * PIT_DEFAULT_DIVISOR = 0x4E20 (20000 decimal),
+ * 1193180 / 20000 ≈ 18.2 Hz
+ *
  * Not strictly needed if you reprogram the PIT with a custom frequency.
  */
 #define PIT_DEFAULT_DIVISOR  0x4E20
@@ -30,13 +30,15 @@
 
 /**
  * Custom frequency definitions:
- *   PIT_BASE_FREQUENCY = 1193180 Hz (original PIT clock)
- *   TARGET_FREQUENCY   = 1000 Hz by default => 1ms per tick
- *   DIVIDER            = PIT_BASE_FREQUENCY / TARGET_FREQUENCY
- *   TICKS_PER_MS       = 1 if freq=1000
+ * PIT_BASE_FREQUENCY = 1193180 Hz (original PIT clock)
+ * TARGET_FREQUENCY   = 1000 Hz by default => 1ms per tick
+ * DIVIDER            = PIT_BASE_FREQUENCY / TARGET_FREQUENCY
+ * TICKS_PER_MS       = 1 if freq=1000 (TARGET_FREQUENCY / 1000)
  */
 #define PIT_BASE_FREQUENCY   1193180
+#ifndef TARGET_FREQUENCY // Allow override via build flags if needed
 #define TARGET_FREQUENCY     1000
+#endif
 #define DIVIDER              (PIT_BASE_FREQUENCY / TARGET_FREQUENCY)
 #define TICKS_PER_MS         (TARGET_FREQUENCY / 1000)
 
@@ -44,10 +46,10 @@
  * init_pit
  *
  * Initializes the PIT:
- *   - Installs an IRQ0 handler to increment a global tick counter.
- *   - Sets the PIT to TARGET_FREQUENCY (e.g. 1000 Hz => 1ms per tick).
- * 
- * Call this in your kernel_main (or similar) to enable timing.
+ * - Installs an IRQ0 handler to increment a global tick counter and call schedule().
+ * - Sets the PIT to TARGET_FREQUENCY (e.g. 1000 Hz => 1ms per tick).
+ *
+ * Call this in your kernel_main (or similar) to enable timing and preemption.
  */
 void init_pit(void);
 
@@ -73,25 +75,14 @@ void sleep_busy(uint32_t milliseconds);
  * Sleeps for 'milliseconds' using interrupts (low CPU usage).
  * In a loop, we enable interrupts (sti) then halt (hlt) until next PIT tick,
  * checking get_pit_ticks() after each interrupt until time is up.
+ * Note: This is a basic implementation and might interact poorly with
+ * complex scheduling or interrupt handling.
  */
 void sleep_interrupt(uint32_t milliseconds);
 
-/**
- * pit_set_scheduler_ready
- * 
- * Marks the scheduler as ready to be called by the PIT handler.
- * Should be called after scheduler init and first task add, before sti.
- * Until this is called, the PIT will increment ticks but not call schedule().
+/* Functions removed as the scheduler now controls its own readiness:
+ * - pit_set_scheduler_ready()
+ * - pit_is_scheduler_ready()
  */
-void pit_set_scheduler_ready(void);
-
-/**
- * pit_is_scheduler_ready
- * 
- * Returns whether the scheduler has been marked as ready for PIT callbacks.
- * 
- * @return true if the scheduler has been marked ready, false otherwise.
- */
-bool pit_is_scheduler_ready(void);
 
 #endif // PIT_H
