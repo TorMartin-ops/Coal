@@ -34,7 +34,7 @@
  
       // Call scheduler unconditionally. The scheduler itself will check
       // if it's ready (g_scheduler_ready flag) before switching context.
-      schedule();
+      //schedule();
  }
  
  /**

@@ -2,10 +2,32 @@
 #define IDT_H
 
 // Include dependencies FIRST
-#include "paging.h"  // <<< Get registers_t definition ONLY from here
-#include "port_io.h" // <<< Get outb declaration before io_wait
+#include "paging.h" // <<< ADDED: Get registers_t definition ONLY from here
+#include "port_io.h" // <<< ADDED: Get outb declaration before io_wait
 
 // --- IDT Structure Definitions ---
+
+ // --- Constants ---
+ #define IDT_ENTRIES 256
+
+ // --- PIC Ports --- (Moved defines here)
+ #define PIC1         0x20      /* IO base address for master PIC */
+ #define PIC2         0xA0      /* IO base address for slave PIC */
+ #define PIC1_COMMAND PIC1
+ #define PIC1_DATA    PIC1+1   // <<< This is PIC1_DAT
+ #define PIC2_COMMAND PIC2
+ #define PIC2_DATA    PIC2+1   // <<< This is PIC2_DAT
+ #define PIC_EOI      0x20      /* End-of-interrupt command code */
+
+ // --- Add missing defines used in kernel.c ---
+ #ifndef PIC1_DAT // Guard against potential redefinition if added elsewhere later
+ #define PIC1_DAT    PIC1_DATA // Use the existing definition
+ #endif
+ #ifndef PIC2_DAT
+ #define PIC2_DAT    PIC2_DATA // Use the existing definition
+ #endif
+ // --- End Added Defines ---
+
 
 // Defines an entry in the Interrupt Descriptor Table.
 struct idt_entry {
@@ -26,20 +48,19 @@ struct idt_ptr {
 #define IDT_ENTRIES 256
 
 // --- Register Context Structure ---
-// Defined in paging.h (included above)
+// *** REMOVED definition from here - now included via paging.h ***
 // typedef struct registers { ... } registers_t;
 
 // --- Interrupt Handler Function Pointer Type ---
-// Define the function pointer type AFTER registers_t is known
+// Define the function pointer type AFTER registers_t is known (via paging.h)
 typedef void (*int_handler_t)(registers_t* regs);
 
-// --- Structure to hold registered handler info ---
-// Define the struct using the handler type
-typedef struct interrupt_handler_info { // <<< RENAMED struct
+// --- Structure to hold registered handler info --- <<< RENAMED and DEFINED here
+typedef struct interrupt_handler_info {
     int           num;      // Interrupt number
     int_handler_t handler;  // Pointer to the C handler function
     void* data;     // Optional data pointer for the handler
-} interrupt_handler_info_t; // <<< Typedef for the struct
+} interrupt_handler_info_t;
 
 
 // --- Public Function Prototypes ---
@@ -56,7 +77,7 @@ void idt_init(void);
  * @param handler Pointer to the C handler function (type int_handler_t).
  * @param data Optional pointer to pass to the handler.
  */
-void register_int_handler(int num, int_handler_t handler, void* data); // Uses typedef
+void register_int_handler(int num, int_handler_t handler, void* data);
 
 
 // Helper for optional delays (used in PIC init)

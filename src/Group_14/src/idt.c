@@ -9,6 +9,7 @@
  // port_io.h is now included via idt.h
  #include "types.h"
  #include <string.h> // For memset
+ #include "serial.h" // Include for serial_write_string (optional, if used)
 
  //--------------------------------------------------------------------------------------------------
  //  Internal data
@@ -54,9 +55,7 @@
  //  PIC ports / helpers
  //--------------------------------------------------------------------------------------------------
  #define PIC1_CMD 0x20
- #define PIC1_DAT 0x21
  #define PIC2_CMD 0xA0
- #define PIC2_DAT 0xA1
  #define PIC_EOI  0x20
 
  // io_wait is now defined in idt.h as static inline
@@ -126,25 +125,19 @@
  }
 
  // Common C handler called by assembly stubs
- void int_handler(registers_t* regs)
- {
-     // Call registered handler if one exists
-     // Use struct typedef defined in header
-     if (regs->int_no < IDT_ENTRIES && interrupt_handlers[regs->int_no].handler != NULL) { // <<< Use struct typedef + bounds check
-         interrupt_handlers[regs->int_no].handler(regs); // <<< Use struct typedef
-     } else {
-         // Use default handler for unregistered interrupts/exceptions
-         // Special case for Double Fault (vector 8) - handled in ASM to halt
-         if (regs->int_no != 8) {
-              default_int_handler(regs);
-         }
-     }
-
-     // Send EOI signal for hardware IRQs
-     if (regs->int_no >= 32 && regs->int_no <= 47) {
-         send_eoi(regs->int_no - 32);
-     }
- }
+ void int_handler(registers_t* regs) {
+    // Logging removed
+    if (regs->int_no < IDT_ENTRIES && interrupt_handlers[regs->int_no].handler != NULL) {
+        interrupt_handlers[regs->int_no].handler(regs);
+    } else {
+        if (regs->int_no != 8) {
+             default_int_handler(regs);
+        }
+    }
+    if (regs->int_no >= 32 && regs->int_no <= 47) {
+        send_eoi(regs->int_no - 32);
+    }
+}
 
  // Basic default handler that prints info and halts
  void default_int_handler(registers_t* r)
@@ -175,40 +168,58 @@
      memset(interrupt_handlers, 0, sizeof(interrupt_handlers));
 
      idtp.limit = sizeof(idt_entries) - 1;
-     idtp.base  = (uint32_t)idt_entries; // Physical address of the IDT
+     idtp.base  = (uint32_t)idt_entries; // Virtual address of the IDT
 
      pic_remap(); // Remap PIC IRQs
 
+     // ---> FIX: Remove PHYS_TO_VIRT from handler addresses <---
      // CPU exceptions (Ring 0 Interrupt Gates - 0x8E)
-     idt_set_gate(0,  PHYS_TO_VIRT((uintptr_t)isr0),  0x08, 0x8E);
-     idt_set_gate(1,  PHYS_TO_VIRT((uintptr_t)isr1),  0x08, 0x8E);
-     idt_set_gate(2,  PHYS_TO_VIRT((uintptr_t)isr2),  0x08, 0x8E);
-     idt_set_gate(3,  PHYS_TO_VIRT((uintptr_t)isr3),  0x08, 0x8E);
-     idt_set_gate(4,  PHYS_TO_VIRT((uintptr_t)isr4),  0x08, 0x8E);
-     idt_set_gate(5,  PHYS_TO_VIRT((uintptr_t)isr5),  0x08, 0x8E);
-     idt_set_gate(6,  PHYS_TO_VIRT((uintptr_t)isr6),  0x08, 0x8E);
-     idt_set_gate(7,  PHYS_TO_VIRT((uintptr_t)isr7),  0x08, 0x8E);
-     idt_set_gate(8,  PHYS_TO_VIRT((uintptr_t)isr8),  0x08, 0x8E); // Double Fault
-     idt_set_gate(10, PHYS_TO_VIRT((uintptr_t)isr10), 0x08, 0x8E); // Invalid TSS
-     idt_set_gate(11, PHYS_TO_VIRT((uintptr_t)isr11), 0x08, 0x8E); // Segment Not Present
-     idt_set_gate(12, PHYS_TO_VIRT((uintptr_t)isr12), 0x08, 0x8E); // Stack Segment Fault
-     idt_set_gate(13, PHYS_TO_VIRT((uintptr_t)isr13), 0x08, 0x8E); // General Protection Fault
-     idt_set_gate(14, PHYS_TO_VIRT((uintptr_t)isr14), 0x08, 0x8E); // Page Fault
-     idt_set_gate(16, PHYS_TO_VIRT((uintptr_t)isr16), 0x08, 0x8E); // x87 Floating Point
-     idt_set_gate(17, PHYS_TO_VIRT((uintptr_t)isr17), 0x08, 0x8E); // Alignment Check
-     idt_set_gate(18, PHYS_TO_VIRT((uintptr_t)isr18), 0x08, 0x8E); // Machine Check
-     idt_set_gate(19, PHYS_TO_VIRT((uintptr_t)isr19), 0x08, 0x8E); // SIMD Floating Point
+     idt_set_gate(0,  (uintptr_t)isr0,  0x08, 0x8E);
+     idt_set_gate(1,  (uintptr_t)isr1,  0x08, 0x8E);
+     idt_set_gate(2,  (uintptr_t)isr2,  0x08, 0x8E);
+     idt_set_gate(3,  (uintptr_t)isr3,  0x08, 0x8E);
+     idt_set_gate(4,  (uintptr_t)isr4,  0x08, 0x8E);
+     idt_set_gate(5,  (uintptr_t)isr5,  0x08, 0x8E);
+     idt_set_gate(6,  (uintptr_t)isr6,  0x08, 0x8E);
+     idt_set_gate(7,  (uintptr_t)isr7,  0x08, 0x8E);
+     idt_set_gate(8,  (uintptr_t)isr8,  0x08, 0x8E); // Double Fault
+     idt_set_gate(10, (uintptr_t)isr10, 0x08, 0x8E); // Invalid TSS
+     idt_set_gate(11, (uintptr_t)isr11, 0x08, 0x8E); // Segment Not Present
+     idt_set_gate(12, (uintptr_t)isr12, 0x08, 0x8E); // Stack Segment Fault
+     idt_set_gate(13, (uintptr_t)isr13, 0x08, 0x8E); // General Protection Fault
+     idt_set_gate(14, (uintptr_t)isr14, 0x08, 0x8E); // Page Fault
+     idt_set_gate(16, (uintptr_t)isr16, 0x08, 0x8E); // x87 Floating Point
+     idt_set_gate(17, (uintptr_t)isr17, 0x08, 0x8E); // Alignment Check
+     idt_set_gate(18, (uintptr_t)isr18, 0x08, 0x8E); // Machine Check
+     idt_set_gate(19, (uintptr_t)isr19, 0x08, 0x8E); // SIMD Floating Point
 
      // PIC IRQs (INT 32-47, Ring 0 Interrupt Gates - 0x8E)
-     idt_set_gate(32, PHYS_TO_VIRT((uintptr_t)irq0),  0x08, 0x8E); // PIT
-     idt_set_gate(33, PHYS_TO_VIRT((uintptr_t)irq1),  0x08, 0x8E); // Keyboard
-     // ... (rest of IRQ gates) ...
-     idt_set_gate(46, PHYS_TO_VIRT((uintptr_t)irq14), 0x08, 0x8E); // Primary ATA HD
-     idt_set_gate(47, PHYS_TO_VIRT((uintptr_t)irq15), 0x08, 0x8E); // Secondary ATA HD
+     idt_set_gate(32, (uintptr_t)irq0,  0x08, 0x8E); // PIT
+     idt_set_gate(33, (uintptr_t)irq1,  0x08, 0x8E); // Keyboard
+     idt_set_gate(34, (uintptr_t)irq2,  0x08, 0x8E);
+     idt_set_gate(35, (uintptr_t)irq3,  0x08, 0x8E);
+     idt_set_gate(36, (uintptr_t)irq4,  0x08, 0x8E);
+     idt_set_gate(37, (uintptr_t)irq5,  0x08, 0x8E);
+     idt_set_gate(38, (uintptr_t)irq6,  0x08, 0x8E);
+     idt_set_gate(39, (uintptr_t)irq7,  0x08, 0x8E);
+     idt_set_gate(40, (uintptr_t)irq8,  0x08, 0x8E);
+     idt_set_gate(41, (uintptr_t)irq9,  0x08, 0x8E);
+     idt_set_gate(42, (uintptr_t)irq10, 0x08, 0x8E);
+     idt_set_gate(43, (uintptr_t)irq11, 0x08, 0x8E);
+     idt_set_gate(44, (uintptr_t)irq12, 0x08, 0x8E);
+     idt_set_gate(45, (uintptr_t)irq13, 0x08, 0x8E);
+     idt_set_gate(46, (uintptr_t)irq14, 0x08, 0x8E); // Primary ATA HD
+     idt_set_gate(47, (uintptr_t)irq15, 0x08, 0x8E); // Secondary ATA HD
 
      // INT 0x80 syscall gate (Ring 3 Trap Gate - 0xEE)
-     idt_set_gate(0x80, PHYS_TO_VIRT((uintptr_t)syscall_handler_asm), 0x08, 0xEE);
+     // Syscall handler address should also be virtual
+     idt_set_gate(0x80, (uintptr_t)syscall_handler_asm, 0x08, 0xEE);
+     // ---> END FIX <---
+
      terminal_printf("[IDT] Registered syscall handler at interrupt 0x80\n");
+
+     terminal_printf("[IDT DEBUG] Loading IDTR: Limit=0x%hx Base=0x%lx (Virt Addr of idt_entries)\n",
+                     idtp.limit, (unsigned long)idtp.base);
 
      // Load the IDT register
      lidt(&idtp);

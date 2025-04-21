@@ -2,7 +2,7 @@
  * kernel.c - Main kernel entry point for UiAOS
  *
  * Author: Group 14 (UiA) & Gemini Assistance
- * Version: 3.6 (Add final TSS ESP0 check)
+ * Version: 3.7 (Move idt_init after init_memory)
  *
  * Description:
  * This file contains the main entry point (`main`) for the UiAOS kernel,
@@ -57,6 +57,7 @@
 #include "kmalloc_internal.h" // For ALIGN_UP, potentially others
 #include "serial.h"
 #include "assert.h"         // For KERNEL_ASSERT, KERNEL_PANIC_HALT
+#include "port_io.h"        // For outb (needed if PIC masking is used)
 
 // === Constants ===
 #define MULTIBOOT2_BOOTLOADER_MAGIC 0x36d76289
@@ -598,16 +599,23 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     terminal_write("[Kernel] Initializing GDT & TSS...\n");
     gdt_init();
 
-    terminal_write("[Kernel] Initializing IDT & PIC...\n");
-    idt_init();
+    // ---> Moved IDT Initialization to AFTER init_memory() <---
+    // terminal_write("[Kernel] Initializing IDT & PIC...\n");
+    // idt_init(); // OLD POSITION
 
     // === Memory Management Initialization ===
     if (!init_memory(g_multiboot_info_phys_addr_global)) {
         // Panic occurs within init_memory on failure
         return; // Should be unreachable
     }
+    // --- PAGING IS NOW ACTIVE ---
 
-    // *** Initialize Temporary VA Mapper *** (FIXED LOCATION)
+    // ---> Corrected: Initialize IDT & PIC AFTER Paging is Active <---
+    terminal_write("[Kernel] Initializing IDT & PIC...\n");
+    idt_init();
+    // ---> End Correction <---
+
+    // *** Initialize Temporary VA Mapper ***
     terminal_write("[Kernel] Initializing Temporary VA Mapper...\n");
     if (paging_temp_map_init() != 0) {
         KERNEL_PANIC_HALT("Failed to initialize temporary VA mapper!");
@@ -675,8 +683,19 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     terminal_write("\n[Kernel] Initialization complete. Enabling interrupts and entering scheduler loop.\n");
     terminal_write("======================================================================\n");
 
+    // Removed PIC masking diagnostic code
+    // terminal_write("[Kernel DEBUG] Masking PIC interrupts except timer (IRQ0)...\n");
+    // outb(PIC1_DAT, 0xFE); // Mask all on master except IRQ0 (bit 0)
+    // outb(PIC2_DAT, 0xFF); // Mask all on slave
+
+    terminal_write("[Kernel DEBUG] About to enable interrupts (sti)...\n");
+    serial_write("[Kernel DEBUG] STI...\n");
+
     // Enable interrupts - PIT timer will start firing -> schedule()
     asm volatile ("sti");
+
+    // Removed diagnostic 'After STI' message and busy loop, restoring hlt
+    serial_write("[Kernel DEBUG] After STI.\n"); // Keep this one to see if we get past sti
 
     // --- Enter the kernel's main idle loop ---
     // This loop runs when the kernel itself has nothing else to do.
