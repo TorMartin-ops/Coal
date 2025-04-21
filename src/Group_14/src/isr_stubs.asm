@@ -1,15 +1,17 @@
 ; src/isr_stubs.asm
 ; Defines basic Interrupt Service Routine (ISR) stubs for exceptions 0-19.
-; For exceptions that push an error code, the stub adjusts the stack accordingly.
-; ISR 14 (Page Fault) is handled separately in isr_pf.asm
+; Includes Double Fault handler (ISR 8) with debug print.
+; Adds debug prints for #TS (10) and #SS (12).
 
 section .text
 
 ; External C handler function
 extern int_handler
+extern serial_putc_asm
 
 ; Export ISR symbols for use in IDT setup
-; *** REMOVED isr14 from this list ***
+; *** REMOVED isr14 ***
+; *** ADDED isr8, isr10, isr12 ***
 global isr0, isr1, isr2, isr3, isr4, isr5, isr6, isr7, isr8
 global isr10, isr11, isr12, isr13
 global isr16, isr17, isr18, isr19
@@ -17,24 +19,61 @@ global isr16, isr17, isr18, isr19
 ; Common macro for ISRs without an error code
 %macro ISR_NOERRCODE 1
 isr%1:
-    pusha          ; Save all general-purpose registers
-    push dword %1  ; Push the interrupt number
-    call int_handler ; Call the C handler
-    add esp, 4     ; Pop the interrupt number
-    popa           ; Restore registers
-    iret           ; Return from interrupt
+    ; --- DEBUG ---
+    ; pusha
+    ; mov al, '0' + %1 ; Crude way to print number 0-9
+    ; call serial_putc_asm
+    ; popa
+    ; --- End DEBUG ---
+    pusha
+    push dword %1
+    call int_handler
+    add esp, 4
+    popa
+    iret
 %endmacro
 
 ; Common macro for ISRs WITH an error code pushed by the CPU
 %macro ISR_ERRCODE 1
 isr%1:
-    pusha          ; Save all general-purpose registers
-    push dword %1  ; Push the interrupt number
-    call int_handler ; Call the C handler (expects error code below interrupt number)
-    add esp, 4     ; Pop the interrupt number
-    popa           ; Restore registers
-    add esp, 4     ; Pop the error code pushed by the CPU
-    iret           ; Return from interrupt
+    ; --- DEBUG Prints for Specific Faults ---
+%if %1 == 8 ; Double Fault
+    pusha
+    mov al, 'D' ; Print 'D' for Double Fault
+    call serial_putc_asm
+    cli
+.halt_df: hlt
+    jmp .halt_df
+    popa ; Unreachable, but balances stack for assembler
+%elif %1 == 10 ; Invalid TSS
+    pusha
+    mov al, 'T' ; Print 'T' for Invalid TSS
+    call serial_putc_asm
+    popa
+%elif %1 == 11 ; Segment Not Present
+    pusha
+    mov al, 'N' ; Print 'N' for Segment Not Present (just in case)
+    call serial_putc_asm
+    popa
+%elif %1 == 12 ; Stack Segment Fault
+    pusha
+    mov al, '#' ; Print '#' for Stack Segment Fault
+    call serial_putc_asm
+    popa
+%elif %1 == 13 ; General Protection Fault
+    pusha
+    mov al, 'G' ; Print 'G' for GP Fault
+    call serial_putc_asm
+    popa
+%endif
+    ; --- End DEBUG ---
+    pusha
+    push dword %1
+    call int_handler
+    add esp, 4
+    popa
+    add esp, 4 ; Pop error code
+    iret
 %endmacro
 
 ; Define ISRs using the macros
@@ -47,17 +86,16 @@ ISR_NOERRCODE 5   ; Out of Bounds Exception
 ISR_NOERRCODE 6   ; Invalid Opcode Exception
 ISR_NOERRCODE 7   ; No Coprocessor Exception
 
-ISR_ERRCODE   8   ; Double Fault Exception (err code)
+ISR_ERRCODE   8   ; Double Fault Exception (err code) <<< Prints 'D' & HALTs
 
-; ISR 9 is reserved (Coprocessor Segment Overrun)
+; ISR 9 is reserved
 
-ISR_ERRCODE   10  ; Invalid TSS Exception (err code)
-ISR_ERRCODE   11  ; Segment Not Present Exception (err code)
-ISR_ERRCODE   12  ; Stack Fault Exception (err code)
-ISR_ERRCODE   13  ; General Protection Fault Exception (err code)
+ISR_ERRCODE   10  ; Invalid TSS Exception (err code) <<< Prints 'T'
+ISR_ERRCODE   11  ; Segment Not Present Exception (err code) <<< Prints 'N'
+ISR_ERRCODE   12  ; Stack Fault Exception (err code) <<< Prints '#'
+ISR_ERRCODE   13  ; General Protection Fault Exception (err code) <<< Prints 'G'
 
 ; *** REMOVED isr14 definition from this file ***
-; It should be defined globally in src/isr_pf.asm
 
 ; ISR 15 is reserved
 

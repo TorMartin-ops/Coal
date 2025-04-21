@@ -2,7 +2,7 @@
  * kernel.c - Main kernel entry point for UiAOS
  *
  * Author: Group 14 (UiA) & Gemini Assistance
- * Version: 3.5 (Fixed build warnings)
+ * Version: 3.6 (Add final TSS ESP0 check)
  *
  * Description:
  * This file contains the main entry point (`main`) for the UiAOS kernel,
@@ -95,7 +95,6 @@ static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
                              uintptr_t *out_total_memory,
                              uintptr_t *out_heap_base_addr, size_t *out_heap_size);
 static bool init_memory(uint32_t mb_info_phys_addr); // Main memory initialization sequence
-// static void kernel_idle_task(void); // <<< REMOVED (Handled by scheduler)
 
 
 // === Multiboot Tag Finding Helper (Improved Validation) ===
@@ -497,7 +496,7 @@ static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
             size_t additional_pages_needed = (ALIGN_UP(total_mb_size, PAGE_SIZE) / PAGE_SIZE) - 1;
             uintptr_t next_phys_page = mb_info_phys_page_start + PAGE_SIZE;
             uintptr_t next_virt_page = mb_info_virt_page_start + PAGE_SIZE;
-            // <<< FIXED: Use %lu for uint32_t and size_t (unsigned long)
+            // Use %lu for uint32_t and size_t
             terminal_printf("   MB Info > 1 page (%lu bytes). Mapping %lu additional pages...\n",
                              (unsigned long)total_mb_size, (unsigned long)additional_pages_needed);
             if (paging_map_range((uint32_t*)g_kernel_page_directory_phys,
@@ -560,10 +559,6 @@ static bool parse_memory_map(struct multiboot_tag_mmap *mmap_tag,
  }
 
 
-// === Kernel Idle Task (REMOVED) ===
-// The idle task functionality is now handled within scheduler.c
-
-
 // === Main Kernel Entry Point ===
 /**
  * main
@@ -583,7 +578,7 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     terminal_init();         // VGA terminal for primary output
 
     terminal_write("=== UiAOS Kernel Booting ===\n");
-    terminal_printf(" Version: %s\n\n", "3.5-BuildFix"); // Updated version
+    terminal_printf(" Version: %s\n\n", "3.6-TSSCheck"); // Updated version
 
     // === Pre-Initialization Checks ===
     terminal_write("[Boot] Verifying Multiboot information...\n");
@@ -642,37 +637,40 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     // === Scheduler Initialization ===
     terminal_write("[Kernel] Initializing Scheduler...\n");
     scheduler_init(); // Initializes idle task and sets g_scheduler_ready = false
-    // Error check scheduler_init if it can fail
 
     // === Initial Process Creation ===
     terminal_write("[Kernel] Creating initial user process...\n");
-    // bool task_added = false; // <<< REMOVED (No longer needed)
-    if (fs_ready) { // Only attempt if FS is available
-        const char *user_prog_path = "/hello.elf"; // Configurable?
+    if (fs_ready) {
+        // Use the simplified hello.elf path
+        const char *user_prog_path = "/hello.elf";
         terminal_printf("  Attempting to load '%s'...\n", user_prog_path);
         pcb_t *user_proc_pcb = create_user_process(user_prog_path);
         if (user_proc_pcb) {
             terminal_printf("  [OK] Process created (PID %lu). Adding to scheduler.\n", (unsigned long)user_proc_pcb->pid);
             if (scheduler_add_task(user_proc_pcb) == 0) {
                 terminal_write("  [OK] Initial user process scheduled.\n");
-                // task_added = true; // <<< REMOVED
             } else {
                 terminal_printf("  [ERROR] Failed to add initial process (PID %lu) to scheduler.\n", (unsigned long)user_proc_pcb->pid);
-                destroy_process(user_proc_pcb); // Clean up failed process
+                destroy_process(user_proc_pcb);
             }
         } else {
             terminal_printf("  [ERROR] Failed to create initial user process from '%s'.\n", user_prog_path);
-            // Decide whether to panic or continue: KERNEL_PANIC_HALT("Failed to create initial process.");
         }
     } else {
          terminal_write("  [Info] Filesystem not available, cannot load initial user process.\n");
     }
 
     // === Start Scheduling ===
-    // Always start the scheduler, even if only the idle task exists.
-    // The scheduler_start() function sets the g_scheduler_ready flag.
     terminal_write("[Kernel] Starting preemptive scheduling mechanism...\n");
     scheduler_start(); // Call the scheduler's start function
+
+    // === Final Check Before Enabling Interrupts ===
+    uint32_t final_esp0 = tss_get_esp0();
+    terminal_printf("[Kernel] Final check: TSS ESP0 = %p before enabling interrupts.\n", (void*)(uintptr_t)final_esp0);
+    if (final_esp0 == 0 || final_esp0 < 0xC0100000) { // Basic sanity check
+        KERNEL_PANIC_HALT("Invalid TSS ESP0 detected just before STI!");
+    }
+    // === END Check ===
 
     terminal_write("\n[Kernel] Initialization complete. Enabling interrupts and entering scheduler loop.\n");
     terminal_write("======================================================================\n");
@@ -680,16 +678,10 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     // Enable interrupts - PIT timer will start firing -> schedule()
     asm volatile ("sti");
 
-    // --- Enter the scheduler idle loop ---
-    // This loop is essentially the idle task's behavior *before* the first
-    // context switch. After the first switch (to hello.elf or the TCB idle task),
-    // execution for the idle context will resume within the scheduler's idle task loop.
-    // It's safe to leave this HLT loop here as the initial wait mechanism.
+    // --- Enter the kernel's main idle loop ---
+    // This loop runs when the kernel itself has nothing else to do.
+    // Control will switch to the scheduler's idle task loop (or user tasks) via interrupts.
     while(1) {
-        // Halt the CPU until the next interrupt (e.g., PIT tick) arrives.
-        // The PIT handler will call schedule(). If schedule() decides to switch,
-        // we won't return here immediately. If it doesn't (e.g., only idle task ready),
-        // we will return here after the interrupt finishes.
         asm volatile ("hlt");
     }
 

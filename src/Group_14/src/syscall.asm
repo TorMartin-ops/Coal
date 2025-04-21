@@ -3,12 +3,19 @@
 section .text
 global syscall_handler_asm  ; Export symbol for IDT registration (if using INT)
 extern syscall_handler      ; C handler function
+extern serial_putc_asm  ; External ASM function for serial output
 
 ; Define kernel data segment selector (must match your GDT)
 %define KERNEL_DATA_SELECTOR 0x10
 
 syscall_handler_asm:
-    ; This handler is typically invoked via 'int 0x80' from user space.
+    ; --- DEBUG: Print 'S' for Syscall Entry ---
+    pusha               ; Save regs temporarily
+    mov al, 'S'
+    call serial_putc_asm
+    popa                ; Restore regs
+    ; --- End DEBUG ---
+
     ; CPU pushes: EFLAGS, CS (user), EIP (user), [SS (user), ESP (user) if priv change]
     ; Stack top -> bottom: [UserSS], [UserESP], EIP, CS, EFLAGS
     ; NO Error Code is pushed for 'int n'.
@@ -23,22 +30,18 @@ syscall_handler_asm:
     push gs
 
     ; 3. Set up Kernel Data Segments
-    ; The CPU might have loaded user segments on entry. Load kernel segments.
     mov ax, KERNEL_DATA_SELECTOR
     mov ds, ax
     mov es, ax
-    ; FS/GS setup might depend on your kernel's usage (e.g., TLS, Per-CPU data)
     ; mov fs, ax ; Example if needed
     ; mov gs, ax ; Example if needed
 
-
     ; 4. Call the C syscall handler
-    ; Pass ESP (pointing to the saved state) as the argument (pointer to syscall_context_t)
     push esp            ; Push pointer to context structure
     call syscall_handler
     add esp, 4          ; Clean up argument from stack
 
-    ; EAX now holds the return value from the C handler. It will remain in EAX for the user.
+    ; EAX now holds the return value from the C handler.
 
     ; 5. Restore segment registers (in reverse order)
     pop gs
@@ -50,6 +53,4 @@ syscall_handler_asm:
     popa
 
     ; 7. Return to user space
-    ; The CPU state (EIP, CS, EFLAGS, User ESP, User SS) is already on the stack
-    ; from the initial 'int 0x80'. IRET will pop them automatically.
     iret

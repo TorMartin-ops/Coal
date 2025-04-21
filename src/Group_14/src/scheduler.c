@@ -2,7 +2,7 @@
  * scheduler.c - Production-Quality Kernel Scheduler Implementation (Revised)
  *
  * Author: Group 14 (UiA) & Gemini
- * Version: 3.8 (Fixed scheduler_ready flag issue)
+ * Version: 3.9 (Build fixes for prototypes and types)
  *
  * Implements a simple round-robin preemptive scheduler.
  * Handles task creation, termination (via ZOMBIE state), context switching,
@@ -17,7 +17,7 @@
 #include <string.h> // Include your kernel's string header
 
 // === Kernel Subsystems & Drivers ===
-#include "scheduler.h"      // Public interface
+#include "scheduler.h"      // Public interface (now includes asm prototypes)
 #include "process.h"        // For pcb_t, destroy_process, PROCESS_KSTACK_SIZE
 #include "kmalloc.h"        // For kmalloc/kfree
 #include "terminal.h"       // For terminal_printf, terminal_write
@@ -25,9 +25,9 @@
 #include "idt.h"            // For interrupt control (saving/restoring flags)
 #include "gdt.h"            // For GDT selectors
 #include "assert.h"         // For KERNEL_ASSERT, KERNEL_PANIC_HALT
-// #include "pit.h"         // No longer needed here
+// #include "pit.h"         // No longer directly needed for scheduler readiness
 #include "paging.h"         // For g_kernel_page_directory_phys (used by idle task)
-#include "tss.h"
+#include "tss.h"            // For tss_set_kernel_stack, TSS_SELECTOR
 
 // --- Kernel Error Codes (Example) ---
 // Define these properly in a central error header if possible
@@ -51,7 +51,7 @@ static uint32_t        context_switches = 0;       // Context switch counter
 static spinlock_t      scheduler_lock;             // Protects scheduler shared data
 
 // --- Global Scheduler Ready Flag (Defined Here) ---
-volatile bool g_scheduler_ready = false; // <<< MOVED & MADE GLOBAL
+volatile bool g_scheduler_ready = false;
 
 // --- Idle Task Data ---
 static tcb_t idle_task_tcb;
@@ -162,7 +162,7 @@ void scheduler_init(void)
     current_task     = NULL;
     task_count       = 0;
     context_switches = 0;
-    g_scheduler_ready = false; // <<< Initialize the global flag
+    g_scheduler_ready = false; // Initialize the global flag
     spinlock_init(&scheduler_lock);
 
     // Initialize and add the mandatory idle task
@@ -214,18 +214,21 @@ int scheduler_add_task(pcb_t *pcb)
                 (unsigned long)pcb->pid, kstack_ptr, (void*)kstack_base);
 
     // --- IRET Frame (5 values pushed in reverse order) ---
-    *(--kstack_ptr) = GDT_USER_DATA_SELECTOR;      // User SS
-    *(--kstack_ptr) = (uintptr_t)pcb->user_stack_top; // User ESP
+    *(--kstack_ptr) = GDT_USER_DATA_SELECTOR | 3;  // User SS (0x23)
+    *(--kstack_ptr) = (uintptr_t)pcb->user_stack_top; // User ESP (e.g., 0xC0000000)
     *(--kstack_ptr) = 0x00000202;                  // EFLAGS (IF=1, Reserved=1, IOPL=0)
-    *(--kstack_ptr) = GDT_USER_CODE_SELECTOR;      // User CS
-    *(--kstack_ptr) = (uintptr_t)pcb->entry_point; // User EIP
+    *(--kstack_ptr) = GDT_USER_CODE_SELECTOR | 3;  // User CS (0x1B)
+    *(--kstack_ptr) = (uintptr_t)pcb->entry_point; // User EIP (e.g., 0x08048080)
 
     // Sanity check stack pointer didn't underflow
     KERNEL_ASSERT((uintptr_t)kstack_ptr > kstack_base, "Kernel stack underflow (IRET setup)");
 
     // Save the pointer to the top of the IRET frame. This is the ESP
     // that jump_to_user_mode will load before executing IRET.
-    new_task->esp = kstack_ptr;
+    // Use the pcb field that prepare_initial_kernel_stack uses
+    new_task->esp = (uint32_t*)pcb->kernel_esp_for_switch; // Use value set by prepare_initial_kernel_stack
+    KERNEL_ASSERT(new_task->esp == kstack_ptr, "Mismatch between calculated ESP and PCB stored ESP");
+
 
     // --- Insert TCB into the circular linked list ---
     uintptr_t irq_flags = spinlock_acquire_irqsave(&scheduler_lock);
@@ -311,7 +314,7 @@ static tcb_t* select_next_task(void)
  void schedule(void)
 {
     // Don't schedule if the scheduler hasn't been started yet
-    if (!g_scheduler_ready) { // <<< CHECK THE GLOBAL FLAG
+    if (!g_scheduler_ready) {
         return;
     }
 
@@ -354,13 +357,11 @@ static tcb_t* select_next_task(void)
     current_task = new_task; // Update the global current task pointer
 
     // Get necessary info for the switch/jump
-    // KERNEL_ASSERT(new_task->process != NULL, "New task process pointer is NULL!"); // Added check
-    // Check process pointer *before* dereferencing it
     if (new_task->process == NULL) {
          KERNEL_PANIC_HALT("New task process pointer is NULL!");
     }
     uint32_t *new_pd_phys = new_task->process->page_directory_phys;
-    uint32_t *new_esp = new_task->esp; // This should be the kernel stack pointer prepared for IRET/context_switch
+    uint32_t *new_esp = new_task->esp; // This is the kernel stack pointer prepared for IRET/context_switch
     uint32_t **old_task_esp_loc = old_task ? &(old_task->esp) : NULL;
     bool first_run = !new_task->has_run; // Check if this is the task's first execution
 
@@ -372,20 +373,20 @@ static tcb_t* select_next_task(void)
         new_task->has_run = true;
     }
 
-    // --- Update TSS ESP0 before first jump to user mode (Original location) ---
-    // This ensures that if an interrupt/syscall happens immediately in user mode,
-    // the CPU knows where the kernel stack (esp0) is for this task.
-    if (first_run && new_task->pid != IDLE_TASK_PID) {
-        KERNEL_ASSERT(new_task->process->kernel_stack_vaddr_top != NULL,
-                      "New task kernel stack top NULL");
-        SCHED_DEBUG("Setting TSS ESP0 (pre-lock release) for PID %lu to %p",
-                    (unsigned long)new_task->pid, new_task->process->kernel_stack_vaddr_top);
-        // Update the TSS entry 0 stack pointer
-        tss_set_kernel_stack((uint32_t)new_task->process->kernel_stack_vaddr_top);
+    // --- Update TSS ESP0 ---
+    // This MUST be done BEFORE switching to the new task, especially before the first jump to user mode.
+    // It ensures that if an interrupt/syscall happens immediately in the new task,
+    // the CPU knows where the correct kernel stack (esp0) is.
+    // Do this for ALL switches to non-idle tasks.
+    if (new_task->pid != IDLE_TASK_PID) {
+         KERNEL_ASSERT(new_task->process != NULL && new_task->process->kernel_stack_vaddr_top != NULL,
+                       "Switch target task has NULL process or kernel stack top");
+         SCHED_DEBUG("Setting TSS ESP0 for switch to PID %lu: %p",
+                     (unsigned long)new_task->pid, new_task->process->kernel_stack_vaddr_top);
+         tss_set_kernel_stack((uint32_t)new_task->process->kernel_stack_vaddr_top);
     }
-    // --- End Original Update ---
 
-    // Release the scheduler lock *before* performing the context switch
+    // Release the scheduler lock *before* performing the context switch/jump
     spinlock_release_irqrestore(&scheduler_lock, irq_flags);
 
     // --- Perform the switch ---
@@ -393,48 +394,13 @@ static tcb_t* select_next_task(void)
         // *** First time running a user task: jump using IRET ***
         SCHED_DEBUG("First run for PID %lu. Calling jump_to_user_mode(ESP=%p, PD=%p)",
                     (unsigned long)new_task->pid, new_esp, new_pd_phys);
-        KERNEL_ASSERT(new_task->process != NULL && new_task->process->kernel_stack_vaddr_top != NULL,
-                      "New task process or kernel stack top NULL before jump prep");
 
-
-        // --- FIX #2 Location (Triple-check TSS ESP0) ---
-        SCHED_DEBUG("Verifying TSS ESP0 for PID %lu before final prep: %p",
-                    (unsigned long)new_task->pid, new_task->process->kernel_stack_vaddr_top);
-        tss_set_kernel_stack((uint32_t)new_task->process->kernel_stack_vaddr_top);
-        // --- End Fix #2 ---
-
-
-        // --- NEW CODE BLOCK INSERTED HERE ---
-        // Disable interrupts explicitly just before the transition
-        // jump_to_user_mode will use IRET which restores EFLAGS (including IF bit) later.
-        SCHED_DEBUG("Disabling interrupts (CLI) before LTR/Jump for PID %lu", (unsigned long)new_task->pid);
+        // Ensure interrupts are disabled before the ASM jump routine
+        // (Though they should already be disabled from IRQ/Syscall entry)
         asm volatile("cli");
 
-        // Set TSS ESP0 one last time immediately before LTR/IRET sequence
-        SCHED_DEBUG("Finalizing TSS ESP0 for PID %lu before user mode jump: %p",
-                    (unsigned long)new_task->pid, new_task->process->kernel_stack_vaddr_top);
-        tss_set_kernel_stack((uint32_t)new_task->process->kernel_stack_vaddr_top);
-
-        // Very important: Explicitly reload the TSS register (TR)
-        // This ensures the CPU uses the potentially updated TSS (esp0) value
-        // if an interrupt or exception occurs immediately after this point or during iret.
-        // Make absolutely sure TSS_SELECTOR is the correct GDT selector for your TSS!
-        SCHED_DEBUG("Reloading Task Register (LTR) with selector %#x", TSS_SELECTOR);
-        asm volatile(
-            "mov %0, %%ax\n"    // Use operand constraint for selector
-            "ltr %%ax"
-            : /* no output */
-            : "i"(TSS_SELECTOR) // Use immediate constraint for the selector value
-            : "ax");            // Clobbers ax
-
-        // Final debug check to see the TSS value the CPU *should* now be using.
-        SCHED_DEBUG("Verifying TSS ESP0 state after LTR for PID %lu:", (unsigned long)new_task->pid);
-        tss_debug_check_esp0(); // Verify TSS ESP0 is valid right before the jump
-        // --- END OF NEW CODE BLOCK ---
-
-
         // Now jump to user mode using the prepared kernel stack
-        jump_to_user_mode(new_esp, new_pd_phys);
+        jump_to_user_mode(new_esp, new_pd_phys); // <<< Prototype visible now
 
         // jump_to_user_mode should NOT return. Panic if it does.
         KERNEL_PANIC_HALT("jump_to_user_mode returned unexpectedly!");
@@ -442,33 +408,15 @@ static tcb_t* select_next_task(void)
     } else {
         // *** Switching between kernel contexts (idle task or subsequent runs) ***
         // Determine if page directory needs to be switched
-        // Check old_task and old_task->process before dereferencing
         bool pd_needs_switch = (!old_task || !old_task->process || old_task->process->page_directory_phys != new_pd_phys);
-
-
-        // If switching to a different process (even kernel->kernel), update TSS ESP0
-        // Don't update for idle->idle or same task subsequent run if PD doesn't change?
-        // Check if the task we are switching TO is *not* the idle task.
-        // Even if it's not the first run, ensure its esp0 is set correctly.
-        // This might be overly cautious but safer.
-        if (new_task->pid != IDLE_TASK_PID) {
-             KERNEL_ASSERT(new_task->process != NULL && new_task->process->kernel_stack_vaddr_top != NULL,
-                           "Non-idle task switch target has NULL process or kernel stack top");
-             SCHED_DEBUG("Setting TSS ESP0 for subsequent run/switch to PID %lu: %p",
-                         (unsigned long)new_task->pid, new_task->process->kernel_stack_vaddr_top);
-             tss_set_kernel_stack((uint32_t)new_task->process->kernel_stack_vaddr_top);
-             // Consider if LTR is needed here too for non-first-run switches.
-             // Generally, LTR is only needed once at boot or if the TSS itself moves.
-             // The CPU reads esp0 from the TR-cached TSS base on CPL change.
-        }
-
 
         SCHED_DEBUG("Context switch: %lu -> %lu (PD Switch: %s)",
                     old_task ? old_task->pid : 0,
                     new_task->pid,
                     pd_needs_switch ? "YES" : "NO");
 
-        context_switch(old_task_esp_loc, new_esp, pd_needs_switch ? new_pd_phys : NULL);
+        // TSS ESP0 was already updated above if needed for non-idle task.
+        context_switch(old_task_esp_loc, new_esp, pd_needs_switch ? new_pd_phys : NULL); // <<< Prototype visible now
     }
 
     // --- Execution resumes here when THIS task gets switched back to ---
@@ -524,6 +472,7 @@ void remove_current_task_with_code(uint32_t code)
     spinlock_release_irqrestore(&scheduler_lock, irq_flags);
 
     // Call schedule() to switch away from this ZOMBIE task.
+    // Interrupts remain disabled until schedule() completes and the next task runs.
     schedule();
 
     // Should never return here.
@@ -546,17 +495,18 @@ void scheduler_cleanup_zombies(void)
     tcb_t *prev = task_list_head;
     // Start checking from the task *after* the head (which might be idle)
     tcb_t *current = task_list_head->next;
-    int checked_count = 0; // Safety counter to prevent infinite loop
+    size_t checked_count = 0; // <<< Changed type to size_t
+    size_t max_checks = task_count; // Maximum nodes to check in one pass
 
     // Iterate through the list, but max task_count times for safety
-    while (checked_count < task_count) {
+    while (current != task_list_head && checked_count < max_checks) { // <<< Comparison is now unsigned
         KERNEL_ASSERT(current != NULL, "NULL task in zombie cleanup loop!");
-        // Skip the idle task itself
+        // Skip the idle task itself (shouldn't be ZOMBIE anyway)
         if (current->pid == IDLE_TASK_PID) {
             prev = current;
             current = current->next;
             checked_count++;
-            continue; // Skip idle task
+            continue;
         }
 
         tcb_t *next_task = current->next; // Save next pointer before potential free
@@ -565,26 +515,12 @@ void scheduler_cleanup_zombies(void)
             SCHED_LOG("Cleanup: Reaping ZOMBIE task PID %lu.", (unsigned long)current->pid);
 
             // --- Unlink the zombie task ---
-            prev->next = next_task;
+            prev->next = next_task; // Link previous node to the node after current
             task_count--;
-            KERNEL_ASSERT(task_count >= 1, "Task count fell below 1 during zombie cleanup"); // Should always have idle task
+            KERNEL_ASSERT(task_count >= 1, "Task count fell below 1 during zombie cleanup");
 
             // If we removed the head's successor, and head might now point to itself
-            // Need to handle case where head itself was the only non-idle task and is removed.
-             if (task_list_head == current) {
-                 // This case should not happen if we always start checking *after* head
-                 // and the idle task (head) is never zombie. Re-asserting this logic:
-                 KERNEL_ASSERT(current->pid != IDLE_TASK_PID, "Zombie cleanup trying to remove idle task?");
-                 // If the head *was* somehow the zombie (which is an error),
-                 // we need to update the head pointer. Let's assume head is always idle task.
-                 // If the zombie was the *only* other task, prev->next is now head.
-                 // prev should be the idle task in this case.
-             } else if (task_list_head->next == current) {
-                 // If zombie was right after head, update head's next.
-                 task_list_head->next = next_task;
-             }
-             // 'prev' correctly points to the node before the removed one ('current').
-             // Its next pointer was updated above.
+            // No special handling needed for head->next as prev->next covers it.
 
             // --- Resource Freeing ---
             pcb_t* pcb_to_free = current->process;
@@ -606,7 +542,7 @@ void scheduler_cleanup_zombies(void)
             // Continue scan from the node *after* the removed one ('next_task')
             // 'prev' remains correct as it points to the node before 'next_task'
             current = next_task;
-            // Don't increment checked_count here, as we adjusted the list and need to re-evaluate 'current'
+            // Don't increment checked_count here, as we adjusted the list
 
         } else {
             // Not a zombie, move pointers forward
@@ -615,17 +551,17 @@ void scheduler_cleanup_zombies(void)
             checked_count++;
         }
 
-         // Stop if we've looped back to the starting point of this pass
-         // Use the head as the loop termination point
-         if (current == task_list_head) {
-             break;
-         }
-
-         // Safety break if list seems corrupted or checked too many times
-         if (current == NULL || checked_count > task_count + 1) { // Allow one extra check
-              SCHED_ERROR("NULL pointer or excessive checks during zombie cleanup scan!");
+         // Safety break if list seems corrupted
+         if (current == NULL) {
+              SCHED_ERROR("NULL pointer encountered during zombie cleanup scan!");
               break;
          }
+
+         // Check secondary loop termination condition (removed redundant check)
+         // if (checked_count > max_checks + 1) { // Allow one extra check <<< This check is redundant now
+         //      SCHED_ERROR("Excessive checks during zombie cleanup scan!");
+         //      break;
+         // }
 
     } // End while loop
 
@@ -649,20 +585,21 @@ void debug_scheduler_stats(uint32_t *out_task_count, uint32_t *out_switches)
 }
 
 /**
- * @brief Returns the ready state of the scheduler.
+ * @brief Returns the ready state of the scheduler (for external checks).
+ * Use scheduler_start() to actually enable scheduling.
  */
 bool scheduler_is_ready(void)
 {
     // Volatile read, no lock needed for single bool
-    return g_scheduler_ready; // <<< Use the global flag
+    return g_scheduler_ready;
 }
 
 /**
  * @brief Marks the scheduler as ready to perform preemptive context switching.
+ * Should be called after initialization and adding the first task(s), before enabling interrupts.
  */
-void scheduler_start(void) { // <<< NEW FUNCTION
+void scheduler_start(void) {
     SCHED_LOG("Starting preemptive scheduling.");
-    // Consider if interrupts should be disabled here before setting flag?
-    // Assuming caller handles interrupt state appropriately (e.g., calls this before 'sti')
-    g_scheduler_ready = true; // <<< Set the global flag
+    // Assuming interrupts are disabled by caller (usually kmain right before 'sti')
+    g_scheduler_ready = true; // Set the global flag
 }

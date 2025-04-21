@@ -110,5 +110,11 @@ void scheduler_start(void);
 // Set by scheduler_start(), checked by schedule().
 extern volatile bool g_scheduler_ready;
 
+// --- External Assembly Function Prototypes --- <<< ADDED
+// Performs the kernel->user mode jump via IRET
+extern void jump_to_user_mode(uint32_t *kernel_stack_ptr, uint32_t *page_directory_phys);
+// Performs a kernel->kernel context switch
+extern void context_switch(uint32_t **old_esp_ptr, uint32_t *new_esp, uint32_t *new_page_directory);
+
 
 #endif // SCHEDULER_H
