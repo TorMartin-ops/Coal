@@ -545,7 +545,7 @@
 
       int page_count = 0;
       int safety_counter = 0;
-      const int max_pages_early = (128 * 1024 * 1024) / PAGE_SIZE;
+      const int max_pages_early = (1024 * 1024 * 1024) / PAGE_SIZE;
 
       while (current_phys < end_phys) {
           if (++safety_counter > max_pages_early) {

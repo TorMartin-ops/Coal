@@ -62,7 +62,7 @@ echo "DEBUG: Disk file check passed using absolute path."
 
 # Start QEMU using the ABSOLUTE paths for robustness
 echo "Starting QEMU, serial output to qemu_output.log"
-qemu-system-i386 -S -gdb tcp::1234 -boot d -hda "$ABS_KERNEL_PATH" -hdb "$ABS_DISK_PATH" -m 64 \
+qemu-system-i386 -S -gdb tcp::1234 -boot d -hda "$ABS_KERNEL_PATH" -hdb "$ABS_DISK_PATH" -m 1024 \
                  -audiodev sdl,id=sdl1,out.buffer-length=40000 -machine pcspk-audiodev=sdl1 \
                  -serial file:qemu_output.log &
 
