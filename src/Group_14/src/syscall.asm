@@ -31,7 +31,6 @@ syscall_handler_asm:
     ; mov fs, ax ; Example if needed
     ; mov gs, ax ; Example if needed
 
-
     ; 4. Call the C syscall handler
     ; Pass ESP (pointing to the saved state) as the argument (pointer to syscall_context_t)
     push esp            ; Push pointer to context structure

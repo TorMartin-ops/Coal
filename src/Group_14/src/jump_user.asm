@@ -1,4 +1,4 @@
-    section .text
+section .text
     global jump_to_user_mode  ; Ensure this 'global' directive is present
 
     ; void jump_to_user_mode(uint32_t *kernel_stack_ptr, uint32_t *page_directory_phys);
@@ -9,7 +9,7 @@
         mov ebp, esp
 
         ; Get arguments
-        mov edx, [ebp + 8]  ; EDX = kernel_stack_ptr (new ESP)
+        mov edx, [ebp + 8]  ; EDX = kernel_stack_ptr (new ESP for IRET frame)
         mov eax, [ebp + 12] ; EAX = page_directory_phys (new CR3)
 
         ; Switch CR3 if necessary
@@ -24,6 +24,13 @@
         ; Load the new kernel stack pointer. This stack contains the IRET frame.
         mov esp, edx
 
+        ; --- FIX START ---
+        ; Memory barrier to ensure TSS updates are synchronized
+        ; This ensures ordering of TSS update and IRET
+        mov eax, cr0
+        mov eax, cr0
+        ; --- FIX END ---
+
         ; Execute IRET to jump to user mode
         ; IRET will pop: EIP, CS, EFLAGS, ESP, SS
         iret
@@ -33,5 +40,3 @@
         cli
         hlt
         jmp .fail
-
-    

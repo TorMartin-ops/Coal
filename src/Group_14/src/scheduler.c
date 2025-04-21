@@ -35,6 +35,8 @@
 #define SCHED_ERR_NOMEM -1 // Out of memory
 #define SCHED_ERR_FAIL  -2 // General failure
 
+
+
 // --- Debug Logging Macros ---
 // Using %lu for uint32_t, %p for pointers, %lx for hex
 #define SCHED_LOG(fmt, ...) terminal_printf("[Scheduler] " fmt "\n", ##__VA_ARGS__)
@@ -305,104 +307,171 @@ static tcb_t* select_next_task(void)
  * @note Should be called with interrupts disabled.
  */
  void schedule(void)
- {
-     // Don't schedule if the timer hasn't marked the scheduler as ready
-     if (!scheduler_ready) {
-         return;
-     }
- 
-     // Acquire lock, saving previous interrupt state
-     uintptr_t irq_flags = spinlock_acquire_irqsave(&scheduler_lock);
- 
-     tcb_t *old_task = (tcb_t *)current_task; // Cast away volatile for local use
-     tcb_t *new_task = select_next_task();    // Find the next task to run
- 
-     KERNEL_ASSERT(new_task != NULL, "select_next_task returned NULL!"); // Should always return at least idle
- 
-     // If the selected task is the same as the current one, no switch needed.
-     if (new_task == old_task) {
-         // Ensure the task is marked RUNNING if it was READY (e.g., after yield)
-         if (current_task && current_task->state == TASK_READY) {
-              current_task->state = TASK_RUNNING;
-         }
-         spinlock_release_irqrestore(&scheduler_lock, irq_flags);
-         return;
-     }
- 
-     // --- Prepare for Context Switch ---
-     context_switches++;
- 
-     // Update state of the outgoing task (if any)
-     if (old_task) {
-         // If the task was running, mark it as ready for the next time.
-         // If it was BLOCKED or ZOMBIE, leave its state as is.
-         if (old_task->state == TASK_RUNNING) {
-             old_task->state = TASK_READY;
-         }
-         // Sanity check the old task's state
-         KERNEL_ASSERT(old_task->state == TASK_READY || old_task->state == TASK_BLOCKED || old_task->state == TASK_ZOMBIE,
-                       "Old task has unexpected state during switch");
-     }
- 
-     // Update state of the incoming task
-     KERNEL_ASSERT(new_task->state == TASK_READY, "Selected next task was not in READY state?");
-     new_task->state = TASK_RUNNING;
-     current_task = new_task; // Update the global current task pointer
- 
-     // Get necessary info for the switch/jump
-     uint32_t *new_pd_phys = new_task->process->page_directory_phys;
-     uint32_t *new_esp = new_task->esp;
-     uint32_t **old_task_esp_loc = old_task ? &(old_task->esp) : NULL;
-     bool first_run = !new_task->has_run; // Check if this is the task's first execution
- 
-     KERNEL_ASSERT(new_pd_phys != NULL, "New task page directory is NULL!");
-     KERNEL_ASSERT(new_esp != NULL, "New task saved ESP is NULL!");
- 
-     // Mark the task as having run before releasing the lock and switching
-     if (first_run) {
-         new_task->has_run = true;
-     }
- 
-     // --- *** THE FIX: Update TSS ESP0 before first jump to user mode *** ---
-     // This ensures that if an interrupt/syscall happens immediately in user mode,
-     // the CPU knows where the kernel stack (esp0) is for this task.
-     if (first_run && new_task->pid != IDLE_TASK_PID) {
-         KERNEL_ASSERT(new_task->process != NULL && new_task->process->kernel_stack_vaddr_top != NULL,
-                       "New task process or kernel stack top NULL");
-         SCHED_DEBUG("Setting TSS ESP0 for PID %lu to %p",
-                     (unsigned long)new_task->pid, new_task->process->kernel_stack_vaddr_top);
-         // Update the TSS entry 0 stack pointer
-         tss_set_kernel_stack((uint32_t)new_task->process->kernel_stack_vaddr_top);
-     }
-     // --- *** END FIX *** ---
- 
-     // Release the scheduler lock *before* performing the context switch
-     spinlock_release_irqrestore(&scheduler_lock, irq_flags);
- 
-     // --- Perform the switch ---
-     if (first_run && new_task->pid != IDLE_TASK_PID) {
-         // *** First time running a user task: jump using IRET ***
-         SCHED_DEBUG("First run for PID %lu. Calling jump_to_user_mode(ESP=%p, PD=%p)",
-                     (unsigned long)new_task->pid, new_esp, new_pd_phys);
-         jump_to_user_mode(new_esp, new_pd_phys);
-         // jump_to_user_mode should NOT return. Panic if it does.
-         KERNEL_PANIC_HALT("jump_to_user_mode returned unexpectedly!");
-     } else {
-         // *** Switching between kernel contexts (idle task or subsequent runs) ***
-         // Determine if page directory needs to be switched
-         bool pd_needs_switch = (!old_task || old_task->process->page_directory_phys != new_pd_phys);
- 
-         // SCHED_DEBUG("Context switch: %lu -> %lu (PD Switch: %s)",
-         //             old_task ? old_task->pid : 0,
-         //             new_task->pid,
-         //             pd_needs_switch ? "YES" : "NO");
- 
-         context_switch(old_task_esp_loc, new_esp, pd_needs_switch ? new_pd_phys : NULL);
-     }
- 
-     // --- Execution resumes here when THIS task gets switched back to ---
-     // Interrupts will be enabled/disabled based on the EFLAGS restored by popfd/iret.
-     // The scheduler lock is NOT held here.
+{
+    // Don't schedule if the timer hasn't marked the scheduler as ready
+    if (!scheduler_ready) {
+        return;
+    }
+
+    // Acquire lock, saving previous interrupt state
+    uintptr_t irq_flags = spinlock_acquire_irqsave(&scheduler_lock);
+
+    tcb_t *old_task = (tcb_t *)current_task; // Cast away volatile for local use
+    tcb_t *new_task = select_next_task();    // Find the next task to run
+
+    KERNEL_ASSERT(new_task != NULL, "select_next_task returned NULL!"); // Should always return at least idle
+
+    // If the selected task is the same as the current one, no switch needed.
+    if (new_task == old_task) {
+        // Ensure the task is marked RUNNING if it was READY (e.g., after yield)
+        if (current_task && current_task->state == TASK_READY) {
+            current_task->state = TASK_RUNNING;
+        }
+        spinlock_release_irqrestore(&scheduler_lock, irq_flags);
+        return;
+    }
+
+    // --- Prepare for Context Switch ---
+    context_switches++;
+
+    // Update state of the outgoing task (if any)
+    if (old_task) {
+        // If the task was running, mark it as ready for the next time.
+        // If it was BLOCKED or ZOMBIE, leave its state as is.
+        if (old_task->state == TASK_RUNNING) {
+            old_task->state = TASK_READY;
+        }
+        // Sanity check the old task's state
+        KERNEL_ASSERT(old_task->state == TASK_READY || old_task->state == TASK_BLOCKED || old_task->state == TASK_ZOMBIE,
+                      "Old task has unexpected state during switch");
+    }
+
+    // Update state of the incoming task
+    KERNEL_ASSERT(new_task->state == TASK_READY, "Selected next task was not in READY state?");
+    new_task->state = TASK_RUNNING;
+    current_task = new_task; // Update the global current task pointer
+
+    // Get necessary info for the switch/jump
+    // KERNEL_ASSERT(new_task->process != NULL, "New task process pointer is NULL!"); // Added check
+    // Check process pointer *before* dereferencing it
+    if (new_task->process == NULL) {
+         KERNEL_PANIC_HALT("New task process pointer is NULL!");
+    }
+    uint32_t *new_pd_phys = new_task->process->page_directory_phys;
+    uint32_t *new_esp = new_task->esp; // This should be the kernel stack pointer prepared for IRET/context_switch
+    uint32_t **old_task_esp_loc = old_task ? &(old_task->esp) : NULL;
+    bool first_run = !new_task->has_run; // Check if this is the task's first execution
+
+    KERNEL_ASSERT(new_pd_phys != NULL, "New task page directory is NULL!");
+    KERNEL_ASSERT(new_esp != NULL, "New task saved ESP is NULL!");
+
+    // Mark the task as having run before releasing the lock and switching
+    if (first_run) {
+        new_task->has_run = true;
+    }
+
+    // --- Update TSS ESP0 before first jump to user mode (Original location) ---
+    // This ensures that if an interrupt/syscall happens immediately in user mode,
+    // the CPU knows where the kernel stack (esp0) is for this task.
+    if (first_run && new_task->pid != IDLE_TASK_PID) {
+        KERNEL_ASSERT(new_task->process->kernel_stack_vaddr_top != NULL,
+                      "New task kernel stack top NULL");
+        SCHED_DEBUG("Setting TSS ESP0 (pre-lock release) for PID %lu to %p",
+                    (unsigned long)new_task->pid, new_task->process->kernel_stack_vaddr_top);
+        // Update the TSS entry 0 stack pointer
+        tss_set_kernel_stack((uint32_t)new_task->process->kernel_stack_vaddr_top);
+    }
+    // --- End Original Update ---
+
+    // Release the scheduler lock *before* performing the context switch
+    spinlock_release_irqrestore(&scheduler_lock, irq_flags);
+
+    // --- Perform the switch ---
+    if (first_run && new_task->pid != IDLE_TASK_PID) {
+        // *** First time running a user task: jump using IRET ***
+        SCHED_DEBUG("First run for PID %lu. Calling jump_to_user_mode(ESP=%p, PD=%p)",
+                    (unsigned long)new_task->pid, new_esp, new_pd_phys);
+        KERNEL_ASSERT(new_task->process != NULL && new_task->process->kernel_stack_vaddr_top != NULL,
+                      "New task process or kernel stack top NULL before jump prep");
+
+
+        // --- FIX #2 Location (Triple-check TSS ESP0) ---
+        SCHED_DEBUG("Verifying TSS ESP0 for PID %lu before final prep: %p",
+                    (unsigned long)new_task->pid, new_task->process->kernel_stack_vaddr_top);
+        tss_set_kernel_stack((uint32_t)new_task->process->kernel_stack_vaddr_top);
+        // --- End Fix #2 ---
+
+
+        // --- NEW CODE BLOCK INSERTED HERE ---
+        // Disable interrupts explicitly just before the transition
+        // jump_to_user_mode will use IRET which restores EFLAGS (including IF bit) later.
+        SCHED_DEBUG("Disabling interrupts (CLI) before LTR/Jump for PID %lu", (unsigned long)new_task->pid);
+        asm volatile("cli");
+
+        // Set TSS ESP0 one last time immediately before LTR/IRET sequence
+        SCHED_DEBUG("Finalizing TSS ESP0 for PID %lu before user mode jump: %p",
+                    (unsigned long)new_task->pid, new_task->process->kernel_stack_vaddr_top);
+        tss_set_kernel_stack((uint32_t)new_task->process->kernel_stack_vaddr_top);
+
+        // Very important: Explicitly reload the TSS register (TR)
+        // This ensures the CPU uses the potentially updated TSS (esp0) value
+        // if an interrupt or exception occurs immediately after this point or during iret.
+        // Make absolutely sure TSS_SELECTOR is the correct GDT selector for your TSS!
+        SCHED_DEBUG("Reloading Task Register (LTR) with selector %#x", TSS_SELECTOR);
+        asm volatile(
+            "mov %0, %%ax\n"    // Use operand constraint for selector
+            "ltr %%ax"
+            : /* no output */
+            : "i"(TSS_SELECTOR) // Use immediate constraint for the selector value
+            : "ax");            // Clobbers ax
+
+        // Final debug check to see the TSS value the CPU *should* now be using.
+        SCHED_DEBUG("Verifying TSS ESP0 state after LTR for PID %lu:", (unsigned long)new_task->pid);
+        tss_debug_check_esp0(); // Verify TSS ESP0 is valid right before the jump
+        // --- END OF NEW CODE BLOCK ---
+
+
+        // Now jump to user mode using the prepared kernel stack
+        jump_to_user_mode(new_esp, new_pd_phys);
+
+        // jump_to_user_mode should NOT return. Panic if it does.
+        KERNEL_PANIC_HALT("jump_to_user_mode returned unexpectedly!");
+
+    } else {
+        // *** Switching between kernel contexts (idle task or subsequent runs) ***
+        // Determine if page directory needs to be switched
+        // Check old_task and old_task->process before dereferencing
+        bool pd_needs_switch = (!old_task || !old_task->process || old_task->process->page_directory_phys != new_pd_phys);
+
+
+        // If switching to a different process (even kernel->kernel), update TSS ESP0
+        // Don't update for idle->idle or same task subsequent run if PD doesn't change?
+        // Check if the task we are switching TO is *not* the idle task.
+        // Even if it's not the first run, ensure its esp0 is set correctly.
+        // This might be overly cautious but safer.
+        if (new_task->pid != IDLE_TASK_PID) {
+             KERNEL_ASSERT(new_task->process != NULL && new_task->process->kernel_stack_vaddr_top != NULL,
+                           "Non-idle task switch target has NULL process or kernel stack top");
+             SCHED_DEBUG("Setting TSS ESP0 for subsequent run/switch to PID %lu: %p",
+                         (unsigned long)new_task->pid, new_task->process->kernel_stack_vaddr_top);
+             tss_set_kernel_stack((uint32_t)new_task->process->kernel_stack_vaddr_top);
+             // Consider if LTR is needed here too for non-first-run switches.
+             // Generally, LTR is only needed once at boot or if the TSS itself moves.
+             // The CPU reads esp0 from the TR-cached TSS base on CPL change.
+        }
+
+
+        SCHED_DEBUG("Context switch: %lu -> %lu (PD Switch: %s)",
+                    old_task ? old_task->pid : 0,
+                    new_task->pid,
+                    pd_needs_switch ? "YES" : "NO");
+
+        context_switch(old_task_esp_loc, new_esp, pd_needs_switch ? new_pd_phys : NULL);
+    }
+
+    // --- Execution resumes here when THIS task gets switched back to ---
+    // Interrupts will be enabled/disabled based on the EFLAGS restored by popfd/iret.
+    // The scheduler lock is NOT held here.
 }
 
 /**

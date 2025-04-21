@@ -181,9 +181,10 @@
  
      // INT 0x80 syscall gate (ring‑3) --------------------------------------
      extern void syscall_handler_asm();
-     idt_set_gate(0x80, PHYS_TO_VIRT(syscall_handler_asm), 0x08, 0xEE); // DPL=3
+     // Use DPL=3 (0xEE) to allow calls from user mode, kernel CS selector (0x08)
+     idt_set_gate(0x80, PHYS_TO_VIRT(syscall_handler_asm), 0x08, 0xEE); 
+     terminal_printf("[IDT] Registered syscall handler at interrupt 0x80\n");
  
      lidt(&idtp);
      terminal_write("[IDT] IDT initialized and loaded.\n");
  }
- 

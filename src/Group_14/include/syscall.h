@@ -3,7 +3,15 @@
 
 #include <libc/stdint.h> // For uint32_t etc.
 
-// Define system call numbers
+// === SYSTEM CALL NUMBERS ===
+// These numbers should match what user programs expect
+
+// User program syscall numbers (hello.c uses these)
+#define USER_SYS_WRITE 1
+#define USER_SYS_EXIT  2
+
+// Internal kernel syscall numbers (for implementation)
+// These are kept for backwards compatibility with existing code
 #define SYS_EXIT    1
 #define SYS_FORK    2   // Example
 #define SYS_READ    3   // Example

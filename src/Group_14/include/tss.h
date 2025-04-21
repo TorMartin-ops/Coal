@@ -1,26 +1,21 @@
-#pragma once
 #ifndef TSS_H
 #define TSS_H
 
-#include "types.h"
+#include "types.h"  // For uint32_t and bool
 
-/**
- * @brief Task State Segment (TSS) structure for 32-bit x86.
- *
- * This structure is aligned on a 4-byte boundary to ensure proper access.
- */
+// Structure of a Task State Segment (TSS)
 typedef struct tss_entry {
-    uint32_t prev_tss;          // Unused, but must be zero.
-    uint32_t esp0;              // Stack pointer to load when changing to kernel mode.
-    uint32_t ss0;               // Stack segment to load when changing to kernel mode.
-    uint32_t esp1;
-    uint32_t ss1;
-    uint32_t esp2;
-    uint32_t ss2;
-    uint32_t cr3;
-    uint32_t eip;
-    uint32_t eflags;
-    uint32_t eax;
+    uint32_t prev_tss;   // The previous TSS - used with hardware task-switching
+    uint32_t esp0;       // The stack pointer to load when changing to kernel mode
+    uint32_t ss0;        // The stack segment to load when changing to kernel mode
+    uint32_t esp1;       // The stack pointer to load when changing to ring 1
+    uint32_t ss1;        // The stack segment to load when changing to ring 1
+    uint32_t esp2;       // The stack pointer to load when changing to ring 2
+    uint32_t ss2;        // The stack segment to load when changing to ring 2
+    uint32_t cr3;        // The page directory pointer
+    uint32_t eip;        // The instruction pointer
+    uint32_t eflags;     // The flags register
+    uint32_t eax;        // General purpose registers
     uint32_t ecx;
     uint32_t edx;
     uint32_t ebx;
@@ -28,29 +23,26 @@ typedef struct tss_entry {
     uint32_t ebp;
     uint32_t esi;
     uint32_t edi;
-    uint32_t es;
+    uint32_t es;         // Segment registers
     uint32_t cs;
     uint32_t ss;
     uint32_t ds;
     uint32_t fs;
     uint32_t gs;
-    uint32_t ldt_segment_selector;
-    uint16_t trap;
-    uint16_t iomap_base;        // Offset to I/O permission bitmap.
-} __attribute__((packed, aligned(4))) tss_entry_t;
+    uint32_t ldt;        // The Local Descriptor Table
+    uint16_t trap;       // Trap flag (bit 0 only, for task switching)
+    uint16_t iomap_base; // The I/O Map Base Address Field (in TSS's)
+} __attribute__((packed)) tss_entry_t;
 
-/**
- * Initializes the Task State Segment (TSS).
- */
+// Initialize the TSS
 void tss_init(void);
 
-/**
- * Updates the kernel stack pointer (ESP0) in the TSS.
- *
- * @param stack The new kernel stack pointer.
- */
+// Set the kernel stack pointer stored in the TSS
 void tss_set_kernel_stack(uint32_t stack);
 
-extern void tss_flush(uint32_t tss_selector); 
+// Verify that the TSS esp0 value is reasonable
+bool tss_debug_check_esp0(void);
+
+#define TSS_SELECTOR 0x28
 
 #endif // TSS_H

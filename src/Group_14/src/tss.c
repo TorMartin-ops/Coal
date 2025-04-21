@@ -20,8 +20,9 @@ void tss_init(void) {
     // This is used when we enter ring 0 from ring 3 or an interrupt.
     tss.ss0 = 0x10;
 
-    // The kernel stack pointer (esp0) is set later via tss_set_kernel_stack().
+    // Initial ESP0 is 0 (will be updated before use)
     tss.esp0 = 0;
+    terminal_printf("[TSS] Initial ESP0 set to 0 (will be updated before use)\n");
 
     // No I/O bitmap => set base after TSS, so no extra bits.
     tss.iomap_base = sizeof(tss_entry_t);
@@ -37,5 +38,39 @@ void tss_init(void) {
  * for ring 0 transitions.
  */
 void tss_set_kernel_stack(uint32_t stack) {
+    // Add verification when setting ESP0
+    if (stack == 0) {
+        terminal_printf("[TSS ERROR] Attempt to set ESP0 to zero!\n");
+        // Don't actually set it to zero if that happens
+        return;
+    }
+    if (stack < 0xC0000000) {
+        terminal_printf("[TSS WARNING] Setting ESP0 to non-kernel space address: %p\n", 
+                      (void*)stack);
+    }
     tss.esp0 = stack;
+    terminal_printf("[TSS] ESP0 updated to %p\n", (void*)stack);
+}
+
+/**
+ * tss_debug_check_esp0 - Verify that the TSS esp0 value is reasonable
+ * 
+ * Returns true if ESP0 is non-zero and appears to be in kernel space
+ */
+bool tss_debug_check_esp0(void) {
+    // Check that ESP0 is non-zero
+    if (tss.esp0 == 0) {
+        terminal_printf("[TSS Debug] ERROR: ESP0 is ZERO!\n");
+        return false;
+    }
+    
+    // Check that ESP0 is in kernel space (higher half)
+    if (tss.esp0 < 0xC0000000) {
+        terminal_printf("[TSS Debug] ERROR: ESP0 (%p) is not in kernel space!\n", 
+                      (void*)tss.esp0);
+        return false;
+    }
+    
+    terminal_printf("[TSS Debug] ESP0 looks valid: %p\n", (void*)tss.esp0);
+    return true;
 }

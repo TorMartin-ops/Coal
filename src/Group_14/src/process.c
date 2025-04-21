@@ -22,7 +22,7 @@
  #include <libc/stddef.h>      // For NULL
  #include "assert.h"           // For KERNEL_ASSERT
  #include "gdt.h"              // For GDT_USER_CODE_SELECTOR, GDT_USER_DATA_SELECTOR
- #include "tss.h"              // For tss_set_kernel_stack
+ #include "tss.h"              // For tss_set_kernel_stack // <-- Already included, no change needed here.
 
  // ------------------------------------------------------------------------
  // Definitions & Constants
@@ -200,6 +200,13 @@
                      (unsigned long)proc->kernel_stack_phys_base,
                      (unsigned long)kstack_virt_base,
                      (void*)proc->kernel_stack_vaddr_top);
+
+     // --- FIX START ---
+     // Explicitly update TSS ESP0 whenever a kernel stack is allocated
+     terminal_printf("  Updating TSS esp0 = %p\n", (void*)proc->kernel_stack_vaddr_top);
+     tss_set_kernel_stack((uint32_t)proc->kernel_stack_vaddr_top);
+     // --- FIX END ---
+
      PROC_DEBUG_PRINTF("Exit OK\n");
      return true; // Success
  }
@@ -248,7 +255,7 @@
      // Temporarily map the physical frame into kernel space
      PROC_DEBUG_PRINTF("Calling paging_temp_map_vaddr for P=%#lx\n", (unsigned long)frame_paddr);
      void* temp_vaddr = paging_temp_map(frame_paddr, PTE_KERNEL_DATA_FLAGS);
-     
+
      if (temp_vaddr == NULL) {
          terminal_printf("[Process] copy_elf_segment_data: ERROR: paging_temp_map_vaddr failed (paddr=%#lx).\n", (unsigned long)frame_paddr);
          return -1;
@@ -666,14 +673,7 @@
          ret_status = -3;
          goto fail_create;
      }
-
-     // --- *** IMPORTANT: Update TSS esp0 *** ---
-     PROC_DEBUG_PRINTF("Step 4.5: Update TSS esp0\n");
-     // Set the kernel stack pointer for CPL 3 -> 0 transitions for this process
-     // (Note: This sets the *global* TSS entry. For multi-core, each core needs its own TSS or TSS needs update on switch)
-     terminal_printf("  Updating TSS esp0 = %p\n", (void*)proc->kernel_stack_vaddr_top);
-     tss_set_kernel_stack((uint32_t)proc->kernel_stack_vaddr_top);
-     // ------------------------------------------
+     // Note: allocate_kernel_stack now handles the initial tss_set_kernel_stack call.
 
      // --- Create Memory Management structure ---
      PROC_DEBUG_PRINTF("Step 5: Create mm_struct\n");
