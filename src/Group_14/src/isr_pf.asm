@@ -15,6 +15,8 @@ extern serial_putc_asm ; External ASM function for serial output
 %define KERNEL_CODE_SELECTOR 0x08 ; Common value, adjust if yours is different
 
 isr14:
+    mov al, 'F' ; 'F' for Page Fault
+    call serial_putc_asm
     ; CPU pushes ErrorCode, EIP, CS, EFLAGS, [SS_user], [ESP_user] automatically
     ; --- DEBUG: Print 'P' for Page Fault Entry ---
     pusha               ; Save regs temporarily
@@ -58,9 +60,9 @@ kernel_fault_unhandled:
     jmp kernel_panic_pf
 
 handle_fixup:
-    mov ebx, [esp + 12]     ; Get saved ECX
-    mov [esp + 8], ebx      ; Set saved EAX = remaining count
-    mov [esp + 48], eax     ; Set saved EIP = fixup_addr (offset adjusted)
+    mov ebx, [esp + 40]     ; Get saved ECX (remaining count) into EBX
+    mov [esp + 44], ebx     ; Set saved EAX = remaining count (now in EBX)
+    mov [esp + 56], eax     ; Set saved EIP = fixup_addr (from find_exception_fixup return in EAX)
     jmp restore_and_return
 
 user_fault:

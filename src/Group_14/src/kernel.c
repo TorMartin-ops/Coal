@@ -36,6 +36,8 @@
 #include "fs_init.h"        // Filesystem layer initialization
 #include "fs_errno.h"       // Filesystem error codes
 #include "read_file.h"      // Helper to read entire files
+#include "sys_file.h"       // System file interface
+#include "syscall.h"        // System call interface
 
 // === Drivers ===
 #include "pit.h"            // Programmable Interval Timer driver
@@ -887,10 +889,12 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     // to start preempting tasks by enabling interrupts.
     terminal_write("[Kernel] Finalizing setup before enabling interrupts...\n");
 
+
     // Mark the scheduler as fully ready to handle timer ticks.
     scheduler_start(); // Sets g_scheduler_ready = true
     terminal_write("  Scheduler marked as ready.\n");
-
+    syscall_init();
+    terminal_write("  Syscall interface initialized.\n");
     // === Enable Interrupts ===
     // This allows hardware interrupts (like the PIT timer tick) to occur,
     // which will trigger the scheduler (`schedule()`) and start multitasking.

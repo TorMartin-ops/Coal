@@ -1525,6 +1525,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
  // --- Page Fault Handler ---
  // --- Page Fault Handler ---
  void page_fault_handler(registers_t *regs) {
+    serial_write("[PF] Enter C page_fault_handler\n");
     uintptr_t fault_addr;
     asm volatile("mov %%cr2, %0" : "=r"(fault_addr));
 

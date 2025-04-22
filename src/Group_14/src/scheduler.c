@@ -775,6 +775,32 @@ static void perform_context_switch(tcb_t *old_task, tcb_t *new_task) {
     uint32_t *new_esp = new_task->esp; // Kernel ESP to load (points into the task's kernel stack)
     uint32_t **old_task_esp_loc = old_task ? &(old_task->esp) : NULL; // Where to save old ESP
 
+    if (new_task->pid != IDLE_TASK_PID && new_task->process && new_task->process->kernel_stack_vaddr_top) {
+        uintptr_t kstack_top = (uintptr_t)new_task->process->kernel_stack_vaddr_top;
+        // Check the page *containing* the top word, which is where ESP0 points.
+        // ESP0 = 0xe0004000, points just past the end. The actual top page is 0xe0003000.
+        uintptr_t kstack_page_to_check = PAGE_ALIGN_DOWN(kstack_top - 1); // Get page containing top byte
+        uintptr_t kstack_phys_check = 0;
+        // Check mapping in the *kernel's* page directory
+        int kstack_map_status = paging_get_physical_address((uint32_t*)g_kernel_page_directory_phys,
+                                                            kstack_page_to_check,
+                                                            &kstack_phys_check);
+
+        serial_write("[Sched Verify KStack] Checking V=");
+        // Add hex print for kstack_page_to_check if possible
+        serial_putc_asm('K'); // Placeholder
+        serial_write(": ");
+        if (kstack_map_status != 0 || kstack_phys_check == 0) {
+            serial_write("!!! MAPPING INVALID/NOT PRESENT !!!\n");
+            // Consider adding a loop or panic here if this occurs
+        } else {
+            serial_write("OK (Mapped to P=");
+            // Add hex print for kstack_phys_check if possible
+             serial_putc_asm('P'); // Placeholder
+            serial_write(")\n");
+        }
+    }
+    
     // Decide if page directory needs switching
     bool pd_needs_switch = (!old_task || !old_task->process || old_task->process->page_directory_phys != new_pd_phys);
 
