@@ -95,6 +95,7 @@ static int strncpy_from_user(const char *u_src, char *k_dst, size_t maxlen) {
  * @return Value to place back in the user process's EAX register (typically 0 on success, negative errno on error).
  */
 int syscall_handler(syscall_context_t *ctx) {
+    serial_write("[Syscall] Enter C syscall_handler\n");
     uint32_t syscall_num = ctx->eax;
     pcb_t* current_proc = get_current_process();
 

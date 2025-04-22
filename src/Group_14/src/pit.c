@@ -95,6 +95,7 @@
   * Calls the scheduler's tick function.
   */
  static void pit_irq_handler(isr_frame_t *frame) {
+    serial_write("[PIT] Enter pit_irq_handler\n");
      (void)frame;
      // --- Call scheduler tick handler ---
      scheduler_tick(); // <<< Ensure this matches your advanced scheduler function name

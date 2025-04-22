@@ -42,6 +42,7 @@ typedef struct tcb {
     struct tcb    *wait_prev;    // Previous in wait list (NULL if first or not waiting)
     struct tcb    *wait_next;    // Next in wait list (NULL if last or not waiting)
     void          *wait_reason;   // Pointer to object being waited on (optional context)
+    struct tcb *all_tasks_next;
 
 } tcb_t;
 

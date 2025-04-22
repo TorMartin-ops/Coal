@@ -181,7 +181,7 @@ static void pic_unmask_required_irqs(void) {
 
     // Calculate new masks (clear bits to unmask/enable)
     // Bit 0 = IRQ 0, Bit 1 = IRQ 1, etc.
-    uint8_t new_mask1 = mask1 & ~(1 << 2); // Unmask Master IRQ 2 (Cascade line)
+    uint8_t new_mask1 = mask1 & ~((1 << 2) | (1 << 0)); // Unmask Master IRQ 2 (Cascade) AND IRQ 0 (PIT)
     uint8_t new_mask2 = mask2 & ~(1 << 6); // Unmask Slave IRQ 6 (which corresponds to hardware IRQ 14)
 
     // Write new masks
@@ -193,7 +193,7 @@ static void pic_unmask_required_irqs(void) {
     // Optional: Read back and log for verification
     uint8_t final_mask1 = inb(PIC1_DATA);
     uint8_t final_mask2 = inb(PIC2_DATA);
-    terminal_printf("  [PIC] New masks after unmask:  Master=0x%02x, Slave=0x%02x\n", final_mask1, final_mask2);
+    terminal_printf("   [PIC] Read back masks: Master=0x%02x, Slave=0x%02x\n", final_mask1, final_mask2);;
 
     // Optional assertion (if needed, could be too strict for some HW/VMs)
     // KERNEL_ASSERT(final_mask1 == new_mask1 && final_mask2 == new_mask2, "PIC mask write failed verification");
@@ -307,6 +307,8 @@ void default_isr_handler(isr_frame_t* frame) {
  * default handler. Sends EOI to the PIC for hardware interrupts.
  */
 void isr_common_handler(isr_frame_t* frame) {
+    serial_write("[IDT] Enter isr_common_handler\n");
+
     // Basic validation of the frame pointer itself
     if (!frame) { KERNEL_PANIC_HALT("isr_common_handler received NULL frame!"); }
 

@@ -1,10 +1,16 @@
 ; jump_user.asm
 ; Performs the initial jump from Kernel Mode (PL0) to User Mode (PL3)
 ; using the IRET instruction with a pre-configured stack frame.
+; Version: 1.1 (Added loading of data segment registers)
 
 section .text
 global jump_to_user_mode
-extern serial_putc_asm ; For debugging
+extern serial_putc_asm ; For debugging (optional)
+
+; Define user data segment selector (ensure this matches your GDT setup)
+; GDT Index 4 = User Data, Selector = 4 * 8 = 0x20
+; RPL = 3 (User Mode)
+%define USER_DATA_SELECTOR 0x23 ; (0x20 | 3)
 
 ;-----------------------------------------------------------------------------
 ; jump_to_user_mode(kernel_stack_ptr, page_directory_phys)
@@ -30,6 +36,15 @@ jump_to_user_mode:
     jz .skip_cr3_load   ; Skip if NULL (should not happen)
     mov cr3, eax        ; Load new page directory physical address (flushes TLB)
 .skip_cr3_load:
+
+    ; --- Load User Data Segments --- <<< FIX ADDED HERE
+    ; Load DS, ES, FS, GS with the User Data Segment Selector before IRET.
+    ; This prevents a #GP fault when user code tries to access data.
+    mov ax, USER_DATA_SELECTOR
+    mov ds, ax
+    mov es, ax
+    mov fs, ax            ; Load FS/GS as well, typically needed.
+    mov gs, ax
 
     ; --- Load ESP with pointer to IRET Frame ---
     ; The C code prepared the kernel stack starting from the top address downwards.
