@@ -2,11 +2,10 @@
 #define IDT_H
 
 // Include dependencies FIRST
-// #include "paging.h" // <<< REMOVE: registers_t/isr_frame_t now defined in isr_frame.h
-#include <isr_frame.h> // <<< ADD: Include the new frame definition
-#include <port_io.h>             // For outb declaration before io_wait
+#include <isr_frame.h> // <<< ADDED: Include the definition for isr_frame_t
+#include <port_io.h>   // For outb, PIC defines below
+#include <types.h>     // For uintN_t types
 
-// --- IDT Structure Definitions ---
 // --- Constants ---
 #define IDT_ENTRIES 256
 
@@ -14,27 +13,27 @@
 #define PIC1         0x20      /* IO base address for master PIC */
 #define PIC2         0xA0      /* IO base address for slave PIC */
 #define PIC1_COMMAND PIC1
-#define PIC1_DATA    (PIC1 + 1)
+#define PIC1_DATA    (PIC1+1)
 #define PIC2_COMMAND PIC2
-#define PIC2_DATA    (PIC2 + 1)
+#define PIC2_DATA    (PIC2+1)
 #define PIC_EOI      0x20      /* End-of-interrupt command code */
 
-// --- Add missing defines used in kernel.c --- (If needed elsewhere)
-#ifndef PIC1_DAT
-#define PIC1_DAT    PIC1_DATA
-#endif
-#ifndef PIC2_DAT
-#define PIC2_DAT    PIC2_DATA
-#endif
-// --- End Added Defines ---
+// PIC Remapping Vector Offsets
+#define PIC1_START_VECTOR 0x20 // IRQ 0-7 map to 32-39
+#define PIC2_START_VECTOR 0x28 // IRQ 8-15 map to 40-47
 
+// Aliases for DATA ports if used elsewhere
+#define PIC1_DAT PIC1_DATA
+#define PIC2_DAT PIC2_DATA
+
+// --- IDT Structure Definitions ---
 
 // Defines an entry in the Interrupt Descriptor Table.
 struct idt_entry {
     uint16_t base_low;  // Lower 16 bits of the handler function address.
     uint16_t sel;       // Kernel segment selector (usually 0x08 for code).
     uint8_t  null;      // Always zero.
-    uint8_t  flags;     // Type and attributes flags (e.g., 0x8E for 32-bit interrupt gate, P=1, DPL=0).
+    uint8_t  flags;     // Type and attributes flags (e.g., 0x8E for 32-bit interrupt gate).
     uint16_t base_high; // Upper 16 bits of the handler function address.
 } __attribute__((packed));
 
@@ -46,18 +45,15 @@ struct idt_ptr {
 
 
 // --- Interrupt Handler Function Pointer Type ---
-// *** UPDATED TYPE DEFINITION ***
-// Define the function pointer type using the new isr_frame_t struct
+// <<< FIXED: Use isr_frame_t from isr_frame.h >>>
 typedef void (*int_handler_t)(isr_frame_t* frame);
 
-
 // --- Structure to hold registered handler info ---
-// Uses the updated int_handler_t type definition implicitly
 typedef struct interrupt_handler_info {
     int           num;      // Interrupt number
     int_handler_t handler;  // Pointer to the C handler function
     void* data;     // Optional data pointer for the handler
-} interrupt_handler_info_t; // Renamed type in idt.c, keep consistent if used elsewhere
+} interrupt_handler_info_t;
 
 
 // --- Public Function Prototypes ---
@@ -69,17 +65,19 @@ void idt_init(void);
 
 /**
  * @brief Registers a C handler function for a specific interrupt number.
- * *** UPDATED DECLARATION ***
+ *
  * @param num The interrupt number (0-255).
- * @param handler Pointer to the C handler function (using isr_frame_t*).
+ * @param handler Pointer to the C handler function (type int_handler_t).
  * @param data Optional pointer to pass to the handler.
  */
-void register_int_handler(int num, void (*handler)(isr_frame_t*), void* data);
+void register_int_handler(int num, int_handler_t handler, void* data);
 
 
 // Helper for optional delays (used in PIC init)
 static inline void io_wait(void) {
-    outb(0x80, 0); // Write to an unused port (often 0x80) as a delay
+    // Write to an unused port (often 0x80) as a delay
+    // Ensure outb is declared (via port_io.h)
+    outb(0x80, 0);
 }
 
 #endif // IDT_H

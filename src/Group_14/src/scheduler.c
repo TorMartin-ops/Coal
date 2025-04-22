@@ -35,6 +35,18 @@
 #define SCHED_ERR_NOMEM -1 // Out of memory
 #define SCHED_ERR_FAIL  -2 // General failure
 
+#ifndef KERNEL_PHYS_BASE
+#define KERNEL_PHYS_BASE 0x100000 // Standard physical load address
+#endif
+#ifndef KERNEL_VIRT_BASE
+#define KERNEL_VIRT_BASE 0xC0000000 // Standard virtual base address
+#endif
+// Ensure PHYS_TO_VIRT calculation doesn't underflow if p < KERNEL_PHYS_BASE
+#define PHYS_TO_VIRT(p) ((uintptr_t)(p) >= KERNEL_PHYS_BASE ? \
+                         ((uintptr_t)(p) - KERNEL_PHYS_BASE + KERNEL_VIRT_BASE) : \
+                         (uintptr_t)(p)) // Use identity map for low addresses if needed
+
+
 
 
 // --- Debug Logging Macros ---
@@ -155,24 +167,53 @@ static void scheduler_init_idle_task(void) {
 /**
  * @brief Initializes the scheduler subsystem.
  */
-void scheduler_init(void)
-{
-    SCHED_LOG("Initializing scheduler...");
-    task_list_head   = NULL;
-    current_task     = NULL;
-    task_count       = 0;
-    context_switches = 0;
-    g_scheduler_ready = false; // Initialize the global flag
-    spinlock_init(&scheduler_lock);
-
-    // Initialize and add the mandatory idle task
-    scheduler_init_idle_task();
-    task_list_head = &idle_task_tcb;
-    idle_task_tcb.next = &idle_task_tcb; // Point to self
-    task_count++;
-
-    SCHED_LOG("Scheduler Initialized (Idle Task PID %lu created).", (unsigned long)IDLE_TASK_PID);
-}
+ void scheduler_init(void)
+ {
+     SCHED_LOG("Initializing scheduler...");
+     task_list_head   = NULL;
+     current_task     = NULL;
+     task_count       = 0;
+     context_switches = 0;
+     g_scheduler_ready = false; // Initialize the global flag
+     spinlock_init(&scheduler_lock);
+ 
+     // Initialize and add the mandatory idle task
+     // This function calculates idle_task_pcb.kernel_stack_vaddr_top
+     // based on the address of the static idle_stack buffer.
+     scheduler_init_idle_task();
+ 
+     // --- Correctly set TSS ESP0 ---
+     // Get the calculated stack top (which might be physical or virtual depending on context)
+     uintptr_t calculated_stack_top = (uintptr_t)idle_task_pcb.kernel_stack_vaddr_top;
+ 
+     // Explicitly determine the intended VIRTUAL address for the TSS.
+     // If the calculated address is already in the higher half, use it.
+     // Otherwise, assume it's physical and convert it.
+     uintptr_t idle_stack_virt_top;
+     if (calculated_stack_top >= KERNEL_VIRT_BASE) {
+          SCHED_DEBUG("Idle stack top (%p) already seems virtual.", (void*)calculated_stack_top);
+          idle_stack_virt_top = calculated_stack_top;
+     } else {
+          SCHED_DEBUG("Idle stack top (%p) seems physical, converting to virtual.", (void*)calculated_stack_top);
+          // Ensure the physical base is correct for the static idle_stack location
+          // If idle_stack is truly at 0x15xxxx, KERNEL_PHYS_BASE=0x100000 is likely correct.
+          idle_stack_virt_top = PHYS_TO_VIRT(calculated_stack_top);
+     }
+ 
+     SCHED_DEBUG("Setting initial TSS ESP0 to idle task stack top: %p",
+                 (void*)idle_stack_virt_top);
+ 
+     // Set the initial TSS ESP0 using the VIRTUAL address
+     tss_set_kernel_stack((uint32_t)idle_stack_virt_top);
+     // --- End TSS ESP0 fix ---
+ 
+ 
+     task_list_head = &idle_task_tcb;
+     idle_task_tcb.next = &idle_task_tcb; // Point to self
+     task_count++;
+ 
+     SCHED_LOG("Scheduler Initialized (Idle Task PID %lu created).", (unsigned long)IDLE_TASK_PID);
+ }
 
 /**
  * @brief Creates a TCB for a given process and adds it to the scheduler's run queue.

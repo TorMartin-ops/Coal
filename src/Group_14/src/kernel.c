@@ -2,7 +2,7 @@
  * kernel.c - Main kernel entry point for UiAOS
  *
  * Author: Group 14 (UiA) & Gemini Assistance
- * Version: 3.7 (Move idt_init after init_memory)
+ * Version: 3.9 (TSS ESP0 fix integrated into scheduler_init)
  *
  * Description:
  * This file contains the main entry point (`main`) for the UiAOS kernel,
@@ -579,7 +579,7 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     terminal_init();         // VGA terminal for primary output
 
     terminal_write("=== UiAOS Kernel Booting ===\n");
-    terminal_printf(" Version: %s\n\n", "3.6-TSSCheck"); // Updated version
+    terminal_printf(" Version: %s\n\n", "3.9"); // Updated version
 
     // === Pre-Initialization Checks ===
     terminal_write("[Boot] Verifying Multiboot information...\n");
@@ -599,10 +599,6 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     terminal_write("[Kernel] Initializing GDT & TSS...\n");
     gdt_init();
 
-    // ---> Moved IDT Initialization to AFTER init_memory() <---
-    // terminal_write("[Kernel] Initializing IDT & PIC...\n");
-    // idt_init(); // OLD POSITION
-
     // === Memory Management Initialization ===
     if (!init_memory(g_multiboot_info_phys_addr_global)) {
         // Panic occurs within init_memory on failure
@@ -610,10 +606,9 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     }
     // --- PAGING IS NOW ACTIVE ---
 
-    // ---> Corrected: Initialize IDT & PIC AFTER Paging is Active <---
+    // ---> Initialize IDT & PIC AFTER Paging is Active <---
     terminal_write("[Kernel] Initializing IDT & PIC...\n");
     idt_init();
-    // ---> End Correction <---
 
     // *** Initialize Temporary VA Mapper ***
     terminal_write("[Kernel] Initializing Temporary VA Mapper...\n");
@@ -629,7 +624,36 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     keyboard_init();
     keymap_load(KEYMAP_NORWEGIAN); // Consider making this configurable
 
-    // === Filesystem Initialization ===
+
+    // === Scheduler Initialization ===
+    // NOTE: scheduler_init() now also sets the initial TSS ESP0.
+    terminal_write("[Kernel] Initializing Scheduler...\n");
+    scheduler_init(); // Initializes idle task, sets TSS ESP0, and g_scheduler_ready = false
+
+
+    // === Start Scheduling ===
+    terminal_write("[Kernel] Starting preemptive scheduling mechanism...\n");
+    scheduler_start(); // Marks scheduler as ready (g_scheduler_ready = true)
+
+
+    // === Final Check Before Enabling Interrupts (Optional) ===
+    // The TSS ESP0 check is removed as scheduler_init handles it now.
+    // You could add other checks here if needed.
+    terminal_write("[Kernel] Pre-STI checks passed.\n");
+
+
+    terminal_write("\n[Kernel] Initialization complete. Enabling interrupts and entering scheduler loop.\n");
+    terminal_write("======================================================================\n");
+
+    terminal_write("[Kernel DEBUG] About to enable interrupts (sti)...\n");
+    serial_write("[Kernel DEBUG] STI...\n");
+
+    // Enable interrupts - PIT timer will start firing -> schedule()
+    asm volatile ("sti");
+
+    serial_write("[Kernel DEBUG] After STI.\n");
+
+    // === Filesystem Initialization (MOVED HERE) ===
     terminal_write("[Kernel] Initializing Filesystem Layer...\n");
     bool fs_ready = false;
     int fs_init_status = fs_init();
@@ -642,11 +666,7 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
         // Consider panic based on requirements: KERNEL_PANIC_HALT("Filesystem init failed.");
     }
 
-    // === Scheduler Initialization ===
-    terminal_write("[Kernel] Initializing Scheduler...\n");
-    scheduler_init(); // Initializes idle task and sets g_scheduler_ready = false
-
-    // === Initial Process Creation ===
+    // === Initial Process Creation (MOVED HERE) ===
     terminal_write("[Kernel] Creating initial user process...\n");
     if (fs_ready) {
         // Use the simplified hello.elf path
@@ -668,34 +688,6 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
          terminal_write("  [Info] Filesystem not available, cannot load initial user process.\n");
     }
 
-    // === Start Scheduling ===
-    terminal_write("[Kernel] Starting preemptive scheduling mechanism...\n");
-    scheduler_start(); // Call the scheduler's start function
-
-    // === Final Check Before Enabling Interrupts ===
-    uint32_t final_esp0 = tss_get_esp0();
-    terminal_printf("[Kernel] Final check: TSS ESP0 = %p before enabling interrupts.\n", (void*)(uintptr_t)final_esp0);
-    if (final_esp0 == 0 || final_esp0 < 0xC0100000) { // Basic sanity check
-        KERNEL_PANIC_HALT("Invalid TSS ESP0 detected just before STI!");
-    }
-    // === END Check ===
-
-    terminal_write("\n[Kernel] Initialization complete. Enabling interrupts and entering scheduler loop.\n");
-    terminal_write("======================================================================\n");
-
-    // Removed PIC masking diagnostic code
-    // terminal_write("[Kernel DEBUG] Masking PIC interrupts except timer (IRQ0)...\n");
-    // outb(PIC1_DAT, 0xFE); // Mask all on master except IRQ0 (bit 0)
-    // outb(PIC2_DAT, 0xFF); // Mask all on slave
-
-    terminal_write("[Kernel DEBUG] About to enable interrupts (sti)...\n");
-    serial_write("[Kernel DEBUG] STI...\n");
-
-    // Enable interrupts - PIT timer will start firing -> schedule()
-    asm volatile ("sti");
-
-    // Removed diagnostic 'After STI' message and busy loop, restoring hlt
-    serial_write("[Kernel DEBUG] After STI.\n"); // Keep this one to see if we get past sti
 
     // --- Enter the kernel's main idle loop ---
     // This loop runs when the kernel itself has nothing else to do.

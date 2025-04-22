@@ -100,7 +100,7 @@
  static void pit_irq_handler(isr_frame_t *frame) {
       (void)frame;
       pit_ticks++;
-      //schedule();
+      schedule();
  }
  
  /**
