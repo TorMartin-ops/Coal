@@ -1,7 +1,7 @@
 ; jump_user.asm
 ; Performs the initial jump from Kernel Mode (PL0) to User Mode (PL3)
 ; using the IRET instruction with a pre-configured stack frame.
-; Version: 1.4 (Added HLT after CR3 load for debugging)
+; Version: 1.6 (Added AND mask for CR3, removed debug HLTs)
 
 section .text
 global jump_to_user_mode
@@ -28,15 +28,22 @@ jump_to_user_mode:
     mov eax, [ebp + 12] ; EAX = page_directory_phys
 
     ; --- Switch Page Directory (CR3) ---
-    mov ecx, cr3        ; Get current CR3
+    mov ecx, cr3       ; Get current CR3
     cmp eax, ecx
-    je .skip_cr3_load
+    je .skip_cr3_load   ; Don't reload if it's the same PD (e.g., kernel thread)
     test eax, eax
-    jz .skip_cr3_load
-    mov cr3, eax 
-     
-.skip_cr3_load:                
+    jz .skip_cr3_load   ; Don't load if NULL address
 
+    ; Safety: Ensure only the address part (top 20 bits) is loaded into CR3
+    and eax, 0xFFFFF000 ; Strip any potential stray low bits (flags)
+    mov cr3, eax        ; Load process page directory physical address
+
+
+    ; Optional: Add a serial print here if needed AFTER fixing the crash
+    ; mov al, 'A'       ; Character to print
+    ; call serial_putc_asm
+
+.skip_cr3_load:
 
     ; --- Load User Data Segments ---
     mov ax, USER_DATA_SELECTOR
@@ -47,10 +54,6 @@ jump_to_user_mode:
 
     ; --- Load ESP with pointer to IRET Frame ---
     mov esp, edx        ; ESP now points to the prepared IRET frame
-
-    ; --- DEBUGGING: Halt just before IRET --- <<< Kept original HLT too
-    hlt                 ; If it reaches here, segment/ESP loads were OK.
-
 
     ; --- Execute IRET ---
     iret

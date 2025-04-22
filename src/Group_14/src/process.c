@@ -731,15 +731,15 @@
           if (kernel_stack_pde_index >= KERNEL_PDE_INDEX && kernel_stack_pde_index < RECURSIVE_PDE_INDEX) {
                uint32_t process_kstack_pde = ((uint32_t*)temp_pd_check)[kernel_stack_pde_index];
                uint32_t global_kstack_pde = g_kernel_page_directory_virt[kernel_stack_pde_index];
-               terminal_printf("  Verification: Proc PD[%d]=%#08lx, Global PD[%d]=%#08lx (Kernel Stack PDE)\n",
-                               kernel_stack_pde_index, (unsigned long)process_kstack_pde,
-                               kernel_stack_pde_index, (unsigned long)global_kstack_pde);
+               terminal_printf("  Verification: Proc PD[%lu]=%#08lx, Global PD[%lu]=%#08lx (Kernel Stack PDE)\n",
+                               (unsigned long)kernel_stack_pde_index, (unsigned long)process_kstack_pde, // Cast index too
+                               (unsigned long)kernel_stack_pde_index, (unsigned long)global_kstack_pde); // Cast index too
                 if (process_kstack_pde == 0 || !(process_kstack_pde & PAGE_PRESENT)) {
                     terminal_printf("  [FATAL VERIFICATION ERROR] Kernel Stack PDE missing or invalid in process PD!\n");
                     // Consider adding a KERNEL_PANIC_HALT here if this fails
                 }
           } else {
-                terminal_printf("  Verification Warning: Kernel Stack PDE index calculation seems wrong (%d)\n", kernel_stack_pde_index);
+            terminal_printf("  Verification Warning: Kernel Stack PDE index calculation seems wrong (%lu)\n", (unsigned long)kernel_stack_pde_index);
           }
 
           paging_temp_unmap(temp_pd_check); // Unmap the temporary check mapping
@@ -754,56 +754,132 @@
 
       // --- Allocate Kernel Stack ---
       PROC_DEBUG_PRINTF("Step 4: Allocate Kernel Stack\n");
-      // ... rest of the function remains the same ...
+      // *** ADD CHECK FOR RETURN VALUE HERE ***
+      if (!allocate_kernel_stack(proc)) {
+          terminal_printf("[Process] ERROR: Failed to allocate/map kernel stack for PID %lu.\n", (unsigned long)proc->pid);
+          ret_status = -3; // Use a distinct status code for kernel stack failure
+          goto fail_create; // Jump to cleanup if allocation fails
+      }
+      // *** END ADDED CHECK ***
 
       // --- Create Memory Management structure ---
       PROC_DEBUG_PRINTF("Step 5: Create mm_struct\n");
-      // ...
+      proc->mm = create_mm(proc->page_directory_phys);
+      if (!proc->mm) {
+          terminal_printf("[Process] ERROR: create_mm failed for PID %lu.\n", (unsigned long)proc->pid);
+          ret_status = -4; // Use a distinct status code for mm_struct failure
+          goto fail_create;
+      }
 
       // --- Load ELF executable into memory space ---
       PROC_DEBUG_PRINTF("Step 6: Load ELF '%s'\n", path);
-      // ...
+      uint32_t entry_point = 0;
+      uintptr_t initial_brk = 0;
+      int load_res = load_elf_and_init_memory(path, proc->mm, &entry_point, &initial_brk);
+      if (load_res != 0) {
+          terminal_printf("[Process] ERROR: Failed to load ELF '%s' (Error code %d).\n", path, load_res);
+          // Map error codes from load_elf to ret_status if desired
+          ret_status = load_res; // Store the specific ELF error
+          goto fail_create;
+      }
+      proc->entry_point = entry_point;
+      proc->mm->start_brk = proc->mm->end_brk = initial_brk; // Set initial break
 
       // --- Setup standard VMAs (Heap placeholder, User Stack) ---
       PROC_DEBUG_PRINTF("Step 7: Setup standard VMAs\n");
-      // ...
+      // Example: Heap VMA (initially zero size, grows via brk syscall)
+      uintptr_t heap_start = proc->mm->end_brk; // Start heap right after loaded data
+      // Ensure heap doesn't overlap stack; typically stack is at a high address.
+      KERNEL_ASSERT(heap_start < USER_STACK_BOTTOM_VIRT, "Heap start overlaps user stack area");
+      if (!insert_vma(proc->mm, heap_start, heap_start, VM_READ | VM_WRITE | VM_USER | VM_GROWS_DOWN | VM_ANONYMOUS, PAGE_PRESENT | PAGE_RW | PAGE_USER | (g_nx_supported ? PAGE_NX_BIT : 0), NULL, 0)) {
+           terminal_printf("[Process] ERROR: Failed to insert initial heap VMA for PID %lu.\n", (unsigned long)proc->pid);
+           ret_status = -5; goto fail_create;
+      }
+       terminal_printf("  Initial Heap VMA placeholder added: [%#lx - %#lx)\n", (unsigned long)heap_start, (unsigned long)heap_start);
+
+      // User Stack VMA (uses constants from process.h)
+      if (!insert_vma(proc->mm, USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR, VM_READ | VM_WRITE | VM_USER | VM_GROWS_DOWN | VM_ANONYMOUS, PAGE_PRESENT | PAGE_RW | PAGE_USER | (g_nx_supported ? PAGE_NX_BIT : 0), NULL, 0)) {
+        terminal_printf("[Process] ERROR: Failed to insert user stack VMA for PID %lu.\n", (unsigned long)proc->pid);
+        ret_status = -6; goto fail_create;
+      }
+       terminal_printf("  User Stack VMA added: [%#lx - %#lx)\n", (unsigned long)USER_STACK_BOTTOM_VIRT, (unsigned long)USER_STACK_TOP_VIRT_ADDR);
+
 
       // --- Allocate and Map Initial User Stack Page ---
       PROC_DEBUG_PRINTF("Step 8: Allocate initial user stack page\n");
-      // ...
+      initial_stack_phys_frame = frame_alloc();
+      if (!initial_stack_phys_frame) {
+          terminal_printf("[Process] ERROR: Failed to allocate initial user stack frame for PID %lu.\n", (unsigned long)proc->pid);
+          ret_status = -7; goto fail_create;
+      }
+      uintptr_t initial_user_stack_page_vaddr = USER_STACK_TOP_VIRT_ADDR - PAGE_SIZE; // Topmost page
+      uint32_t stack_page_flags = PAGE_PRESENT | PAGE_RW | PAGE_USER;
+      if (g_nx_supported) stack_page_flags |= PAGE_NX_BIT;
+
+      int map_res = paging_map_single_4k(proc->page_directory_phys, initial_user_stack_page_vaddr, initial_stack_phys_frame, stack_page_flags);
+      if (map_res != 0) {
+           terminal_printf("[Process] ERROR: Failed to map initial user stack page for PID %lu (err %d).\n", (unsigned long)proc->pid, map_res);
+           // Frame allocated but mapping failed - set flag so cleanup frees frame
+           initial_stack_mapped = false; // Ensure flag is false
+           ret_status = -8; goto fail_create;
+      }
+      initial_stack_mapped = true; // Mark as mapped
+      proc->user_stack_top = (void*)USER_STACK_TOP_VIRT_ADDR; // Set ESP to top of range
+      terminal_printf("  Initial user stack page allocated (P=%#lx) and mapped (V=%p). User ESP set to %p.\n",
+                      (unsigned long)initial_stack_phys_frame, (void*)initial_user_stack_page_vaddr, proc->user_stack_top);
+
+      // Zero out the initial user stack page using a temporary kernel mapping
+      void* temp_stack_map = paging_temp_map(initial_stack_phys_frame, PTE_KERNEL_DATA_FLAGS);
+      if (temp_stack_map) {
+            memset(temp_stack_map, 0, PAGE_SIZE);
+            paging_temp_unmap(temp_stack_map);
+      } else {
+          terminal_printf("[Process] Warning: Failed to temp map initial user stack P=%#lx for zeroing.\n", (unsigned long)initial_stack_phys_frame);
+          // Proceed anyway, stack will contain garbage initially
+      }
+
 
       // --- Prepare Initial Kernel Stack for IRET ---
       PROC_DEBUG_PRINTF("Step 9: Prepare initial kernel stack for IRET\n");
-      // ...
+      prepare_initial_kernel_stack(proc); // Fills proc->kernel_esp_for_switch
 
       // --- SUCCESS ---
       terminal_printf("[Process] Successfully created PCB PID %lu structure for '%s'.\n",
                       (unsigned long)proc->pid, path);
       PROC_DEBUG_PRINTF("Exit OK (proc=%p)\n", proc);
       return proc; // Return the prepared PCB
- 
+
   fail_create:
       // --- Cleanup on Failure ---
-      // ... (ensure cleanup logic is robust) ...
       terminal_printf("[Process] Cleanup after create_user_process failed (PID %lu, Status %d).\n",
                       (unsigned long)(proc ? proc->pid : 0), ret_status);
- 
+
       if (pd_mapped_temp && proc_pd_virt_temp != NULL) {
           PROC_DEBUG_PRINTF("  Cleaning up temporary PD mapping %p\n", proc_pd_virt_temp);
           paging_temp_unmap(proc_pd_virt_temp);
       }
-      // ... (rest of cleanup) ...
 
-       if (proc) {
+      // Free initial user stack frame if allocated but mapping failed OR if cleanup is needed before return
+      if (initial_stack_phys_frame != 0 && !initial_stack_mapped) {
+           PROC_DEBUG_PRINTF("  Freeing unmapped initial user stack frame P=%#lx\n", (unsigned long)initial_stack_phys_frame);
+           put_frame(initial_stack_phys_frame);
+           initial_stack_phys_frame = 0; // Prevent double free if destroy_process is called later
+      }
+
+      // Destroy partially created process (handles mm, kernel stack, page dir, pcb)
+      // destroy_process should be safe to call even if some parts (like mm) were not allocated.
+      if (proc) {
           PROC_DEBUG_PRINTF("  Calling destroy_process for partially created PID %lu\n", (unsigned long)proc->pid);
-          destroy_process(proc);
+          destroy_process(proc); // destroy_process handles freeing PD, kernel stack, mm, and PCB
       } else {
+          // If even PCB allocation failed, but PD was allocated, free PD frame manually
           if (pd_phys) {
                PROC_DEBUG_PRINTF("  Freeing PD frame P=%#lx (PCB allocation failed)\n", (unsigned long)pd_phys);
               put_frame(pd_phys);
           }
       }
- 
+
+
       PROC_DEBUG_PRINTF("Exit FAIL (NULL)\n");
       return NULL; // Indicate failure
  }

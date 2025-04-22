@@ -79,7 +79,7 @@
  extern uint32_t g_multiboot_info_phys_addr_global;
 
  // --- Early Allocation Tracking ---
- #define MAX_EARLY_ALLOCATIONS 128
+ #define MAX_EARLY_ALLOCATIONS 256
  static uintptr_t early_allocated_frames[MAX_EARLY_ALLOCATIONS];
  static int       early_allocated_count  = 0;
  static bool      early_allocator_used   = false; // Tracks if early allocator is ACTIVE, becomes false after finalize
@@ -634,14 +634,16 @@
       return 0; // Success
  }
 
- int paging_setup_early_maps(uintptr_t page_directory_phys,
+int paging_setup_early_maps(uintptr_t page_directory_phys,
                              uintptr_t kernel_phys_start,
                              uintptr_t kernel_phys_end,
                              uintptr_t heap_phys_start,
                              size_t heap_size)
  {
       terminal_write("[Paging Stage 2] Setting up early memory maps...\n");
+      volatile uint32_t* pd_phys_ptr = (volatile uint32_t*)page_directory_phys; // Make sure pd_phys_ptr is declared early
 
+      // --- Existing Mappings ---
       size_t identity_map_size = 4 * 1024 * 1024; // 4MB
       terminal_printf("  Mapping Identity [0x0 - 0x%zx)\n", identity_map_size);
       if (paging_map_physical_early(page_directory_phys, 0x0, identity_map_size, PTE_KERNEL_DATA_FLAGS, false) != 0) {
@@ -679,29 +681,57 @@
           PAGING_PANIC("Failed to map VGA buffer!");
       }
 
-    // Calculate the correct PDE index for the start of the temporary mapping area
-    const uint32_t temp_map_pde_index = PDE_INDEX(KERNEL_TEMP_MAP_START); // Should evaluate to 1016
+      // --- NEW: Pre-allocate Kernel Stack Page Tables ---
+      terminal_printf("  Pre-allocating Page Tables for Kernel Stack Range [0x%lx - 0x%lx)...\n",
+                      (unsigned long)KERNEL_STACK_VADDR_START, (unsigned long)KERNEL_TEMP_MAP_START);
 
-    terminal_printf("  Pre-allocating Page Table for Temporary Mapping Area (PDE %lu)...\n", (unsigned long)temp_map_pde_index);
-    uintptr_t temp_pt_phys = paging_alloc_early_frame_physical();
-    if (!temp_pt_phys) {
-        KERNEL_PANIC_HALT("Failed to allocate PT frame for temporary mapping area!");
-    }
-    volatile uint32_t* pd_phys_ptr = (volatile uint32_t*)page_directory_phys;
-    // Use kernel flags, ensure NX bit if supported
-    uint32_t temp_pde_flags = PAGE_PRESENT | PAGE_RW;
-    if (g_nx_supported) {
-         temp_pde_flags |= PAGE_NX_BIT;
-    }
+      uint32_t stack_start_pde_idx = PDE_INDEX(KERNEL_STACK_VADDR_START); // e.g., 896 for 0xE0000000
+      uint32_t stack_end_pde_idx   = PDE_INDEX(KERNEL_TEMP_MAP_START);    // e.g., 1016 for 0xFE000000
 
-    // *** Use the CORRECT INDEX calculated above ***
-    pd_phys_ptr[temp_map_pde_index] = (temp_pt_phys & PAGING_ADDR_MASK) | temp_pde_flags;
-    // *** Use the CORRECT INDEX in the log message ***
-    terminal_printf("   Mapped PDE[%lu] to PT Phys %#lx\n", (unsigned long)temp_map_pde_index, (unsigned long)temp_pt_phys);
+      for (uint32_t pde_idx = stack_start_pde_idx; pde_idx < stack_end_pde_idx; ++pde_idx) {
+          if (!(pd_phys_ptr[pde_idx] & PAGE_PRESENT)) {
+              uintptr_t new_pt_phys = paging_alloc_early_frame_physical();
+              if (!new_pt_phys) {
+                  KERNEL_PANIC_HALT("Failed to allocate PT frame for kernel stack!");
+              }
 
-    terminal_write("[Paging Stage 2] Early memory maps configured.\n");
-    return 0; // Success
-}
+              // Set PDE flags: Present, RW, Kernel, NX (if supported)
+              uint32_t pde_flags = PAGE_PRESENT | PAGE_RW;
+              if (g_nx_supported) {
+                  pde_flags |= PAGE_NX_BIT;
+              }
+              // Set the PDE entry in the global kernel directory
+              pd_phys_ptr[pde_idx] = (new_pt_phys & PAGING_ADDR_MASK) | pde_flags;
+              // Debug print (optional)
+              // terminal_printf("    Allocated Kernel Stack PT: PDE[%lu] -> Phys %#lx\n", (unsigned long)pde_idx, (unsigned long)new_pt_phys);
+          }
+      }
+      terminal_printf("   Kernel Stack PTs pre-allocation check complete.\n");
+      // --- End NEW Section ---
+
+
+      // --- Existing: Pre-allocate Temp Map Area PT ---
+      const uint32_t temp_map_pde_index = PDE_INDEX(KERNEL_TEMP_MAP_START); // Should evaluate to 1016
+      terminal_printf("  Pre-allocating Page Table for Temporary Mapping Area (PDE %lu)...\n", (unsigned long)temp_map_pde_index);
+      if (!(pd_phys_ptr[temp_map_pde_index] & PAGE_PRESENT)) { // Check if it wasn't already allocated by the stack loop (unlikely but safe)
+          uintptr_t temp_pt_phys = paging_alloc_early_frame_physical();
+          if (!temp_pt_phys) {
+              KERNEL_PANIC_HALT("Failed to allocate PT frame for temporary mapping area!");
+          }
+          uint32_t temp_pde_flags = PAGE_PRESENT | PAGE_RW;
+          if (g_nx_supported) {
+              temp_pde_flags |= PAGE_NX_BIT;
+          }
+          pd_phys_ptr[temp_map_pde_index] = (temp_pt_phys & PAGING_ADDR_MASK) | temp_pde_flags;
+          terminal_printf("   Mapped PDE[%lu] to PT Phys %#lx\n", (unsigned long)temp_map_pde_index, (unsigned long)temp_pt_phys);
+      } else {
+           terminal_printf("   PT for Temporary Mapping Area (PDE %lu) already exists.\n", (unsigned long)temp_map_pde_index);
+      }
+
+
+      terminal_write("[Paging Stage 2] Early memory maps configured.\n");
+      return 0; // Success
+ }
 
  static void debug_print_pd_entries(uint32_t* pd_ptr, uintptr_t vaddr_start, size_t count) {
       terminal_write("--- Debug PD Entries ---\n");
@@ -1898,30 +1928,40 @@ void paging_temp_unmap(void* temp_vaddr) {
     temp_vaddr_free(vaddr);
 }
 
- // Helper for copying kernel PDEs (unchanged from previous fixes)
+ // Helper for copying kernel PDEs
  void copy_kernel_pde_entries(uint32_t *dst_pd_virt) {
-     if (!g_kernel_page_directory_virt) {
-         terminal_printf("[CopyPDEs] Error: Kernel PD global pointer not set.\n");
-         return;
-     }
-     if (!dst_pd_virt) {
-         terminal_printf("[CopyPDEs] Error: Destination PD pointer is NULL.\n");
-         return;
-     }
+    if (!g_kernel_page_directory_virt) {
+        KERNEL_PANIC_HALT("copy_kernel_pde_entries called before kernel PD virt pointer is set!");
+        return;
+    }
+    if (!dst_pd_virt) {
+        KERNEL_PANIC_HALT("copy_kernel_pde_entries called with NULL destination PD pointer!");
+        return;
+    }
 
-     size_t start_index = KERNEL_PDE_INDEX;
-     size_t end_index = RECURSIVE_PDE_INDEX;
+    // Define the range of kernel PDEs to copy
+    size_t start_index = KERNEL_PDE_INDEX;        // Index for KERNEL_SPACE_VIRT_START (e.g., 768)
+    size_t end_index = RECURSIVE_PDE_INDEX;     // Index for recursive mapping (e.g., 1023), copy excludes this entry
 
-     if (start_index >= end_index || end_index > TABLES_PER_DIR) {
-         terminal_printf("[CopyPDEs] Error: Invalid kernel PDE indices (%zu - %zu).\n", start_index, end_index);
-         return;
-     }
+    terminal_printf("[CopyPDEs] Copying kernel PDE range [%zu - %zu) using memcpy...\n", start_index, end_index); // Modified log
 
-     size_t count = end_index - start_index;
-     size_t bytes_to_copy = count * sizeof(uint32_t);
+    if (start_index >= end_index || end_index > TABLES_PER_DIR) {
+        terminal_printf("[CopyPDEs] Error: Invalid kernel PDE indices (%zu - %zu).\n", start_index, end_index);
+        KERNEL_PANIC_HALT("Invalid PDE range for kernel copy");
+        return;
+    }
 
-     memcpy(dst_pd_virt + start_index, g_kernel_page_directory_virt + start_index, bytes_to_copy);
- }
+    // Calculate number of entries and bytes to copy
+    size_t count = end_index - start_index;
+    size_t bytes_to_copy = count * sizeof(uint32_t);
+
+    // Perform the direct memory copy
+    memcpy(dst_pd_virt + start_index,             // Destination start index
+           g_kernel_page_directory_virt + start_index, // Source start index
+           bytes_to_copy);                        // Number of bytes
+
+    terminal_printf("[CopyPDEs] Kernel PDE memcpy complete.\n"); // Modified log
+}
 
  int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr, size_t memsz) {
      terminal_printf("[Unmap Range] V=[0x%#lx - 0x%#lx) in PD Phys %p\n",

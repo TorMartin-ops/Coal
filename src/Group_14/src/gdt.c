@@ -83,11 +83,12 @@ void gdt_init(void)
     // 5) TSS descriptor
     //    Typically: base -> &tss, limit -> size of TSS - 1
     //    Access = 0x89 => P=1, DPL=0, type=1001b (32-bit TSS (available)).
-    //    Gran  = 0x00 or 0x40 for TSS. Usually G=0 because TSS is small.
+    //    Gran  = 0x00 => G=0 (bytes), DB=0, L=0, Limit[19:16]=0. Limit fits in low 16 bits.
     uint32_t tss_base  = (uint32_t)&tss;
     uint32_t tss_limit = (sizeof(struct tss_entry) - 1);
 
-    gdt_set_gate(5, tss_base, tss_limit, 0x89, 0x40);
+    // Use 0x00 for granularity byte as limit is small and DB should be 0
+    gdt_set_gate(5, tss_base, tss_limit, 0x89, 0x00);
 
     // 1) Load the GDT into GDTR
     gdt_flush((uint32_t)&gp);

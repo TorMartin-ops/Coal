@@ -123,6 +123,8 @@
  #define KERNEL_TEMP_MAP_SIZE  (KERNEL_TEMP_MAP_END - KERNEL_TEMP_MAP_START)
  #define KERNEL_TEMP_MAP_COUNT (KERNEL_TEMP_MAP_SIZE / PAGE_SIZE) // Number of temp slots (4096)
 
+ #define KERNEL_STACK_VADDR_START 0xE0000000
+
  // --- CPU Features / Control Register Bits / MSRs ---
  // CR4 Bits
  #define CR4_PSE (1 << 4) // Page Size Extension (Enable 4MB pages)

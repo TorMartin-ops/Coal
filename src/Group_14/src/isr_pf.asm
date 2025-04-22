@@ -15,6 +15,7 @@ extern serial_putc_asm ; External ASM function for serial output
 %define KERNEL_CODE_SELECTOR 0x08 ; Common value, adjust if yours is different
 
 isr14:
+    ; CPU pushes ErrorCode, EIP, CS, EFLAGS, [SS_user], [ESP_user] automatically
     ; --- DEBUG: Print 'P' for Page Fault Entry ---
     pusha               ; Save regs temporarily
     mov al, 'P'
@@ -35,6 +36,8 @@ isr14:
     push es
     push fs
     push gs
+
+
 
     ; --- Stack Layout Confirmation ... (rest of the file remains the same) ---
 
