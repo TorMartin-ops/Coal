@@ -70,7 +70,7 @@
 
  // --- Virtual Memory Layout ---
  #ifndef KERNEL_SPACE_VIRT_START
- #define KERNEL_SPACE_VIRT_START 0xC0000000u // Default higher half start address
+ #define KERNEL_SPACE_VIRT_START 0xC0000000u // Match actual kernel mapping address
  #endif
 
  // --- Helper Macros ---

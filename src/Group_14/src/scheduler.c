@@ -67,14 +67,14 @@ static const uint32_t g_priority_time_slices_ms[SCHED_PRIORITY_LEVELS] = {
 
 // --- Physical/Virtual Address Conversion (Example) ---
 #ifndef KERNEL_PHYS_BASE
-#define KERNEL_PHYS_BASE 0x100000
+#define KERNEL_PHYS_BASE 0x100000u
 #endif
 #ifndef KERNEL_VIRT_BASE
-#define KERNEL_VIRT_BASE 0xC0000000
+#define KERNEL_VIRT_BASE 0xC0100000u
 #endif
 #define PHYS_TO_VIRT(p) ((uintptr_t)(p) >= KERNEL_PHYS_BASE ? \
-                         ((uintptr_t)(p) - KERNEL_PHYS_BASE + KERNEL_VIRT_BASE) : \
-                         (uintptr_t)(p))
+                       ((uintptr_t)(p) - KERNEL_PHYS_BASE + KERNEL_VIRT_BASE) : \
+                       (uintptr_t)(p))
 
 // --- Debug Logging Macros ---
 #define SCHEDULER_DEBUG 1 // Set to 0 to disable detailed debug output

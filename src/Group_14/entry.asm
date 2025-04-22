@@ -19,4 +19,4 @@ _start:
 
     ; Should not be reached if exit works
 hang:
-    jmp hang       ; Loop forever if exit fails
+    jmp hang       ; Loop forever if exit failsA
