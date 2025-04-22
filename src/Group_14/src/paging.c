@@ -763,26 +763,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
       terminal_write("------------------------\n");
  }
 
-
-
-
-// Add this helper function somewhere near the top with other static inline functions
-static inline void enable_cr4_pge(void) {
-    // Check if PGE is already enabled (optional, but safe)
-    uint32_t current_cr4 = read_cr4();
-    if (!(current_cr4 & CR4_PGE)) {
-        asm volatile (
-            "mov %%cr4, %%eax      \n\t"
-            "or  $0x80, %%eax      \n\t"   /* Bit 7 = PGE */
-            "mov %%eax, %%cr4      \n\t"
-            : : : "eax", "memory"
-        );
-        terminal_write("  CR4.PGE enabled – global pages allowed.\n");
-    } else {
-        terminal_write("  CR4.PGE was already enabled.\n");
-    }
-}
-
+ 
 
  int paging_finalize_and_activate(uintptr_t page_directory_phys, uintptr_t total_memory_bytes)
  {
@@ -808,8 +789,6 @@ static inline void enable_cr4_pge(void) {
       terminal_write("  Activating Paging (Loading CR3, Setting CR0.PG)...\n");
       paging_activate((uint32_t*)page_directory_phys);
       terminal_write("  Paging HW Activated.\n");
-
-      enable_cr4_pge();
 
       uintptr_t kernel_pd_virt_addr = RECURSIVE_PD_VADDR;
       terminal_printf("  Setting global pointers: PD Virt=%p, PD Phys=0x%#lx\n",
@@ -1952,38 +1931,28 @@ void paging_temp_unmap(void* temp_vaddr) {
 }
 
  // Helper for copying kernel PDEs
- void copy_kernel_pde_entries(uint32_t *dst_pd_virt) {
-    if (!g_kernel_page_directory_virt) {
-        KERNEL_PANIC_HALT("copy_kernel_pde_entries called before kernel PD virt pointer is set!");
-        return;
-    }
-    if (!dst_pd_virt) {
-        KERNEL_PANIC_HALT("copy_kernel_pde_entries called with NULL destination PD pointer!");
-        return;
-    }
-
-    // Define the range of kernel PDEs to copy
-    size_t start_index = KERNEL_PDE_INDEX;        // Index for KERNEL_SPACE_VIRT_START (e.g., 768)
-    size_t end_index = RECURSIVE_PDE_INDEX;     // Index for recursive mapping (e.g., 1023), copy excludes this entry
-
-    terminal_printf("[CopyPDEs] Copying kernel PDE range [%zu - %zu) using memcpy...\n", start_index, end_index); // Modified log
-
-    if (start_index >= end_index || end_index > TABLES_PER_DIR) {
-        terminal_printf("[CopyPDEs] Error: Invalid kernel PDE indices (%zu - %zu).\n", start_index, end_index);
-        KERNEL_PANIC_HALT("Invalid PDE range for kernel copy");
+ /* paging.c -------------------------------------------------------------- */
+void copy_kernel_pde_entries(uint32_t *dst_pd)
+{
+    if (!g_kernel_page_directory_virt || !dst_pd) { /* Basic null checks */
+        KERNEL_PANIC_HALT("copy_kernel_pde_entries: Invalid PD pointers!");
         return;
     }
 
-    // Calculate number of entries and bytes to copy
-    size_t count = end_index - start_index;
-    size_t bytes_to_copy = count * sizeof(uint32_t);
+    /* --- FIX: Copy identity PDE[0] so early-mapped pages & IDT stay reachable --- */
+    dst_pd[0] = g_kernel_page_directory_virt[0];
+    /* --- END FIX --- */
 
-    // Perform the direct memory copy
-    memcpy(dst_pd_virt + start_index,             // Destination start index
-           g_kernel_page_directory_virt + start_index, // Source start index
-           bytes_to_copy);                        // Number of bytes
 
-    terminal_printf("[CopyPDEs] Kernel PDE memcpy complete.\n"); // Modified log
+    size_t start_index = KERNEL_PDE_INDEX;          /* 768 */
+    size_t end_index   = RECURSIVE_PDE_INDEX;       /* 1023 */
+
+    // ... rest of the function ...
+    memcpy(dst_pd + start_index,
+           g_kernel_page_directory_virt + start_index,
+           (end_index - start_index) * sizeof(uint32_t));
+
+    terminal_printf("[CopyPDEs] Kernel PDE memcpy complete.\n");
 }
 
  int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr, size_t memsz) {

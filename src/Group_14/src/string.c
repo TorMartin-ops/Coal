@@ -25,60 +25,13 @@ void *memset(void *dest, int c, size_t n) {
  * Uses word-sized copies for aligned sections for better performance.
  * @warning The memory areas must not overlap. Use memmove if overlap is possible.
  */
-void *memcpy(void *dest, const void *src, size_t n) {
-    unsigned char *d = (unsigned char *)dest;
-    const unsigned char *s = (const unsigned char *)src;
-    void *original_dest = dest; // Save original destination pointer
-
-    // Optimization: Handle small copies byte-by-byte directly.
-    // Also handle the case where n is too small for word alignment logic.
-    // Threshold can be tuned (e.g., 2 * WORD_SIZE, or a fixed small number).
-    if (n < WORD_SIZE * 2) {
-        goto byte_copy_remainder;
-    }
-
-    // Align destination pointer down to the nearest word boundary (optional optimization)
-    // This example aligns dest first, then checks src alignment.
-    size_t dest_offset = (uintptr_t)d & WORD_MASK;
-    if (dest_offset != 0) {
-        dest_offset = WORD_SIZE - dest_offset; // Bytes to copy to reach alignment
-        if (dest_offset > n) {
-            dest_offset = n; // Don't copy more than requested
-        }
-        n -= dest_offset;
-        while (dest_offset--) {
-            *d++ = *s++;
-        }
-        // Now 'd' should be aligned if n was large enough
-    }
-
-    // If source is also aligned (or if we don't care about src alignment
-    // and are willing to risk potential performance hit/unaligned access),
-    // copy using word_t chunks.
-    // This example requires both to be aligned for word copy stage.
-    if (((uintptr_t)s & WORD_MASK) == 0) {
-        word_t *wd = (word_t *)d;
-        const word_t *ws = (const word_t *)s;
-        size_t num_words = n / WORD_SIZE;
-
-        // Copy the bulk of the data using word-sized operations
-        while (num_words--) {
-            *wd++ = *ws++;
-        }
-
-        // Update pointers to the end of the word-copied section
-        d = (unsigned char *)wd;
-        s = (const unsigned char *)ws;
-        n &= WORD_MASK; // n = n % WORD_SIZE; Get the remaining bytes count
-    }
-
-byte_copy_remainder:
-    // Copy any remaining bytes (either initial if small size, or trailing bytes)
+ void *memcpy(void *dest, const void *src, size_t n) {
+    unsigned char *d = dest;
+    const unsigned char *s = src;
     while (n--) {
         *d++ = *s++;
     }
-
-    return original_dest;
+    return dest;
 }
 
 

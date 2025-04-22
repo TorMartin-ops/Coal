@@ -28,7 +28,7 @@
  #include "fs_limits.h"      // For MAX_FD <-- Added include
  #include "fs_errno.h"       // For error codes (ENOENT, ENOEXEC, ENOMEM, EIO) <-- Added include
  #include "vfs.h"            // For vfs_close (used in process_close_fds fallback)
- 
+ #include "serial.h"
  
  // ------------------------------------------------------------------------
  // Definitions & Constants
@@ -895,89 +895,92 @@
   * before calling this function to avoid use-after-free issues.
   * @param pcb Pointer to the PCB of the process to destroy.
   */
- void destroy_process(pcb_t *pcb)
- {
-      if (!pcb) return;
- 
-      uint32_t pid = pcb->pid; // Store PID for logging before freeing PCB
-      PROC_DEBUG_PRINTF("Enter PID=%lu\n", (unsigned long)pid);
-      terminal_printf("[Process] Destroying process PID %lu.\n", (unsigned long)pid);
- 
-      // 0. Mark as exiting/zombie to prevent rescheduling? (Depends on scheduler)
-      // pcb->state = PROC_ZOMBIE; // COMMENTED OUT
- 
-      // 1. Close All Open File Descriptors
-      //    This must happen before freeing memory structures that VFS might use.
-      PROC_DEBUG_PRINTF("  Closing file descriptors for PID %lu...\n", (unsigned long)pid);
-      process_close_fds(pcb); // Handles closing VFS files and freeing sys_file structs
- 
-      // 2. Destroy Memory Management structure and associated resources
-      //    This should handle freeing all user-space page tables and frames
-      //    associated with the process's VMAs.
-      if (pcb->mm) {
-          PROC_DEBUG_PRINTF("  Destroying mm_struct %p...\n", pcb->mm);
-          destroy_mm(pcb->mm); // Assumes destroy_mm frees user pages/tables & mm struct itself
-          pcb->mm = NULL;
-      } else {
-          PROC_DEBUG_PRINTF("  No mm_struct found to destroy.\n");
-      }
- 
-      // 3. Free Kernel Stack (Physical frames and Kernel Virtual Mapping)
-      if (pcb->kernel_stack_vaddr_top != NULL) {
-          uintptr_t stack_top = (uintptr_t)pcb->kernel_stack_vaddr_top;
-          size_t stack_size = PROCESS_KSTACK_SIZE;
-          uintptr_t stack_base = stack_top - stack_size;
-          terminal_printf("  Freeing kernel stack: V=[%p-%p)\n", (void*)stack_base, (void*)stack_top);
- 
-          // Iterate through the kernel virtual addresses used by the stack
-          for (uintptr_t v_addr = stack_base; v_addr < stack_top; v_addr += PAGE_SIZE) {
-              uintptr_t phys_addr = 0;
-              // Look up the physical frame mapped at this virtual address in the KERNEL page directory
-              PROC_DEBUG_PRINTF("   Looking up physical address for kernel stack V=%p...\n", (void*)v_addr);
-              // Use the KERNEL page directory physical address
-              if (paging_get_physical_address((uint32_t*)g_kernel_page_directory_phys, v_addr, &phys_addr) == 0) {
-                  if (phys_addr != 0) {
-                      PROC_DEBUG_PRINTF("   Found P=%#lx. Calling put_frame.\n", (unsigned long)phys_addr);
-                      // Free the physical frame
-                      put_frame(phys_addr);
-                  } else {
-                      // This case might happen if unmapping occurred before frame freeing, but ideally shouldn't.
-                      terminal_printf("  Warning: No physical frame found for kernel stack V=%p during destroy.\n", (void*)v_addr);
-                  }
-              } else {
-                  // Page table entry might not exist if unmapped already.
-                  terminal_printf("  Warning: Could not get PTE for kernel stack V=%p during destroy (might be unmapped already).\n", (void*)v_addr);
-              }
-          }
-          // Unmap the virtual range from the KERNEL page directory
-          // This removes the PTEs/PDEs from the kernel's address space.
-          PROC_DEBUG_PRINTF("  Unmapping kernel stack range V=[%p-%p) from kernel PD.\n", (void*)stack_base, (void*)stack_top);
-          paging_unmap_range((uint32_t*)g_kernel_page_directory_phys, stack_base, stack_size);
- 
-          pcb->kernel_stack_vaddr_top = NULL;
-          pcb->kernel_stack_phys_base = 0;
-      } else {
-           PROC_DEBUG_PRINTF("  No kernel stack allocated or already freed.\n");
-      }
- 
-      // 4. Free the process's Page Directory frame
-      //    This MUST happen AFTER destroy_mm (which frees user page tables)
-      //    and AFTER freeing the kernel stack (which uses the kernel PD for lookup/unmap).
-      if (pcb->page_directory_phys) {
-          terminal_printf("  Freeing process PD frame: P=%p\n", (void*)pcb->page_directory_phys);
-          put_frame((uintptr_t)pcb->page_directory_phys);
-          pcb->page_directory_phys = NULL;
-      } else {
-          PROC_DEBUG_PRINTF("  No Page Directory allocated or already freed.\n");
-      }
- 
-      // 5. Free the PCB structure itself
-      PROC_DEBUG_PRINTF("  Freeing PCB structure %p\n", pcb);
-      // TODO: Lock PID release for SMP if necessary
-      kfree(pcb);
-      terminal_printf("[Process] PCB PID %lu resources freed.\n", (unsigned long)pid);
-      PROC_DEBUG_PRINTF("Exit PID=%lu\n", (unsigned long)pid);
- }
+  void destroy_process(pcb_t *pcb)
+  {
+       if (!pcb) return;
+  
+       uint32_t pid = pcb->pid; // Store PID for logging before freeing PCB
+       // ---> ADDED: Log entry <---
+       serial_write("[destroy_process] Enter for PID ");
+       // simple_utoa(pid); // Or use a function to print number via serial
+       serial_write("\n");
+       // ---> END ADD <---
+  
+       PROC_DEBUG_PRINTF("Enter PID=%lu\n", (unsigned long)pid);
+       terminal_printf("[Process] Destroying process PID %lu.\n", (unsigned long)pid);
+  
+       // 1. Close All Open File Descriptors
+       serial_write("[destroy_process] Step 1: Closing FDs...\n"); // <-- ADDED
+       process_close_fds(pcb);
+       serial_write("[destroy_process] Step 1: FDs closed.\n"); // <-- ADDED
+  
+       // 2. Destroy Memory Management structure
+       serial_write("[destroy_process] Step 2: Destroying MM...\n"); // <-- ADDED
+       if (pcb->mm) {
+           PROC_DEBUG_PRINTF("  Destroying mm_struct %p...\n", pcb->mm);
+           destroy_mm(pcb->mm);
+           pcb->mm = NULL;
+       } else {
+           PROC_DEBUG_PRINTF("  No mm_struct found to destroy.\n");
+       }
+       serial_write("[destroy_process] Step 2: MM destroyed.\n"); // <-- ADDED
+  
+       // 3. Free Kernel Stack
+       serial_write("[destroy_process] Step 3: Freeing Kernel Stack...\n"); // <-- ADDED
+       if (pcb->kernel_stack_vaddr_top != NULL) {
+           uintptr_t stack_top = (uintptr_t)pcb->kernel_stack_vaddr_top;
+           size_t stack_size = PROCESS_KSTACK_SIZE;
+           uintptr_t stack_base = stack_top - stack_size;
+           terminal_printf("  Freeing kernel stack: V=[%p-%p)\n", (void*)stack_base, (void*)stack_top);
+  
+           // Free physical frames
+           serial_write("  Freeing kernel stack frames...\n"); // <-- ADDED
+           for (uintptr_t v_addr = stack_base; v_addr < stack_top; v_addr += PAGE_SIZE) {
+               uintptr_t phys_addr = 0;
+               if (paging_get_physical_address((uint32_t*)g_kernel_page_directory_phys, v_addr, &phys_addr) == 0) {
+                   if (phys_addr != 0) {
+                       put_frame(phys_addr);
+                   }
+               }
+           }
+           serial_write("  Kernel stack frames freed.\n"); // <-- ADDED
+  
+           // Unmap virtual range
+           serial_write("  Unmapping kernel stack range...\n"); // <-- ADDED
+           paging_unmap_range((uint32_t*)g_kernel_page_directory_phys, stack_base, stack_size);
+           serial_write("  Kernel stack range unmapped.\n"); // <-- ADDED
+  
+           pcb->kernel_stack_vaddr_top = NULL;
+           pcb->kernel_stack_phys_base = 0;
+       } else {
+            PROC_DEBUG_PRINTF("  No kernel stack allocated or already freed.\n");
+       }
+        serial_write("[destroy_process] Step 3: Kernel Stack freed.\n"); // <-- ADDED
+  
+       // 4. Free the process's Page Directory frame
+       serial_write("[destroy_process] Step 4: Freeing Page Directory...\n"); // <-- ADDED
+       if (pcb->page_directory_phys) {
+           terminal_printf("  Freeing process PD frame: P=%p\n", (void*)pcb->page_directory_phys);
+           put_frame((uintptr_t)pcb->page_directory_phys);
+           pcb->page_directory_phys = NULL;
+       } else {
+           PROC_DEBUG_PRINTF("  No Page Directory allocated or already freed.\n");
+       }
+       serial_write("[destroy_process] Step 4: Page Directory freed.\n"); // <-- ADDED
+  
+       // 5. Free the PCB structure itself
+       serial_write("[destroy_process] Step 5: Freeing PCB structure...\n"); // <-- ADDED
+       kfree(pcb);
+       serial_write("[destroy_process] Step 5: PCB structure freed.\n"); // <-- ADDED
+  
+       terminal_printf("[Process] PCB PID %lu resources freed.\n", (unsigned long)pid);
+       // ---> ADDED: Log exit <---
+       serial_write("[destroy_process] Exit for PID ");
+       // simple_utoa(pid); // Or use a function to print number via serial
+       serial_write("\n");
+       // ---> END ADD <---
+       PROC_DEBUG_PRINTF("Exit PID=%lu\n", (unsigned long)pid);
+  }
  
  // ------------------------------------------------------------------------
  // Process File Descriptor Management Implementations

@@ -495,11 +495,29 @@ uint32_t scheduler_get_ticks(void) {
 /**
  * @brief The main loop for the kernel's idle task.
  */
-static __attribute__((noreturn)) void kernel_idle_task_loop(void) {
+ static __attribute__((noreturn)) void kernel_idle_task_loop(void) {
+    // ---> ADDED: Log entry into idle loop <---
+    serial_write("[Idle Loop] Entered.\n");
+    // ---> END ADD <---
+
     SCHED_INFO("Idle task started (PID %lu). Entering HLT loop.", (unsigned long)IDLE_TASK_PID);
     while (1) {
+        // ---> ADDED: Log before cleanup <---
+        serial_write("[Idle Loop] Calling scheduler_cleanup_zombies...\n");
+        // ---> END ADD <---
+
         scheduler_cleanup_zombies(); // Periodically clean up zombies
-        asm volatile ("sti; hlt");   // Atomically enable interrupts and halt
+
+        // ---> ADDED: Log after cleanup <---
+        serial_write("[Idle Loop] Returned from scheduler_cleanup_zombies. Executing sti; hlt\n");
+        // ---> END ADD <---
+
+        asm volatile ("sti; hlt"); // Atomically enable interrupts and halt
+
+        // ---> ADDED: Log after waking from hlt <---
+        // This will only print if an interrupt woke the CPU
+        serial_write("[Idle Loop] Woke up from hlt.\n");
+        // ---> END ADD <---
     }
 }
 

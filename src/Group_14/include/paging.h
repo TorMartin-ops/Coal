@@ -144,6 +144,10 @@
  // EFER Bits (Note: EFER is 64-bit MSR)
  #define EFER_NXE (1ULL << 11) // No-Execute Enable
 
+#define PAGE_FAULT_PRESENT  (1 << 0) // P bit: 0=Not Present, 1=Protection Violation
+#define PAGE_FAULT_WRITE    (1 << 1) // W/R bit: 0=Read, 1=Write
+#define PAGE_FAULT_USER     (1 << 2) // U/S bit: 0=Supervisor, 1=User
+
 
  typedef struct registers {
     // Pushed by common ISR/IRQ stubs (before pusha)
