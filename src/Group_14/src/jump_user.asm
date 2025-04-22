@@ -1,42 +1,62 @@
+; jump_user.asm
+; Performs the initial jump from Kernel Mode (PL0) to User Mode (PL3)
+; using the IRET instruction with a pre-configured stack frame.
+
 section .text
-     global jump_to_user_mode
-     extern serial_putc_asm ; Make sure this is available
+global jump_to_user_mode
+extern serial_putc_asm ; For debugging
 
-     jump_to_user_mode:
-         push ebp
-         mov ebp, esp
+;-----------------------------------------------------------------------------
+; jump_to_user_mode(kernel_stack_ptr, page_directory_phys)
+; Args on stack (cdecl):
+;   [ebp+8]  = kernel_stack_ptr (uint32_t*) - ESP pointing to the prepared IRET frame on the kernel stack.
+;   [ebp+12] = page_directory_phys (uint32_t*) - Physical address of the user process's page directory.
+;-----------------------------------------------------------------------------
+jump_to_user_mode:
+    ; --- Function Prologue ---
+    push ebp
+    mov ebp, esp
 
-         ; Get arguments
-         mov edx, [ebp + 8]  ; EDX = kernel_stack_ptr (new ESP for IRET frame)
-         mov eax, [ebp + 12] ; EAX = page_directory_phys (new CR3)
+    ; --- Get Arguments ---
+    mov edx, [ebp + 8]  ; EDX = kernel_stack_ptr (points to the IRET frame: EIP, CS, EFLAGS, ESP_user, SS_user)
+    mov eax, [ebp + 12] ; EAX = page_directory_phys (physical address)
 
-         ; Switch CR3 if necessary
-         mov ecx, cr3
-         cmp eax, ecx
-         je .skip_cr3_load_user
-         test eax, eax
-         jz .skip_cr3_load_user
-         mov cr3, eax
-     .skip_cr3_load_user:
+    ; --- Switch Page Directory (CR3) ---
+    ; Load the process's page directory. This is essential for user space access.
+    mov ecx, cr3        ; Get current CR3 (likely kernel's PD)
+    cmp eax, ecx        ; Compare new PD with current
+    je .skip_cr3_load   ; Skip if already correct (shouldn't happen on first jump)
+    test eax, eax       ; Ensure new PD address is not NULL
+    jz .skip_cr3_load   ; Skip if NULL (should not happen)
+    mov cr3, eax        ; Load new page directory physical address (flushes TLB)
+.skip_cr3_load:
 
-         ; Load the new kernel stack pointer. This stack contains the IRET frame.
-         mov esp, edx
+    ; --- Load ESP with pointer to IRET Frame ---
+    ; The C code prepared the kernel stack starting from the top address downwards.
+    ; ESP needs to point to the EIP value on the stack for IRET.
+    mov esp, edx        ; ESP now points to the prepared IRET frame
 
-         ; Memory barrier (optional, likely harmless)
-         ; mov eax, cr0
-         ; mov eax, cr0
+    ; --- Optional Debug Output ---
+    ; pusha             ; Save all registers if needed
+    ; mov al, 'J'       ; Character 'J' for Jump
+    ; call serial_putc_asm
+    ; popa              ; Restore registers
 
-         ; ---> ADDED LOGGING <---
-         push eax          ; Save EAX
-         mov al, 'J'       ; Character 'J' for Jump
-         call serial_putc_asm
-         pop eax           ; Restore EAX
-         ; ---> END LOGGING <---
+    ; --- Execute IRET ---
+    ; iret performs the following:
+    ; 1. Pops EIP from [ESP]
+    ; 2. Pops CS from [ESP+4]
+    ; 3. Pops EFLAGS from [ESP+8]
+    ; 4. If privilege level changed (PL0 -> PL3):
+    ;    a. Pops ESP_user from [ESP+12]
+    ;    b. Pops SS_user from [ESP+16]
+    ; Atomically loads CS:EIP, SS:ESP, EFLAGS and transfers control.
+    iret
 
-         ; Execute IRET to jump to user mode
-         iret
-
-     .fail:
-         cli
-         hlt
-         jmp .fail
+    ; --- Should NEVER Return Here ---
+    ; If iret fails catastrophically (e.g., triple fault), the system resets.
+    ; If it somehow returns (major CPU bug or emulation issue), halt.
+.fail:
+    cli                 ; Disable interrupts
+    hlt                 ; Halt the processor
+    jmp .fail           ; Infinite halt loop

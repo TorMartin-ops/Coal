@@ -1,3 +1,4 @@
+// include/scheduler.h (Version 4.0 - For Advanced Scheduler)
 #ifndef SCHEDULER_H
 #define SCHEDULER_H
 
@@ -5,24 +6,43 @@
 #include <libc/stdint.h>
 #include <libc/stdbool.h> // Ensure bool is included
 
-// --- Task States ---
+// --- Enhanced Task States ---
 typedef enum {
-    TASK_READY,     // Ready to run
+    TASK_READY,     // Ready to run (in a run queue)
     TASK_RUNNING,   // Currently executing
-    TASK_BLOCKED,   // Waiting for an event (e.g., I/O, semaphore)
-    TASK_ZOMBIE     // Terminated, waiting for cleanup
-} task_state_t;
+    TASK_BLOCKED,   // Waiting for an event (in a wait queue, not run queue)
+    TASK_SLEEPING,  // Sleeping until a specific time (in the sleep queue)
+    TASK_ZOMBIE,    // Terminated, resources awaiting cleanup
+    TASK_EXITING    // Intermediate state during termination (optional)
+} task_state_e; // Changed name to avoid conflict if task_state_t is used elsewhere
 
-// --- Task Control Block (TCB) ---
+// --- Enhanced Task Control Block (TCB) ---
 typedef struct tcb {
-    pcb_t         *process;      // Pointer to the associated Process Control Block
-    uint32_t       pid;          // Process ID (redundant, but useful for quick access)
-    task_state_t   state;        // Current state of the task
-    uint32_t      *esp;          // Saved kernel stack pointer for context switch/IRET
-    struct tcb    *next;         // Pointer to the next TCB in the scheduling list
-    bool           has_run;      // Flag: true if task has executed at least once (used for IRET vs context_switch)
-    // Add other scheduling info as needed (priority, time slice, etc.)
-    // uint32_t       exit_code;    // To store exit code when task becomes ZOMBIE (optional)
+    // Core Task Info & Links
+    struct tcb    *next;         // Next task in the run queue OR wait queue
+    pcb_t         *process;      // Pointer to parent process
+    uint32_t       pid;          // Process ID
+
+    // Execution Context
+    uint32_t      *esp;          // Saved kernel stack pointer
+
+    // State & Scheduling Parameters
+    task_state_e   state;        // Current state
+    bool           has_run;      // True if task has executed at least once
+    uint8_t        priority;       // Task priority (0=highest)
+    uint32_t       time_slice_ticks; // Current time slice allocation in ticks
+    uint32_t       ticks_remaining; // Ticks left in current time slice
+
+    // Statistics & Sleep
+    uint32_t       runtime_ticks;  // Total runtime in ticks
+    uint32_t       wakeup_time;    // Absolute tick count when to wake up (if SLEEPING)
+    uint32_t       exit_code;      // Exit code when ZOMBIE
+
+    // Wait Queue Links (used for BLOCKED state on mutexes, semaphores, etc.)
+    struct tcb    *wait_prev;    // Previous in wait list (NULL if first or not waiting)
+    struct tcb    *wait_next;    // Next in wait list (NULL if last or not waiting)
+    void          *wait_reason;   // Pointer to object being waited on (optional context)
+
 } tcb_t;
 
 // --- Constants ---
@@ -30,90 +50,77 @@ typedef struct tcb {
 
 // --- Public Function Prototypes ---
 
-/**
- * @brief Initializes the scheduler subsystem.
- */
+/** @brief Initializes the scheduler subsystem. */
 void scheduler_init(void);
 
 /**
- * @brief Creates a TCB for a given process and adds it to the scheduler's run queue.
+ * @brief Creates a TCB for a given process and adds it to the scheduler.
  * @param pcb Pointer to the Process Control Block to schedule.
  * @return 0 on success, negative error code on failure.
  */
 int scheduler_add_task(pcb_t *pcb);
 
 /**
- * @brief The core scheduler function. Selects the next task and performs a context switch.
- * Should be called periodically (e.g., by timer interrupt) or when a task yields/blocks.
- * @note Should be called with interrupts disabled.
+ * @brief Core scheduler function. Selects next task, performs context switch.
+ * @note Called with interrupts disabled.
  */
 void schedule(void);
 
-/**
- * @brief Voluntarily yields the CPU to another task.
- */
+/** @brief Voluntarily yields the CPU to another task. */
 void yield(void);
 
 /**
- * @brief Marks the current running task as ZOMBIE (terminated) and triggers a context switch.
- * The task's resources will be cleaned up later by scheduler_cleanup_zombies().
- * @param code The exit code for the process (currently unused but good practice).
- * @note This function should not return to the caller.
+ * @brief Puts the current task to sleep for a specified duration.
+ * @param ms Duration in milliseconds. Task state becomes SLEEPING.
+ * @note The task will be woken up by the scheduler_tick handler.
+ */
+void sleep_ms(uint32_t ms);
+
+/**
+ * @brief Marks the current running task as ZOMBIE and triggers a context switch.
+ * @param code The exit code for the process.
+ * @note This function does not return to the caller.
  */
 void remove_current_task_with_code(uint32_t code);
 
-/**
- * @brief Returns a volatile pointer to the currently running task's TCB.
- * Useful for quick checks, but be wary of race conditions without locks.
- * @return Volatile pointer to the current TCB, or NULL if scheduling hasn't started.
- */
+/** @brief Returns a volatile pointer to the currently running task's TCB. */
 volatile tcb_t *get_current_task_volatile(void);
 
-/**
-* @brief Returns a non-volatile pointer to the currently running task's TCB.
-* @return Pointer to the current TCB, or NULL if scheduling hasn't started.
-* @note Caller must ensure atomicity (e.g., disable interrupts or hold lock) if needed.
-*/
+/** @brief Returns a non-volatile pointer to the currently running task's TCB. */
 tcb_t *get_current_task(void);
 
-
-/**
- * @brief Frees resources associated with ZOMBIE tasks.
- * Should be called periodically (e.g., by the idle task).
- */
+/** @brief Frees resources associated with ZOMBIE tasks. */
 void scheduler_cleanup_zombies(void);
 
-/**
- * @brief Retrieves basic scheduler statistics.
- * @param out_task_count Pointer to store the total number of tasks (including idle).
- * @param out_switches Pointer to store the total number of context switches performed.
- */
+/** @brief Retrieves basic scheduler statistics. */
 void debug_scheduler_stats(uint32_t *out_task_count, uint32_t *out_switches);
 
-
-/**
- * @brief Checks if the scheduler is ready for preemptive context switching.
- * @return True if ready, false otherwise.
- */
+/** @brief Checks if the scheduler is ready for preemptive context switching. */
 bool scheduler_is_ready(void);
 
-/**
- * @brief Marks the scheduler as ready to perform preemptive context switching.
- * Should be called after initialization and adding the first task(s), before enabling interrupts.
- */
+/** @brief Marks the scheduler as ready to perform context switching. */
 void scheduler_start(void);
+
+/**
+ * @brief Scheduler's timer tick routine.
+ * @details Called by the timer interrupt handler. Updates ticks, checks
+ * sleeping tasks, manages time slices, and triggers preemption.
+ * @note Must be called with interrupts disabled.
+ */
+void scheduler_tick(void);
+
+/**
+ * @brief Returns the current system tick count.
+ * @return The volatile tick count.
+ */
+uint32_t scheduler_get_ticks(void);
 
 
 // --- External Declarations ---
-
-// The globally accessible flag indicating if the scheduler is active.
-// Set by scheduler_start(), checked by schedule().
 extern volatile bool g_scheduler_ready;
 
-// --- External Assembly Function Prototypes --- <<< ADDED
-// Performs the kernel->user mode jump via IRET
+// --- External Assembly Function Prototypes ---
 extern void jump_to_user_mode(uint32_t *kernel_stack_ptr, uint32_t *page_directory_phys);
-// Performs a kernel->kernel context switch
 extern void context_switch(uint32_t **old_esp_ptr, uint32_t *new_esp, uint32_t *new_page_directory);
 
 
