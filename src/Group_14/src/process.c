@@ -703,7 +703,7 @@
       PROC_DEBUG_PRINTF("  Calling copy_kernel_pde_entries to %p...\n", proc_pd_virt_temp);
       copy_kernel_pde_entries((uint32_t*)proc_pd_virt_temp); // Copy kernel mappings
       PROC_DEBUG_PRINTF("  Setting recursive entry in temp PD mapping %p...\n", proc_pd_virt_temp);
-      ((uint32_t*)proc_pd_virt_temp)[RECURSIVE_PDE_INDEX] = (pd_phys & PAGING_ADDR_MASK) | PAGE_PRESENT | PAGE_RW | (g_nx_supported ? PAGE_NX_BIT : 0); // Kernel RW, NX ok
+      ((uint32_t*)proc_pd_virt_temp)[RECURSIVE_PDE_INDEX] = (pd_phys & PAGING_ADDR_MASK) | PAGE_PRESENT | PAGE_RW; // Kernel RW, NX ok
       PROC_DEBUG_PRINTF("  Calling paging_temp_unmap for %p...\n", proc_pd_virt_temp);
       paging_temp_unmap(proc_pd_virt_temp);
       pd_mapped_temp = false;

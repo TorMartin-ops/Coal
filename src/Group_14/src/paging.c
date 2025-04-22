@@ -763,6 +763,27 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
       terminal_write("------------------------\n");
  }
 
+
+
+
+// Add this helper function somewhere near the top with other static inline functions
+static inline void enable_cr4_pge(void) {
+    // Check if PGE is already enabled (optional, but safe)
+    uint32_t current_cr4 = read_cr4();
+    if (!(current_cr4 & CR4_PGE)) {
+        asm volatile (
+            "mov %%cr4, %%eax      \n\t"
+            "or  $0x80, %%eax      \n\t"   /* Bit 7 = PGE */
+            "mov %%eax, %%cr4      \n\t"
+            : : : "eax", "memory"
+        );
+        terminal_write("  CR4.PGE enabled – global pages allowed.\n");
+    } else {
+        terminal_write("  CR4.PGE was already enabled.\n");
+    }
+}
+
+
  int paging_finalize_and_activate(uintptr_t page_directory_phys, uintptr_t total_memory_bytes)
  {
       terminal_write("[Paging Stage 3] Finalizing and activating paging...\n");
@@ -787,6 +808,8 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
       terminal_write("  Activating Paging (Loading CR3, Setting CR0.PG)...\n");
       paging_activate((uint32_t*)page_directory_phys);
       terminal_write("  Paging HW Activated.\n");
+
+      enable_cr4_pge();
 
       uintptr_t kernel_pd_virt_addr = RECURSIVE_PD_VADDR;
       terminal_printf("  Setting global pointers: PD Virt=%p, PD Phys=0x%#lx\n",
