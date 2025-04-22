@@ -857,6 +857,8 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     terminal_write("[Kernel] Initializing Scheduler...\n");
     scheduler_init();
     terminal_write("  Scheduler initialized (Idle Task ready, TSS ESP0 set).\n");
+    syscall_init();
+    terminal_write("  Syscall interface initialized.\n");
 
 
     // 6. Filesystem Initialization
@@ -893,8 +895,6 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     // Mark the scheduler as fully ready to handle timer ticks.
     scheduler_start(); // Sets g_scheduler_ready = true
     terminal_write("  Scheduler marked as ready.\n");
-    syscall_init();
-    terminal_write("  Syscall interface initialized.\n");
     // === Enable Interrupts ===
     // This allows hardware interrupts (like the PIT timer tick) to occur,
     // which will trigger the scheduler (`schedule()`) and start multitasking.

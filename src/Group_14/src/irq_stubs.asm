@@ -47,43 +47,31 @@ IRQ_HANDLER 15  ; Secondary ATA Hard Disk (Vector 47)
 ; Creates the stack frame expected by the C isr_common_handler(isr_frame_t* frame).
 ; Assumes KERNEL_DATA_SEG is defined above.
 common_interrupt_stub:
-    ; 1. Save all general purpose registers
-    pusha          ; Pushes EDI, ESI, EBP, ESP_dummy, EBX, EDX, ECX, EAX
+    ; CPU/Stub already pushed ErrorCode and VectorNumber
+    pusha          ; Save GP registers
 
-    ; 2. Save segment registers (DS, ES, FS, GS)
-    push ds
-    push es
-    push fs
-    push gs
+    ; Save the original DS, ES, FS, GS *temporarily* if needed by C
+    ; but DO NOT pop them back just before IRET. IRET handles segments.
+    ; For simplicity, if C handler doesn't need them, skip push/pop.
+    ; Let's assume C doesn't need them for now.
 
-    ; 3. Load kernel data segments into segment registers
-    mov ax, KERNEL_DATA_SEG
+    mov ax, KERNEL_DATA_SEG ; Kernel Data Selector
     mov ds, ax
     mov es, ax
     mov fs, ax
-    mov gs, ax     ; GS is now saved and set
+    mov gs, ax
 
-    ; 4. Call the C handler, passing a pointer to the saved state.
-    ;    ESP now points to the saved GS, which matches the start of
-    ;    the 'isr_frame_t' struct layout from isr_frame.h.
-    mov eax, esp   ; Get pointer to the start of the isr_frame_t structure
-    push eax       ; Push pointer as argument for isr_common_handler
+    mov eax, esp    ; Get pointer to the stack frame base (after pusha)
+                    ; Adjust isr_frame_t definition if DS/ES/FS/GS aren't pushed
+    push eax        ; Push argument for C handler
     call isr_common_handler
-    add esp, 4     ; Clean up argument stack
+    add esp, 4      ; Clean up argument
 
-    ; 5. Restore segment registers
-    pop gs
-    pop fs
-    pop es
-    pop ds
+    ; NO explicit "pop gs/fs/es/ds" here
 
-    ; 6. Restore general purpose registers
-    popa
+    popa            ; Restore GP registers
 
-    ; 7. Clean up the vector number and error code pushed by the specific stub
-    add esp, 8
+    add esp, 8      ; Clean up Vector Number and Error Code
 
-    ; 8. Return from interrupt
-    ; sti           ; Optional: Re-enable interrupts explicitly only if needed.
-                    ; IRET will restore EFLAGS including the interrupt flag.
-    iret
+    iret            ; Return, restores EIP, CS, EFLAGS, ESP, SS
+                    ; implicitly loads DS, ES, FS, GS based on new SS/CS

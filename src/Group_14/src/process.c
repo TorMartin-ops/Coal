@@ -838,6 +838,36 @@
           // Proceed anyway, stack will contain garbage initially
       }
 
+       // --- ADDED: Verify Kernel Stack Mapping in Process PD ---a
+      PROC_DEBUG_PRINTF("  Verifying kernel stack mapping V=[%p - %p) in Proc PD P=%#lx\n",
+                      (void*)(proc->kernel_stack_vaddr_top - PROCESS_KSTACK_SIZE),
+                      (void*)proc->kernel_stack_vaddr_top,
+                      (unsigned long)proc->page_directory_phys);
+      bool kstack_map_ok = true;
+      for (uintptr_t v_addr = (uintptr_t)proc->kernel_stack_vaddr_top - PROCESS_KSTACK_SIZE;
+           v_addr < (uintptr_t)proc->kernel_stack_vaddr_top;
+           v_addr += PAGE_SIZE)
+      {
+          uintptr_t check_phys = 0;
+          // Use paging_get_physical_address which respects the PD passed
+          if (paging_get_physical_address(proc->page_directory_phys, v_addr, &check_phys) != 0 || check_phys == 0) {
+              terminal_printf("  [FATAL VERIFICATION ERROR] Kernel stack V=%p NOT mapped in process PD P=%#lx!\n",
+                              (void*)v_addr, (unsigned long)proc->page_directory_phys);
+              kstack_map_ok = false;
+              // Maybe break here or check all pages? Checking all is more thorough.
+          } else {
+               // Optional: Log success
+               // terminal_printf("  Verification OK: Kernel stack V=%p maps to P=%#lx in process PD.\n",
+               //               (void*)v_addr, (unsigned long)check_phys);
+          }
+      }
+      if (!kstack_map_ok) {
+           ret_status = -9; // Assign a new error code
+           goto fail_create; // Abort process creation
+      }
+      PROC_DEBUG_PRINTF("  Kernel stack mapping verified successfully in process PD.\n");
+      // --- END ADDED VERIFICATION BLOCK ---
+
 
       // --- Prepare Initial Kernel Stack for IRET ---
       PROC_DEBUG_PRINTF("Step 9: Prepare initial kernel stack for IRET\n");

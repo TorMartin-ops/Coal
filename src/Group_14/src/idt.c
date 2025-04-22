@@ -258,7 +258,7 @@ void default_isr_handler(isr_frame_t* frame) {
 
     terminal_printf(" Vector:  %lu (0x%lx)\n", (unsigned long)frame->int_no, (unsigned long)frame->int_no);
     terminal_printf(" ErrCode: 0x%lx\n", (unsigned long)frame->err_code);
-    terminal_printf(" EIP:     0x%p\n", frame->eip); // Use %p for addresses
+    terminal_printf(" EIP:     0x%08lx\n", (unsigned long)frame->eip);
     terminal_printf(" CS:      0x%lx\n", (unsigned long)frame->cs);
     terminal_printf(" EFLAGS:  0x%lx\n", (unsigned long)frame->eflags);
 
@@ -430,7 +430,7 @@ void idt_init(void) {
 
     // --- Load the IDT Register (IDTR) ---
     // Use %hu for uint16_t (limit), %p for pointer (base)
-    terminal_printf("[IDT] Loading IDTR: Limit=0x%hX Base=%p (Virt Addr)\n",
+    terminal_printf("[IDT] Loading IDTR: Limit=0x%hX Base=%#010lx (Virt Addr)\n",
                     idtp.limit, (void*)idtp.base);
     idt_flush((uintptr_t)&idtp); // Pass the virtual address of the idtp structure
 
