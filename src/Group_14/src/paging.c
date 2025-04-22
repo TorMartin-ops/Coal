@@ -101,6 +101,8 @@
  static int        paging_map_physical_early(uintptr_t page_directory_phys, uintptr_t phys_addr_start, size_t size, uint32_t flags, bool map_to_higher_half);
  static void       debug_print_pd_entries(uint32_t* pd_ptr, uintptr_t vaddr_start, size_t count); // Changed first arg type
  static bool is_page_table_empty(uint32_t *pt_virt);
+ static void paging_unmap_physical_early_frame(volatile void* temp_vaddr)
+ static void paging_map_physical_early_frame(volatile void* temp_vaddr)
 
 
  // --- Low-Level CPU Control ---
@@ -639,99 +641,152 @@
                              uintptr_t kernel_phys_end,
                              uintptr_t heap_phys_start,
                              size_t heap_size)
- {
-      terminal_write("[Paging Stage 2] Setting up early memory maps...\n");
+{
+     terminal_write("[Paging Stage 2] Setting up early memory maps...\n");
 
-      size_t identity_map_size = 4 * 1024 * 1024; // 4MB
-      terminal_printf("  Mapping Identity [0x0 - 0x%zx)\n", identity_map_size);
-      if (paging_map_physical_early(page_directory_phys, 0x0, identity_map_size, PTE_KERNEL_DATA_FLAGS, false) != 0) {
-          PAGING_PANIC("Failed to set up early identity mapping!");
-      }
+     // --- Map Identity, Kernel Code/Data, Heap, VGA (Existing Code) ---
+     size_t identity_map_size = 4 * 1024 * 1024; // 4MB
+     terminal_printf("  Mapping Identity [0x0 - 0x%zx)\n", identity_map_size);
+     if (paging_map_physical_early(page_directory_phys, 0x0, identity_map_size, PTE_KERNEL_DATA_FLAGS, false) != 0) {
+         PAGING_PANIC("Failed to set up early identity mapping!");
+     }
 
-      uintptr_t kernel_phys_aligned_start = PAGE_ALIGN_DOWN(kernel_phys_start);
-      uintptr_t kernel_phys_aligned_end = PAGE_ALIGN_UP(kernel_phys_end);
-      size_t kernel_size = kernel_phys_aligned_end - kernel_phys_aligned_start;
-      terminal_printf("  Mapping Kernel Phys [%#lx - %#lx) to Higher Half [%#lx - %#lx)\n",
+     uintptr_t kernel_phys_aligned_start = PAGE_ALIGN_DOWN(kernel_phys_start);
+     uintptr_t kernel_phys_aligned_end = PAGE_ALIGN_UP(kernel_phys_end);
+     size_t kernel_size = kernel_phys_aligned_end - kernel_phys_aligned_start;
+     terminal_printf("  Mapping Kernel Phys [%#lx - %#lx) to Higher Half [%#lx - %#lx)\n",
         (unsigned long)kernel_phys_aligned_start, (unsigned long)kernel_phys_aligned_end,
         (unsigned long)(KERNEL_SPACE_VIRT_START + kernel_phys_aligned_start),
         (unsigned long)(KERNEL_SPACE_VIRT_START + kernel_phys_aligned_end));
-      if (paging_map_physical_early(page_directory_phys, kernel_phys_aligned_start, kernel_size, PTE_KERNEL_DATA_FLAGS, true) != 0) {
-          PAGING_PANIC("Failed to map kernel to higher half!");
-      }
+     if (paging_map_physical_early(page_directory_phys, kernel_phys_aligned_start, kernel_size, PTE_KERNEL_DATA_FLAGS, true) != 0) {
+         PAGING_PANIC("Failed to map kernel to higher half!");
+     }
 
-      if (heap_size > 0) {
-          uintptr_t heap_phys_aligned_start = PAGE_ALIGN_DOWN(heap_phys_start);
-          uintptr_t heap_end = heap_phys_start + heap_size;
-          uintptr_t heap_phys_aligned_end = PAGE_ALIGN_UP(heap_end);
-          if(heap_phys_aligned_end < heap_end) heap_phys_aligned_end = UINTPTR_MAX;
-          size_t heap_aligned_size = heap_phys_aligned_end - heap_phys_aligned_start;
+     if (heap_size > 0) {
+         uintptr_t heap_phys_aligned_start = PAGE_ALIGN_DOWN(heap_phys_start);
+         uintptr_t heap_end = heap_phys_start + heap_size;
+         uintptr_t heap_phys_aligned_end = PAGE_ALIGN_UP(heap_end);
+         if(heap_phys_aligned_end < heap_end) heap_phys_aligned_end = UINTPTR_MAX;
+         size_t heap_aligned_size = heap_phys_aligned_end - heap_phys_aligned_start;
           terminal_printf("  Mapping Kernel Heap Phys [%#lx - %#lx) to Higher Half [%#lx - %#lx)\n",
-                (unsigned long)heap_phys_aligned_start, (unsigned long)heap_phys_aligned_end,
-                (unsigned long)(KERNEL_SPACE_VIRT_START + heap_phys_aligned_start),
-                (unsigned long)(KERNEL_SPACE_VIRT_START + heap_phys_aligned_end));
-          if (paging_map_physical_early(page_directory_phys, heap_phys_aligned_start, heap_aligned_size, PTE_KERNEL_DATA_FLAGS, true) != 0) {
-              PAGING_PANIC("Failed to map early kernel heap!");
-          }
-      }
+              (unsigned long)heap_phys_aligned_start, (unsigned long)heap_phys_aligned_end,
+              (unsigned long)(KERNEL_SPACE_VIRT_START + heap_phys_aligned_start),
+              (unsigned long)(KERNEL_SPACE_VIRT_START + heap_phys_aligned_end));
+         if (paging_map_physical_early(page_directory_phys, heap_phys_aligned_start, heap_aligned_size, PTE_KERNEL_DATA_FLAGS, true) != 0) {
+             PAGING_PANIC("Failed to map early kernel heap!");
+         }
+     }
 
-      terminal_printf("  Mapping VGA Buffer Phys %#lx to Virt %#lx\n", (unsigned long)VGA_PHYS_ADDR, (unsigned long)VGA_VIRT_ADDR);
-      if (paging_map_physical_early(page_directory_phys, VGA_PHYS_ADDR, PAGE_SIZE, PTE_KERNEL_DATA_FLAGS, true) != 0) {
-          PAGING_PANIC("Failed to map VGA buffer!");
-      }
+     terminal_printf("  Mapping VGA Buffer Phys %#lx to Virt %#lx\n", (unsigned long)VGA_PHYS_ADDR, (unsigned long)VGA_VIRT_ADDR);
+     if (paging_map_physical_early(page_directory_phys, VGA_PHYS_ADDR, PAGE_SIZE, PTE_KERNEL_DATA_FLAGS, true) != 0) {
+         PAGING_PANIC("Failed to map VGA buffer!");
+     }
 
-    // Calculate the correct PDE index for the start of the temporary mapping area
-    const uint32_t temp_map_pde_index = PDE_INDEX(KERNEL_TEMP_MAP_START); // Should evaluate to 1016
+     // --- Pre-allocate Temp Map Area PT (Existing Code) ---
+     const uint32_t temp_map_pde_index = PDE_INDEX(KERNEL_TEMP_MAP_START);
+     terminal_printf("  Pre-allocating Page Table for Temporary Mapping Area (PDE %lu)...\n", (unsigned long)temp_map_pde_index);
+     uintptr_t temp_pt_phys = paging_alloc_early_frame_physical();
+     if (!temp_pt_phys) {
+         KERNEL_PANIC_HALT("Failed to allocate PT frame for temporary mapping area!");
+     }
+     volatile uint32_t* pd_phys_ptr = (volatile uint32_t*)page_directory_phys;
+     uint32_t temp_pde_flags = PAGE_PRESENT | PAGE_RW;
+     if (g_nx_supported) { temp_pde_flags |= PAGE_NX_BIT; }
+     pd_phys_ptr[temp_map_pde_index] = (temp_pt_phys & PAGING_ADDR_MASK) | temp_pde_flags;
+     terminal_printf("   Mapped PDE[%lu] to PT Phys %#lx\n", (unsigned long)temp_map_pde_index, (unsigned long)temp_pt_phys);
 
-    terminal_printf("  Pre-allocating Page Table for Temporary Mapping Area (PDE %lu)...\n", (unsigned long)temp_map_pde_index);
-    uintptr_t temp_pt_phys = paging_alloc_early_frame_physical();
-    if (!temp_pt_phys) {
-        KERNEL_PANIC_HALT("Failed to allocate PT frame for temporary mapping area!");
+     // <<< --- ADD KERNEL STACK RANGE PRE-ALLOCATION --- >>>
+     terminal_printf("  Pre-allocating Page Tables for Kernel Stack Range [%#lx - %#lx)...\n",
+         (unsigned long)KERNEL_STACK_VIRT_START, (unsigned long)KERNEL_STACK_VIRT_END);
+
+     uint32_t kstack_start_pde_idx = PDE_INDEX(KERNEL_STACK_VIRT_START); // e.g., 896
+     uint32_t kstack_end_pde_idx = PDE_INDEX(KERNEL_STACK_VIRT_END - 1); // Index for the last byte
+
+     // Ensure the loop covers all necessary PDEs, including the last one
+     for (uint32_t idx = kstack_start_pde_idx; idx <= kstack_end_pde_idx; ++idx) {
+         // Only allocate if the PDE isn't already present (might overlap with heap/other mappings)
+         if (!(pd_phys_ptr[idx] & PAGE_PRESENT)) {
+             uintptr_t kstack_pt_phys = paging_alloc_early_frame_physical();
+             if (!kstack_pt_phys) {
+                 KERNEL_PANIC_HALT("Failed to allocate PT frame for kernel stack range!");
+             }
+             // Zero out the new page table frame - requires temporary mapping
+             volatile uint32_t* temp_pt_map = (volatile uint32_t*)paging_map_physical_early_frame(kstack_pt_phys); // Need a helper like this
+             if (!temp_pt_map) {
+                  KERNEL_PANIC_HALT("Failed to temp map new kernel stack PT for zeroing!");
+             }
+             memset((void*)temp_pt_map, 0, PAGE_SIZE);
+             paging_unmap_physical_early_frame(temp_pt_map); // Need a helper like this
+
+             // Set the PDE entry: Present, RW, Kernel, NX
+             uint32_t kstack_pde_flags = PAGE_PRESENT | PAGE_RW;
+             if (g_nx_supported) { kstack_pde_flags |= PAGE_NX_BIT; }
+             pd_phys_ptr[idx] = (kstack_pt_phys & PAGING_ADDR_MASK) | kstack_pde_flags;
+             terminal_printf("   Mapped Kernel Stack PDE[%u] to PT Phys %#lx\n", idx, (unsigned long)kstack_pt_phys);
+         } else {
+              terminal_printf("   Kernel Stack PDE[%u] already present (value %#lx), skipping pre-allocation.\n", idx, (unsigned long)pd_phys_ptr[idx]);
+              // Ensure flags are sufficient (at least P+RW+Kernel) - Add check if needed
+              if (! (pd_phys_ptr[idx] & PAGE_RW)) {
+                    terminal_printf("   Warning: Existing PDE[%u] is not RW!\n", idx);
+                    // Optionally force RW: pd_phys_ptr[idx] |= PAGE_RW;
+              }
+         }
+     }
+     // <<< --- END KERNEL STACK RANGE PRE-ALLOCATION --- >>>
+
+
+     terminal_write("[Paging Stage 2] Early memory maps configured.\n");
+     return 0; // Success
+ }
+
+ static volatile void* paging_map_physical_early_frame(uintptr_t phys_addr) {
+    // Define the size of the initial identity mapping (must match setup)
+    const size_t identity_map_size = 4 * 1024 * 1024; // 4MB
+
+    KERNEL_ASSERT((phys_addr % PAGE_SIZE) == 0, "Early map frame address not page aligned");
+
+    if (phys_addr < identity_map_size) {
+        // The physical address is within the identity-mapped region.
+        // Therefore, the virtual address is the same as the physical address.
+        // terminal_printf(" [Early Map Helper] Using identity map for P=%#lx -> V=%#lx\n", phys_addr, phys_addr);
+        return (volatile void*)phys_addr;
+    } else {
+        // The physical address is outside the identity-mapped region.
+        // We cannot safely map this physical address at this early stage
+        // without a more complex pre-allocated temporary mapping mechanism.
+        terminal_printf("[Paging WARN] paging_map_physical_early_frame: Cannot map physical address %#lx (outside identity map range 0x%zx).\n",
+                        (unsigned long)phys_addr, identity_map_size);
+        return NULL; // Indicate failure
     }
-    volatile uint32_t* pd_phys_ptr = (volatile uint32_t*)page_directory_phys;
-    // Use kernel flags, ensure NX bit if supported
-    uint32_t temp_pde_flags = PAGE_PRESENT | PAGE_RW;
-    if (g_nx_supported) {
-         temp_pde_flags |= PAGE_NX_BIT;
-    }
-
-    // *** Use the CORRECT INDEX calculated above ***
-    pd_phys_ptr[temp_map_pde_index] = (temp_pt_phys & PAGING_ADDR_MASK) | temp_pde_flags;
-    // *** Use the CORRECT INDEX in the log message ***
-    terminal_printf("   Mapped PDE[%lu] to PT Phys %#lx\n", (unsigned long)temp_map_pde_index, (unsigned long)temp_pt_phys);
-
-    terminal_write("[Paging Stage 2] Early memory maps configured.\n");
-    return 0; // Success
 }
 
- static void debug_print_pd_entries(uint32_t* pd_ptr, uintptr_t vaddr_start, size_t count) {
-      terminal_write("--- Debug PD Entries ---\n");
-      uint32_t start_idx = PDE_INDEX(vaddr_start);
-      uint32_t end_idx = start_idx + count;
-      if (end_idx > TABLES_PER_DIR) end_idx = TABLES_PER_DIR;
+/**
+ * @brief "Unmaps" a temporary virtual address obtained via the early mapping helper.
+ * @details If the mapping was based on the identity map, no actual unmapping
+ * operation is needed. This function primarily serves as a placeholder
+ * to match the mapping function's interface.
+ *
+ * @param temp_vaddr The virtual address previously returned by
+ * paging_map_physical_early_frame.
+ */
+static void paging_unmap_physical_early_frame(volatile void* temp_vaddr) {
+    // Define the size of the initial identity mapping (must match setup)
+    const size_t identity_map_size = 4 * 1024 * 1024; // 4MB
+    uintptr_t vaddr_val = (uintptr_t)temp_vaddr;
 
-      for (uint32_t idx = start_idx; idx < end_idx; ++idx) {
-          uint32_t pde = pd_ptr[idx];
-          uintptr_t va = (uintptr_t)idx << PAGING_PDE_SHIFT;
+    // If the virtual address corresponds to an identity mapping, no action is needed.
+    if (vaddr_val < identity_map_size) {
+        // terminal_printf(" [Early Unmap Helper] No action needed for identity mapped V=%p\n", temp_vaddr);
+        return;
+    } else {
+        // If the address was somehow mapped outside the identity range (which
+        // shouldn't happen with the current map helper implementation returning NULL),
+        // log a warning as we don't have a mechanism to unmap it here.
+        terminal_printf("[Paging WARN] paging_unmap_physical_early_frame: Cannot unmap non-identity address %p.\n", temp_vaddr);
+    }
+}
 
-          if (pde & PAGE_PRESENT) {
-              terminal_printf(" PDE[%4u] (V~%#08lx): %#08lx (P=%d RW=%d US=%d PS=%d",
-                (unsigned int)idx,
-                (unsigned long)va,
-                (unsigned long)pde,
-                              (pde & PAGE_PRESENT) ? 1 : 0,
-                              (pde & PAGE_RW) ? 1 : 0,
-                              (pde & PAGE_USER) ? 1 : 0,
-                              (pde & PAGE_SIZE_4MB) ? 1 : 0);
 
-              if (pde & PAGE_SIZE_4MB) {
-                terminal_printf(" Frame=%#lx)\n", (unsigned long)(pde & PAGING_PDE_ADDR_MASK_4MB));
-              } else {
-                  terminal_printf(" PT=0x%#lx)\n", (unsigned long)(pde & PAGING_PDE_ADDR_MASK_4KB));
-              }
-          }
-      }
-      terminal_write("------------------------\n");
- }
 
  int paging_finalize_and_activate(uintptr_t page_directory_phys, uintptr_t total_memory_bytes)
  {
