@@ -1,14 +1,21 @@
-// Include Guard
+// process.h
+
 #ifndef PROCESS_H
 #define PROCESS_H
 
-#include "types.h"
-#include "paging.h"     // Include for PAGE_SIZE, KERNEL_SPACE_VIRT_START, registers_t
+#include "types.h"      // Include necessary base types
+#include "paging.h"      // Include for PAGE_SIZE, KERNEL_SPACE_VIRT_START, registers_t
+// #include "fs_limits.h"   // Define MAX_FD directly below instead
 
-// Forward declare mm_struct to avoid circular dependency with mm.h
+// Forward declare mm_struct to avoid circular dependency with mm.h if needed
 struct mm_struct;
+// Forward declare sys_file if needed, OR include sys_file.h if it only contains declarations/typedefs
+struct sys_file;
 
 // === Configuration Constants ===
+
+// Define the maximum number of open file descriptors per process
+#define MAX_FD 16 // <<<--- DEFINE MAX_FD HERE (adjust value as needed)
 
 // Define the size for the kernel stack allocated per process
 // (Must be page-aligned and > 0)
@@ -24,6 +31,16 @@ struct mm_struct;
 extern "C" {
 #endif
 
+// Define process states if you use them
+typedef enum {
+    PROC_INITIALIZING,
+    PROC_READY,
+    PROC_RUNNING,
+    PROC_SLEEPING,
+    PROC_ZOMBIE
+} process_state_t;
+
+
 // === Process Control Block (PCB) Structure ===
 typedef struct pcb {
     uint32_t pid;                   // Process ID
@@ -31,11 +48,13 @@ typedef struct pcb {
     uint32_t entry_point;           // Virtual address of the program's entry point
     void *user_stack_top;           // Virtual address for the initial user ESP setting
 
+    // Per-process file descriptor table
+    struct sys_file *fd_table[MAX_FD]; // MAX_FD is now defined above
+
     // Kernel Stack Info (Used when process is in kernel mode)
     uint32_t kernel_stack_phys_base; // Physical address of the base frame (for potential debugging/info)
     uint32_t *kernel_stack_vaddr_top; // Virtual address of the top of the kernel stack (highest address + 1)
 
-    // *** ADDED FIELD ***
     // Stores the kernel stack pointer (ESP) after the initial IRET frame has been pushed.
     // Used by the context switch mechanism for the first switch to this process.
     uint32_t kernel_esp_for_switch;
@@ -44,10 +63,10 @@ typedef struct pcb {
     struct mm_struct *mm;           // Pointer to the memory structure (VMAs, page dir etc.)
 
     // Process State & Scheduling Info (Examples - Adapt to your design)
-    // int state;                   // e.g., PROC_RUNNING, PROC_READY, PROC_SLEEPING
+    process_state_t state;          // e.g., PROC_RUNNING, PROC_READY, PROC_SLEEPING - Uncomment if used
     // int priority;
-    // struct pcb *next;            // For linking in scheduler queues
-    // struct tcb *tcb;             // Link to associated Task Control Block if separate
+    struct pcb *next;               // For linking in scheduler queues
+    // struct tcb *tcb;              // Link to associated Task Control Block if separate
 
     // === CPU Context ===
     // Stores the register state when the process is context-switched OUT.
@@ -86,6 +105,22 @@ void destroy_process(pcb_t *pcb);
  * @return Pointer to the current PCB, or NULL if no process context is active.
  */
 pcb_t* get_current_process(void);
+
+/**
+ * @brief Initializes the file descriptor table for a new process.
+ * Should be called during process creation after the PCB is allocated.
+ *
+ * @param proc Pointer to the new process's PCB.
+ */
+void process_init_fds(pcb_t *proc);
+
+/**
+ * @brief Closes all open file descriptors for a terminating process.
+ * Should be called during process termination *before* freeing the PCB memory.
+ *
+ * @param proc Pointer to the terminating process's PCB.
+ */
+void process_close_fds(pcb_t *proc);
 
 
 #ifdef __cplusplus
