@@ -134,13 +134,13 @@ set(DISK_IMAGE "${CMAKE_CURRENT_BINARY_DIR}/disk.img") # Changed extension to .i
 # Create a combined target for disk image creation and file copying
 add_custom_command(
     OUTPUT ${DISK_IMAGE}
-    # Create the FAT16 disk image
+    # Create the FAT disk image
     COMMAND dd if=/dev/zero of=${DISK_IMAGE} bs=1M count=32
-    COMMAND mkfs.fat -F 16 ${DISK_IMAGE}
+    COMMAND mkfs.fat -F 32 ${DISK_IMAGE}
     # Copy hello.elf to the FAT16 image
     COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:hello_elf> ::/hello.elf
     DEPENDS hello_elf
-    COMMENT "Creating FAT16 disk image with hello.elf"
+    COMMENT "Creating FAT32 disk image with hello.elf"
     VERBATIM
 )
 
