@@ -1,89 +1,147 @@
-    section .text
-    global syscall_handler_asm    ; Export symbol for IDT registration
-    extern syscall_dispatcher     ; C dispatcher function
-    extern serial_putc_asm      ; External ASM function for serial output (optional debug)
+; syscall.asm - System Call Handler Assembly Stub
+; MODIFIED WITH EXTRA DEBUG PRINTS, INCLUDING ENTRY CHECK
 
-    ; Define kernel data segment selector (must match your GDT)
-    %define KERNEL_DATA_SELECTOR 0x10 ; Example value - USE YOUR ACTUAL KERNEL DS
+section .text
+global syscall_handler_asm    ; Export symbol for IDT registration
+extern syscall_dispatcher     ; C dispatcher function
+extern serial_putc_asm      ; External ASM function for serial output
 
-    syscall_handler_asm:
-     ; <<< --- ADDED DEBUG PRINT --- >>>
+; Define kernel data segment selector (must match your GDT)
+%define KERNEL_DATA_SELECTOR 0x10 ; Example value - USE YOUR ACTUAL KERNEL DS
+
+syscall_handler_asm:
+    ; --- DEBUG: Check AL immediately on entry ---
+    push edx        ; Save EDX (used by serial_putc_asm)
+    push eax        ; Save original EAX (including AL)
+
+    ; Print '$' marker
+    mov al, '$'
+    call serial_putc_asm
+
+    ; Print original AL value (high nibble)
+    mov dl, [esp + 0] ; Get low byte (original AL) from saved EAX on stack into DL
+    shr dl, 4         ; Get high nibble
+    cmp dl, 9
+    jle .L_hex1_digit
+    add dl, 'A'-10    ; Convert to A-F
+    jmp .L_hex1_done
+.L_hex1_digit:
+    add dl, '0'       ; Convert to 0-9
+.L_hex1_done:
+    mov al, dl        ; Move hex digit to AL for printing
+    call serial_putc_asm ; Print high nibble
+
+    ; Print original AL value (low nibble)
+    mov dl, [esp + 0] ; Get low byte (original AL) from saved EAX again
+    and dl, 0x0F      ; Get low nibble
+    cmp dl, 9
+    jle .L_hex2_digit
+    add dl, 'A'-10    ; Convert to A-F
+    jmp .L_hex2_done
+.L_hex2_digit:
+    add dl, '0'       ; Convert to 0-9
+.L_hex2_done:
+    mov al, dl        ; Move hex digit to AL for printing
+    call serial_putc_asm ; Print low nibble
+
+    pop eax         ; Restore original EAX
+    pop edx         ; Restore EDX
+    ; --- END IMMEDIATE ENTRY DEBUG ---
+
+
+    ; --- DEBUG: #0 marker ---
     pusha
     mov al, '#' ; Indicate ASM handler entry
     call serial_putc_asm
-    mov al, 'S'
+    mov al, '0' ; Stage 0: Entry marker after initial check
     call serial_putc_asm
     popa
-    ; <<< --- END ADDED DEBUG PRINT --- >>>
 
+    ; 1. Push dummy error code (0) to match isr_frame_t layout
+    push dword 0
 
-        ; CPU pushes: EFLAGS, CS (user), EIP (user)
-        ; [SS (user), ESP (user) if privilege change from user to kernel]
-        ; Stack top -> bottom: [UserSS], [UserESP], EFLAGS, CS, EIP
-        ; NO Error Code is pushed for 'int n'.
-        ; EAX contains the syscall number.
+    ; 2. Push "interrupt" number (0x80 for syscall)
+    push dword 0x80
 
-        ; --- Optional DEBUG: Print 'S' ---
-        ; pusha
-        ; mov al, 'S'
-        ; call serial_putc_asm
-        ; popa
-        ; --- End DEBUG ---
+    ; 3. Save segment registers (DS, ES, FS, GS) to match isr_frame_t
+    push ds
+    push es
+    push fs
+    push gs
 
-        ; 1. Push dummy error code (0) to match isr_frame_t layout
-        push dword 0
+    ; 4. Save all general purpose registers using pusha
+    pusha          ; Pushes EDI, ESI, EBP, ESP_dummy, EBX, EDX, ECX, EAX
 
-        ; 2. Push "interrupt" number (0x80 for syscall)
-        push dword 0x80
+    ; --- DEBUG: #1 marker ---
+    pusha
+    mov al, '#'
+    call serial_putc_asm
+    mov al, '1' ; Stage 1: After pusha
+    call serial_putc_asm
+    popa
 
-        ; 3. Save segment registers (DS, ES, FS, GS) to match isr_frame_t
-        ;    These will hold the USER segments initially.
-        push ds
-        push es
-        push fs
-        push gs
+    ; 5. Set up Kernel Data Segments for C handler execution
+    mov ax, KERNEL_DATA_SELECTOR
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
 
-        ; 4. Save all general purpose registers using pusha
-        pusha          ; Pushes EDI, ESI, EBP, ESP_dummy, EBX, EDX, ECX, EAX
+    ; 6. Call the C syscall dispatcher
+    mov eax, esp     ; ESP points to saved EAX from pusha
+    add eax, 32      ; Adjust ESP to point to the initially pushed gs (start of frame)
 
-        ; --- Stack now matches isr_frame_t layout from the pushed gs upwards ---
+    ; --- DEBUG: #2 marker ---
+    pusha
+    mov al, '#'
+    call serial_putc_asm
+    mov al, '2' ; Stage 2: Before C call
+    call serial_putc_asm
+    popa
 
-        ; 5. Set up Kernel Data Segments for C handler execution
-        mov ax, KERNEL_DATA_SELECTOR
-        mov ds, ax
-        mov es, ax
-        mov fs, ax
-        mov gs, ax
+    push eax         ; Push pointer to the syscall_regs_t/isr_frame_t structure
+    call syscall_dispatcher ; Call the C function
+    add esp, 4       ; Clean up the argument (pointer) from the stack
 
-        ; 6. Call the C syscall dispatcher
-        ;    Pass pointer to the base of the saved frame (points to the pushed gs)
-        mov eax, esp     ; ESP points to saved EAX from pusha
-        add eax, 32      ; Adjust ESP to point to the initially pushed gs (start of frame)
-        push eax         ; Push pointer to the syscall_regs_t/isr_frame_t structure
-        call syscall_dispatcher ; Call the C function
-        add esp, 4       ; Clean up the argument (pointer) from the stack
+    ; --- DEBUG: #3 marker ---
+    ; EAX holds return value from C dispatcher
+    pusha
+    mov al, '#'
+    call serial_putc_asm
+    mov al, '3' ; Stage 3: After C call
+    call serial_putc_asm
+    popa
 
-        ; EAX now holds the return value from the C handler.
-        ; We need to place this return value into the saved EAX slot on the stack.
-        ; The saved EAX is at [ESP + offset_to_eax_from_pusha]
-        ; Offset = EDI,ESI,EBP,ESP_dummy,EBX,EDX,ECX = 7 * 4 = 28 bytes
-        mov [esp + 28], eax ; Store return value in the stack slot for EAX
+    ; Place return value into the saved EAX slot on the stack.
+    mov [esp + 28], eax ; Store return value in the stack slot for EAX
 
-        ; 7. Restore General Purpose Registers (including EAX which now holds return value)
-        popa
+    ; --- DEBUG: #4 marker ---
+    pusha
+    mov al, '#'
+    call serial_putc_asm
+    mov al, '4' ; Stage 4: Before popa
+    call serial_putc_asm
+    popa
 
-        ; 8. Restore Segment Registers (popped in reverse order)
-        pop gs
-        pop fs
-        pop es
-        pop ds
+    ; 7. Restore General Purpose Registers
+    popa
 
-        ; 9. Clean up the vector number (0x80) and dummy error code (0)
-        add esp, 8
+    ; 8. Restore Segment Registers
+    pop gs
+    pop fs
+    pop es
+    pop ds
 
-        ; 10. Return to user space
-        ;     iret will pop EIP, CS, EFLAGS, [UserESP, UserSS] from the stack
-        ;     and restore them. The general purpose registers (including EAX
-        ;     with the return value) are already restored by popa.
-        iret
-    
+    ; 9. Clean up the vector number and dummy error code
+    add esp, 8
+
+    ; --- DEBUG: #5 marker ---
+    pusha
+    mov al, '#'
+    call serial_putc_asm
+    mov al, '5' ; Stage 5: Before iret
+    call serial_putc_asm
+    popa
+
+    ; 10. Return to user space
+    iret

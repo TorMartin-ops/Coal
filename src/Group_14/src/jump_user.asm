@@ -1,12 +1,10 @@
 ; src/jump_user.asm
 ; Jumps to user mode using IRET after setting up the stack.
-; Includes extra debugging serial output around iret.
 
 section .text
 bits 32
 
 global jump_to_user_mode
-extern serial_putc_asm ; For debug output
 
 ; Function signature:
 ; void jump_to_user_mode(uint32_t *kernel_stack_ptr, uint32_t *page_directory_phys);
@@ -35,38 +33,14 @@ jump_to_user_mode:
 
 .skip_cr3_load:
     ; Switch stack pointer to the prepared frame location saved in edx
-    mov esp, edx        ; ESP now points to the IRET frame (e.g., 0xe0003fec)
-
-    ; --- DEBUG: Immediately Before IRET ---
-    pusha               ; Save all general purpose registers
-    mov al, '>'         ; Marker char 1
-    call serial_putc_asm
-    mov al, 'I'         ; Marker char 2
-    call serial_putc_asm
-    mov al, '>'         ; Marker char 3
-    call serial_putc_asm
-    popa                ; Restore all general purpose registers
-    ; --- End DEBUG ---
+    mov esp, edx        ; ESP now points to the IRET frame
 
     ; Execute IRET. Pops EIP, CS, EFLAGS, ESP, SS from stack at current ESP.
     iret
 
-    ; --- DEBUG: Immediately After IRET (SHOULD NOT BE REACHED in kernel mode) ---
-    ; If execution reaches here, iret failed or returned somehow (which is wrong).
-    pusha
-    mov al, '<'         ; Failure Marker 1
-    call serial_putc_asm
-    mov al, 'X'         ; Failure Marker 2
-    call serial_putc_asm
-    mov al, '<'         ; Failure Marker 3
-    call serial_putc_asm
-    popa
-    ; --- End DEBUG ---
-
-
     ; Execution should not reach here if iret successfully transitions to user mode.
 .fail:
-    ; If iret fails catastrophically or returns, halt the system.
+    ; If iret fails catastrophically or somehow returns to kernel mode, halt the system.
     cli
 .halt_loop:
     hlt

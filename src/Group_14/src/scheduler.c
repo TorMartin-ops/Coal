@@ -786,18 +786,17 @@ static void perform_context_switch(tcb_t *old_task, tcb_t *new_task) {
                                                             kstack_page_to_check,
                                                             &kstack_phys_check);
 
-        serial_write("[Sched Verify KStack] Checking V=");
+        terminal_printf("[Sched Verify KStack] Checking V=");
         // Add hex print for kstack_page_to_check if possible
-        serial_putc_asm('K'); // Placeholder
-        serial_write(": ");
+        terminal_printf(": ");
         if (kstack_map_status != 0 || kstack_phys_check == 0) {
-            serial_write("!!! MAPPING INVALID/NOT PRESENT !!!\n");
+            terminal_printf("!!! MAPPING INVALID/NOT PRESENT !!!\n");
             // Consider adding a loop or panic here if this occurs
         } else {
-            serial_write("OK (Mapped to P=");
+            terminal_printf("OK (Mapped to P=");
             // Add hex print for kstack_phys_check if possible
-             serial_putc_asm('P'); // Placeholder
-            serial_write(")\n");
+    
+            terminal_printf(")\n");
         }
     }
     
@@ -1193,7 +1192,7 @@ void scheduler_start(void) {
 static void dump_scheduler_state(void) {
     uintptr_t global_irq_flags = spinlock_acquire_irqsave(&g_scheduler_global_lock);
 
-    terminal_printf("\n--- Scheduler State Dump ---\n");
+    ("\n--- Scheduler State Dump ---\n");
     terminal_printf("Current Tick: %lu\n", g_tick_count);
     terminal_printf("Active Tasks: %lu\n", g_task_count); // Count reflects active tasks
     terminal_printf("Context Switches: %lu\n", g_context_switches);

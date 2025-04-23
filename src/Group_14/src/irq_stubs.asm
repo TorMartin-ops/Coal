@@ -1,11 +1,13 @@
 ; Corrected src/irq_stubs.asm
 ; Defines Interrupt Request (IRQ) handler stubs for IRQs 0-15 (vectors 32-47).
 ; Uses a common stub to ensure correct stack frame for the C handler.
+; <<< MODIFIED: Added debug print to common_interrupt_stub >>>
 
 section .text
 
 ; External C handler function
 extern isr_common_handler ; Make sure C code defines this function
+extern serial_putc_asm    ; External ASM function for serial output
 
 ; Export IRQ symbols for use in IDT setup
 global irq0, irq1, irq2, irq3, irq4, irq5, irq6, irq7
@@ -18,8 +20,8 @@ KERNEL_DATA_SEG equ 0x10
 ; IRQs do not push an error code automatically, so we push 0.
 %macro IRQ_HANDLER 1
 irq%1:
-    ; cli            ; Optional: Disable interrupts on entry if not using Interrupt Gates
-    push dword 0   ; Push dummy error code for IRQ
+    ; cli              ; Optional: Disable interrupts on entry if not using Interrupt Gates
+    push dword 0     ; Push dummy error code for IRQ
     push dword 32 + %1 ; Push vector number (IRQ 0 = 32, etc.)
     jmp common_interrupt_stub ; Jump to common code
 %endmacro
@@ -45,10 +47,15 @@ IRQ_HANDLER 15  ; Secondary ATA Hard Disk (Vector 47)
 
 ; Common stub called by all ISRs and IRQs after pushing vector and error code.
 ; Creates the stack frame expected by the C isr_common_handler(isr_frame_t* frame).
-; Assumes KERNEL_DATA_SEG is defined above.
 common_interrupt_stub:
+    ; --- DEBUG PRINT: Indicate entry into common stub ---
+    pusha           ; Save registers temporarily
+    mov al, '@'     ; '@' signifies entry to common stub
+    call serial_putc_asm
+    popa            ; Restore registers
+    ; --- END DEBUG PRINT ---
+
     ; 1. Save segment registers (DS, ES, FS, GS) first, as isr_frame_t expects them
-    ;    at the lowest address pushed by the stub.
     push ds
     push es
     push fs
@@ -62,24 +69,22 @@ common_interrupt_stub:
     mov ds, ax
     mov es, ax
     mov fs, ax
-    mov gs, ax      ; GS is now set (original was saved by initial push gs)
+    mov gs, ax     ; GS is now set (original was saved by initial push gs)
 
     ; 4. Call the C handler, passing a pointer to the saved state.
-    ;    ESP now points to the saved EAX from pusha. The C handler expects
-    ;    a pointer to the *start* of the frame (the pushed gs).
-    ;    The offset from current ESP to the start of the frame is 32 bytes (pusha).
-    mov eax, esp    ; Get pointer to the start of the isr_frame_t structure
-    push eax        ; Push pointer as argument for isr_common_handler
+    mov eax, esp   ; Get pointer to the start of the isr_frame_t structure
+    push eax       ; Push pointer as argument for isr_common_handler
     call isr_common_handler
-    add esp, 4      ; Clean up argument stack
+    add esp, 4     ; Clean up argument stack
 
     ; 5. Restore segment registers (placeholder pop gs, real restore is later)
-    pop gs          ; Pop the saved GS value (now unused, will be restored below)
+    ;    pop gs <-- REMOVED (See comment in isr_stubs.asm)
 
     ; 6. Restore general purpose registers
     popa
 
     ; 7. Restore original segment registers (popped in reverse order of push)
+    pop gs ; <<< CORRECTED: Restore original GS here
     pop fs
     pop es
     pop ds
