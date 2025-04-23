@@ -523,8 +523,9 @@ uint32_t scheduler_get_ticks(void) {
 
 /**
  * @brief Initializes the TCB and minimal PCB for the dedicated idle task.
+ * CORRECTED stack setup order.
  */
-static void scheduler_init_idle_task(void) {
+ static void scheduler_init_idle_task(void) {
     SCHED_DEBUG("Initializing idle task...");
 
     // Setup Minimal PCB
@@ -532,7 +533,7 @@ static void scheduler_init_idle_task(void) {
     g_idle_task_pcb.pid = IDLE_TASK_PID;
     g_idle_task_pcb.page_directory_phys = (uint32_t*)g_kernel_page_directory_phys;
     KERNEL_ASSERT(g_idle_task_pcb.page_directory_phys != NULL, "Kernel PD phys NULL");
-    g_idle_task_pcb.entry_point = (uintptr_t)kernel_idle_task_loop;
+    g_idle_task_pcb.entry_point = (uintptr_t)kernel_idle_task_loop; // Correct entry point
     g_idle_task_pcb.user_stack_top = NULL;
     g_idle_task_pcb.mm = NULL;
 
@@ -547,39 +548,54 @@ static void scheduler_init_idle_task(void) {
     g_idle_task_tcb.process = &g_idle_task_pcb;
     g_idle_task_tcb.pid     = IDLE_TASK_PID;
     g_idle_task_tcb.state   = TASK_READY;
-    g_idle_task_tcb.has_run = true; // Mark as 'run' so context switch doesn't try jump_to_user_mode
+    g_idle_task_tcb.has_run = true; // Mark as 'run'
     g_idle_task_tcb.priority = SCHED_IDLE_PRIORITY;
     g_idle_task_tcb.time_slice_ticks = MS_TO_TICKS(g_priority_time_slices_ms[SCHED_IDLE_PRIORITY]);
     g_idle_task_tcb.ticks_remaining = g_idle_task_tcb.time_slice_ticks;
-    g_idle_task_tcb.all_tasks_next = NULL; // Initialize global list pointer
+    g_idle_task_tcb.all_tasks_next = NULL;
 
     // Prepare Initial Stack Pointer (ESP) for Idle Task
-    // Must point to a valid stack frame for context_switch to load
-    uint32_t *kstack_ptr = (uint32_t*)idle_stack_virt_top;
+    uint32_t *kstack_ptr = (uint32_t*)idle_stack_virt_top; // Start at the virtual top
     uintptr_t kstack_base_virt = PHYS_TO_VIRT((uintptr_t)idle_stack_buffer);
 
-    // Create a minimal stack frame as if context_switch saved it
-    // Order must match context_switch.asm save order
-    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // DS
-    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // ES
-    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // FS
-    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // GS
-    *(--kstack_ptr) = 0x00000202; // EFLAGS (IF=1, IOPL=0) - interrupts enabled
-    *(--kstack_ptr) = KERNEL_CODE_SELECTOR; // CS - Not directly used by context_switch restore, but good practice
-    *(--kstack_ptr) = (uint32_t)g_idle_task_pcb.entry_point; // EIP (Return address for context_switch)
-    *(--kstack_ptr) = 0; // EAX
-    *(--kstack_ptr) = 0; // ECX
-    *(--kstack_ptr) = 0; // EDX
-    *(--kstack_ptr) = 0; // EBX
-    *(--kstack_ptr) = 0; // ESP_dummy (Original ESP, not used)
-    *(--kstack_ptr) = 0; // EBP
-    *(--kstack_ptr) = 0; // ESI
-    *(--kstack_ptr) = 0; // EDI
+    // Create stack frame matching the REVERSE of the context_switch POP order
+    // ASM POP Order: popad -> popfd -> pop gs -> pop fs -> pop es -> pop ds -> pop ebp -> ret
+
+    // --- FINAL Corrected Setup Order ---
+
+    // 1. Return Address (popped LAST by 'ret')
+    *(--kstack_ptr) = (uint32_t)g_idle_task_pcb.entry_point; // Fake return address is idle loop start
+
+    // 2. Caller's EBP (popped before 'ret' by 'pop ebp')
+    *(--kstack_ptr) = 0; // Fake caller's EBP (use 0 for initial frame)
+
+    // 3. Segments popped before EBP
+    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // Value for DS pop
+    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // Value for ES pop
+    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // Value for FS pop
+    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // Value for GS pop
+
+    // 4. EFLAGS popped before segments
+    *(--kstack_ptr) = 0x00000202; // Value for POPFD (IF=1)
+
+    // 5. PUSHAD Registers popped FIRST
+    //    Order POPPED by POPAD: EAX, ECX, EDX, EBX, ESP_dummy, EBP, ESI, EDI
+    //    Order setting up stack (reverse): EDI, ESI, EBP, ESP_dummy, EBX, EDX, ECX, EAX
+    *(--kstack_ptr) = 0; // Value for EDI pop
+    *(--kstack_ptr) = 0; // Value for ESI pop
+    *(--kstack_ptr) = 0; // Value for EBP pop (from POPAD - this is the idle task's initial EBP value)
+    *(--kstack_ptr) = 0; // Value for ESP_dummy pop
+    *(--kstack_ptr) = 0; // Value for EBX pop
+    *(--kstack_ptr) = 0; // Value for EDX pop
+    *(--kstack_ptr) = 0; // Value for ECX pop
+    *(--kstack_ptr) = 0; // Value for EAX pop
+    // --- End Stack Setup ---
 
     KERNEL_ASSERT((uintptr_t)kstack_ptr >= kstack_base_virt, "Idle stack underflow during init");
     g_idle_task_tcb.esp = kstack_ptr; // Set initial ESP for context switch
 
-    SCHED_DEBUG("Idle task TCB initialized: ESP=%p", g_idle_task_tcb.esp);
+    // ESP should point to the value that will be popped into EAX by popad
+    SCHED_DEBUG("Idle task TCB initialized: ESP=%p (Corrected Stack Order + Ret/EBP)", g_idle_task_tcb.esp);
 
     // Add idle task to the global task list (Needs lock)
     uintptr_t all_tasks_irq_flags = spinlock_acquire_irqsave(&g_all_tasks_lock);
