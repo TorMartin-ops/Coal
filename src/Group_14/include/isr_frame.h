@@ -1,17 +1,28 @@
 /* include/arch/i386/isr_frame.h */
-/* Defines the frame pushed by the corrected interrupt stubs (isr_stub.S / *_stubs.asm) */
 #ifndef ARCH_I386_ISR_FRAME_H
 #define ARCH_I386_ISR_FRAME_H
 
 #include <libc/stdint.h> // Use standard integer types
 
 // Structure representing the stack frame layout created by the common interrupt stub
-// Matches the order of pushes: gs, fs, es, ds, pusha, int_no, err_code, eip, cs, eflags, useresp, ss
 typedef struct __attribute__((packed)) isr_frame {
     // Pushed by common_interrupt_stub *after* pusha
     uint32_t gs, fs, es, ds;
-    // Pushed by PUSHA instruction (in reverse order)
-    uint32_t edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax;
+
+    // --- CORRECTED ORDER ---
+    // Pushed by PUSHA instruction (in standard order: EAX, ECX, EDX, EBX, ESP_orig, EBP, ESI, EDI)
+    // The struct fields should match the popa order (reverse of pusha).
+    // popad restores: EDI, ESI, EBP, ESP_dummy, EBX, EDX, ECX, EAX
+    uint32_t edi;
+    uint32_t esi;
+    uint32_t ebp;
+    uint32_t esp_dummy; // The ESP value before PUSHA was executed
+    uint32_t ebx;
+    uint32_t edx;
+    uint32_t ecx;
+    uint32_t eax;
+    // --- END CORRECTION ---
+
     // Pushed by specific ISR/IRQ stub before jumping to common stub
     uint32_t int_no;   // Interrupt (vector) number
     uint32_t err_code; // Error code (pushed by CPU or 0 by stub)

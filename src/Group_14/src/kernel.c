@@ -886,6 +886,9 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
         terminal_write("  [Info] Filesystem not ready, skipping initial user process creation.\n");
     }
 
+    syscall_init();
+    terminal_write("  Syscall interface initialized.\n");
+
     // 8. Mark Scheduler Ready & Enable Interrupts
     // Once all essential pre-interrupt setup is complete, we can allow the scheduler
     // to start preempting tasks by enabling interrupts.
