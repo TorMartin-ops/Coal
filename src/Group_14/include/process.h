@@ -19,10 +19,10 @@ struct sys_file;
 
 // Define the size for the kernel stack allocated per process
 // (Must be page-aligned and > 0)
-#define PROCESS_KSTACK_SIZE (PAGE_SIZE * 4) // Example: 4 pages (16KB)
+#define PROCESS_KSTACK_SIZE (PAGE_SIZE *4) // Example: 4 pages (16KB)
 
 // Define User Stack Layout Constants
-#define USER_STACK_PAGES        4                       // Example: 4 pages
+#define USER_STACK_PAGES        4                      // Example: 4 pages
 #define USER_STACK_SIZE         (USER_STACK_PAGES * PAGE_SIZE)    // Example: 16KB
 #define USER_STACK_TOP_VIRT_ADDR (KERNEL_SPACE_VIRT_START)        // Stack grows down from just below kernel space
 #define USER_STACK_BOTTOM_VIRT  (USER_STACK_TOP_VIRT_ADDR - USER_STACK_SIZE) // Lowest valid stack address

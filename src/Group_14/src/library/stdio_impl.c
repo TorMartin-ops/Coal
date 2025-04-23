@@ -153,10 +153,3 @@ int snprintf(char *str, size_t size, const char *format, ...) {
     va_end(args);
     return ret;
 }
-
-// Implementations for putchar, print, printf if needed (might call terminal functions)
-// Example:
-// #include "terminal.h"
-// int putchar(int ic) { terminal_write_char((char)ic); return ic; }
-// bool print(const char* data, size_t length) { for(size_t i=0; i<length; ++i) putchar(data[i]); return true; }
-// int printf(const char* restrict format, ...) { /* Use vsnprintf and print */ }

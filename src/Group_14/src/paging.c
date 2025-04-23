@@ -1253,92 +1253,132 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
  // --- Utility Functions ---
 
  int paging_get_physical_address(uint32_t *page_directory_phys,
-                                 uintptr_t vaddr,
-                                 uintptr_t *paddr_out)
- {
-     if (!paddr_out) return KERN_EINVAL;
-     *paddr_out = 0;
+                                uintptr_t vaddr,
+                                uintptr_t *paddr_out)
+{
+    if (!paddr_out) {
+        terminal_printf("[GetPhys] Error: Output pointer paddr_out is NULL.\n");
+        return KERN_EINVAL;
+    }
+    *paddr_out = 0; // Default to 0 on failure or if not found
 
-     bool is_current_pd = (g_kernel_page_directory_phys != 0 && (uintptr_t)page_directory_phys == g_kernel_page_directory_phys);
+    bool is_current_pd = (g_kernel_page_directory_phys != 0 && (uintptr_t)page_directory_phys == g_kernel_page_directory_phys);
 
-     if (is_current_pd) {
-         if (!g_kernel_page_directory_virt) {
-             terminal_printf("[GetPhys] Error: Lookup in current PD, but kernel PD virt pointer is NULL.\n");
+    if (is_current_pd) {
+        // --- Lookup in CURRENT Page Directory ---
+        if (!g_kernel_page_directory_virt) {
+            terminal_printf("[GetPhys] Error: Lookup in current PD, but kernel PD virt pointer is NULL.\n");
+            // This likely means paging isn't fully active or initialized correctly.
+            return KERN_EPERM; // Indicate a system state error
+        }
+
+        uint32_t pd_idx = PDE_INDEX(vaddr);
+        uint32_t pde = g_kernel_page_directory_virt[pd_idx];
+
+        // Check if Page Directory Entry is present
+        if (!(pde & PAGE_PRESENT)) {
+            // terminal_printf("[GetPhys] Debug: PDE[%u] not present for V=%p in current PD.\n", pd_idx, (void*)vaddr);
+            return KERN_ENOENT; // Page directory entry not present -> address not mapped
+        }
+
+        // Check if it's a 4MB page
+        if (pde & PAGE_SIZE_4MB) {
+            uintptr_t page_base_phys = pde & PAGING_PDE_ADDR_MASK_4MB; // Mask for 4MB page frame address
+            uintptr_t page_offset = vaddr & (PAGE_SIZE_LARGE - 1);    // Offset within the 4MB page
+            *paddr_out = page_base_phys + page_offset;
+            // terminal_printf("[GetPhys] Debug: V=%p -> P=%p (4MB Page PDE[%u]=%#08lx)\n", (void*)vaddr, (void*)*paddr_out, pd_idx, pde);
+            return 0; // Success
+        } else {
+            // It's a 4KB page, need to look into the Page Table
+            // Access Page Table using recursive mapping
+            uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
+            uint32_t pt_idx = PTE_INDEX(vaddr);
+            uint32_t pte = pt_virt[pt_idx];
+
+            // Check if Page Table Entry is present
+            if (!(pte & PAGE_PRESENT)) {
+                // terminal_printf("[GetPhys] Debug: PTE[%u][%u] not present for V=%p in current PD.\n", pd_idx, pt_idx, (void*)vaddr);
+                return KERN_ENOENT; // Page table entry not present -> address not mapped
+            }
+
+            // Calculate final physical address
+            uintptr_t page_base_phys = pte & PAGING_PTE_ADDR_MASK; // Mask for 4KB page frame address
+            uintptr_t page_offset = vaddr & (PAGE_SIZE - 1);       // Offset within the 4KB page
+            *paddr_out = page_base_phys + page_offset;
+            // terminal_printf("[GetPhys] Debug: V=%p -> P=%p (4KB Page PTE[%u][%u]=%#08lx)\n", (void*)vaddr, (void*)*paddr_out, pd_idx, pt_idx, pte);
+            return 0; // Success
+        }
+    }
+    else {
+        // --- Lookup in ANOTHER Page Directory ---
+        if (!page_directory_phys) {
+             terminal_printf("[GetPhys] Error: NULL page_directory_phys provided for non-current lookup.\n");
+             return KERN_EINVAL;
+        }
+        // Need temporary mapping functions and kernel PD to be ready
+        if (!g_kernel_page_directory_virt) {
+             terminal_printf("[GetPhys] Error: Kernel PD Virt not available for temporary mapping.\n");
              return KERN_EPERM;
-         }
+        }
 
-         uint32_t pd_idx = PDE_INDEX(vaddr);
-         uint32_t pde = g_kernel_page_directory_virt[pd_idx];
+        int ret = KERN_ENOENT; // Default to not found
+        uint32_t* target_pd_virt_temp = NULL;
+        uint32_t* target_pt_virt_temp = NULL;
 
-         if (!(pde & PAGE_PRESENT)) return KERN_ENOENT;
+        // Map the target Page Directory temporarily (read-only is sufficient)
+        target_pd_virt_temp = paging_temp_map((uintptr_t)page_directory_phys, PTE_KERNEL_READONLY_FLAGS);
+        if (!target_pd_virt_temp) {
+            terminal_printf("[GetPhys] Error: Failed to temp map target PD P=%p.\n", (void*)page_directory_phys);
+            return KERN_EPERM; // Indicate mapping failure
+        }
 
-         if (pde & PAGE_SIZE_4MB) {
-             uintptr_t page_base_phys = pde & PAGING_PDE_ADDR_MASK_4MB;
-             uintptr_t page_offset = vaddr & (PAGE_SIZE_LARGE - 1);
-             *paddr_out = page_base_phys + page_offset;
-             return 0;
-         } else {
-             uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
-             uint32_t pt_idx = PTE_INDEX(vaddr);
-             uint32_t pte = pt_virt[pt_idx];
+        uint32_t pd_idx = PDE_INDEX(vaddr);
+        uint32_t pde = target_pd_virt_temp[pd_idx];
 
-             if (!(pte & PAGE_PRESENT)) return KERN_ENOENT;
+        if (pde & PAGE_PRESENT) {
+            if (pde & PAGE_SIZE_4MB) {
+                // 4MB page case
+                uintptr_t page_base_phys = pde & PAGING_PDE_ADDR_MASK_4MB;
+                uintptr_t page_offset = vaddr & (PAGE_SIZE_LARGE - 1);
+                *paddr_out = page_base_phys + page_offset;
+                // terminal_printf("[GetPhys] Debug: V=%p -> P=%p (Other PD, 4MB Page PDE[%u]=%#08lx)\n", (void*)vaddr, (void*)*paddr_out, pd_idx, pde);
+                ret = 0; // Success
+            } else {
+                // 4KB page case - need to map the Page Table
+                uintptr_t pt_phys = pde & PAGING_PDE_ADDR_MASK_4KB;
+                target_pt_virt_temp = paging_temp_map(pt_phys, PTE_KERNEL_READONLY_FLAGS);
 
-             uintptr_t page_base_phys = pte & PAGING_PTE_ADDR_MASK;
-             uintptr_t page_offset = vaddr & (PAGE_SIZE - 1);
-             *paddr_out = page_base_phys + page_offset;
-             return 0;
-         }
-     }
-     else {
-         if (!page_directory_phys) return KERN_EINVAL;
-         if (!g_kernel_page_directory_virt) return KERN_EPERM;
+                if (!target_pt_virt_temp) {
+                     terminal_printf("[GetPhys] Error: Failed to temp map target PT P=%#lx from PD P=%p.\n", (unsigned long)pt_phys, (void*)page_directory_phys);
+                     ret = KERN_EPERM; // Indicate mapping failure
+                } else {
+                    uint32_t pt_idx = PTE_INDEX(vaddr);
+                    uint32_t pte = target_pt_virt_temp[pt_idx];
 
-         int ret = KERN_ENOENT;
-         uint32_t* target_pd_virt_temp = NULL;
-         uint32_t* target_pt_virt_temp = NULL;
+                    if (pte & PAGE_PRESENT) {
+                        uintptr_t page_base_phys = pte & PAGING_PTE_ADDR_MASK;
+                        uintptr_t page_offset = vaddr & (PAGE_SIZE - 1);
+                        *paddr_out = page_base_phys + page_offset;
+                        // terminal_printf("[GetPhys] Debug: V=%p -> P=%p (Other PD, 4KB Page PTE[%u][%u]=%#08lx)\n", (void*)vaddr, (void*)*paddr_out, pd_idx, pt_idx, pte);
+                        ret = 0; // Success
+                    } else {
+                        // terminal_printf("[GetPhys] Debug: PTE[%u][%u] not present for V=%p in other PD.\n", pd_idx, pt_idx, (void*)vaddr);
+                        // ret remains KERN_ENOENT
+                    }
+                    // Unmap the temporary Page Table mapping
+                    paging_temp_unmap(target_pt_virt_temp);
+                }
+            }
+        } else {
+             // terminal_printf("[GetPhys] Debug: PDE[%u] not present for V=%p in other PD.\n", pd_idx, (void*)vaddr);
+             // ret remains KERN_ENOENT
+        }
 
-         // FIX: Use paging_temp_map instead of paging_temp_map_vaddr
-         target_pd_virt_temp = paging_temp_map((uintptr_t)page_directory_phys, PTE_KERNEL_READONLY_FLAGS);
-         if (!target_pd_virt_temp) {
-             return KERN_EPERM;
-         }
-
-         uint32_t pd_idx = PDE_INDEX(vaddr);
-         uint32_t pde = target_pd_virt_temp[pd_idx];
-
-         if (pde & PAGE_PRESENT) {
-             if (pde & PAGE_SIZE_4MB) {
-                 uintptr_t page_base_phys = pde & PAGING_PDE_ADDR_MASK_4MB;
-                 uintptr_t page_offset = vaddr & (PAGE_SIZE_LARGE - 1);
-                 *paddr_out = page_base_phys + page_offset;
-                 ret = 0;
-             } else {
-                 uintptr_t pt_phys = pde & PAGING_PDE_ADDR_MASK_4KB;
-                 // FIX: Use paging_temp_map instead of paging_temp_map_vaddr
-                 target_pt_virt_temp = paging_temp_map(pt_phys, PTE_KERNEL_READONLY_FLAGS);
-                 if (!target_pt_virt_temp) {
-                      ret = KERN_EPERM;
-                 } else {
-                     uint32_t pt_idx = PTE_INDEX(vaddr);
-                     uint32_t pte = target_pt_virt_temp[pt_idx];
-
-                     if (pte & PAGE_PRESENT) {
-                         uintptr_t page_base_phys = pte & PAGING_PTE_ADDR_MASK;
-                         uintptr_t page_offset = vaddr & (PAGE_SIZE - 1);
-                         *paddr_out = page_base_phys + page_offset;
-                         ret = 0;
-                     }
-                     // FIX: Use paging_temp_unmap instead of paging_temp_unmap_vaddr
-                     paging_temp_unmap(target_pt_virt_temp);
-                 }
-             }
-         }
-         // FIX: Use paging_temp_unmap instead of paging_temp_unmap_vaddr
-         paging_temp_unmap(target_pd_virt_temp);
-         return ret;
-     }
- }
+        // Unmap the temporary Page Directory mapping
+        paging_temp_unmap(target_pd_virt_temp);
+        return ret;
+    }
+}
 
  // --- Process Management Support ---
 
@@ -2101,3 +2141,98 @@ void copy_kernel_pde_entries(uint32_t *dst_pd)
      terminal_printf("[Unmap Range] Finished. Unmapped approx %d pages.\n", unmapped_count);
      return 0;
  }
+
+ int paging_get_physical_address_and_flags(uint32_t *page_directory_phys,
+                                          uintptr_t vaddr,
+                                          uintptr_t *paddr_out,
+                                          uint32_t *flags_out)
+{
+    if (!paddr_out || !flags_out) {
+        terminal_printf("[GetPhysFlags] Error: Output pointer paddr_out or flags_out is NULL.\n");
+        return KERN_EINVAL;
+    }
+    *paddr_out = 0;
+    *flags_out = 0; // Clear output flags on entry
+
+    bool is_current_pd = (g_kernel_page_directory_phys != 0 && (uintptr_t)page_directory_phys == g_kernel_page_directory_phys);
+
+    if (is_current_pd) {
+        // --- Lookup in CURRENT Page Directory ---
+        if (!g_kernel_page_directory_virt) {
+            terminal_printf("[GetPhysFlags] Error: Lookup in current PD, but kernel PD virt pointer is NULL.\n");
+            return KERN_EPERM;
+        }
+
+        uint32_t pd_idx = PDE_INDEX(vaddr);
+        uint32_t pde = g_kernel_page_directory_virt[pd_idx];
+
+        if (!(pde & PAGE_PRESENT)) return KERN_ENOENT;
+
+        if (pde & PAGE_SIZE_4MB) {
+            uintptr_t page_base_phys = pde & PAGING_PDE_ADDR_MASK_4MB;
+            uintptr_t page_offset = vaddr & (PAGE_SIZE_LARGE - 1);
+            *paddr_out = page_base_phys + page_offset;
+            *flags_out = pde & PAGING_FLAG_MASK; // Return PDE flags for 4MB page
+            return 0; // Success
+        } else {
+            uint32_t* pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
+            uint32_t pt_idx = PTE_INDEX(vaddr);
+            uint32_t pte = pt_virt[pt_idx];
+
+            if (!(pte & PAGE_PRESENT)) return KERN_ENOENT;
+
+            uintptr_t page_base_phys = pte & PAGING_PTE_ADDR_MASK;
+            uintptr_t page_offset = vaddr & (PAGE_SIZE - 1);
+            *paddr_out = page_base_phys + page_offset;
+            *flags_out = pte & PAGING_FLAG_MASK; // Return PTE flags for 4KB page
+            return 0; // Success
+        }
+    }
+    else {
+        // --- Lookup in ANOTHER Page Directory ---
+        if (!page_directory_phys) return KERN_EINVAL;
+        if (!g_kernel_page_directory_virt) return KERN_EPERM;
+
+        int ret = KERN_ENOENT;
+        uint32_t* target_pd_virt_temp = NULL;
+        uint32_t* target_pt_virt_temp = NULL;
+
+        target_pd_virt_temp = paging_temp_map((uintptr_t)page_directory_phys, PTE_KERNEL_READONLY_FLAGS);
+        if (!target_pd_virt_temp) {
+            return KERN_EPERM;
+        }
+
+        uint32_t pd_idx = PDE_INDEX(vaddr);
+        uint32_t pde = target_pd_virt_temp[pd_idx];
+
+        if (pde & PAGE_PRESENT) {
+            if (pde & PAGE_SIZE_4MB) {
+                uintptr_t page_base_phys = pde & PAGING_PDE_ADDR_MASK_4MB;
+                uintptr_t page_offset = vaddr & (PAGE_SIZE_LARGE - 1);
+                *paddr_out = page_base_phys + page_offset;
+                *flags_out = pde & PAGING_FLAG_MASK; // Get flags from PDE
+                ret = 0;
+            } else {
+                uintptr_t pt_phys = pde & PAGING_PDE_ADDR_MASK_4KB;
+                target_pt_virt_temp = paging_temp_map(pt_phys, PTE_KERNEL_READONLY_FLAGS);
+                if (!target_pt_virt_temp) {
+                     ret = KERN_EPERM;
+                } else {
+                    uint32_t pt_idx = PTE_INDEX(vaddr);
+                    uint32_t pte = target_pt_virt_temp[pt_idx];
+                    if (pte & PAGE_PRESENT) {
+                        uintptr_t page_base_phys = pte & PAGING_PTE_ADDR_MASK;
+                        uintptr_t page_offset = vaddr & (PAGE_SIZE - 1);
+                        *paddr_out = page_base_phys + page_offset;
+                        *flags_out = pte & PAGING_FLAG_MASK; // Get flags from PTE
+                        ret = 0;
+                    }
+                    paging_temp_unmap(target_pt_virt_temp); // Unmap temp PT
+                }
+            }
+        }
+        paging_temp_unmap(target_pd_virt_temp); // Unmap temp PD
+        return ret;
+    }
+}
+

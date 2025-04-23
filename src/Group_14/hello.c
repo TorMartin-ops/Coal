@@ -1,45 +1,28 @@
-// hello.c - Simple user-space program for UiAOS - Prints Hello World
+// hello.c - Simplest exit test
 
-// Define syscall numbers directly if no user-space header exists
 #define SYS_EXIT  1
-#define SYS_WRITE 4
-
-// Define standard file descriptors
-#define STDOUT_FILENO 1
 
 // Simple inline assembly wrapper for syscalls
-// Returns the value from EAX (syscall return value)
 static inline int syscall(int num, int arg1, int arg2, int arg3) {
     int ret;
     asm volatile (
-        "int $0x80"         // Invoke syscall interrupt
+        "int $0x80"
         : "=a" (ret)        // Output: return value in EAX -> ret
-        : "a" (num),        // Input: syscall number in EAX
-          "b" (arg1),       // Input: argument 1 in EBX
-          "c" (arg2),       // Input: argument 2 in ECX
-          "d" (arg3)        // Input: argument 3 in EDX
-        : "memory", "cc"    // Clobbers memory and condition codes
+        // Ensure EAX is explicitly listed as input operand for syscall number
+        : "a" (num), "b" (arg1), "c" (arg2), "d" (arg3)
+        // IMPORTANT: Add input registers to clobber list IF they might be modified
+        // by the syscall *and* the compiler needs to know. Usually "memory" is enough.
+        : "memory", "cc" // "eax", "ebx", "ecx", "edx" might be needed if ABI is complex
     );
     return ret;
 }
 
-// Simple strlen implementation (no standard library)
-static unsigned int my_strlen(const char *str) {
-    unsigned int len = 0;
-    while (str[len]) {
-        len++;
-    }
-    return len;
-}
-
-// Main entry point
 int main() {
-    const char *message = "Hello, World from User Space!\n";
-    unsigned int len = my_strlen(message);
+    // First and ONLY action: Exit immediately.
+    syscall(SYS_EXIT, 55, 0, 0); // Use a distinct exit code like 55
 
-    // Call SYS_WRITE(STDOUT_FILENO, message, len)
-    syscall(SYS_WRITE, STDOUT_FILENO, (int)message, (int)len);
+    // This should never be reached if exit works
+    while(1) {} // Loop forever if exit fails
 
-    // Returning 0 implicitly calls SYS_EXIT(0) via entry.asm
-    return 0;
+    return 99;
 }

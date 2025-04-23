@@ -225,6 +225,11 @@
   */
  void paging_temp_unmap(void* temp_vaddr);
 
+ int paging_get_physical_address_and_flags(uint32_t *page_directory_phys,
+    uintptr_t vaddr,
+    uintptr_t *paddr_out,
+    uint32_t *flags_out);
+
 
  #ifdef __cplusplus
  }

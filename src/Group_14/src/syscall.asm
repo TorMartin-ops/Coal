@@ -7,6 +7,16 @@
     %define KERNEL_DATA_SELECTOR 0x10 ; Example value - USE YOUR ACTUAL KERNEL DS
 
     syscall_handler_asm:
+     ; <<< --- ADDED DEBUG PRINT --- >>>
+    pusha
+    mov al, '#' ; Indicate ASM handler entry
+    call serial_putc_asm
+    mov al, 'S'
+    call serial_putc_asm
+    popa
+    ; <<< --- END ADDED DEBUG PRINT --- >>>
+
+
         ; CPU pushes: EFLAGS, CS (user), EIP (user)
         ; [SS (user), ESP (user) if privilege change from user to kernel]
         ; Stack top -> bottom: [UserSS], [UserESP], EFLAGS, CS, EIP
