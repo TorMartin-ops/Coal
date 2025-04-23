@@ -47,31 +47,46 @@ IRQ_HANDLER 15  ; Secondary ATA Hard Disk (Vector 47)
 ; Creates the stack frame expected by the C isr_common_handler(isr_frame_t* frame).
 ; Assumes KERNEL_DATA_SEG is defined above.
 common_interrupt_stub:
-    ; CPU/Stub already pushed ErrorCode and VectorNumber
-    pusha          ; Save GP registers
+    ; 1. Save segment registers (DS, ES, FS, GS) first, as isr_frame_t expects them
+    ;    at the lowest address pushed by the stub.
+    push ds
+    push es
+    push fs
+    push gs
 
-    ; Save the original DS, ES, FS, GS *temporarily* if needed by C
-    ; but DO NOT pop them back just before IRET. IRET handles segments.
-    ; For simplicity, if C handler doesn't need them, skip push/pop.
-    ; Let's assume C doesn't need them for now.
+    ; 2. Save all general purpose registers
+    pusha          ; Pushes EDI, ESI, EBP, ESP_dummy, EBX, EDX, ECX, EAX
 
-    mov ax, KERNEL_DATA_SEG ; Kernel Data Selector
+    ; 3. Load kernel data segments into segment registers for C handler execution
+    mov ax, KERNEL_DATA_SEG
     mov ds, ax
     mov es, ax
     mov fs, ax
-    mov gs, ax
+    mov gs, ax      ; GS is now set (original was saved by initial push gs)
 
-    mov eax, esp    ; Get pointer to the stack frame base (after pusha)
-                    ; Adjust isr_frame_t definition if DS/ES/FS/GS aren't pushed
-    push eax        ; Push argument for C handler
+    ; 4. Call the C handler, passing a pointer to the saved state.
+    ;    ESP now points to the saved EAX from pusha. The C handler expects
+    ;    a pointer to the *start* of the frame (the pushed gs).
+    ;    The offset from current ESP to the start of the frame is 32 bytes (pusha).
+    mov eax, esp    ; Get pointer to the start of the isr_frame_t structure
+    push eax        ; Push pointer as argument for isr_common_handler
     call isr_common_handler
-    add esp, 4      ; Clean up argument
+    add esp, 4      ; Clean up argument stack
 
-    ; NO explicit "pop gs/fs/es/ds" here
+    ; 5. Restore segment registers (placeholder pop gs, real restore is later)
+    pop gs          ; Pop the saved GS value (now unused, will be restored below)
 
-    popa            ; Restore GP registers
+    ; 6. Restore general purpose registers
+    popa
 
-    add esp, 8      ; Clean up Vector Number and Error Code
+    ; 7. Restore original segment registers (popped in reverse order of push)
+    pop fs
+    pop es
+    pop ds
 
-    iret            ; Return, restores EIP, CS, EFLAGS, ESP, SS
-                    ; implicitly loads DS, ES, FS, GS based on new SS/CS
+    ; 8. Clean up the vector number and error code pushed by the specific stub
+    add esp, 8
+
+    ; 9. Return from interrupt
+    ; sti
+    iret

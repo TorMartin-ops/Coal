@@ -16,6 +16,7 @@
  #include "multiboot2.h"         // For parsing memory map
  #include "msr.h"                // For MSR read/write (EFER)
  #include "assert.h"             // For KERNEL_ASSERT
+#include "serial.h"             // Serial port logging
 
  // --- Constants and Macros ---
  #ifndef PAGING_PANIC
@@ -1523,25 +1524,25 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
 
 
  // --- Page Fault Handler ---
- // --- Page Fault Handler ---
- void page_fault_handler(registers_t *regs) {
+ void page_fault_handler(registers_t *regs) { // <-- Use isr_frame_t
     serial_write("[PF] Enter C page_fault_handler\n");
     uintptr_t fault_addr;
     asm volatile("mov %%cr2, %0" : "=r"(fault_addr));
 
-    if (!regs) {
+    if (!regs) { // <-- Use frame
         terminal_printf("\n--- PAGE FAULT (#PF) --- \n");
-        terminal_printf(" FATAL ERROR: regs pointer is NULL in page_fault_handler!\n");
-        KERNEL_PANIC_HALT("Page Fault with NULL registers structure");
+        terminal_printf(" FATAL ERROR: frame pointer is NULL in page_fault_handler!\n");
+        KERNEL_PANIC_HALT("Page Fault with NULL frame structure");
         return;
     }
 
-    uint32_t error_code = regs->err_code;
+    uint32_t error_code = regs->err_code; // <-- Use frame
 
-    bool present         = (error_code & 0x1);
-    bool write           = (error_code & 0x2);
-    bool user            = (error_code & 0x4); // Fault occurred in user mode?
-    bool reserved_bit    = (error_code & 0x8);
+    // Decode error code bits
+    bool non_present       = !(error_code & 0x1); // Corrected: 0 = Not Present
+    bool write_fault       = (error_code & 0x2);
+    bool user_mode         = (error_code & 0x4); // Fault occurred while CPL=3?
+    bool reserved_bit      = (error_code & 0x8);
     bool instruction_fetch = (error_code & 0x10);
 
     pcb_t* current_process = get_current_process();
@@ -1550,55 +1551,57 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
     terminal_printf("\n--- PAGE FAULT (#PF) ---\n");
     // Use %lu for pid (uint32_t), %p for address, %lx for error_code
     terminal_printf(" PID: %lu, Addr: %p, ErrCode: 0x%lx\n",
-      (unsigned long)current_pid,
-      (void*)fault_addr,
-      (unsigned long)error_code);
+        (unsigned long)current_pid,
+        (void*)fault_addr,
+        (unsigned long)error_code);
     terminal_printf(" Details: %s, %s, %s, %s, %s\n",
-                    present ? "Present" : "Not-Present",
-                    write ? "Write" : "Read",
-                    user ? "User-Mode" : "Supervisor-Mode", // Clarified label
+                    non_present ? "Not-Present" : "Present(Protection)", // Corrected label
+                    write_fault ? "Write" : "Read",
+                    user_mode ? "User-Mode" : "Supervisor-Mode", // Clarified label
                     reserved_bit ? "Reserved-Bit-Set" : "Reserved-OK",
                     instruction_fetch ? (g_nx_supported ? "Instruction-Fetch(NX?)" : "Instruction-Fetch") : "Data-Access");
     // Use %p for EIP, %lx for CS/EFLAGS
     terminal_printf(" CPU State: EIP=%p, CS=0x%lx, EFLAGS=0x%lx\n",
-      (void*)regs->eip,
-      (unsigned long)regs->cs,
-      (unsigned long)regs->eflags);
+        (void*)regs->eip, // <-- Use frame
+        (unsigned long)regs->cs, // <-- Use frame
+        (unsigned long)regs->eflags); // <-- Use frame
     // Use %lx for general regs, %p for EBP, %lx for saved ESP
     terminal_printf(" EAX=0x%#lx EBX=0x%#lx ECX=0x%#lx EDX=0x%#lx\n",
-          (unsigned long)regs->eax, (unsigned long)regs->ebx,
-          (unsigned long)regs->ecx, (unsigned long)regs->edx);
+            (unsigned long)regs->eax, (unsigned long)regs->ebx, // <-- Use frame
+            (unsigned long)regs->ecx, (unsigned long)regs->edx); // <-- Use frame
     terminal_printf(" ESI=0x%#lx EDI=0x%#lx EBP=%p K_ESP_before_pusha=0x%#lx\n", // Renamed esp_dummy label
-          (unsigned long)regs->esi, (unsigned long)regs->edi,
-          (void*)regs->ebp, (unsigned long)regs->esp_dummy); // This is ESP before PUSHA
+            (unsigned long)regs->esi, (unsigned long)regs->edi, // <-- Use frame
+            (void*)regs->ebp, (unsigned long)regs->esp_dummy); // <-- Use frame
 
-    // ---> FIX: Conditionally access and print user_ss/user_esp <---
-    // Check if the fault happened in user mode by checking RPL of CS selector pushed by CPU
-    if ((regs->cs & 3) != 0) { // RPL = bits 0-1 of CS selector
+    // Conditionally access and print user_ss/user_esp
+    // Check if the fault happened *while CPL was 3* by checking RPL of CS selector pushed by CPU
+    if ((regs->cs & 3) != 0) { // RPL = bits 0-1 of CS selector <-- Use frame
         // If yes, user_ss and user_esp were pushed by the CPU *after* eflags
-        // Calculate their position relative to the known eflags field address.
-        // Note: This relies on the registers_t struct layout being correct up to eflags.
-        uint32_t* stack_ptr_at_eflags = &regs->eflags;
-        // user_esp is one dword below eflags, user_ss is two dwords below on the stack
-        uint32_t user_esp_val = *(stack_ptr_at_eflags + 1);
-        uint32_t user_ss_val  = *(stack_ptr_at_eflags + 2);
-        terminal_printf("              U_ESP=0x%#lx, U_SS=0x%#lx\n",
-                        (unsigned long)user_esp_val,
-                        (unsigned long)user_ss_val);
+        // Access them directly from the frame struct
+        terminal_printf("           U_ESP=0x%#lx, U_SS=0x%#lx\n",
+                        (unsigned long)regs->useresp, // <-- Use frame
+                        (unsigned long)regs->ss);     // <-- Use frame
     }
-    // ---> END FIX <---
 
-
-    if (!user) { // Check error code flag: Did the fault *occur* while CPL=0?
+    if (!user_mode) { // Check error code flag: Did the fault *occur* while CPL=0?
         terminal_printf(" Reason: Fault occurred in Supervisor Mode!\n");
         if (reserved_bit) terminal_printf(" CRITICAL: Reserved bit set in paging structure accessed by kernel at VAddr %p!\n", (void*)fault_addr);
-        if (!present) terminal_printf(" CRITICAL: Kernel attempted to access non-present page at VAddr %p!\n", (void*)fault_addr);
-        else if (write) terminal_printf(" CRITICAL: Kernel write attempt caused protection fault at VAddr %p!\n", (void*)fault_addr);
-        // Check if fault address is within uaccess exception table range here if applicable
-        PAGING_PANIC("Irrecoverable Supervisor Page Fault");
-        return;
+
+        // *** Corrected Logic Here ***
+        if (non_present) { // Check if page was NOT present
+             terminal_printf(" CRITICAL: Kernel attempted to access non-present page at VAddr %p!\n", (void*)fault_addr);
+             // Line 1598 is likely here or just after
+             KERNEL_PANIC_HALT("Irrecoverable Supervisor Page Fault");
+        } else { // Page was present, so it's a protection fault
+             if (write_fault) terminal_printf(" CRITICAL: Kernel write attempt caused protection fault at VAddr %p!\n", (void*)fault_addr);
+             else terminal_printf(" CRITICAL: Kernel read/execute attempt caused protection fault at VAddr %p!\n", (void*)fault_addr);
+             KERNEL_PANIC_HALT("Irrecoverable Supervisor Protection Fault");
+        }
+        // KERNEL_PANIC_HALT should not return
+        return; // Keep compiler happy
     }
 
+    // --- User Mode Fault ---
     terminal_printf(" Reason: Fault occurred in User Mode.\n");
 
     if (!current_process) {
@@ -1640,28 +1643,28 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
     }
 
     terminal_printf("  VMA Found: [%#lx - %#lx) Flags: %c%c%c PageProt: 0x%lx\n",
-      (unsigned long)vma->vm_start, (unsigned long)vma->vm_end,
-      (vma->vm_flags & VM_READ) ? 'R' : '-',
-      (vma->vm_flags & VM_WRITE) ? 'W' : '-',
-      (vma->vm_flags & VM_EXEC) ? 'X' : '-',
-      (unsigned long)vma->page_prot);
+        (unsigned long)vma->vm_start, (unsigned long)vma->vm_end,
+        (vma->vm_flags & VM_READ) ? 'R' : '-',
+        (vma->vm_flags & VM_WRITE) ? 'W' : '-',
+        (vma->vm_flags & VM_EXEC) ? 'X' : '-',
+        (unsigned long)vma->page_prot);
 
     // Check permissions against VMA flags (not just PTE flags)
-    if (write && !(vma->vm_flags & VM_WRITE)) {
+    if (write_fault && !(vma->vm_flags & VM_WRITE)) {
         terminal_printf("  Error: Write attempt to VMA without VM_WRITE flag. Segmentation Fault.\n");
         goto kill_process;
     }
     // Note: Read implies execute if NX is not supported/set
-    if (!write && !(vma->vm_flags & VM_READ)) {
+    if (!write_fault && !(vma->vm_flags & VM_READ)) {
          // This case might need refinement depending on execute handling
          terminal_printf("  Error: Read/Execute attempt from VMA without VM_READ flag. Segmentation Fault.\n");
          goto kill_process;
     }
      // Explicit execute check (relevant even without HW NX if VM_EXEC is used meaningfully)
      if (instruction_fetch && !(vma->vm_flags & VM_EXEC)) {
-          // We might reach here even if HW NX isn't supported/active, but the VMA lacks EXEC permission
-          terminal_printf("  Error: Instruction fetch from VMA without VM_EXEC flag. Segmentation Fault.\n");
-          goto kill_process;
+         // We might reach here even if HW NX isn't supported/active, but the VMA lacks EXEC permission
+         terminal_printf("  Error: Instruction fetch from VMA without VM_EXEC flag. Segmentation Fault.\n");
+         goto kill_process;
      }
 
     terminal_printf("  Attempting to handle fault via VMA operations (Demand Paging / COW)...\n");

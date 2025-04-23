@@ -1,16 +1,16 @@
 #include "syscall.h"
-#include "terminal.h"   // For terminal output (STDOUT/STDERR & debugging)
-#include "process.h"    // For get_current_process(), pcb_t
-#include "scheduler.h"  // For remove_current_task_with_code()
-#include "sys_file.h"   // For sys_open, sys_read, sys_write, sys_close, sys_lseek impls
-#include "kmalloc.h"    // For kmalloc/kfree
-#include "string.h"     // For memcpy/memset/strncpy (careful usage)
-#include "uaccess.h"    // For access_ok, copy_from_user, copy_to_user
-#include "fs_errno.h"   // For error codes (EFAULT, ENOSYS, EBADF, EINVAL, ENOMEM, etc.)
-#include "fs_limits.h"  // For MAX_PATH_LEN, MAX_FD
-#include "vfs.h"        // For SEEK_SET, SEEK_CUR, SEEK_END definitions (via sys_file.h)
-#include "assert.h"     // For KERNEL_PANIC_HALT, KERNEL_ASSERT
-#include "debug.h"      // For DEBUG_PRINTK
+#include "terminal.h"    // For terminal output (STDOUT/STDERR & debugging)
+#include "process.h"     // For get_current_process(), pcb_t
+#include "scheduler.h"   // For remove_current_task_with_code()
+#include "sys_file.h"    // For sys_open, sys_read, sys_write, sys_close, sys_lseek impls
+#include "kmalloc.h"     // For kmalloc/kfree
+#include "string.h"      // For memcpy/memset/strncpy (careful usage)
+#include "uaccess.h"     // For access_ok, copy_from_user, copy_to_user
+#include "fs_errno.h"    // For error codes (EFAULT, ENOSYS, EBADF, EINVAL, ENOMEM, etc.)
+#include "fs_limits.h"   // For MAX_PATH_LEN, MAX_FD
+#include "vfs.h"         // For SEEK_SET, SEEK_CUR, SEEK_END definitions (via sys_file.h)
+#include "assert.h"      // For KERNEL_PANIC_HALT, KERNEL_ASSERT
+#include "debug.h"       // For DEBUG_PRINTK
 
 // Define standard file descriptors
 #define STDIN_FILENO  0
@@ -27,13 +27,13 @@
 #endif
 
 // Forward declarations for static syscall implementation functions
-static int sys_exit_impl(uint32_t exit_code, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5);
-static int sys_read_impl(uint32_t fd, uint32_t user_buf_ptr, uint32_t count, uint32_t arg3, uint32_t arg4, uint32_t arg5);
-static int sys_write_impl(uint32_t fd, uint32_t user_buf_ptr, uint32_t count, uint32_t arg3, uint32_t arg4, uint32_t arg5);
-static int sys_open_impl(uint32_t user_pathname_ptr, uint32_t flags, uint32_t mode, uint32_t arg3, uint32_t arg4, uint32_t arg5);
-static int sys_close_impl(uint32_t fd, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5);
-static int sys_lseek_impl(uint32_t fd, uint32_t offset, uint32_t whence, uint32_t arg3, uint32_t arg4, uint32_t arg5);
-static int sys_not_implemented(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5);
+static int sys_exit_impl(syscall_regs_t *regs);
+static int sys_read_impl(syscall_regs_t *regs);
+static int sys_write_impl(syscall_regs_t *regs);
+static int sys_open_impl(syscall_regs_t *regs);
+static int sys_close_impl(syscall_regs_t *regs);
+static int sys_lseek_impl(syscall_regs_t *regs);
+static int sys_not_implemented(syscall_regs_t *regs);
 
 // The system call dispatch table
 static syscall_fn_t syscall_table[MAX_SYSCALLS];
@@ -120,20 +120,21 @@ static int strncpy_from_user_safe(const char *u_src, char *k_dst, size_t maxlen)
 // Syscall Implementation Functions (Static)
 //-----------------------------------------------------------------------------
 
-static int sys_not_implemented(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
+static int sys_not_implemented(syscall_regs_t *regs) {
     // Avoid unused parameter warnings (optional)
-    (void)arg0; (void)arg1; (void)arg2; (void)arg3; (void)arg4; (void)arg5;
+    (void)regs;
 
     pcb_t* current_proc = get_current_process();
     uint32_t pid = current_proc ? current_proc->pid : 0;
-    // Note: Accessing the original syscall number requires peeking at the stack frame
-    // or modifying the dispatcher to pass it. For simplicity, we omit it here.
-    DEBUG_PRINTK("[Syscall] PID %u: Called unimplemented syscall.\n", pid);
+    // Access the original syscall number from the frame
+    uint32_t syscall_num = regs->eax;
+    DEBUG_PRINTK("[Syscall] PID %u: Called unimplemented syscall %u.\n", pid, syscall_num);
     return -ENOSYS; // Function not implemented
 }
 
-static int sys_exit_impl(uint32_t exit_code, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
-    (void)arg1; (void)arg2; (void)arg3; (void)arg4; (void)arg5; // Unused args
+static int sys_exit_impl(syscall_regs_t *regs) {
+    // Extract argument(s) from the frame struct
+    uint32_t exit_code = regs->ebx; // Arg 0 is in EBX
 
     pcb_t* current_proc = get_current_process();
     uint32_t pid = current_proc ? current_proc->pid : 0; // Get PID safely
@@ -147,8 +148,11 @@ static int sys_exit_impl(uint32_t exit_code, uint32_t arg1, uint32_t arg2, uint3
     return 0; // Unreachable
 }
 
-static int sys_read_impl(uint32_t fd, uint32_t user_buf_ptr, uint32_t count, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
-    (void)arg3; (void)arg4; (void)arg5; // Unused args
+static int sys_read_impl(syscall_regs_t *regs) {
+    // Extract arguments from frame
+    uint32_t fd           = regs->ebx; // Arg 0
+    uint32_t user_buf_ptr = regs->ecx; // Arg 1
+    uint32_t count        = regs->edx; // Arg 2
 
     void *user_buf = (void*)user_buf_ptr;
     char* kbuf = NULL; // Kernel buffer for chunking
@@ -221,8 +225,11 @@ sys_read_cleanup_and_exit:
 }
 
 
-static int sys_write_impl(uint32_t fd, uint32_t user_buf_ptr, uint32_t count, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
-    (void)arg3; (void)arg4; (void)arg5; // Unused args
+static int sys_write_impl(syscall_regs_t *regs) {
+    // Extract arguments from frame
+    uint32_t fd           = regs->ebx; // Arg 0
+    uint32_t user_buf_ptr = regs->ecx; // Arg 1
+    uint32_t count        = regs->edx; // Arg 2
 
     const void *user_buf = (const void*)user_buf_ptr;
     char* kbuf = NULL;
@@ -255,11 +262,9 @@ static int sys_write_impl(uint32_t fd, uint32_t user_buf_ptr, uint32_t count, ui
 
             size_t copied_this_chunk = current_chunk_size - not_copied;
 
-            // Write the successfully copied part to the terminal character by character
-            for (size_t i = 0; i < copied_this_chunk; i++) {
-                 // Assuming terminal_write_char exists in terminal.h/c
-                 terminal_write_char(kbuf[i]);
-            }
+            // Write the successfully copied part to the terminal
+            // *** MODIFIED: Use terminal_write_bytes ***
+            terminal_write_bytes(kbuf, copied_this_chunk);
             total_written += copied_this_chunk;
 
             // If copy_from_user failed, stop and return bytes written or EFAULT
@@ -314,8 +319,11 @@ sys_write_cleanup_and_exit:
 }
 
 
-static int sys_open_impl(uint32_t user_pathname_ptr, uint32_t flags, uint32_t mode, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
-    (void)arg3; (void)arg4; (void)arg5; // Unused args
+static int sys_open_impl(syscall_regs_t *regs) {
+    // Extract arguments from frame
+    uint32_t user_pathname_ptr = regs->ebx; // Arg 0
+    uint32_t flags             = regs->ecx; // Arg 1
+    uint32_t mode              = regs->edx; // Arg 2
 
     const char *user_pathname = (const char*)user_pathname_ptr;
     // Allocate kernel buffer for path on the stack if reasonably small, else kmalloc
@@ -339,8 +347,9 @@ static int sys_open_impl(uint32_t user_pathname_ptr, uint32_t flags, uint32_t mo
     return fd;
 }
 
-static int sys_close_impl(uint32_t fd, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
-    (void)arg1; (void)arg2; (void)arg3; (void)arg4; (void)arg5; // Unused args
+static int sys_close_impl(syscall_regs_t *regs) {
+    // Extract arguments from frame
+    uint32_t fd = regs->ebx; // Arg 0
 
     // DEBUG_PRINTK("[Syscall] SYS_CLOSE: fd=%d\n", fd);
     // Call the underlying sys_close function (handles VFS and FD table)
@@ -349,8 +358,11 @@ static int sys_close_impl(uint32_t fd, uint32_t arg1, uint32_t arg2, uint32_t ar
     return ret;
 }
 
-static int sys_lseek_impl(uint32_t fd, uint32_t offset, uint32_t whence, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
-    (void)arg3; (void)arg4; (void)arg5; // Unused args
+static int sys_lseek_impl(syscall_regs_t *regs) {
+    // Extract arguments from frame
+    uint32_t fd     = regs->ebx; // Arg 0
+    uint32_t offset = regs->ecx; // Arg 1
+    uint32_t whence = regs->edx; // Arg 2
 
     // Basic validation for whence (should match SEEK_SET, SEEK_CUR, SEEK_END)
     if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) {
@@ -381,6 +393,7 @@ static int sys_lseek_impl(uint32_t fd, uint32_t offset, uint32_t whence, uint32_
  * The return value is placed back into regs->eax.
  */
 void syscall_dispatcher(syscall_regs_t *regs) {
+    // Extract syscall number from the correct field
     uint32_t syscall_num = regs->eax;
     int ret_val = -ENOSYS; // Default return: not implemented
 
@@ -398,7 +411,7 @@ void syscall_dispatcher(syscall_regs_t *regs) {
             // Unreachable
         }
         // Set a return value just in case panic doesn't halt immediately
-        regs->eax = (uint32_t)-EFAULT;
+        regs->eax = (uint32_t)-EFAULT; // Set return value in frame
         return;
     }
     // uint32_t current_pid = current_proc->pid; // For logging if needed
@@ -409,8 +422,8 @@ void syscall_dispatcher(syscall_regs_t *regs) {
         syscall_fn_t handler = syscall_table[syscall_num];
         if (handler) {
             // Call the specific implementation function
-            // Arguments passed according to convention: ebx, ecx, edx, esi, edi, ebp
-            ret_val = handler(regs->ebx, regs->ecx, regs->edx, regs->esi, regs->edi, regs->ebp);
+            // Pass the full regs struct
+            ret_val = handler(regs);
         } else {
             // Should not happen if table initialized correctly, but handle defensively
             DEBUG_PRINTK("[Syscall] PID %u: Error: NULL handler for syscall %u.\n", current_proc->pid, syscall_num);
@@ -422,8 +435,9 @@ void syscall_dispatcher(syscall_regs_t *regs) {
     }
 
     // Set the return value in the context's EAX register for the user process
+    // The assembly stub will pop this value into EAX before iret.
     regs->eax = (uint32_t)ret_val;
 
     // DEBUG_PRINTK("[Syscall] Exit: PID=%u, Num=%u, Return=%d (0x%x)\n",
-    //              current_pid, syscall_num, ret_val, regs->eax);
+    //             current_pid, syscall_num, ret_val, regs->eax);
 }

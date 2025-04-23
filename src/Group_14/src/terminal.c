@@ -744,6 +744,12 @@
      spinlock_release_irqrestore(&terminal_lock, flags); // Release lock
  }
 
+ void terminal_write_bytes(const char* data, size_t size) {
+    for (size_t i = 0; i < size; ++i) {
+        terminal_putchar(data[i]);
+    }
+}
+
 
  /* ------------------------------------------------------------------------- */
  /* End of file                                                              */

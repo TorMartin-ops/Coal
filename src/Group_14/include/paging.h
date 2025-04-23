@@ -160,6 +160,8 @@
     uint32_t err_code;
     // Pushed by CPU automatically on interrupt/exception
     uint32_t eip, cs, eflags;
+    uint32_t useresp; // User stack pointer
+    uint32_t ss;      // User stack segment
 } __attribute__((packed)) registers_t; // <<< ADDED PACKED ATTRIBUTE HERE
 
 

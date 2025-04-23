@@ -165,4 +165,7 @@ void terminal_write_char(char c); // Keep this if keyboard.c specifically uses i
 // Add this declaration in terminal.h
 void terminal_backspace(void);
 
+void terminal_write_bytes(const char* data, size_t size); // <-- ADDED DECLARATION
+
+
 #endif // TERMINAL_H
