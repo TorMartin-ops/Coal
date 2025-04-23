@@ -10,6 +10,7 @@
 void serial_init(); // Optional initialization
 void serial_putchar(char c);
 void serial_write(const char *str);
+void serial_print_hex(uint32_t n); // Print hex value
 // You could also implement serial_printf if needed
 
 #endif // SERIAL_H

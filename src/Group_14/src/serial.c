@@ -29,6 +29,17 @@ void serial_write(const char *str) {
   }
 }
 
+void serial_print_hex(uint32_t n) {
+  char buf[9];
+  buf[8] = '\0'; // Null terminator
+  const char *digits = "0123456789ABCDEF";
+  for (int i = 7; i >= 0; i--) {
+      buf[i] = digits[n & 0xF]; // Get last nibble
+      n >>= 4;                 // Shift right by 4 bits
+  }
+  serial_write(buf); // Write the hex string
+}
+
 // Optional: Basic Initialization (can set baud rate, etc., but often works with defaults in QEMU)
 void serial_init() {
    // Basic init - QEMU often defaults work fine

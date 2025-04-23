@@ -19,14 +19,17 @@
  #include "vfs.h"         // For SEEK_SET, SEEK_CUR, SEEK_END definitions (needed by sys_file.h)
  #include "assert.h"      // For KERNEL_PANIC_HALT, KERNEL_ASSERT
  #include "debug.h"       // For DEBUG_PRINTK
+ #include "serial.h"      // For serial_write and serial_print_hex
  
  // --- Debug Configuration ---
- #define DEBUG_SYSCALL 0 // Set to 1 to enable syscall debug messages
+ // Enable full syscall debug logging via DEBUG_PRINTK (optional)
+ #define DEBUG_SYSCALL 1 // <<< Set to 1 to enable logging >>>
  
  #if DEBUG_SYSCALL
- #define SYSCALL_DEBUG_PRINTK(fmt, ...) DEBUG_PRINTK("[Syscall] " fmt, ##__VA_ARGS__)
+ // Ensure DEBUG_PRINTK is defined in debug.h and works correctly
+ #define SYSCALL_DEBUG_PRINTK(fmt, ...) DEBUG_PRINTK("[Syscall] " fmt "\n", ##__VA_ARGS__)
  #else
- #define SYSCALL_DEBUG_PRINTK(fmt, ...) ((void)0)
+ #define SYSCALL_DEBUG_PRINTK(fmt, ...) ((void)0) // No-op if disabled
  #endif
  
  // --- Constants ---
@@ -66,6 +69,10 @@
  // Helper functions
  static int strncpy_from_user_safe(const char *u_src, char *k_dst, size_t maxlen);
  
+ // External helper for printing hex via serial
+ // Ensure its prototype is available (e.g., in serial.h or debug.h)
+ extern void serial_print_hex(uint32_t n);
+ 
  //-----------------------------------------------------------------------------
  // Syscall Initialization
  //-----------------------------------------------------------------------------
@@ -76,89 +83,121 @@
   * Specific handlers are then registered for implemented syscalls.
   */
  void syscall_init(void) {
-     DEBUG_PRINTK("Initializing system call table (max %d syscalls)...\n", MAX_SYSCALLS);
+      serial_write(" FNC_ENTER: syscall_init\n");
+      DEBUG_PRINTK("Initializing system call table (max %d syscalls)...\n", MAX_SYSCALLS);
+      serial_write("  STEP: Looping to init table\n");
+      // Initialize all entries to point to the 'not implemented' function
+      for (int i = 0; i < MAX_SYSCALLS; i++) {
+          syscall_table[i] = sys_not_implemented;
+      }
+      serial_write("  STEP: Registering handlers\n");
+      // Register implemented system calls
+      syscall_table[SYS_EXIT]  = sys_exit_impl; // <<< ENSURE THIS IS CORRECT
+      syscall_table[SYS_READ]  = sys_read_impl;
+      syscall_table[SYS_WRITE] = sys_write_impl;
+      syscall_table[SYS_OPEN]  = sys_open_impl;
+      syscall_table[SYS_CLOSE] = sys_close_impl;
+      syscall_table[SYS_LSEEK] = sys_lseek_impl;
+      syscall_table[SYS_GETPID] = sys_getpid_impl;
  
-     // Initialize all entries to point to the 'not implemented' function
-     for (int i = 0; i < MAX_SYSCALLS; i++) {
-         syscall_table[i] = sys_not_implemented;
-     }
+      // --- **FIX**: Verification Assertion ---
+      // Explicitly check if the assignment for SYS_EXIT worked immediately.
+      // If this assertion fails, the problem is right here in syscall_init
+      // (e.g., sys_exit_impl isn't defined correctly, or SYS_EXIT isn't 1).
+      serial_write("  STEP: Verifying SYS_EXIT assignment...\n");
+      KERNEL_ASSERT(syscall_table[SYS_EXIT] == sys_exit_impl, "syscall_table[SYS_EXIT] assignment failed! Check definitions.");
+      KERNEL_ASSERT(syscall_table[SYS_EXIT] != sys_not_implemented, "syscall_table[SYS_EXIT] incorrectly points to sys_not_implemented!");
+      serial_write("  STEP: SYS_EXIT assignment OK.\n");
+      // --- END **FIX** ---
  
-     // Register implemented system calls
-     syscall_table[SYS_EXIT]  = sys_exit_impl;
-     syscall_table[SYS_READ]  = sys_read_impl;
-     syscall_table[SYS_WRITE] = sys_write_impl;
-     syscall_table[SYS_OPEN]  = sys_open_impl;
-     syscall_table[SYS_CLOSE] = sys_close_impl;
-     syscall_table[SYS_LSEEK] = sys_lseek_impl;
  
-     // Register placeholders for common syscalls
-     syscall_table[SYS_GETPID] = sys_getpid_impl; // Example placeholder
-     // syscall_table[SYS_FORK]   = sys_fork_impl; // Requires significant process/memory management additions
-     // syscall_table[SYS_EXECVE] = sys_execve_impl; // Requires ELF loading, argument handling etc.
-     // syscall_table[SYS_BRK]    = sys_brk_impl; // Requires VMA manipulation
+      // --- Pointer Logging for Debugging ---
+      serial_write(" DBG:InitPtrs:\n");
+      serial_write("  NI@"); serial_print_hex((uint32_t)sys_not_implemented); serial_write("\n");
+      serial_write("  EX@"); serial_print_hex((uint32_t)sys_exit_impl); serial_write("\n");
+      serial_write("  T0@"); serial_print_hex((uint32_t)syscall_table[0]); serial_write("\n"); // Should be NI
+      serial_write("  T1@"); serial_print_hex((uint32_t)syscall_table[1]); serial_write("\n"); // Should be EX (verified above)
+      serial_write("  T3@"); serial_print_hex((uint32_t)syscall_table[SYS_READ]); serial_write("\n"); // Should be sys_read_impl
+      // Also log via DEBUG_PRINTK if enabled/working
+      #if DEBUG_SYSCALL
+      DEBUG_PRINTK("   sys_not_implemented func ptr = %p\n", sys_not_implemented);
+      DEBUG_PRINTK("   sys_exit_impl       func ptr = %p\n", sys_exit_impl);
+      DEBUG_PRINTK("   syscall_table[0]    func ptr = %p\n", syscall_table[0]);
+      DEBUG_PRINTK("   syscall_table[1]    func ptr = %p\n", syscall_table[1]);
+      DEBUG_PRINTK("   syscall_table[3]    func ptr = %p\n", syscall_table[SYS_READ]);
+      #endif
+      // --- END Logging ---
  
-     DEBUG_PRINTK("System call table initialization complete.\n");
+ 
+      DEBUG_PRINTK("System call table initialization complete.\n");
+      serial_write(" FNC_EXIT: syscall_init\n");
  }
  
  //-----------------------------------------------------------------------------
  // Static Helper: Safe String Copy from User Space
  //-----------------------------------------------------------------------------
- 
- /**
-  * @brief Copies a null-terminated string from user space safely.
-  * Uses copy_from_user internally byte-by-byte to handle page faults gracefully.
-  *
-  * @param u_src User space virtual address of the string. Must be accessible.
-  * @param k_dst Kernel space buffer to copy the string into. Must be valid kernel memory.
-  * @param maxlen Maximum number of bytes to copy into k_dst (including null terminator).
-  * The resulting kernel buffer is always null-terminated if maxlen > 0.
-  * @return 0 on success.
-  * @return -ENAMETOOLONG if the string length (excluding null terminator) is >= maxlen.
-  * @return -EFAULT if a page fault occurs while accessing user memory `u_src`.
-  * @return -EINVAL if maxlen is 0.
-  */
+ // ... (strncpy_from_user_safe function remains the same as the previous verbose version)
  static int strncpy_from_user_safe(const char *u_src, char *k_dst, size_t maxlen) {
-     if (maxlen == 0) {
-         return -EINVAL;
-     }
-     // Basic address check before proceeding (avoids obvious kernel faults)
-     // Note: access_ok provides more detailed VMA checks, but copy_from_user handles faults.
-     if (!u_src || (uintptr_t)u_src >= KERNEL_SPACE_VIRT_START) {
-          return -EFAULT; // Basic check for obviously bad user pointer
-     }
+      serial_write(" FNC_ENTER: strncpy_from_user_safe\n");
+      serial_write("  STEP: Checking maxlen\n");
+      if (maxlen == 0) {
+           serial_write("  RET: -EINVAL (maxlen=0)\n");
+          return -EINVAL;
+      }
+      serial_write("  STEP: Basic u_src check\n");
+      // Basic address check
+      if (!u_src || (uintptr_t)u_src >= KERNEL_SPACE_VIRT_START) {
+          serial_write("  RET: -EFAULT (bad u_src)\n");
+          return -EFAULT;
+      }
  
-     KERNEL_ASSERT(k_dst != NULL, "Kernel destination buffer cannot be NULL");
+      KERNEL_ASSERT(k_dst != NULL, "Kernel destination buffer cannot be NULL");
+      SYSCALL_DEBUG_PRINTK("strncpy_from_user_safe: Copying from u_src=%p to k_dst=%p (maxlen=%u)\n", u_src, k_dst, maxlen);
+      serial_write("  STEP: Entering copy loop\n");
+      size_t len = 0;
+      while (len < maxlen) {
+           serial_write("   LOOP: Top\n");
+          char current_char;
+          // Try to copy one byte
+          serial_write("   LOOP: Calling copy_from_user\n");
+          SYSCALL_DEBUG_PRINTK("  strncpy: Attempting copy_from_user for byte %u at %p\n", len, u_src + len);
+          size_t not_copied = copy_from_user(&current_char, u_src + len, 1);
+           serial_write("   LOOP: copy_from_user returned\n");
  
-     size_t len = 0;
-     while (len < maxlen) {
-         char current_char;
-         // Try to copy one byte
-         size_t not_copied = copy_from_user(&current_char, u_src + len, 1);
+          serial_write("   LOOP: Checking not_copied\n");
+          if (not_copied > 0) {
+              serial_write("   LOOP: Fault detected!\n");
+              // Fault occurred accessing user memory. Null-terminate kernel buffer safely.
+              k_dst[len > 0 ? len -1 : 0] = '\0'; // Terminate at last potentially valid point
+              SYSCALL_DEBUG_PRINTK("  strncpy: Fault copying byte %u from %p. Returning -EFAULT\n", len, u_src + len);
+              serial_write("  RET: -EFAULT (fault during copy)\n");
+              return -EFAULT;
+          }
  
-         if (not_copied > 0) {
-             // Fault occurred accessing user memory. Null-terminate kernel buffer safely.
-             k_dst[len > 0 ? len -1 : 0] = '\0'; // Terminate at last potentially valid point
-             SYSCALL_DEBUG_PRINTK("strncpy_from_user: Fault copying byte %u from %p\n", len, u_src + len);
-             return -EFAULT;
-         }
+          // Store the copied byte
+           serial_write("   LOOP: Storing char\n");
+          k_dst[len] = current_char;
+          SYSCALL_DEBUG_PRINTK("  strncpy: Copied byte %u = '%c' (0x%x)\n", len, (current_char >= ' ' ? current_char : '?'), current_char);
  
-         // Store the copied byte
-         k_dst[len] = current_char;
  
-         // Check for null terminator
-         if (current_char == '\0') {
-             return 0; // Success: Found null terminator within maxlen.
-         }
+          // Check for null terminator
+          serial_write("   LOOP: Checking null terminator\n");
+          if (current_char == '\0') {
+              SYSCALL_DEBUG_PRINTK("  strncpy: Found null terminator at length %u. Success.\n", len);
+              serial_write("  RET: 0 (Success)\n");
+              return 0; // Success: Found null terminator within maxlen.
+          }
  
-         len++; // Advance to next character
-     }
- 
-     // Reached maxlen without finding null terminator.
-     k_dst[maxlen - 1] = '\0'; // Ensure null termination.
-     SYSCALL_DEBUG_PRINTK("strncpy_from_user: String from %p exceeded maxlen %u\n", u_src, maxlen);
-     return -ENAMETOOLONG;
+           serial_write("   LOOP: Incrementing len\n");
+          len++; // Advance to next character
+      }
+      serial_write("  STEP: Loop finished (maxlen reached)\n");
+      // Reached maxlen without finding null terminator.
+      k_dst[maxlen - 1] = '\0'; // Ensure null termination.
+      SYSCALL_DEBUG_PRINTK("  strncpy: String from %p exceeded maxlen %u. Returning -ENAMETOOLONG\n", u_src, maxlen);
+      serial_write("  RET: -ENAMETOOLONG\n");
+      return -ENAMETOOLONG;
  }
- 
  
  //-----------------------------------------------------------------------------
  // Syscall Implementations
@@ -166,426 +205,503 @@
  
  /**
   * @brief Handles unimplemented system calls.
-  * @param regs Pointer to saved user registers (EAX contains the invalid syscall number).
-  * @return -ENOSYS always.
   */
  static int sys_not_implemented(syscall_regs_t *regs) {
-     KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_not_implemented");
-     pcb_t* current_proc = get_current_process(); // Can be NULL early? No, checked in dispatcher.
-     uint32_t pid = current_proc->pid;
-     uint32_t syscall_num = regs->eax; // Invalid syscall number
+      serial_write(" FNC_ENTER: sys_not_implemented\n");
+      KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_not_implemented");
+      serial_write("  STEP: Getting process\n");
+      pcb_t* current_proc = get_current_process();
+      KERNEL_ASSERT(current_proc != NULL, "No process context in sys_not_implemented");
+      uint32_t pid = current_proc->pid;
+      uint32_t syscall_num = regs->eax;
  
-     SYSCALL_DEBUG_PRINTK("PID %lu: Called unimplemented syscall %u.\n", pid, syscall_num);
-     return -ENOSYS; // Function not implemented
+      SYSCALL_DEBUG_PRINTK("PID %lu: Called unimplemented syscall %u. Returning -ENOSYS.\n", pid, syscall_num);
+      serial_write(" FNC_EXIT: sys_not_implemented (-ENOSYS)\n");
+      return -ENOSYS; // Function not implemented
  }
  
  /**
   * @brief Implements the exit() system call (SYS_EXIT).
-  * Terminates the current process with the given exit code. This function does not return.
-  *
-  * @param regs Pointer to saved user registers. `regs->ebx` contains the exit code.
-  * @return Does not return. If it somehow did, the kernel panics.
   */
  static int sys_exit_impl(syscall_regs_t *regs) {
-     KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_exit_impl");
+      serial_write(" FNC_ENTER: sys_exit_impl\n"); // <<< Check if this appears!
+      KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_exit_impl");
  
-     // Extract exit code from EBX (Argument 0)
-     int exit_code = (int)regs->ebx; // Cast to signed int
+      // Extract exit code from EBX (Argument 0)
+      serial_write("  STEP: Extracting exit code\n");
+      int exit_code = (int)regs->ebx;
+      serial_write("  DBG: ExitCode="); serial_print_hex(exit_code); serial_write("\n");
  
-     pcb_t* current_proc = get_current_process();
-     KERNEL_ASSERT(current_proc != NULL, "sys_exit called without process context!");
-     uint32_t pid = current_proc->pid;
  
-     SYSCALL_DEBUG_PRINTK("PID %lu: SYS_EXIT called with exit_code %d.\n", pid, exit_code);
+      serial_write("  STEP: Getting process\n");
+      pcb_t* current_proc = get_current_process();
+      KERNEL_ASSERT(current_proc != NULL, "sys_exit called without process context!");
+      uint32_t pid = current_proc->pid;
  
-     // Call the scheduler function to terminate the task.
-     // This function handles state changes, cleanup (eventually), and scheduling the next task.
-     // It MUST NOT return to this context.
-     remove_current_task_with_code(exit_code);
+      SYSCALL_DEBUG_PRINTK("PID %lu: SYS_EXIT(exit_code=%d) called.\n", pid, exit_code);
+      serial_write("  STEP: Calling remove_current_task...\n");
+      SYSCALL_DEBUG_PRINTK("  Calling remove_current_task_with_code(%d)...\n", exit_code);
  
-     // If remove_current_task_with_code returns, something is catastrophically wrong.
-     KERNEL_PANIC_HALT("FATAL: remove_current_task_with_code returned in sys_exit!");
-     return 0; // Unreachable code
+      remove_current_task_with_code(exit_code);
+ 
+      // Should not return
+      serial_write("  STEP: ERROR! remove_current_task returned!\n");
+      SYSCALL_DEBUG_PRINTK("  FATAL ERROR: remove_current_task_with_code returned!\n");
+      KERNEL_PANIC_HALT("FATAL: remove_current_task_with_code returned in sys_exit!");
+      serial_write(" FNC_EXIT: sys_exit_impl (PANIC!)\n"); // Should be unreachable
+      return 0; // Unreachable code
  }
  
  /**
   * @brief Implements the read() system call (SYS_READ).
-  * Reads data from a file descriptor into a user buffer.
-  *
-  * @param regs Pointer to saved user registers.
-  * `regs->ebx` = file descriptor (int fd)
-  * `regs->ecx` = user buffer pointer (void *user_buf)
-  * `regs->edx` = number of bytes to read (size_t count)
-  * @return Number of bytes successfully read and copied to user space (>= 0).
-  * @return Negative errno on failure (e.g., -EBADF, -EFAULT, -ENOMEM, -EINVAL).
   */
+ // ... (sys_read_impl function remains the same as the previous verbose version)
  static int sys_read_impl(syscall_regs_t *regs) {
-     KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_read_impl");
+      serial_write(" FNC_ENTER: sys_read_impl\n");
+      KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_read_impl");
  
-     // Extract arguments
-     int fd              = (int)regs->ebx;
-     void *user_buf      = (void*)regs->ecx;
-     size_t count        = (size_t)regs->edx;
+      // Extract arguments
+      serial_write("  STEP: Extracting args (fd, buf, count)\n");
+      int fd              = (int)regs->ebx;
+      void *user_buf      = (void*)regs->ecx;
+      size_t count        = (size_t)regs->edx;
+      uint32_t pid        = get_current_process() ? get_current_process()->pid : 0; // Handle potential NULL
  
-     SYSCALL_DEBUG_PRINTK("PID %lu: SYS_READ(fd=%d, buf=%p, count=%u)\n",
-                          get_current_process()->pid, fd, user_buf, count);
+      SYSCALL_DEBUG_PRINTK("PID %lu: SYS_READ(fd=%d, buf=%p, count=%u)\n", pid, fd, user_buf, count);
  
-     // --- Argument Validation ---
-     if ((ssize_t)count < 0) { // Check if count interpreted as signed is negative
-         SYSCALL_DEBUG_PRINTK(" -> EINVAL (negative count)\n");
-         return -EINVAL;
-     }
-     if (count == 0) {
-         SYSCALL_DEBUG_PRINTK(" -> OK (count is 0)\n");
-         return 0; // Reading 0 bytes is a no-op, success.
-     }
-     // Check user buffer writability *before* allocation/reading.
-     // Checks VMA permissions and basic address validity.
-     if (!access_ok(VERIFY_WRITE, user_buf, count)) {
-         SYSCALL_DEBUG_PRINTK(" -> EFAULT (access_ok failed for user buffer %p)\n", user_buf);
-         return -EFAULT;
-     }
+      // Argument Validation
+      serial_write("  STEP: Validating count\n");
+      if ((ssize_t)count < 0) { // Check if count interpreted as signed is negative
+          SYSCALL_DEBUG_PRINTK(" -> EINVAL (negative count %d)\n", count);
+          serial_write("  RET: -EINVAL (negative count)\n");
+          return -EINVAL;
+      }
+      if (count == 0) {
+          SYSCALL_DEBUG_PRINTK(" -> OK (count is 0)\n");
+           serial_write("  RET: 0 (count=0)\n");
+          return 0; // Reading 0 bytes is a no-op, success.
+      }
  
-     // Allocate kernel buffer for chunking reads
-     // Avoids holding large stack buffers and simplifies fault handling.
-     size_t chunk_alloc_size = MIN(MAX_RW_CHUNK_SIZE, count);
-     char* kbuf = kmalloc(chunk_alloc_size);
-     if (!kbuf) {
-         SYSCALL_DEBUG_PRINTK(" -> ENOMEM (kmalloc failed for kernel buffer)\n");
-         return -ENOMEM;
-     }
+      // Check user buffer writability
+      serial_write("  STEP: Calling access_ok\n");
+      SYSCALL_DEBUG_PRINTK("  Checking access_ok(WRITE, %p, %u)...\n", user_buf, count);
+      bool access_ok_res = access_ok(VERIFY_WRITE, user_buf, count);
+      serial_write("  STEP: access_ok returned\n");
+      if (!access_ok_res) {
+          SYSCALL_DEBUG_PRINTK(" -> EFAULT (access_ok failed for user buffer %p)\n", user_buf);
+          serial_write("  RET: -EFAULT (access_ok failed)\n");
+          return -EFAULT;
+      }
+      SYSCALL_DEBUG_PRINTK("  access_ok passed.\n");
  
-     ssize_t total_read = 0;
-     int final_ret_val = 0; // Used to store return value in case of errors during loop
  
-     // Loop to read data in chunks
-     while (total_read < (ssize_t)count) {
-         size_t current_chunk_size = MIN(chunk_alloc_size, count - total_read);
-         KERNEL_ASSERT(current_chunk_size > 0, "Zero chunk size in read loop");
+      // Allocate kernel buffer
+      size_t chunk_alloc_size = MIN(MAX_RW_CHUNK_SIZE, count);
+      serial_write("  STEP: Calling kmalloc\n");
+      SYSCALL_DEBUG_PRINTK("  Allocating kernel buffer (size %u)...\n", chunk_alloc_size);
+      char* kbuf = kmalloc(chunk_alloc_size);
+      serial_write("  STEP: kmalloc returned\n");
+      if (!kbuf) {
+          SYSCALL_DEBUG_PRINTK(" -> ENOMEM (kmalloc failed for kernel buffer)\n");
+          serial_write("  RET: -ENOMEM (kmalloc failed)\n");
+          return -ENOMEM;
+      }
+       SYSCALL_DEBUG_PRINTK("  Kernel buffer allocated at %p.\n", kbuf);
  
-         // Call the underlying file operation function (e.g., from sys_file.c)
-         // This function handles FD validation within the process context.
-         ssize_t bytes_read_this_chunk = sys_read(fd, kbuf, current_chunk_size);
  
-         SYSCALL_DEBUG_PRINTK("   sys_read(%d, kbuf, %u) returned %d\n", fd, current_chunk_size, bytes_read_this_chunk);
+      ssize_t total_read = 0;
+      int final_ret_val = 0; // Used to store return value in case of errors during loop
  
-         if (bytes_read_this_chunk < 0) {
-             // Error from underlying sys_read (e.g., -EBADF, -EIO)
-             // Return bytes successfully read so far, or the error if nothing was read yet.
-             final_ret_val = (total_read > 0) ? total_read : bytes_read_this_chunk;
-             SYSCALL_DEBUG_PRINTK(" -> Error %d from sys_read. Returning %d.\n", bytes_read_this_chunk, final_ret_val);
-             goto sys_read_cleanup_and_exit;
-         }
+      // Loop to read data in chunks
+      serial_write("  STEP: Entering read loop\n");
+      SYSCALL_DEBUG_PRINTK("  Entering read loop (total_read=%d, count=%u)...\n", total_read, count);
+      while (total_read < (ssize_t)count) {
+           serial_write("   LOOP_READ: Top\n");
+          size_t current_chunk_size = MIN(chunk_alloc_size, count - total_read);
+          KERNEL_ASSERT(current_chunk_size > 0, "Zero chunk size in read loop");
+          SYSCALL_DEBUG_PRINTK("  Loop: Requesting chunk size %u (total_read %d)\n", current_chunk_size, total_read);
  
-         if (bytes_read_this_chunk == 0) {
-             // End Of File reached
-             SYSCALL_DEBUG_PRINTK(" -> EOF reached.\n");
-             break; // Exit loop, return total_read so far
-         }
+          // Call underlying sys_read
+          serial_write("   LOOP_READ: Calling sys_read (underlying)\n");
+          SYSCALL_DEBUG_PRINTK("   Calling sys_read(%d, kbuf=%p, current_chunk_size=%u)...\n", fd, kbuf, current_chunk_size);
+          ssize_t bytes_read_this_chunk = sys_read(fd, kbuf, current_chunk_size);
+          serial_write("   LOOP_READ: sys_read returned\n");
+          SYSCALL_DEBUG_PRINTK("   sys_read returned %d\n", bytes_read_this_chunk);
  
-         // Copy the chunk read into kernel buffer back to user space
-         // copy_to_user handles potential page faults during the write to user_buf.
-         size_t not_copied = copy_to_user((char*)user_buf + total_read, kbuf, bytes_read_this_chunk);
+          serial_write("   LOOP_READ: Checking result\n");
+          if (bytes_read_this_chunk < 0) {
+              serial_write("   LOOP_READ: Error from sys_read\n");
+              final_ret_val = (total_read > 0) ? total_read : bytes_read_this_chunk;
+              SYSCALL_DEBUG_PRINTK(" -> Error %d from underlying sys_read. Breaking loop. Returning %d.\n", bytes_read_this_chunk, final_ret_val);
+              goto sys_read_cleanup_and_exit; // Use goto for single cleanup point
+          }
+          if (bytes_read_this_chunk == 0) {
+              serial_write("   LOOP_READ: EOF from sys_read\n");
+              SYSCALL_DEBUG_PRINTK(" -> EOF reached by underlying sys_read. Breaking loop.\n");
+              break; // Exit loop
+          }
  
-         if (not_copied > 0) {
-             // Fault writing back to user space
-             size_t copied_back_this_chunk = bytes_read_this_chunk - not_copied;
-             total_read += copied_back_this_chunk;
-             SYSCALL_DEBUG_PRINTK(" -> EFAULT copying back to user %p after reading %d bytes (total read: %d)\n",
-                                  (char*)user_buf + total_read - copied_back_this_chunk, bytes_read_this_chunk, total_read);
-             // Return bytes successfully read & copied back, or EFAULT if none were copied this time.
-             final_ret_val = (total_read > 0) ? total_read : -EFAULT;
-             goto sys_read_cleanup_and_exit;
-         }
+          // Copy back to user
+          serial_write("   LOOP_READ: Calling copy_to_user\n");
+          SYSCALL_DEBUG_PRINTK("   Calling copy_to_user(dst=%p, src=%p, size=%d)...\n", (char*)user_buf + total_read, kbuf, bytes_read_this_chunk);
+          size_t not_copied = copy_to_user((char*)user_buf + total_read, kbuf, bytes_read_this_chunk);
+          serial_write("   LOOP_READ: copy_to_user returned\n");
+          SYSCALL_DEBUG_PRINTK("   copy_to_user returned not_copied=%u\n", not_copied);
  
-         // Successfully read and copied back this chunk
-         total_read += bytes_read_this_chunk;
+          serial_write("   LOOP_READ: Checking not_copied\n");
+          if (not_copied > 0) {
+               serial_write("   LOOP_READ: Fault during copy_to_user\n");
+              size_t copied_back_this_chunk = bytes_read_this_chunk - not_copied;
+              total_read += copied_back_this_chunk;
+              SYSCALL_DEBUG_PRINTK(" -> EFAULT during copy_to_user (copied %u/%d bytes this chunk). Total read: %d. Breaking loop.\n",
+                                   copied_back_this_chunk, bytes_read_this_chunk, total_read);
+              final_ret_val = (total_read > 0) ? total_read : -EFAULT;
+              goto sys_read_cleanup_and_exit;
+          }
  
-         // If sys_read returned fewer bytes than requested, it implies EOF or device limit, stop reading.
-         if ((size_t)bytes_read_this_chunk < current_chunk_size) {
-             SYSCALL_DEBUG_PRINTK(" -> Short read (%d < %u), assuming EOF/limit.\n", bytes_read_this_chunk, current_chunk_size);
-             break;
-         }
-     } // end while
+          // Successfully read and copied back
+          serial_write("   LOOP_READ: Chunk success\n");
+          total_read += bytes_read_this_chunk;
+          SYSCALL_DEBUG_PRINTK("   Chunk processed successfully. total_read=%d\n", total_read);
  
-     // Success case: return total bytes read and copied
-     final_ret_val = total_read;
-     SYSCALL_DEBUG_PRINTK(" -> OK (Total bytes read: %d)\n", final_ret_val);
+          serial_write("   LOOP_READ: Checking short read\n");
+          if ((size_t)bytes_read_this_chunk < current_chunk_size) {
+              serial_write("   LOOP_READ: Short read detected\n");
+              SYSCALL_DEBUG_PRINTK(" -> Short read from underlying sys_read (%d < %u). Breaking loop.\n", bytes_read_this_chunk, current_chunk_size);
+              break;
+          }
+          serial_write("   LOOP_READ: Bottom\n");
+      } // end while
+      serial_write("  STEP: Exited read loop\n");
+ 
+      final_ret_val = total_read;
+      SYSCALL_DEBUG_PRINTK(" -> Read loop finished. OK (Total bytes read: %d)\n", final_ret_val);
  
  sys_read_cleanup_and_exit:
-     if (kbuf) {
-         kfree(kbuf);
-     }
-     return final_ret_val;
+      serial_write("  STEP: Cleanup\n");
+      if (kbuf) {
+          serial_write("   ACTION: Freeing kbuf\n");
+          SYSCALL_DEBUG_PRINTK("  Freeing kernel buffer %p.\n", kbuf);
+          kfree(kbuf);
+      }
+      SYSCALL_DEBUG_PRINTK("  SYS_READ returning %d.\n", final_ret_val);
+      serial_write(" FNC_EXIT: sys_read_impl\n");
+      return final_ret_val;
  }
- 
  
  /**
   * @brief Implements the write() system call (SYS_WRITE).
-  * Writes data from a user buffer to a file descriptor.
-  *
-  * @param regs Pointer to saved user registers.
-  * `regs->ebx` = file descriptor (int fd)
-  * `regs->ecx` = user buffer pointer (const void *user_buf)
-  * `regs->edx` = number of bytes to write (size_t count)
-  * @return Number of bytes successfully written (>= 0). Can be less than count.
-  * @return Negative errno on failure (e.g., -EBADF, -EFAULT, -ENOMEM, -EINVAL).
   */
+ // ... (sys_write_impl function remains the same as the previous verbose version)
  static int sys_write_impl(syscall_regs_t *regs) {
-     KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_write_impl");
+      serial_write(" FNC_ENTER: sys_write_impl\n");
+      KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_write_impl");
  
-     // Extract arguments
-     int fd                = (int)regs->ebx;
-     const void *user_buf  = (const void*)regs->ecx;
-     size_t count          = (size_t)regs->edx;
+      // Extract arguments
+      serial_write("  STEP: Extracting args (fd, buf, count)\n");
+      int fd                = (int)regs->ebx;
+      const void *user_buf  = (const void*)regs->ecx;
+      size_t count          = (size_t)regs->edx;
+      uint32_t pid          = get_current_process() ? get_current_process()->pid : 0;
  
-     SYSCALL_DEBUG_PRINTK("PID %lu: SYS_WRITE(fd=%d, buf=%p, count=%u)\n",
-                          get_current_process()->pid, fd, user_buf, count);
  
-     // --- Argument Validation ---
-     if ((ssize_t)count < 0) {
-         SYSCALL_DEBUG_PRINTK(" -> EINVAL (negative count)\n");
-         return -EINVAL;
-     }
-     if (count == 0) {
-          SYSCALL_DEBUG_PRINTK(" -> OK (count is 0)\n");
-         return 0;
-     }
-     // Check user buffer readability.
-     if (!access_ok(VERIFY_READ, user_buf, count)) {
-         SYSCALL_DEBUG_PRINTK(" -> EFAULT (access_ok failed for user buffer %p)\n", user_buf);
-         return -EFAULT;
-     }
+      SYSCALL_DEBUG_PRINTK("PID %lu: SYS_WRITE(fd=%d, buf=%p, count=%u)\n", pid, fd, user_buf, count);
  
-     // Allocate kernel buffer for chunking writes
-     size_t chunk_alloc_size = MIN(MAX_RW_CHUNK_SIZE, count);
-     char* kbuf = kmalloc(chunk_alloc_size);
-     if (!kbuf) {
-         SYSCALL_DEBUG_PRINTK(" -> ENOMEM (kmalloc failed for kernel buffer)\n");
-         return -ENOMEM;
-     }
+      // Argument Validation
+      serial_write("  STEP: Validating count\n");
+      if ((ssize_t)count < 0) {
+          SYSCALL_DEBUG_PRINTK(" -> EINVAL (negative count %d)\n", count);
+          serial_write("  RET: -EINVAL (negative count)\n");
+          return -EINVAL;
+      }
+      if (count == 0) {
+           SYSCALL_DEBUG_PRINTK(" -> OK (count is 0)\n");
+           serial_write("  RET: 0 (count=0)\n");
+          return 0;
+      }
  
-     ssize_t total_written = 0;
-     int final_ret_val = 0;
+      // Check user buffer readability
+      serial_write("  STEP: Calling access_ok\n");
+      SYSCALL_DEBUG_PRINTK("  Checking access_ok(READ, %p, %u)...\n", user_buf, count);
+      bool access_ok_res = access_ok(VERIFY_READ, user_buf, count);
+      serial_write("  STEP: access_ok returned\n");
+      if (!access_ok_res) {
+          SYSCALL_DEBUG_PRINTK(" -> EFAULT (access_ok failed for user buffer %p)\n", user_buf);
+           serial_write("  RET: -EFAULT (access_ok failed)\n");
+          return -EFAULT;
+      }
+      SYSCALL_DEBUG_PRINTK("  access_ok passed.\n");
  
-     // Special case: Directly write to console FDs (STDOUT/STDERR) using terminal_write_bytes
-     // This bypasses the VFS layer for console output efficiency.
-     if (fd == STDOUT_FILENO || fd == STDERR_FILENO) {
-         SYSCALL_DEBUG_PRINTK("   Handling write to STDOUT/STDERR (fd=%d)\n", fd);
-         while(total_written < (ssize_t)count) {
-             size_t current_chunk_size = MIN(chunk_alloc_size, count - total_written);
-             KERNEL_ASSERT(current_chunk_size > 0, "Zero chunk size in console write loop");
  
-             // Copy chunk from user space to kernel buffer
-             size_t not_copied = copy_from_user(kbuf, (char*)user_buf + total_written, current_chunk_size);
-             size_t copied_this_chunk = current_chunk_size - not_copied;
+      // Allocate kernel buffer
+      size_t chunk_alloc_size = MIN(MAX_RW_CHUNK_SIZE, count);
+      serial_write("  STEP: Calling kmalloc\n");
+      SYSCALL_DEBUG_PRINTK("  Allocating kernel buffer (size %u)...\n", chunk_alloc_size);
+      char* kbuf = kmalloc(chunk_alloc_size);
+      serial_write("  STEP: kmalloc returned\n");
+      if (!kbuf) {
+          SYSCALL_DEBUG_PRINTK(" -> ENOMEM (kmalloc failed for kernel buffer)\n");
+           serial_write("  RET: -ENOMEM (kmalloc failed)\n");
+          return -ENOMEM;
+      }
+      SYSCALL_DEBUG_PRINTK("  Kernel buffer allocated at %p.\n", kbuf);
  
-             // Write the copied chunk to the terminal
-             if (copied_this_chunk > 0) {
-                 // TODO: terminal_write_bytes might block if the terminal buffer is full.
-                 // A more advanced implementation might handle this non-blockingly or buffer.
-                 terminal_write_bytes(kbuf, copied_this_chunk); // Assume this handles underlying device write
-                 total_written += copied_this_chunk;
-             }
  
-             // Check if copy_from_user faulted
-             if (not_copied > 0) {
-                 SYSCALL_DEBUG_PRINTK(" -> EFAULT copying from user %p during console write (total written: %d)\n",
-                                      (char*)user_buf + total_written, total_written);
-                 // Return bytes successfully written so far, or EFAULT if none were copied this time.
-                 final_ret_val = (total_written > 0) ? total_written : -EFAULT;
-                 goto sys_write_cleanup_and_exit;
-             }
-             // If we copied less than a full chunk but had no error, we must have finished.
-             if (copied_this_chunk < current_chunk_size) {
-                  break;
-             }
-         }
-         final_ret_val = total_written; // Success for console write
-     }
-     // Handle writing to actual files via the underlying sys_write (VFS)
-     else {
-          SYSCALL_DEBUG_PRINTK("   Handling write to file fd=%d\n", fd);
+      ssize_t total_written = 0;
+      int final_ret_val = 0;
+ 
+      // Handle console FDs
+      serial_write("  STEP: Checking fd type (console?)\n");
+      if (fd == STDOUT_FILENO || fd == STDERR_FILENO) {
+          serial_write("  STEP: Console fd detected. Entering write loop.\n");
+          SYSCALL_DEBUG_PRINTK("  Handling write to STDOUT/STDERR (fd=%d)\n", fd);
           while(total_written < (ssize_t)count) {
-             size_t current_chunk_size = MIN(chunk_alloc_size, count - total_written);
-             KERNEL_ASSERT(current_chunk_size > 0, "Zero chunk size in file write loop");
+              serial_write("   LOOP_WRITE_CON: Top\n");
+              size_t current_chunk_size = MIN(chunk_alloc_size, count - total_written);
+              KERNEL_ASSERT(current_chunk_size > 0, "Zero chunk size in console write loop");
+              SYSCALL_DEBUG_PRINTK("  Loop: Requesting chunk size %u (total_written %d)\n", current_chunk_size, total_written);
  
-             // Copy chunk from user space to kernel buffer
-             size_t not_copied = copy_from_user(kbuf, (char*)user_buf + total_written, current_chunk_size);
-             size_t copied_this_chunk = current_chunk_size - not_copied;
+              // Copy from user
+              serial_write("   LOOP_WRITE_CON: Calling copy_from_user\n");
+              SYSCALL_DEBUG_PRINTK("   Calling copy_from_user(dst=%p, src=%p, size=%u)...\n", kbuf, (char*)user_buf + total_written, current_chunk_size);
+              size_t not_copied = copy_from_user(kbuf, (char*)user_buf + total_written, current_chunk_size);
+              serial_write("   LOOP_WRITE_CON: copy_from_user returned\n");
+              SYSCALL_DEBUG_PRINTK("   copy_from_user returned not_copied=%u\n", not_copied);
+              size_t copied_this_chunk = current_chunk_size - not_copied;
  
-             // Write the copied chunk using the file system layer function
-             if (copied_this_chunk > 0) {
-                 ssize_t bytes_written_this_chunk = sys_write(fd, kbuf, copied_this_chunk);
-                 SYSCALL_DEBUG_PRINTK("   sys_write(%d, kbuf, %u) returned %d\n", fd, copied_this_chunk, bytes_written_this_chunk);
- 
-                 if (bytes_written_this_chunk < 0) {
-                     // Error from underlying sys_write (e.g., -EBADF, -ENOSPC, -EIO)
-                     final_ret_val = (total_written > 0) ? total_written : bytes_written_this_chunk;
-                      SYSCALL_DEBUG_PRINTK(" -> Error %d from sys_write. Returning %d.\n", bytes_written_this_chunk, final_ret_val);
-                     goto sys_write_cleanup_and_exit;
-                 }
-                 // Accumulate bytes successfully written by the underlying layer
-                 total_written += bytes_written_this_chunk;
- 
-                 // If the FS wrote fewer bytes than we gave it, it might be full or hit a limit. Stop.
-                 if ((size_t)bytes_written_this_chunk < copied_this_chunk) {
-                      SYSCALL_DEBUG_PRINTK(" -> Short write (%d < %u), assuming FS limit/error.\n", bytes_written_this_chunk, copied_this_chunk);
-                      break;
-                 }
-             }
- 
-             // Check if copy_from_user faulted
-             if (not_copied > 0) {
-                  SYSCALL_DEBUG_PRINTK(" -> EFAULT copying from user %p during file write (total written: %d)\n",
-                                      (char*)user_buf + total_written, total_written);
-                 final_ret_val = (total_written > 0) ? total_written : -EFAULT;
-                 goto sys_write_cleanup_and_exit;
-             }
-             // If we copied less than a full chunk but had no error, we must have finished.
-              if (copied_this_chunk < current_chunk_size) {
-                  break;
+              // Write to terminal
+              serial_write("   LOOP_WRITE_CON: Checking copied_this_chunk\n");
+              if (copied_this_chunk > 0) {
+                  serial_write("   LOOP_WRITE_CON: Calling terminal_write_bytes\n");
+                  SYSCALL_DEBUG_PRINTK("   Calling terminal_write_bytes(buf=%p, size=%u)...\n", kbuf, copied_this_chunk);
+                  terminal_write_bytes(kbuf, copied_this_chunk);
+                  serial_write("   LOOP_WRITE_CON: terminal_write_bytes returned\n");
+                  SYSCALL_DEBUG_PRINTK("   terminal_write_bytes finished.\n");
+                  total_written += copied_this_chunk;
               }
-         }
-         final_ret_val = total_written; // Success for file write
-     }
  
-     SYSCALL_DEBUG_PRINTK(" -> OK (Total bytes written: %d)\n", final_ret_val);
+              // Check for copy fault
+              serial_write("   LOOP_WRITE_CON: Checking not_copied\n");
+              if (not_copied > 0) {
+                   serial_write("   LOOP_WRITE_CON: Fault during copy_from_user\n");
+                  SYSCALL_DEBUG_PRINTK(" -> EFAULT during copy_from_user (copied %u/%u bytes this chunk). Total written: %d. Breaking loop.\n",
+                                       copied_this_chunk, current_chunk_size, total_written);
+                  final_ret_val = (total_written > 0) ? total_written : -EFAULT;
+                  goto sys_write_cleanup_and_exit;
+              }
+ 
+              serial_write("   LOOP_WRITE_CON: Checking short copy\n");
+              if (copied_this_chunk < current_chunk_size) {
+                   serial_write("   LOOP_WRITE_CON: Short copy detected\n");
+                   SYSCALL_DEBUG_PRINTK("   Short copy (%u < %u) from user, assuming end of request.\n", copied_this_chunk, current_chunk_size);
+                   break;
+              }
+               SYSCALL_DEBUG_PRINTK("   Chunk processed successfully. total_written=%d\n", total_written);
+               serial_write("   LOOP_WRITE_CON: Bottom\n");
+          }
+           serial_write("  STEP: Console write loop finished\n");
+          final_ret_val = total_written;
+      }
+      // Handle file FDs
+      else {
+           serial_write("  STEP: File fd detected. Entering write loop.\n");
+           SYSCALL_DEBUG_PRINTK("  Handling write to file fd=%d\n", fd);
+           while(total_written < (ssize_t)count) {
+               serial_write("   LOOP_WRITE_FILE: Top\n");
+              size_t current_chunk_size = MIN(chunk_alloc_size, count - total_written);
+              KERNEL_ASSERT(current_chunk_size > 0, "Zero chunk size in file write loop");
+              SYSCALL_DEBUG_PRINTK("  Loop: Requesting chunk size %u (total_written %d)\n", current_chunk_size, total_written);
+ 
+              // Copy from user
+              serial_write("   LOOP_WRITE_FILE: Calling copy_from_user\n");
+              SYSCALL_DEBUG_PRINTK("   Calling copy_from_user(dst=%p, src=%p, size=%u)...\n", kbuf, (char*)user_buf + total_written, current_chunk_size);
+              size_t not_copied = copy_from_user(kbuf, (char*)user_buf + total_written, current_chunk_size);
+              serial_write("   LOOP_WRITE_FILE: copy_from_user returned\n");
+              SYSCALL_DEBUG_PRINTK("   copy_from_user returned not_copied=%u\n", not_copied);
+              size_t copied_this_chunk = current_chunk_size - not_copied;
+ 
+              // Write using sys_write
+              serial_write("   LOOP_WRITE_FILE: Checking copied_this_chunk\n");
+              if (copied_this_chunk > 0) {
+                  serial_write("   LOOP_WRITE_FILE: Calling sys_write (underlying)\n");
+                  SYSCALL_DEBUG_PRINTK("   Calling sys_write(%d, kbuf=%p, size=%u)...\n", fd, kbuf, copied_this_chunk);
+                  ssize_t bytes_written_this_chunk = sys_write(fd, kbuf, copied_this_chunk);
+                  serial_write("   LOOP_WRITE_FILE: sys_write returned\n");
+                  SYSCALL_DEBUG_PRINTK("   sys_write returned %d\n", bytes_written_this_chunk);
+ 
+                  serial_write("   LOOP_WRITE_FILE: Checking result\n");
+                  if (bytes_written_this_chunk < 0) {
+                       serial_write("   LOOP_WRITE_FILE: Error from sys_write\n");
+                      final_ret_val = (total_written > 0) ? total_written : bytes_written_this_chunk;
+                       SYSCALL_DEBUG_PRINTK(" -> Error %d from underlying sys_write. Breaking loop. Returning %d.\n", bytes_written_this_chunk, final_ret_val);
+                      goto sys_write_cleanup_and_exit;
+                  }
+ 
+                  total_written += bytes_written_this_chunk;
+ 
+                  serial_write("   LOOP_WRITE_FILE: Checking short write\n");
+                  if ((size_t)bytes_written_this_chunk < copied_this_chunk) {
+                      serial_write("   LOOP_WRITE_FILE: Short write detected\n");
+                       SYSCALL_DEBUG_PRINTK(" -> Short write from underlying sys_write (%d < %u). Breaking loop.\n", bytes_written_this_chunk, copied_this_chunk);
+                       break;
+                  }
+              }
+ 
+              // Check for copy fault
+              serial_write("   LOOP_WRITE_FILE: Checking not_copied\n");
+              if (not_copied > 0) {
+                   serial_write("   LOOP_WRITE_FILE: Fault during copy_from_user\n");
+                   SYSCALL_DEBUG_PRINTK(" -> EFAULT during copy_from_user (copied %u/%u bytes this chunk). Total written: %d. Breaking loop.\n",
+                                        copied_this_chunk, current_chunk_size, total_written);
+                  final_ret_val = (total_written > 0) ? total_written : -EFAULT;
+                  goto sys_write_cleanup_and_exit;
+              }
+ 
+               serial_write("   LOOP_WRITE_FILE: Checking short copy\n");
+               if (copied_this_chunk < current_chunk_size) {
+                    serial_write("   LOOP_WRITE_FILE: Short copy detected\n");
+                    SYSCALL_DEBUG_PRINTK("   Short copy (%u < %u) from user, assuming end of request.\n", copied_this_chunk, current_chunk_size);
+                    break;
+               }
+                SYSCALL_DEBUG_PRINTK("   Chunk processed successfully. total_written=%d\n", total_written);
+                serial_write("   LOOP_WRITE_FILE: Bottom\n");
+          }
+          serial_write("  STEP: File write loop finished\n");
+          final_ret_val = total_written;
+      }
+ 
+      SYSCALL_DEBUG_PRINTK(" -> Write loop finished. OK (Total bytes written: %d)\n", final_ret_val);
  
  sys_write_cleanup_and_exit:
-     if (kbuf) {
-         kfree(kbuf);
-     }
-     return final_ret_val;
+      serial_write("  STEP: Cleanup\n");
+      if (kbuf) {
+           serial_write("   ACTION: Freeing kbuf\n");
+          SYSCALL_DEBUG_PRINTK("  Freeing kernel buffer %p.\n", kbuf);
+          kfree(kbuf);
+      }
+      SYSCALL_DEBUG_PRINTK("  SYS_WRITE returning %d.\n", final_ret_val);
+      serial_write(" FNC_EXIT: sys_write_impl\n");
+      return final_ret_val;
  }
  
  
  /**
   * @brief Implements the open() system call (SYS_OPEN).
-  * Opens or creates a file and returns a file descriptor.
-  *
-  * @param regs Pointer to saved user registers.
-  * `regs->ebx` = user pathname pointer (const char *user_pathname)
-  * `regs->ecx` = flags (int flags)
-  * `regs->edx` = mode (int mode) - used only if O_CREAT is set.
-  * @return File descriptor (int fd >= 0) on success.
-  * @return Negative errno on failure (e.g., -EFAULT, -ENAMETOOLONG, -ENOENT, -ENOMEM).
   */
  static int sys_open_impl(syscall_regs_t *regs) {
-     KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_open_impl");
+      serial_write(" FNC_ENTER: sys_open_impl\n");
+      KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_open_impl");
  
-     // Extract arguments
-     const char *user_pathname = (const char*)regs->ebx;
-     int flags                 = (int)regs->ecx;
-     int mode                  = (int)regs->edx; // Mode is relevant only if O_CREAT is specified
+      // Extract arguments
+      serial_write("  STEP: Extracting args (path, flags, mode)\n");
+      const char *user_pathname = (const char*)regs->ebx;
+      int flags                 = (int)regs->ecx;
+      int mode                  = (int)regs->edx;
+      uint32_t pid              = get_current_process() ? get_current_process()->pid : 0;
  
-     SYSCALL_DEBUG_PRINTK("PID %lu: SYS_OPEN(path=%p, flags=0x%x, mode=0%o)\n",
-                          get_current_process()->pid, user_pathname, flags, mode);
+      SYSCALL_DEBUG_PRINTK("PID %lu: SYS_OPEN(path_user=%p, flags=0x%x, mode=0%o)\n", pid, user_pathname, flags, mode);
  
-     // Allocate kernel buffer for path. Stack allocation is usually fine if MAX_SYSCALL_STR_LEN is reasonable.
-     char k_pathname[MAX_SYSCALL_STR_LEN];
+      // Allocate kernel buffer for path.
+      char k_pathname[MAX_SYSCALL_STR_LEN];
  
-     // Safely copy pathname from user space using the helper function.
-     // This handles potential faults and length limits.
-     int copy_err = strncpy_from_user_safe(user_pathname, k_pathname, MAX_SYSCALL_STR_LEN);
-     if (copy_err != 0) {
-          SYSCALL_DEBUG_PRINTK(" -> Error %d copying path from user %p\n", copy_err, user_pathname);
-         // Return the specific error from strncpy_from_user (-EFAULT or -ENAMETOOLONG)
-         return copy_err;
-     }
-     SYSCALL_DEBUG_PRINTK("   Copied path: '%s'\n", k_pathname);
+      // Safely copy pathname from user space.
+      serial_write("  STEP: Calling strncpy_from_user_safe\n");
+      SYSCALL_DEBUG_PRINTK("  Calling strncpy_from_user_safe...\n");
+      int copy_err = strncpy_from_user_safe(user_pathname, k_pathname, MAX_SYSCALL_STR_LEN);
+      serial_write("  STEP: strncpy_from_user_safe returned\n");
+      if (copy_err != 0) {
+           SYSCALL_DEBUG_PRINTK(" -> Error %d copying path from user %p\n", copy_err, user_pathname);
+           serial_write("  RET: Error from strncpy\n");
+          return copy_err; // Return -EFAULT or -ENAMETOOLONG
+      }
+      SYSCALL_DEBUG_PRINTK("  Copied path to kernel: '%s'\n", k_pathname);
  
-     // Call the underlying sys_open function (e.g., in sys_file.c).
-     // This function interacts with the VFS to open/create the file and allocates
-     // a file descriptor within the current process's context.
-     int fd = sys_open(k_pathname, flags, mode);
+      // Call the underlying sys_open function.
+      serial_write("  STEP: Calling sys_open (underlying)\n");
+      SYSCALL_DEBUG_PRINTK("  Calling sys_open(kpath='%s', flags=0x%x, mode=0%o)...\n", k_pathname, flags, mode);
+      int fd = sys_open(k_pathname, flags, mode);
+      serial_write("  STEP: sys_open returned\n");
+      SYSCALL_DEBUG_PRINTK("  sys_open returned fd = %d\n", fd);
  
-     // sys_open returns fd (>= 0) or negative errno on failure
-     SYSCALL_DEBUG_PRINTK("   sys_open returned fd = %d\n", fd);
-     return fd;
+      serial_write(" FNC_EXIT: sys_open_impl\n");
+      return fd;
  }
  
  /**
   * @brief Implements the close() system call (SYS_CLOSE).
-  * Closes an open file descriptor.
-  *
-  * @param regs Pointer to saved user registers.
-  * `regs->ebx` = file descriptor (int fd)
-  * @return 0 on success.
-  * @return Negative errno on failure (e.g., -EBADF).
   */
  static int sys_close_impl(syscall_regs_t *regs) {
-     KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_close_impl");
+      serial_write(" FNC_ENTER: sys_close_impl\n");
+      KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_close_impl");
  
-     // Extract file descriptor argument
-     int fd = (int)regs->ebx;
+      // Extract file descriptor argument
+      serial_write("  STEP: Extracting fd arg\n");
+      int fd = (int)regs->ebx;
+      uint32_t pid = get_current_process() ? get_current_process()->pid : 0;
  
-     SYSCALL_DEBUG_PRINTK("PID %lu: SYS_CLOSE(fd=%d)\n", get_current_process()->pid, fd);
+      SYSCALL_DEBUG_PRINTK("PID %lu: SYS_CLOSE(fd=%d)\n", pid, fd);
  
-     // Call the underlying sys_close function (e.g., in sys_file.c).
-     // This handles VFS close operations, freeing the sys_file structure,
-     // and marking the FD slot as available in the process's FD table.
-     int ret = sys_close(fd); // Returns 0 or negative errno
+      // Call the underlying sys_close function.
+      serial_write("  STEP: Calling sys_close (underlying)\n");
+      SYSCALL_DEBUG_PRINTK("  Calling sys_close(%d)...\n", fd);
+      int ret = sys_close(fd); // Returns 0 or negative errno
+      serial_write("  STEP: sys_close returned\n");
+      SYSCALL_DEBUG_PRINTK("  sys_close returned %d\n", ret);
  
-     SYSCALL_DEBUG_PRINTK("   sys_close returned %d\n", ret);
-     return ret;
+      serial_write(" FNC_EXIT: sys_close_impl\n");
+      return ret;
  }
  
  /**
   * @brief Implements the lseek() system call (SYS_LSEEK).
-  * Repositions the read/write offset of an open file descriptor.
-  *
-  * @param regs Pointer to saved user registers.
-  * `regs->ebx` = file descriptor (int fd)
-  * `regs->ecx` = offset (off_t offset)
-  * `regs->edx` = whence (int whence - SEEK_SET, SEEK_CUR, SEEK_END)
-  * @return The resulting offset location from the beginning of the file (>= 0) on success.
-  * @return Negative errno on failure (e.g., -EBADF, -EINVAL, -ESPIPE).
   */
  static int sys_lseek_impl(syscall_regs_t *regs) {
-     KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_lseek_impl");
+      serial_write(" FNC_ENTER: sys_lseek_impl\n");
+      KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_lseek_impl");
  
-     // Extract arguments
-     int fd        = (int)regs->ebx;
-     off_t offset  = (off_t)regs->ecx; // Assuming off_t is compatible with uint32_t
-     int whence    = (int)regs->edx;
+      // Extract arguments
+      serial_write("  STEP: Extracting args (fd, offset, whence)\n");
+      int fd        = (int)regs->ebx;
+      off_t offset  = (off_t)regs->ecx;
+      int whence    = (int)regs->edx;
+      uint32_t pid  = get_current_process() ? get_current_process()->pid : 0;
  
-     SYSCALL_DEBUG_PRINTK("PID %lu: SYS_LSEEK(fd=%d, offset=%ld, whence=%d)\n",
-                          get_current_process()->pid, fd, (long)offset, whence); // Use %ld for off_t? Check type.
+      SYSCALL_DEBUG_PRINTK("PID %lu: SYS_LSEEK(fd=%d, offset=%ld, whence=%d)\n", pid, fd, (long)offset, whence);
  
-     // Basic validation for whence (the underlying VFS function might do more)
-     if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) {
-          SYSCALL_DEBUG_PRINTK(" -> EINVAL (invalid whence value %d)\n", whence);
-         return -EINVAL;
-     }
+      // Basic validation for whence
+      serial_write("  STEP: Validating whence\n");
+      if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) {
+           SYSCALL_DEBUG_PRINTK(" -> EINVAL (invalid whence value %d)\n", whence);
+           serial_write("  RET: -EINVAL (bad whence)\n");
+          return -EINVAL;
+      }
  
-     // Call the underlying sys_lseek function (e.g., in sys_file.c).
-     // This handles FD validation and calls the appropriate VFS function.
-     off_t result_offset = sys_lseek(fd, offset, whence);
+      // Call the underlying sys_lseek function.
+      serial_write("  STEP: Calling sys_lseek (underlying)\n");
+      SYSCALL_DEBUG_PRINTK("  Calling sys_lseek(%d, %ld, %d)...\n", fd, (long)offset, whence);
+      off_t result_offset = sys_lseek(fd, offset, whence);
+      serial_write("  STEP: sys_lseek returned\n");
+      SYSCALL_DEBUG_PRINTK("  sys_lseek returned offset = %ld (or error %ld)\n", (long)result_offset, (long)result_offset);
  
-     // Returns new offset (>=0) or negative errno.
-     SYSCALL_DEBUG_PRINTK("   sys_lseek returned offset = %ld (or error %ld)\n", (long)result_offset, (long)result_offset);
-     // Cast result back to int for syscall return. Check potential overflow if off_t > 32 bits.
-     // For i386, off_t is likely int32_t or uint32_t, so casting is usually safe.
-     return (int)result_offset;
+      serial_write(" FNC_EXIT: sys_lseek_impl\n");
+      return (int)result_offset;
  }
  
  /**
   * @brief Implements the getpid() system call (SYS_GETPID).
-  * Returns the process ID of the calling process.
-  *
-  * @param regs Pointer to saved user registers (unused for this syscall).
-  * @return Process ID (PID) of the current process. This syscall always succeeds.
   */
  static int sys_getpid_impl(syscall_regs_t *regs) {
-     KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_getpid_impl");
-     (void)regs; // Explicitly mark regs as unused
+      serial_write(" FNC_ENTER: sys_getpid_impl\n");
+      KERNEL_ASSERT(regs != NULL, "NULL regs passed to sys_getpid_impl");
+      (void)regs; // Explicitly mark regs as unused
  
-     pcb_t* current_proc = get_current_process();
-     KERNEL_ASSERT(current_proc != NULL, "sys_getpid called without process context!");
+      serial_write("  STEP: Getting process\n");
+      pcb_t* current_proc = get_current_process();
+      KERNEL_ASSERT(current_proc != NULL, "sys_getpid called without process context!");
  
-     SYSCALL_DEBUG_PRINTK("PID %lu: SYS_GETPID() -> %lu\n", current_proc->pid, current_proc->pid);
-     return (int)current_proc->pid;
+      SYSCALL_DEBUG_PRINTK("PID %lu: SYS_GETPID() -> Returning PID %lu\n", current_proc->pid, current_proc->pid);
+      serial_write(" FNC_EXIT: sys_getpid_impl\n");
+      return (int)current_proc->pid;
  }
  
  
@@ -595,63 +711,101 @@
  
  /**
   * @brief The C handler called by the assembly syscall stub (`syscall_handler_asm`).
-  *
   * Dispatches the system call based on the number provided in `regs->eax`.
-  * It validates the syscall number, retrieves the current process context,
-  * calls the appropriate handler function from the `syscall_table`, and sets
-  * the return value in `regs->eax`.
-  *
-  * @param regs Pointer to the saved register state (`syscall_regs_t` / `isr_frame_t`)
-  * pushed onto the kernel stack by the assembly handler.
   */
   void syscall_dispatcher(syscall_regs_t *regs) {
-     // Use assertion for critical preconditions
-     KERNEL_ASSERT(regs != NULL, "Syscall dispatcher received NULL registers!");
+      // Use low-level serial write for entry/exit
+      serial_write("SD: Enter\n");
  
-     // Use SYSCALL_DEBUG_PRINTK for debug messages
-     SYSCALL_DEBUG_PRINTK("Dispatcher entered.");
+      // Use assertion for critical preconditions
+      KERNEL_ASSERT(regs != NULL, "Syscall dispatcher received NULL registers!");
  
-     uint32_t syscall_num = regs->eax;
-     SYSCALL_DEBUG_PRINTK(" -> Syscall Number: %u (0x%x)", syscall_num, syscall_num);
+      // Use SYSCALL_DEBUG_PRINTK for higher-level debug messages
+      SYSCALL_DEBUG_PRINTK("Dispatcher entered. Frame at %p.", regs);
  
-     // Get current process context
-     pcb_t* current_proc = get_current_process();
-     if (!current_proc) {
-         // This should ideally not happen during a syscall from a valid process.
-         // Panicking might be appropriate, as allowing SYS_EXIT without context is risky.
-         SYSCALL_DEBUG_PRINTK(" -> FATAL: No process context during syscall %u!", syscall_num);
-         KERNEL_PANIC_HALT("Syscall executed without process context!");
-         // Unreachable, but for completeness:
-         // regs->eax = (uint32_t)-EFAULT;
-         // return;
-     }
-     uint32_t current_pid = current_proc->pid; // Safe to get PID now
-     SYSCALL_DEBUG_PRINTK(" -> Caller PID: %lu", current_pid);
+      uint32_t syscall_num = regs->eax;
+      SYSCALL_DEBUG_PRINTK(" -> Extracted syscall number: %u (0x%x)", syscall_num, syscall_num);
+      SYSCALL_DEBUG_PRINTK(" -> Raw Args: EBX=0x%x, ECX=0x%x, EDX=0x%x, ESI=0x%x, EDI=0x%x",
+                           regs->ebx, regs->ecx, regs->edx, regs->esi, regs->edi);
  
+      // Get current process context
+      serial_write("SD: GetProc\n");
+      pcb_t* current_proc = get_current_process();
+      SYSCALL_DEBUG_PRINTK(" --> current_proc = %p", current_proc);
  
-     // Validate syscall number against table bounds
-     int ret_val; // Use signed int for return value (can be negative errno)
-     if (syscall_num < MAX_SYSCALLS) {
-         syscall_fn_t handler = syscall_table[syscall_num];
-         SYSCALL_DEBUG_PRINTK(" -> Handler lookup for %u: %p", syscall_num, handler);
+      serial_write("SD: ChkProc\n");
+      if (!current_proc) {
+          serial_write("SD: ERR NoProc!\n");
+          SYSCALL_DEBUG_PRINTK(" -> FATAL: No process context during syscall %u!", syscall_num);
+          KERNEL_PANIC_HALT("Syscall executed without process context!");
+      }
+      uint32_t current_pid = current_proc->pid;
+      SYSCALL_DEBUG_PRINTK(" -> Caller PID: %lu", current_pid);
  
-         if (handler) {
-             // Call the specific syscall implementation
-             ret_val = handler(regs);
-             SYSCALL_DEBUG_PRINTK(" -> Handler for %u returned %d", syscall_num, ret_val);
-         } else {
-             // This case should ideally not happen if the table is initialized correctly.
-             SYSCALL_DEBUG_PRINTK(" -> Error: NULL handler found for syscall %u.", syscall_num);
-             ret_val = -ENOSYS; // Should default to sys_not_implemented anyway
-         }
-     } else {
-         SYSCALL_DEBUG_PRINTK(" -> Error: Invalid syscall number %u (>= %u).", syscall_num, MAX_SYSCALLS);
-         ret_val = -ENOSYS; // Error: System call number out of range
-     }
+      // Validate syscall number
+      int ret_val;
+      serial_write("SD: ChkBounds\n");
+      SYSCALL_DEBUG_PRINTK(" --> Checking syscall number bounds (%u < %u)...", syscall_num, MAX_SYSCALLS);
+      if (syscall_num < MAX_SYSCALLS) {
+          serial_write("SD: InBounds\n");
+          serial_write("SD: LookupHnd\n");
+          syscall_fn_t handler = syscall_table[syscall_num];
+          SYSCALL_DEBUG_PRINTK(" ---> Handler lookup result: Addr=%p", handler);
  
-     // Set the return value in the EAX register slot saved on the stack frame.
-     // The assembly handler will restore this value into EAX before iret.
-     regs->eax = (uint32_t)ret_val;
-     SYSCALL_DEBUG_PRINTK(" -> Set return EAX to %d (0x%x)", ret_val, (uint32_t)ret_val);
-     SYSCALL_DEBUG_PRINTK("Dispatcher exiting.");
+          // --- Pointer Logging via Serial ---
+          serial_write(" DBG:DispatchPtrs:\n");
+          serial_write("  Hnd@"); serial_print_hex((uint32_t)handler); serial_write("\n");
+          serial_write("  NI @"); serial_print_hex((uint32_t)sys_not_implemented); serial_write("\n");
+          // --- END Logging ---
+ 
+          // --- Start Corrected Handler Logic ---
+          serial_write("SD: ChkHnd (New Logic)\n");
+          SYSCALL_DEBUG_PRINTK(" ---> Checking handler validity and type...");
+ 
+          if (handler) { // First, ensure handler is not NULL
+              SYSCALL_DEBUG_PRINTK(" ---> Handler is not NULL.");
+              // --- Added: Pointer Comparison Logging ---
+              serial_write(" DBG:Compare Hnd vs NI:\n");
+              serial_write("  Hnd@"); serial_print_hex((uint32_t)handler); serial_write("\n");
+              serial_write("  NI @"); serial_print_hex((uint32_t)sys_not_implemented); serial_write("\n");
+              // --- END Added ---
+              if (handler == sys_not_implemented) {
+                  // Handler points specifically to sys_not_implemented
+                  serial_write("SD: CallNI (New Logic)\n");
+                  SYSCALL_DEBUG_PRINTK(" ---> Handler is sys_not_implemented. Calling it...");
+                  ret_val = sys_not_implemented(regs); // Explicitly call for clarity
+                  serial_write("SD: NIRet (New Logic)\n");
+                  SYSCALL_DEBUG_PRINTK(" ---> sys_not_implemented returned %d", ret_val);
+              } else {
+                  // Handler is valid and not sys_not_implemented
+                  serial_write("SD: CallHnd (New Logic)\n");
+                  SYSCALL_DEBUG_PRINTK(" ---> Handler is implemented (%p). Calling it...", handler);
+                  ret_val = handler(regs); // Call the actual implementation
+                  serial_write("SD: HndRet (New Logic)\n");
+                  SYSCALL_DEBUG_PRINTK(" -> Handler for %u returned %d (0x%x)", syscall_num, ret_val, (uint32_t)ret_val);
+              }
+          } else {
+              // Handler was NULL in the table (shouldn't happen after syscall_init)
+              serial_write("SD: ERR NullHnd (New Logic)\n");
+              SYSCALL_DEBUG_PRINTK(" ---> Error: NULL handler found for syscall %u in table! Returning -ENOSYS.", syscall_num);
+              ret_val = -ENOSYS;
+          }
+          // --- End Corrected Handler Logic ---
+ 
+      }
+      // Handle syscall number out of bounds
+      else {
+          serial_write("SD: ERR Bounds\n");
+          SYSCALL_DEBUG_PRINTK(" --> Syscall number is out of bounds (>= %u). Returning -ENOSYS.", MAX_SYSCALLS);
+          ret_val = -ENOSYS; // Error: System call number out of range
+      }
+ 
+      // Set return value
+      serial_write("SD: SetRet\n");
+      SYSCALL_DEBUG_PRINTK(" --> Preparing to set return value in regs->eax...");
+      regs->eax = (uint32_t)ret_val;
+      SYSCALL_DEBUG_PRINTK(" -> Set return EAX to %d (0x%x)", ret_val, (uint32_t)ret_val);
+ 
+      serial_write("SD: Exit\n");
+      SYSCALL_DEBUG_PRINTK("Dispatcher exiting.");
  }
