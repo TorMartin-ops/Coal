@@ -52,12 +52,36 @@
  
  /**
   * @brief Structure containing the user process's registers saved by the assembly handler.
-  *
-  * Mirrors the isr_frame_t structure for consistency. The assembly handler pushes
-  * a dummy error code (0) and the vector number (0x80) to match the layout.
-  * Syscall arguments are extracted from the general-purpose registers within this struct.
+  * Layout MUST match the exact order that syscall_handler_asm pushes registers onto the stack.
   */
- typedef isr_frame_t syscall_regs_t;
+ typedef struct __attribute__((packed)) syscall_regs {
+     // Order from bottom to top of stack (pusha order)
+     uint32_t edi;          // Pushed by pusha (last in, first out when restored by popa)
+     uint32_t esi;          // Pushed by pusha
+     uint32_t ebp;          // Pushed by pusha
+     uint32_t esp_dummy;    // Pushed by pusha (original ESP, not used in restoration)
+     uint32_t ebx;          // Pushed by pusha - First syscall argument
+     uint32_t edx;          // Pushed by pusha - Third syscall argument
+     uint32_t ecx;          // Pushed by pusha - Second syscall argument
+     uint32_t eax;          // Pushed by pusha - Syscall number
+ 
+     // Additional registers pushed separately
+     uint32_t gs;           // Pushed after pusha
+     uint32_t fs;           // Pushed after pusha
+     uint32_t es;           // Pushed after pusha
+     uint32_t ds;           // Pushed after pusha
+     
+     // Interrupt details
+     uint32_t int_no;       // Syscall interrupt number (0x80)
+     uint32_t err_code;     // Dummy error code (0)
+     
+     // CPU-pushed registers (if coming from user mode)
+     uint32_t eip;          // Return address (saved by CPU)
+     uint32_t cs;           // Code segment (saved by CPU)
+     uint32_t eflags;       // Flags (saved by CPU)
+     uint32_t useresp;      // User mode stack pointer (saved by CPU if privilege change)
+     uint32_t ss;           // Stack segment (saved by CPU if privilege change)
+ } syscall_regs_t;
  
  /**
   * @brief Function pointer type for system call implementation functions.
@@ -81,8 +105,10 @@
   * Validates the syscall number and calls the appropriate implementation function.
   *
   * @param regs Pointer to the saved register state from the user process.
+  * @param syscall_num The original syscall number passed by the user.
+  * @param first_arg The original first argument (EBX) passed by the user.
   * The return value of the syscall is placed back into regs->eax.
   */
- void syscall_dispatcher(syscall_regs_t *regs);
+ void syscall_dispatcher(syscall_regs_t *regs, uint32_t syscall_num, uint32_t first_arg);
  
  #endif // SYSCALL_H
