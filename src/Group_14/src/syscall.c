@@ -82,56 +82,56 @@
   * All entries are initially set to `sys_not_implemented`.
   * Specific handlers are then registered for implemented syscalls.
   */
- void syscall_init(void) {
-      serial_write(" FNC_ENTER: syscall_init\n");
-      DEBUG_PRINTK("Initializing system call table (max %d syscalls)...\n", MAX_SYSCALLS);
-      serial_write("  STEP: Looping to init table\n");
-      // Initialize all entries to point to the 'not implemented' function
-      for (int i = 0; i < MAX_SYSCALLS; i++) {
-          syscall_table[i] = sys_not_implemented;
-      }
-      serial_write("  STEP: Registering handlers\n");
-      // Register implemented system calls
-      syscall_table[SYS_EXIT]  = sys_exit_impl; // <<< ENSURE THIS IS CORRECT
-      syscall_table[SYS_READ]  = sys_read_impl;
-      syscall_table[SYS_WRITE] = sys_write_impl;
-      syscall_table[SYS_OPEN]  = sys_open_impl;
-      syscall_table[SYS_CLOSE] = sys_close_impl;
-      syscall_table[SYS_LSEEK] = sys_lseek_impl;
-      syscall_table[SYS_GETPID] = sys_getpid_impl;
- 
-      // --- **FIX**: Verification Assertion ---
-      // Explicitly check if the assignment for SYS_EXIT worked immediately.
-      // If this assertion fails, the problem is right here in syscall_init
-      // (e.g., sys_exit_impl isn't defined correctly, or SYS_EXIT isn't 1).
-      serial_write("  STEP: Verifying SYS_EXIT assignment...\n");
-      KERNEL_ASSERT(syscall_table[SYS_EXIT] == sys_exit_impl, "syscall_table[SYS_EXIT] assignment failed! Check definitions.");
-      KERNEL_ASSERT(syscall_table[SYS_EXIT] != sys_not_implemented, "syscall_table[SYS_EXIT] incorrectly points to sys_not_implemented!");
-      serial_write("  STEP: SYS_EXIT assignment OK.\n");
-      // --- END **FIX** ---
- 
- 
-      // --- Pointer Logging for Debugging ---
-      serial_write(" DBG:InitPtrs:\n");
-      serial_write("  NI@"); serial_print_hex((uint32_t)sys_not_implemented); serial_write("\n");
-      serial_write("  EX@"); serial_print_hex((uint32_t)sys_exit_impl); serial_write("\n");
-      serial_write("  T0@"); serial_print_hex((uint32_t)syscall_table[0]); serial_write("\n"); // Should be NI
-      serial_write("  T1@"); serial_print_hex((uint32_t)syscall_table[1]); serial_write("\n"); // Should be EX (verified above)
-      serial_write("  T3@"); serial_print_hex((uint32_t)syscall_table[SYS_READ]); serial_write("\n"); // Should be sys_read_impl
-      // Also log via DEBUG_PRINTK if enabled/working
-      #if DEBUG_SYSCALL
-      DEBUG_PRINTK("   sys_not_implemented func ptr = %p\n", sys_not_implemented);
-      DEBUG_PRINTK("   sys_exit_impl       func ptr = %p\n", sys_exit_impl);
-      DEBUG_PRINTK("   syscall_table[0]    func ptr = %p\n", syscall_table[0]);
-      DEBUG_PRINTK("   syscall_table[1]    func ptr = %p\n", syscall_table[1]);
-      DEBUG_PRINTK("   syscall_table[3]    func ptr = %p\n", syscall_table[SYS_READ]);
-      #endif
-      // --- END Logging ---
- 
- 
-      DEBUG_PRINTK("System call table initialization complete.\n");
-      serial_write(" FNC_EXIT: syscall_init\n");
- }
+  void syscall_init(void) {
+    serial_write(" FNC_ENTER: syscall_init\n");
+    DEBUG_PRINTK("Initializing system call table (max %d syscalls)...\n", MAX_SYSCALLS);
+    serial_write("  STEP: Looping to init table\n");
+    // Initialize all entries to point to the 'not implemented' function
+    for (int i = 0; i < MAX_SYSCALLS; i++) {
+        syscall_table[i] = sys_not_implemented;
+    }
+    serial_write("  STEP: Registering handlers\n");
+    // Register implemented system calls
+    syscall_table[SYS_EXIT]  = sys_exit_impl;
+    syscall_table[SYS_READ]  = sys_read_impl;
+    syscall_table[SYS_WRITE] = sys_write_impl;
+    syscall_table[SYS_OPEN]  = sys_open_impl;
+    syscall_table[SYS_CLOSE] = sys_close_impl;
+    syscall_table[SYS_LSEEK] = sys_lseek_impl;
+    syscall_table[SYS_GETPID] = sys_getpid_impl;
+
+    // --- Verification Assertion ---
+    serial_write("  STEP: Verifying SYS_EXIT assignment...\n");
+    KERNEL_ASSERT(syscall_table[SYS_EXIT] == sys_exit_impl, "syscall_table[SYS_EXIT] assignment failed! Check definitions.");
+    KERNEL_ASSERT(syscall_table[SYS_EXIT] != sys_not_implemented, "syscall_table[SYS_EXIT] incorrectly points to sys_not_implemented!");
+    serial_write("  STEP: SYS_EXIT assignment OK.\n");
+
+
+    // --- Pointer Logging for Debugging ---
+    serial_write(" DBG:InitPtrs:\n");
+    serial_write("  NI@"); serial_print_hex((uint32_t)sys_not_implemented); serial_write("\n");
+    serial_write("  EX@"); serial_print_hex((uint32_t)sys_exit_impl); serial_write("\n");
+    serial_write("  T0@"); serial_print_hex((uint32_t)syscall_table[0]); serial_write("\n"); // Should be NI
+    serial_write("  T1@"); serial_print_hex((uint32_t)syscall_table[1]); serial_write("\n"); // Should be EX (verified above)
+    serial_write("  T3@"); serial_print_hex((uint32_t)syscall_table[SYS_READ]); serial_write("\n"); // Should be sys_read_impl
+
+    // +++ ADDED DEBUG PRINT +++
+    serial_write(" DBG: syscall_table[1] after init loop: ");
+    serial_print_hex((uint32_t)syscall_table[SYS_EXIT]);
+    serial_write("\n");
+    // +++ END ADDED +++
+
+    #if DEBUG_SYSCALL
+    DEBUG_PRINTK("   sys_not_implemented func ptr = %p\n", sys_not_implemented);
+    DEBUG_PRINTK("   sys_exit_impl       func ptr = %p\n", sys_exit_impl);
+    DEBUG_PRINTK("   syscall_table[0]    func ptr = %p\n", syscall_table[0]);
+    DEBUG_PRINTK("   syscall_table[1]    func ptr = %p\n", syscall_table[1]); // Already logged by DEBUG_PRINTK if enabled
+    DEBUG_PRINTK("   syscall_table[3]    func ptr = %p\n", syscall_table[SYS_READ]);
+    #endif
+
+    DEBUG_PRINTK("System call table initialization complete.\n");
+    serial_write(" FNC_EXIT: syscall_init\n");
+}
  
  //-----------------------------------------------------------------------------
  // Static Helper: Safe String Copy from User Space

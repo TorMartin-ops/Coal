@@ -857,9 +857,6 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     terminal_write("[Kernel] Initializing Scheduler...\n");
     scheduler_init();
     terminal_write("  Scheduler initialized (Idle Task ready, TSS ESP0 set).\n");
-    syscall_init();
-    terminal_write("  Syscall interface initialized.\n");
-
 
     // 6. Filesystem Initialization
     // Mount the root filesystem. Requires block device drivers and memory allocators.
@@ -886,8 +883,6 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
         terminal_write("  [Info] Filesystem not ready, skipping initial user process creation.\n");
     }
 
-    syscall_init();
-    terminal_write("  Syscall interface initialized.\n");
 
     // 8. Mark Scheduler Ready & Enable Interrupts
     // Once all essential pre-interrupt setup is complete, we can allow the scheduler
@@ -895,6 +890,8 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     terminal_write("[Kernel] Finalizing setup before enabling interrupts...\n");
 
 
+    syscall_init();
+    terminal_write("  Syscall interface initialized.\n");
     // Mark the scheduler as fully ready to handle timer ticks.
     scheduler_start(); // Sets g_scheduler_ready = true
     terminal_write("  Scheduler marked as ready.\n");
