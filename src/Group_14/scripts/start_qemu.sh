@@ -1,10 +1,19 @@
 #!/bin/bash
-INPUT_KERNEL_PATH=$1 # Use a different name for the input argument
-INPUT_DISK_PATH=$2
+INPUT_ISO_PATH=$1 # Take ISO path as argument
+
+# --- Determine path to disk.img relative to ISO path ---
+# This assumes disk.img is in the same directory as kernel.iso (e.g., your build output dir)
+ISO_DIR=$(dirname "$INPUT_ISO_PATH")
+INPUT_DISK_PATH="$ISO_DIR/disk.img"
+# Fallback if ISO_DIR is just '.'
+if [ "$ISO_DIR" == "." ]; then
+    INPUT_DISK_PATH="./disk.img"
+fi
+
 
 # Basic check for arguments
-if [ -z "$INPUT_KERNEL_PATH" ] || [ -z "$INPUT_DISK_PATH" ]; then
-  echo "Usage: $0 <kernel_path> <disk_path>"
+if [ -z "$INPUT_ISO_PATH" ]; then
+  echo "Usage: $0 <path/to/kernel.iso>"
   exit 1
 fi
 
@@ -25,51 +34,61 @@ resolve_path() {
   fi
 }
 
-# Calculate the absolute paths using the helper function
-ABS_KERNEL_PATH=$(resolve_path "$INPUT_KERNEL_PATH" "$SCRIPT_DIR")
+# Calculate the absolute paths for ISO and DISK
+ABS_ISO_PATH=$(resolve_path "$INPUT_ISO_PATH" "$SCRIPT_DIR")
 ABS_DISK_PATH=$(resolve_path "$INPUT_DISK_PATH" "$SCRIPT_DIR")
 
+
 # Check if readlink failed (returned empty string)
-if [ -z "$ABS_KERNEL_PATH" ]; then
-  echo "Error: Failed to resolve kernel path: $INPUT_KERNEL_PATH"
+if [ -z "$ABS_ISO_PATH" ]; then
+  echo "Error: Failed to resolve ISO path: $INPUT_ISO_PATH"
   exit 1
 fi
- if [ -z "$ABS_DISK_PATH" ]; then
-  echo "Error: Failed to resolve disk path: $INPUT_DISK_PATH"
-  exit 1
+if [ -z "$ABS_DISK_PATH" ]; then
+   # If resolving relative to script dir failed, try relative to CWD as fallback
+   ABS_DISK_PATH=$(resolve_path "$INPUT_DISK_PATH" "$PWD")
+   if [ -z "$ABS_DISK_PATH" ]; then
+      echo "Error: Failed to resolve disk path: $INPUT_DISK_PATH"
+      exit 1
+   fi
 fi
 
 
-echo "DEBUG: Script directory: $SCRIPT_DIR"
-echo "DEBUG: Input Kernel Path Arg: $INPUT_KERNEL_PATH"
-echo "DEBUG: Calculated Absolute Kernel Path: $ABS_KERNEL_PATH"
-echo "DEBUG: Input Disk Path Arg: $INPUT_DISK_PATH"
+echo "DEBUG: Script directory             : $SCRIPT_DIR"
+echo "DEBUG: Input ISO Path Arg           : $INPUT_ISO_PATH"
+echo "DEBUG: Calculated Absolute ISO Path  : $ABS_ISO_PATH"
+echo "DEBUG: Inferred Input Disk Path    : $INPUT_DISK_PATH"
 echo "DEBUG: Calculated Absolute Disk Path: $ABS_DISK_PATH"
 
 # Check if files exist using the calculated ABSOLUTE paths
-if [ ! -f "$ABS_KERNEL_PATH" ]; then
-  echo "Error: Kernel file not found at calculated absolute path: $ABS_KERNEL_PATH"
+if [ ! -f "$ABS_ISO_PATH" ]; then
+  echo "Error: ISO file not found at calculated absolute path: $ABS_ISO_PATH"
   exit 1
 fi
-echo "DEBUG: Kernel file check passed using absolute path."
-
+echo "DEBUG: ISO file check passed using absolute path."
 if [ ! -f "$ABS_DISK_PATH" ]; then
-  echo "Error: Disk image not found at calculated absolute path: $ABS_DISK_PATH"
+  echo "Error: Disk image file not found at calculated absolute path: $ABS_DISK_PATH"
   exit 1
 fi
 echo "DEBUG: Disk file check passed using absolute path."
 
 
-# Start QEMU using the ABSOLUTE paths for robustness
-echo "Starting QEMU, serial output to qemu_output.log"
-qemu-system-i386 -S -gdb tcp::1234 -boot d -hda "$ABS_KERNEL_PATH" -hdb "$ABS_DISK_PATH" -m 1024 \
+# Start QEMU using the ISO with -cdrom AND the disk image with -hdb
+echo "Starting QEMU with ISO (-cdrom=$ABS_ISO_PATH) and Disk (-hdb=$ABS_DISK_PATH), serial output to qemu_output.log"
+qemu-system-i386 -S -gdb tcp::1234 \
+                 -boot d \
+                 -cdrom "$ABS_ISO_PATH" \
+                 -hdb "$ABS_DISK_PATH" \
+                 -m 1024 \
                  -audiodev sdl,id=sdl1,out.buffer-length=40000 -machine pcspk-audiodev=sdl1 \
                  -serial file:qemu_output.log &
 
 QEMU_PID=$!
 
+# --- Rest of the script (QEMU check, GDB wait, cleanup) ---
+
 # Check if QEMU started successfully
-sleep 1 # Give QEMU a moment to start or fail
+sleep 1
 if ! kill -0 $QEMU_PID 2>/dev/null; then
     echo "Error: QEMU failed to start."
     exit 1
@@ -78,14 +97,12 @@ echo "QEMU started with PID $QEMU_PID"
 
 # Function to check if gdb is running
 is_gdb_running() {
-    # Use pgrep with more specific matching if possible
     pgrep -f "gdb-multiarch.*1234" > /dev/null
 }
 
 # Function to handle termination signals
 cleanup() {
     echo "Stopping QEMU (PID $QEMU_PID)..."
-    # Send SIGTERM first, then SIGKILL if needed
     kill $QEMU_PID 2>/dev/null
     sleep 1
     if kill -0 $QEMU_PID 2>/dev/null; then
@@ -93,14 +110,13 @@ cleanup() {
         kill -9 $QEMU_PID 2>/dev/null
     fi
     echo "QEMU stopped."
-    # Display log file content if requested
-    # Check for log file in the original script directory
-    if [ -f "$SCRIPT_DIR/qemu_output.log" ]; then
-        echo "--- QEMU Output Log ($SCRIPT_DIR/qemu_output.log) ---"
-        cat "$SCRIPT_DIR/qemu_output.log"
+    # Log file is created relative to where QEMU was launched from
+    if [ -f "./qemu_output.log" ]; then
+        echo "--- QEMU Output Log (./qemu_output.log) ---"
+        cat "./qemu_output.log"
         echo "-----------------------------------------"
     else
-        echo "DEBUG: Log file $SCRIPT_DIR/qemu_output.log not found."
+        echo "DEBUG: Log file ./qemu_output.log not found."
     fi
     exit 0
 }
@@ -111,12 +127,11 @@ trap cleanup SIGINT SIGTERM EXIT
 # Wait for gdb to connect
 echo "Waiting for gdb connection (listening on tcp::1234)..."
 while ! is_gdb_running; do
-    # Check if QEMU exited prematurely
     if ! kill -0 $QEMU_PID 2>/dev/null; then
         echo "QEMU process exited before GDB connected."
-        # Call cleanup here to show log file if it exists
+        # Call cleanup explicitly to show logs if QEMU dies early
         cleanup
-        exit 1 # Exit script if QEMU dies
+        exit 1
     fi
     sleep 1
 done
@@ -125,12 +140,11 @@ echo "GDB process detected."
 # Monitor the GDB connection / QEMU process
 echo "Monitoring GDB/QEMU..."
 while kill -0 $QEMU_PID 2>/dev/null; do
-    # Check if GDB is still running
     if ! is_gdb_running; then
         echo "GDB process appears to have disconnected/exited."
-        break # Exit the monitoring loop if GDB stops
+        break
     fi
-    sleep 2 # Check less frequently
+    sleep 2
 done
 
 echo "Monitoring loop finished."

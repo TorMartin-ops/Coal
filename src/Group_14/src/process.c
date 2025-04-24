@@ -290,44 +290,72 @@
   * @return 0 on success, -1 on failure (e.g., temp mapping failed).
   */
  static int copy_elf_segment_data(uintptr_t frame_paddr,
-                                  const uint8_t* file_data_buffer,
-                                  size_t file_buffer_offset,
-                                  size_t size_to_copy,
-                                  size_t zero_padding)
- {
-      PROC_DEBUG_PRINTF("Enter P=%#lx, offset=%lu, copy=%lu, zero=%lu\n", (unsigned long)frame_paddr, (unsigned long)file_buffer_offset, (unsigned long)size_to_copy, (unsigned long)zero_padding);
-      KERNEL_ASSERT(frame_paddr != 0 && (frame_paddr % PAGE_SIZE) == 0, "copy_elf_segment_data: Invalid physical address");
-      KERNEL_ASSERT(size_to_copy + zero_padding <= PAGE_SIZE, "ELF copy + zero exceeds frame");
+                                 const uint8_t* file_data_buffer,
+                                 size_t file_buffer_offset,
+                                 size_t size_to_copy,
+                                 size_t zero_padding)
+{
+     PROC_DEBUG_PRINTF("Enter P=%#lx, offset=%lu, copy=%lu, zero=%lu\n", (unsigned long)frame_paddr, (unsigned long)file_buffer_offset, (unsigned long)size_to_copy, (unsigned long)zero_padding);
+     KERNEL_ASSERT(frame_paddr != 0 && (frame_paddr % PAGE_SIZE) == 0, "copy_elf_segment_data: Invalid physical address");
+     KERNEL_ASSERT(size_to_copy + zero_padding <= PAGE_SIZE, "ELF copy + zero exceeds frame");
  
-      // Temporarily map the physical frame into kernel space
-      PROC_DEBUG_PRINTF("Calling paging_temp_map for P=%#lx\n", (unsigned long)frame_paddr);
-      // Use PTE_KERNEL_DATA_FLAGS to ensure it's writable by kernel
-      void* temp_vaddr = paging_temp_map(frame_paddr, PTE_KERNEL_DATA_FLAGS);
+     // Sanity check the input parameters
+     if (!file_data_buffer && size_to_copy > 0) {
+         terminal_printf("[Process] copy_elf_segment_data: ERROR: NULL file_data_buffer with non-zero copy size.\n");
+         return -1;
+     }
+
+     if (file_buffer_offset > 0 && !file_data_buffer) {
+         terminal_printf("[Process] copy_elf_segment_data: ERROR: Non-zero file offset with NULL file_data_buffer.\n");
+         return -1;
+     }
+
+     // Temporarily map the physical frame into kernel space
+     PROC_DEBUG_PRINTF("Calling paging_temp_map for P=%#lx\n", (unsigned long)frame_paddr);
+     // Use PTE_KERNEL_DATA_FLAGS to ensure it's writable by kernel
+     void* temp_vaddr = paging_temp_map(frame_paddr, PTE_KERNEL_DATA_FLAGS);
  
-      if (temp_vaddr == NULL) {
-          terminal_printf("[Process] copy_elf_segment_data: ERROR: paging_temp_map failed (paddr=%#lx).\n", (unsigned long)frame_paddr);
-          return -1;
-      }
-      PROC_DEBUG_PRINTF("paging_temp_map returned V=%p\n", temp_vaddr);
+     if (temp_vaddr == NULL) {
+         terminal_printf("[Process] copy_elf_segment_data: ERROR: paging_temp_map failed (paddr=%#lx).\n", (unsigned long)frame_paddr);
+         return -1;
+     }
+     PROC_DEBUG_PRINTF("paging_temp_map returned V=%p\n", temp_vaddr);
  
-      // Copy data from ELF file buffer
-      if (size_to_copy > 0) {
-          PROC_DEBUG_PRINTF("memcpy: dst=%p, src=%p + %lu, size=%lu\n", temp_vaddr, file_data_buffer, (unsigned long)file_buffer_offset, (unsigned long)size_to_copy);
-          KERNEL_ASSERT(file_data_buffer != NULL, "copy_elf_segment_data: NULL file_data_buffer");
-          memcpy(temp_vaddr, file_data_buffer + file_buffer_offset, size_to_copy);
-      }
-      // Zero out the BSS portion within this page
-      if (zero_padding > 0) {
-          PROC_DEBUG_PRINTF("memset: dst=%p + %lu, val=0, size=%lu\n", temp_vaddr, (unsigned long)size_to_copy, (unsigned long)zero_padding);
-          memset((uint8_t*)temp_vaddr + size_to_copy, 0, zero_padding);
-      }
+     // Copy data from ELF file buffer - with added validation
+     if (size_to_copy > 0) {
+         PROC_DEBUG_PRINTF("memcpy: dst=%p, src=%p + %lu, size=%lu\n", temp_vaddr, file_data_buffer, (unsigned long)file_buffer_offset, (unsigned long)size_to_copy);
+         KERNEL_ASSERT(file_data_buffer != NULL, "copy_elf_segment_data: NULL file_data_buffer");
+         
+         // Extra debug to see what we're copying - print first few bytes
+         if (PROCESS_DEBUG && size_to_copy >= 4) {
+             const uint8_t* src = file_data_buffer + file_buffer_offset;
+             PROC_DEBUG_PRINTF("First 4 bytes: %02x %02x %02x %02x\n", 
+                             src[0], src[1], src[2], src[3]);
+         }
+         
+         // Do the actual copy
+         memcpy(temp_vaddr, file_data_buffer + file_buffer_offset, size_to_copy);
+         
+         // Verify the copy succeeded
+         if (PROCESS_DEBUG && size_to_copy >= 4) {
+             const uint8_t* dst = (const uint8_t*)temp_vaddr;
+             PROC_DEBUG_PRINTF("Verify first 4 bytes: %02x %02x %02x %02x\n", 
+                             dst[0], dst[1], dst[2], dst[3]);
+         }
+     }
+     
+     // Zero out the BSS portion within this page
+     if (zero_padding > 0) {
+         PROC_DEBUG_PRINTF("memset: dst=%p + %lu, val=0, size=%lu\n", temp_vaddr, (unsigned long)size_to_copy, (unsigned long)zero_padding);
+         memset((uint8_t*)temp_vaddr + size_to_copy, 0, zero_padding);
+     }
  
-      // Unmap the specific temporary kernel mapping
-      PROC_DEBUG_PRINTF("Calling paging_temp_unmap for V=%p\n", temp_vaddr);
-      paging_temp_unmap(temp_vaddr);
-      PROC_DEBUG_PRINTF("Exit OK\n");
-      return 0; // success
- }
+     // Unmap the specific temporary kernel mapping
+     PROC_DEBUG_PRINTF("Calling paging_temp_unmap for V=%p\n", temp_vaddr);
+     paging_temp_unmap(temp_vaddr);
+     PROC_DEBUG_PRINTF("Exit OK\n");
+     return 0; // success
+}
  
  
  // ------------------------------------------------------------------------

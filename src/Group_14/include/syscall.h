@@ -21,6 +21,7 @@
  #define SYS_WRITE    4  /**< Write to file descriptor */
  #define SYS_OPEN     5  /**< Open or create a file */
  #define SYS_CLOSE    6  /**< Close a file descriptor */
+ #define SYS_PUTS     7     
  // #define SYS_WAITPID  7  /**< Wait for process termination (Not Implemented) */
  // #define SYS_CREAT    8  /**< Create file (obsolete, use open) (Not Implemented) */
  // #define SYS_LINK     9  /**< Create hard link (Not Implemented) */
@@ -89,8 +90,7 @@
   * Each syscall implementation receives a pointer to the saved registers
   * and returns an integer result (0 or positive value on success, negative errno on failure).
   */
- typedef int (*syscall_fn_t)(syscall_regs_t *regs);
- 
+  typedef int (*syscall_fn_t)(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, syscall_regs_t *full_frame);
  // --- Function Prototypes ---
  
  /**
@@ -110,5 +110,5 @@
   * The return value of the syscall is placed back into regs->eax.
   */
  void syscall_dispatcher(syscall_regs_t *regs, uint32_t syscall_num, uint32_t first_arg);
- 
+
  #endif // SYSCALL_H
