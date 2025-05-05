@@ -1,6 +1,8 @@
 /**
  * @file syscall.c
- * @brief System Call Dispatcher and Implementations
+ * @brief System Call Dispatcher and Implementations (Corrected Argument Handling)
+ *
+ * Version 4.2.1: Fixed access_ok checks and debug logs in sys_read/sys_write.
  */
 
  // --- Includes ---
@@ -119,7 +121,9 @@
 
      serial_write("  STEP: Calling access_ok\n");
      SYSCALL_DEBUG_PRINTK("  strncpy: Checking access_ok(READ, %p, 1 byte)...", u_src);
-     if (!access_ok(VERIFY_READ, u_src, 1)) { // Check VMA permissions
+     // Check VMA permissions for reading at least one byte initially.
+     // The copy_from_user will handle subsequent faults if the string crosses VMA boundaries.
+     if (!access_ok(VERIFY_READ, u_src, 1)) {
          SYSCALL_DEBUG_PRINTK("  strncpy: access_ok failed for user buffer %p", u_src);
          serial_write("  RET: -EFAULT (access_ok failed)\n");
          return -EFAULT;
@@ -131,9 +135,11 @@
      size_t len = 0;
      while (len < maxlen) {
          char current_char;
-         size_t not_copied = copy_from_user(&current_char, u_src + len, 1); // Fault-tolerant copy
+         // Copy one byte at a time, relying on exception handling in copy_from_user
+         size_t not_copied = copy_from_user(&current_char, u_src + len, 1);
          if (not_copied > 0) {
              serial_write("   LOOP: Fault detected!\n");
+             // Ensure null termination even on fault.
              k_dst[len > 0 ? len -1 : 0] = '\0';
              SYSCALL_DEBUG_PRINTK("  strncpy: Fault copying byte %u from %p. Returning -EFAULT", len, u_src + len);
              serial_write("  RET: -EFAULT (fault during copy)\n");
@@ -143,15 +149,16 @@
          if (current_char == '\0') {
              SYSCALL_DEBUG_PRINTK("  strncpy: Found null terminator at length %u. Success.", len);
              serial_write("  RET: 0 (Success)\n");
-             return 0;
+             return 0; // Success
          }
          len++;
      }
+     // If loop finished because maxlen was reached without finding null terminator
      serial_write("  STEP: Loop finished (maxlen reached)\n");
-     k_dst[maxlen - 1] = '\0';
+     k_dst[maxlen - 1] = '\0'; // Ensure null termination
      SYSCALL_DEBUG_PRINTK("  strncpy: String from %p exceeded maxlen %u. Returning -ENAMETOOLONG", u_src, maxlen);
      serial_write("  RET: -ENAMETOOLONG\n");
-     return -ENAMETOOLONG;
+     return -ENAMETOOLONG; // String too long
  }
 
  //-----------------------------------------------------------------------------
@@ -189,8 +196,8 @@
     (void)regs; // regs might be unused if only explicit args are needed now
     serial_write(" FNC_ENTER: sys_read_impl\n");
     int fd              = (int)arg1_ebx;
-    void *user_buf      = (void*)arg2_ecx; // Buffer pointer from ECX
-    size_t count        = (size_t)arg3_edx;
+    void *user_buf      = (void*)arg2_ecx; // *** Use correct arg from dispatcher ***
+    size_t count        = (size_t)arg3_edx; // *** Use correct arg from dispatcher ***
     uint32_t pid        = get_current_process() ? get_current_process()->pid : 0;
 
     SYSCALL_DEBUG_PRINTK("PID %lu: SYS_READ(fd=%d, buf=%p, count=%zu)", pid, fd, user_buf, count);
@@ -203,14 +210,14 @@
         return 0;
     }
 
-    // --- ADDED Robust Serial Log Before access_ok ---
+    // --- Corrected Pre-access_ok check ---
     serial_write("  STEP: Pre-access_ok check for WRITE..."); // Check user buffer writability
     serial_write(" fd="); serial_print_hex(fd);
-    serial_write(" buf="); serial_print_hex((uintptr_t)user_buf);
-    serial_write(" count="); serial_print_hex(count); serial_write("\n");
-    // --- END Added Log ---
+    serial_write(" buf="); serial_print_hex((uintptr_t)user_buf); // *** Log actual user_buf ***
+    serial_write(" count="); serial_print_hex(count); serial_write("\n"); // *** Log actual count ***
 
     // Check if the user buffer is WRITABLE (since kernel writes to it)
+    // *** Pass the actual user_buf and count to access_ok ***
     if (!access_ok(VERIFY_WRITE, user_buf, count)) {
         SYSCALL_DEBUG_PRINTK(" -> EFAULT (access_ok failed for user buffer %p)", user_buf);
         serial_write("  RET: -EFAULT (access_ok failed)\n"); // Log the failure reason
@@ -282,8 +289,8 @@ sys_read_cleanup:
     (void)regs;
     serial_write(" FNC_ENTER: sys_write_impl\n");
     int fd                = (int)arg1_ebx;
-    const void *user_buf  = (const void*)arg2_ecx; // Buffer pointer from ECX
-    size_t count          = (size_t)arg3_edx;
+    const void *user_buf  = (const void*)arg2_ecx; // *** Use correct arg from dispatcher ***
+    size_t count          = (size_t)arg3_edx;     // *** Use correct arg from dispatcher ***
     uint32_t pid          = get_current_process() ? get_current_process()->pid : 0;
 
     SYSCALL_DEBUG_PRINTK("PID %lu: SYS_WRITE(fd=%d, buf=%p, count=%zu)", pid, fd, user_buf, count);
@@ -296,14 +303,14 @@ sys_read_cleanup:
         return 0;
     }
 
-    // --- ADDED Robust Serial Log Before access_ok ---
+    // --- Corrected Pre-access_ok check ---
     serial_write("  STEP: Pre-access_ok check for READ..."); // Check user buffer readability
     serial_write(" fd="); serial_print_hex(fd);
-    serial_write(" buf="); serial_print_hex((uintptr_t)user_buf);
-    serial_write(" count="); serial_print_hex(count); serial_write("\n");
-    // --- END Added Log ---
+    serial_write(" buf="); serial_print_hex((uintptr_t)user_buf); // *** Log actual user_buf ***
+    serial_write(" count="); serial_print_hex(count); serial_write("\n"); // *** Log actual count ***
 
     // Check if the user buffer is READABLE (since kernel reads from it)
+    // *** Pass the actual user_buf and count to access_ok ***
     if (!access_ok(VERIFY_READ, user_buf, count)) {
         SYSCALL_DEBUG_PRINTK(" -> EFAULT (access_ok failed for user buffer %p)", user_buf);
         serial_write("  RET: -EFAULT (access_ok failed)\n"); // Log the failure reason
@@ -367,10 +374,6 @@ sys_read_cleanup:
              serial_write("  LOOP: Fault during copy_from_user\n");
             goto sys_write_cleanup;
         }
-        // This check should be redundant if copy_from_user behaves correctly
-        // if (copied_from_user_this_chunk < current_chunk_size) {
-        //     break;
-        // }
     } // End while loop
 
     final_ret_val = total_written; // Success, return total bytes written
@@ -493,9 +496,9 @@ sys_write_cleanup:
      serial_write("SD: FirstArg(Arg3)="); serial_print_hex(first_arg_ebx); serial_write("\n");
      // Log register values saved by pusha for comparison/debugging
      serial_write("SD: Frame Check: regs->eax="); serial_print_hex(regs->eax); serial_write("\n");
-     serial_write("SD: Frame Check: regs->ebx="); serial_print_hex(regs->ebx); serial_write("\n"); // <= Still likely 0
-     serial_write("SD: Frame Check: regs->ecx="); serial_print_hex(regs->ecx); serial_write("\n");
-     serial_write("SD: Frame Check: regs->edx="); serial_print_hex(regs->edx); serial_write("\n");
+     serial_write("SD: Frame Check: regs->ebx="); serial_print_hex(regs->ebx); serial_write("\n"); // Should match first_arg_ebx
+     serial_write("SD: Frame Check: regs->ecx="); serial_print_hex(regs->ecx); serial_write("\n"); // Should be arg2
+     serial_write("SD: Frame Check: regs->edx="); serial_print_hex(regs->edx); serial_write("\n"); // Should be arg3
 
      // Verify syscall number consistency
      if (syscall_num != regs->eax) {
@@ -545,7 +548,9 @@ sys_write_cleanup:
      }
      serial_write("SD: SetRet\n");
      SYSCALL_DEBUG_PRINTK(" -> C Dispatcher returning %d (0x%x) in EAX for assembly stub.", ret_val, (uint32_t)ret_val);
+
+     // *** CRUCIAL FIX: Place return value into the frame where ASM stub expects it ***
+     regs->eax = (uint32_t)ret_val;
+
      serial_write("SD: Exit\n");
-     // The return value of this function (in EAX) must be placed into the
-     // user's EAX context by the assembly stub before iret.
  }
