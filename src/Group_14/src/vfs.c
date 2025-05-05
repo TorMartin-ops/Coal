@@ -648,35 +648,101 @@
   * @brief Opens or creates a file/directory via the appropriate driver.
   */
   file_t *vfs_open(const char *path, int flags) {
-    if (!path || path[0] != '/') { VFS_ERROR("vfs_open: Invalid path '%s'", path ? path : "NULL"); return NULL; }
-    VFS_DEBUG_LOG("vfs_open: path='%s', flags=0x%x", path, flags);
+    // --- Added Serial Logging ---
+    serial_write("[vfs_open] Enter. Path='");
+    serial_write(path ? path : "NULL");
+    serial_write("', Flags=0x");
+    serial_print_hex((uint32_t)flags); // Log initial flags
+    serial_write("\n");
+    // --- End Serial Logging ---
+
+    if (!path || path[0] != '/') {
+        // --- Added Serial Logging ---
+        serial_write("[vfs_open] Error: Invalid path.\n");
+        // --- End Serial Logging ---
+        VFS_ERROR("vfs_open: Invalid path '%s'", path ? path : "NULL"); return NULL;
+    }
+    // VFS_DEBUG_LOG("vfs_open: path='%s', flags=0x%x", path, flags); // Replaced
 
     mount_t *mnt = find_best_mount_for_path(path);
-    if (!mnt) { VFS_ERROR("vfs_open: No mount point found for path '%s'", path); return NULL; }
+    if (!mnt) {
+        // --- Added Serial Logging ---
+        serial_write("[vfs_open] Error: No mount point found for path.\n");
+        // --- End Serial Logging ---
+        VFS_ERROR("vfs_open: No mount point found for path '%s'", path); return NULL;
+    }
 
     vfs_driver_t *driver = vfs_get_driver(mnt->fs_name); // Use correct type
-    if (!driver) { VFS_ERROR("vfs_open: Driver '%s' not found for mount point '%s'", mnt->fs_name, mnt->mount_point); return NULL; }
+    if (!driver) {
+        // --- Added Serial Logging ---
+        serial_write("[vfs_open] Error: Driver not found for mount point.\n");
+        // --- End Serial Logging ---
+        VFS_ERROR("vfs_open: Driver '%s' not found for mount point '%s'", mnt->fs_name, mnt->mount_point); return NULL;
+    }
 
     // THIS is where the relative path is calculated
     const char *relative_path = get_relative_path(path, mnt);
-    if (!relative_path) { VFS_ERROR("vfs_open: Failed to calculate relative path for '%s' on '%s'", path, mnt->mount_point); return NULL; }
+    if (!relative_path) {
+        // --- Added Serial Logging ---
+        serial_write("[vfs_open] Error: Failed to get relative path.\n");
+        // --- End Serial Logging ---
+        VFS_ERROR("vfs_open: Failed to calculate relative path for '%s' on '%s'", path, mnt->mount_point); return NULL;
+    }
 
-    VFS_DEBUG_LOG("vfs_open: Using mount '%s', driver '%s', relative path '%s'",
-                    mnt->mount_point, driver->fs_name, relative_path);
+    // VFS_DEBUG_LOG("vfs_open: Using mount '%s', driver '%s', relative path '%s'", // Replaced
+    //                 mnt->mount_point, driver->fs_name, relative_path);
+    // --- Added Serial Logging ---
+    serial_write("[vfs_open] Using mount='");
+    serial_write(mnt->mount_point);
+    serial_write("', driver='");
+    serial_write(driver->fs_name);
+    serial_write("', rel_path='");
+    serial_write(relative_path);
+    serial_write("'\n");
+    // --- End Serial Logging ---
 
-    if (!driver->open) { VFS_ERROR("Driver '%s' does not support open operation", driver->fs_name); return NULL; }
+
+    if (!driver->open) {
+        // --- Added Serial Logging ---
+        serial_write("[vfs_open] Error: Driver does not support open.\n");
+        // --- End Serial Logging ---
+        VFS_ERROR("Driver '%s' does not support open operation", driver->fs_name); return NULL;
+    }
+
+    // --- CRUCIAL LOG BEFORE CALL ---
+    serial_write("[vfs_open] >>> Calling driver->open: ctx=");
+    serial_print_hex((uintptr_t)mnt->fs_context);
+    serial_write(", rel_path='");
+    serial_write(relative_path);
+    serial_write("', flags=0x");
+    serial_print_hex((uint32_t)flags); // Print flags *just before* the call
+    serial_write("\n");
+    // --- END CRUCIAL LOG ---
 
     // Call the driver's open function with the relative path
     vnode_t *node = driver->open(mnt->fs_context, relative_path, flags);
+
+    // --- Log after call ---
+     serial_write("[vfs_open] <<< driver->open returned node=");
+     serial_print_hex((uintptr_t)node);
+     serial_write("\n");
+    // --- End Log after call ---
+
        if (!node) {
+           // --- Added Serial Logging ---
+           serial_write("[vfs_open] Driver open failed.\n");
+           // --- End Serial Logging ---
            VFS_DEBUG_LOG("vfs_open: Driver '%s' failed to open relative path '%s'", driver->fs_name, relative_path);
            // Driver open failed, return NULL. Driver is responsible for internal cleanup.
            return NULL;
        }
- 
+
        // Sanity check: Driver MUST set the fs_driver pointer in the returned vnode
        // KERNEL_ASSERT might be too harsh, maybe log error and clean up?
        if (node->fs_driver != driver) {
+           // --- Added Serial Logging ---
+           serial_write("[vfs_open] CRITICAL Error: Driver did not set fs_driver correctly!\n");
+           // --- End Serial Logging ---
            VFS_ERROR("CRITICAL: Driver '%s' open implementation did NOT set vnode->fs_driver correctly!", driver->fs_name);
            // We don't know which driver SHOULD handle cleanup now. This is bad.
            // Attempt cleanup with the *expected* driver, but this is risky.
@@ -687,14 +753,15 @@
                 driver->close(&temp_file);
            }
            kfree(node); // Free the vnode struct itself (assuming VFS allocated it or driver expects VFS to free)
-                          // OR: Assume driver->open allocated vnode and driver->close frees it.
-                          // Let's assume driver->close handles freeing node->data, and VFS frees node itself.
            return NULL; // Abort
        }
- 
+
        // Allocate the VFS file structure
        file_t *file = (file_t *)kmalloc(sizeof(file_t));
        if (!file) {
+           // --- Added Serial Logging ---
+           serial_write("[vfs_open] Error: kmalloc for file_t failed.\n");
+           // --- End Serial Logging ---
            VFS_ERROR("vfs_open: Failed kmalloc for file_t for path '%s'", path);
            VFS_LOG("vfs_open: Cleaning up vnode %p via driver close due to file_t allocation failure", node);
            // We successfully opened the vnode via the driver, but failed to allocate the VFS file_t.
@@ -708,18 +775,25 @@
                          driver->fs_name, node, node->data);
                // Resource leak (node->data) likely if no close function.
            }
-           // Assume VFS layer is responsible for freeing the vnode struct itself,
-           // while driver->close is responsible for freeing node->data.
            kfree(node);
            return NULL;
        }
- 
+
        // Populate the VFS file structure
        file->vnode = node;
        file->flags = flags;
        file->offset = 0; // Standard practice: open sets offset to 0
- 
-       VFS_DEBUG_LOG("vfs_open: Success '%s' (file: %p, vnode: %p, ctx: %p)", path, file, node, node->data);
+
+       // VFS_DEBUG_LOG("vfs_open: Success '%s' (file: %p, vnode: %p, ctx: %p)", path, file, node, node->data); // Replaced
+       // --- Added Serial Logging ---
+       serial_write("[vfs_open] Success. file=");
+       serial_print_hex((uintptr_t)file);
+       serial_write(", vnode=");
+       serial_print_hex((uintptr_t)node);
+       serial_write(", node->data=");
+       serial_print_hex((uintptr_t)node->data);
+       serial_write("\n");
+       // --- End Serial Logging ---
        return file;
  }
  

@@ -1,36 +1,49 @@
-/* include/arch/i386/isr_frame.h */
-#ifndef ARCH_I386_ISR_FRAME_H
-#define ARCH_I386_ISR_FRAME_H
+/* include/isr_frame.h - CORRECTED Canonical Stack Frame Definition v4.5 */
+#ifndef ISR_FRAME_H
+#define ISR_FRAME_H
 
 #include <libc/stdint.h> // Use standard integer types
 
-// Structure representing the stack frame layout created by the common interrupt stub
+/**
+ * @brief Structure representing the stack frame layout created by common
+ * interrupt/exception/syscall assembly stubs.
+ *
+ * Layout MUST EXACTLY MATCH the push order:
+ * PUSH Segments -> PUSHA -> CALL C Handler
+ * Fields ordered by INCREASING stack address (matches pusha hardware order).
+ * Offsets shown are relative to ESP *after* pusha executes.
+ */
 typedef struct __attribute__((packed)) isr_frame {
-    // Pushed by common_interrupt_stub *after* pusha
-    uint32_t gs, fs, es, ds;
+    /* Pushed by PUSHA instruction (EDI pushed first, EAX pushed last) */
+    uint32_t edi;          /* Offset +0 relative to ESP after pusha */
+    uint32_t esi;          /* Offset +4 */
+    uint32_t ebp;          /* Offset +8 */
+    uint32_t esp_dummy;    /* Offset +12 (ESP before PUSHA) */
+    uint32_t ebx;          /* Offset +16 (Arg 1) */
+    uint32_t edx;          /* Offset +20 (Arg 3) */
+    uint32_t ecx;          /* Offset +24 (Arg 2) */
+    uint32_t eax;          /* Offset +28 (Syscall Number / Return Value) */
 
-    // --- CORRECTED ORDER ---
-    // Pushed by PUSHA instruction (in standard order: EAX, ECX, EDX, EBX, ESP_orig, EBP, ESI, EDI)
-    // The struct fields should match the popa order (reverse of pusha).
-    // popad restores: EDI, ESI, EBP, ESP_dummy, EBX, EDX, ECX, EAX
-    uint32_t edi;
-    uint32_t esi;
-    uint32_t ebp;
-    uint32_t esp_dummy; // The ESP value before PUSHA was executed
-    uint32_t ebx;
-    uint32_t edx;
-    uint32_t ecx;
-    uint32_t eax;
-    // --- END CORRECTION ---
+    /* Pushed manually BEFORE pusha */
+    uint32_t gs;           /* Offset +32 */
+    uint32_t fs;           /* Offset +36 */
+    uint32_t es;           /* Offset +40 */
+    uint32_t ds;           /* Offset +44 */
 
-    // Pushed by specific ISR/IRQ stub before jumping to common stub
-    uint32_t int_no;   // Interrupt (vector) number
-    uint32_t err_code; // Error code (pushed by CPU or 0 by stub)
-    // Pushed by CPU automatically on interrupt/exception
-    uint32_t eip, cs, eflags;
-    // Pushed by CPU only on privilege level change (user->kernel)
-    uint32_t useresp; // User stack pointer
-    uint32_t ss;      // User stack segment
+    /* Pushed manually by specific stub BEFORE segments/pusha */
+    uint32_t int_no;       /* Offset +48 */
+    uint32_t err_code;     /* Offset +52 */
+
+    /* CPU Pushed State (Highest addresses on stack) */
+    uint32_t eip;          /* Offset +56 */
+    uint32_t cs;           /* Offset +60 */
+    uint32_t eflags;       /* Offset +64 */
+    uint32_t useresp;      /* Offset +68 (If CPL change) */
+    uint32_t ss;           /* Offset +72 (If CPL change) */
 } isr_frame_t;
 
-#endif // ARCH_I386_ISR_FRAME_H
+// Define syscall_regs_t as an alias for compatibility if needed elsewhere,
+// though standardizing on isr_frame_t is recommended.
+typedef isr_frame_t syscall_regs_t;
+
+#endif // ISR_FRAME_H

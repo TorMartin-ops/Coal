@@ -71,37 +71,78 @@
  // --- sys_open --- (Keep existing implementation)
  // Handles VFS open, sys_file_t allocation, and FD assignment.
  int sys_open(const char *pathname, int flags, int mode) {
-     KERNEL_ASSERT(pathname != NULL, "NULL pathname passed to sys_open");
-     pcb_t *current_proc = get_current_process();
-     if (!current_proc) return -EFAULT;
-     SYSFILE_DEBUG_PRINTK("PID %lu: sys_open(path='%s', flags=0x%x, mode=0%o)", current_proc->pid, pathname, flags, mode);
+    // --- Added Serial Logging ---
+    serial_write("[sys_open] Enter. Pathname='");
+    serial_write(pathname ? pathname : "NULL");
+    serial_write("', Flags=0x");
+    serial_print_hex((uint32_t)flags);
+    serial_write(", Mode=0");
+    // serial_print_oct(mode); // Need octal print helper or use hex
+    serial_print_hex((uint32_t)mode); // Using hex for mode for now
+    serial_write("\n");
+    // --- End Serial Logging ---
 
-     file_t *vfile = vfs_open(pathname, flags); // VFS interaction
-     if (!vfile) {
-         SYSFILE_DEBUG_PRINTK(" -> vfs_open failed for path '%s'. Returning -ENOENT (assumed).", pathname);
-         return -ENOENT; // Or better error from vfs_open if available
-     }
-     SYSFILE_DEBUG_PRINTK(" -> vfs_open succeeded, vfile=%p", vfile);
+    KERNEL_ASSERT(pathname != NULL, "NULL pathname passed to sys_open");
+    pcb_t *current_proc = get_current_process();
+    if (!current_proc) {
+        serial_write("[sys_open] Error: No current process. Returning -EFAULT.\n");
+        return -EFAULT;
+    }
+    // Use %lu for pid (uint32_t), %p for pathname, %x for flags (int), %o for mode (int)
+    SYSFILE_DEBUG_PRINTK("PID %lu: sys_open(path='%s', flags=0x%x, mode=0%o)", current_proc->pid, pathname, flags, mode);
 
-     sys_file_t *sf = (sys_file_t *)kmalloc(sizeof(sys_file_t));
-     if (!sf) {
-         SYSFILE_DEBUG_PRINTK(" -> kmalloc failed for sys_file_t. Returning -ENOMEM.");
-         vfs_close(vfile);
-         return -ENOMEM;
-     }
-     sf->vfs_file = vfile;
-     sf->flags = flags;
+    // --- Added Serial Logging ---
+    serial_write("[sys_open] Calling vfs_open. Path='");
+    serial_write(pathname);
+    serial_write("', Flags=0x");
+    serial_print_hex((uint32_t)flags); // Log flags JUST BEFORE calling vfs_open
+    serial_write("\n");
+    // --- End Serial Logging ---
 
-     int fd = allocate_fd_for_process(current_proc, sf);
-     if (fd < 0) { // -EMFILE
-         SYSFILE_DEBUG_PRINTK(" -> allocate_fd_for_process failed (%d).", fd);
-         vfs_close(vfile);
-         kfree(sf);
-         return fd;
-     }
-     SYSFILE_DEBUG_PRINTK(" -> Success. Assigned fd %d.", fd);
-     return fd;
- }
+    file_t *vfile = vfs_open(pathname, flags); // VFS interaction
+
+    // --- Added Serial Logging ---
+    serial_write("[sys_open] vfs_open returned vfile=");
+    serial_print_hex((uintptr_t)vfile);
+    serial_write("\n");
+    // --- End Serial Logging ---
+
+    if (!vfile) {
+        SYSFILE_DEBUG_PRINTK(" -> vfs_open failed for path '%s'. Returning -ENOENT (assumed).", pathname);
+        serial_write("[sys_open] vfs_open failed. Returning -ENOENT.\n");
+        return -ENOENT; // Or better error from vfs_open if available
+    }
+    SYSFILE_DEBUG_PRINTK(" -> vfs_open succeeded, vfile=%p", vfile);
+    serial_write("[sys_open] vfs_open succeeded.\n");
+
+    serial_write("[sys_open] Allocating sys_file_t...\n");
+    sys_file_t *sf = (sys_file_t *)kmalloc(sizeof(sys_file_t));
+    if (!sf) {
+        SYSFILE_DEBUG_PRINTK(" -> kmalloc failed for sys_file_t. Returning -ENOMEM.");
+        serial_write("[sys_open] kmalloc for sys_file_t failed. Closing vfile, returning -ENOMEM.\n");
+        vfs_close(vfile);
+        return -ENOMEM;
+    }
+    sf->vfs_file = vfile;
+    sf->flags = flags; // Store the flags passed to sys_open
+    serial_write("[sys_open] sys_file_t allocated and populated.\n");
+
+    serial_write("[sys_open] Allocating file descriptor...\n");
+    int fd = allocate_fd_for_process(current_proc, sf);
+    if (fd < 0) { // -EMFILE
+        SYSFILE_DEBUG_PRINTK(" -> allocate_fd_for_process failed (%d).", fd);
+        serial_write("[sys_open] allocate_fd failed. Closing vfile, freeing sf, returning error.\n");
+        vfs_close(vfile);
+        kfree(sf);
+        return fd;
+    }
+    SYSFILE_DEBUG_PRINTK(" -> Success. Assigned fd %d.", fd);
+    serial_write("[sys_open] FD allocated: ");
+    // serial_print_dec(fd); // Need decimal print helper or use hex
+    serial_print_hex((uint32_t)fd); // Using hex for fd
+    serial_write(". Returning fd.\n");
+    return fd;
+}
 
  // --- sys_read --- (Keep existing implementation)
  // Validates FD, checks permissions, calls VFS read.
