@@ -372,199 +372,185 @@
   * @return 0 on success, negative error code on failure.
   */
  static int load_elf_and_init_memory(const char *path,
-                                     mm_struct_t *mm,
-                                     uint32_t *entry_point,
-                                     uintptr_t *initial_brk)
+                                    mm_struct_t *mm,
+                                    uint32_t *entry_point,
+                                    uintptr_t *initial_brk)
  {
-      PROC_DEBUG_PRINTF("Enter path='%s', mm=%p\n", path ? path : "<NULL>", mm);
+      PROC_DEBUG_PRINTF("Enter path='%s', mm=%p", path ? path : "<NULL>", mm);
       KERNEL_ASSERT(path != NULL && mm != NULL && entry_point != NULL && initial_brk != NULL, "load_elf: Invalid arguments");
- 
+
       size_t file_size = 0;
       uint8_t *file_data = NULL;
       uintptr_t phys_page = 0; // Tracks a potentially allocated frame that needs freeing on error
       int result = -1; // Default to error
- 
+
       // 1. Read ELF file using the read_file helper
-      PROC_DEBUG_PRINTF("Reading file '%s'\n", path);
+      PROC_DEBUG_PRINTF("Reading file '%s'", path);
       file_data = (uint8_t*)read_file(path, &file_size); // read_file allocates buffer
       if (!file_data) {
           terminal_printf("[Process] load_elf: ERROR: Failed to read file '%s'.\n", path);
           result = -ENOENT; // File not found or read error
           goto cleanup_load_elf;
       }
-      PROC_DEBUG_PRINTF("File read: size=%lu bytes, buffer=%p\n", (unsigned long)file_size, file_data);
+      PROC_DEBUG_PRINTF("File read: size=%lu bytes, buffer=%p", (unsigned long)file_size, file_data);
       if (file_size < sizeof(Elf32_Ehdr)) {
           terminal_printf("[Process] load_elf: ERROR: File '%s' is too small to be an ELF file (size %lu).\n", path, (unsigned long)file_size);
           result = -ENOEXEC; // Exec format error
           goto cleanup_load_elf;
       }
- 
+
       // 2. Parse and Validate ELF Header
-      PROC_DEBUG_PRINTF("Parsing ELF header...\n");
+      PROC_DEBUG_PRINTF("Parsing ELF header...");
       Elf32_Ehdr *ehdr = (Elf32_Ehdr *)file_data;
- 
-      // Check ELF Magic Number
+
+      // Check ELF Magic Number, Class, Type, Machine, Program Header Table validity
       if (ehdr->e_ident[EI_MAG0] != ELFMAG0 || ehdr->e_ident[EI_MAG1] != ELFMAG1 ||
           ehdr->e_ident[EI_MAG2] != ELFMAG2 || ehdr->e_ident[EI_MAG3] != ELFMAG3) {
           terminal_printf("[Process] load_elf: ERROR: Invalid ELF magic number for '%s'.\n", path);
           result = -ENOEXEC; goto cleanup_load_elf;
       }
-      // Check Class (32-bit) and Type (Executable) and Machine (i386)
       if (ehdr->e_ident[EI_CLASS] != ELFCLASS32 || ehdr->e_type != ET_EXEC || ehdr->e_machine != EM_386) {
            terminal_printf("[Process] load_elf: ERROR: ELF file '%s' is not a 32-bit i386 executable.\n", path);
            result = -ENOEXEC; goto cleanup_load_elf;
       }
-      // Ensure program header table is within the file bounds
        if (ehdr->e_phoff == 0 || ehdr->e_phnum == 0 ||
            (ehdr->e_phoff + (uint64_t)ehdr->e_phnum * ehdr->e_phentsize) > file_size) {
            terminal_printf("[Process] load_elf: ERROR: Invalid program header table in '%s'.\n", path);
            result = -ENOEXEC; goto cleanup_load_elf;
        }
- 
+
       *entry_point = ehdr->e_entry;
       terminal_printf("  ELF Entry Point: %#lx\n", (unsigned long)*entry_point);
- 
+
       // 3. Process Program Headers (Segments)
-      PROC_DEBUG_PRINTF("Processing %u program headers...\n", (unsigned)ehdr->e_phnum);
+      PROC_DEBUG_PRINTF("Processing %u program headers...", (unsigned)ehdr->e_phnum);
       Elf32_Phdr *phdr_table = (Elf32_Phdr *)(file_data + ehdr->e_phoff);
       uintptr_t highest_addr_loaded = 0;
- 
+
       for (Elf32_Half i = 0; i < ehdr->e_phnum; i++) {
           Elf32_Phdr *phdr = &phdr_table[i];
-          PROC_DEBUG_PRINTF(" Segment %u: Type=%lu\n", (unsigned)i, (unsigned long)phdr->p_type); // Use %lu for Elf32_Word
- 
+          PROC_DEBUG_PRINTF(" Segment %u: Type=%lu", (unsigned)i, (unsigned long)phdr->p_type);
+
           // Only process PT_LOAD segments with a non-zero memory size
           if (phdr->p_type != PT_LOAD || phdr->p_memsz == 0) {
+              PROC_DEBUG_PRINTF("   -> Skipping (Not PT_LOAD or memsz is 0)");
               continue;
           }
- 
-          // Validate segment addresses and sizes
+
+          // Validate segment addresses and sizes (remain the same)
           if (phdr->p_vaddr < USER_SPACE_START_VIRT || phdr->p_vaddr >= KERNEL_VIRT_BASE) {
               terminal_printf("  -> Error: Segment %d VAddr %#lx out of user space bounds for '%s'.\n", (int)i, (unsigned long)phdr->p_vaddr, path);
               result = -ENOEXEC; goto cleanup_load_elf;
           }
-          if (phdr->p_vaddr + phdr->p_memsz < phdr->p_vaddr || // Check memsz overflow
-              phdr->p_vaddr + phdr->p_memsz > KERNEL_VIRT_BASE) {
-              terminal_printf("  -> Error: Segment %d memory range extends into kernel space for '%s'.\n", (int)i, path);
+          if (phdr->p_vaddr + phdr->p_memsz < phdr->p_vaddr || phdr->p_vaddr + phdr->p_memsz > KERNEL_VIRT_BASE) {
+              terminal_printf("  -> Error: Segment %d memory range [%#lx-%#lx) invalid for '%s'.\n", (int)i, (unsigned long)phdr->p_vaddr, (unsigned long)(phdr->p_vaddr + phdr->p_memsz), path);
               result = -ENOEXEC; goto cleanup_load_elf;
           }
            if (phdr->p_filesz > phdr->p_memsz) {
-               // Use %lu for Elf32_Word types
                terminal_printf("  -> Error: Segment %d filesz (%lu) > memsz (%lu) for '%s'.\n", (int)i, (unsigned long)phdr->p_filesz, (unsigned long)phdr->p_memsz, path);
                result = -ENOEXEC; goto cleanup_load_elf;
            }
-           if (phdr->p_offset + phdr->p_filesz < phdr->p_offset || // Check filesz overflow
-               phdr->p_offset + phdr->p_filesz > file_size) {
-               terminal_printf("  -> Error: Segment %d file range exceeds file size for '%s'.\n", (int)i, path);
+           if (phdr->p_offset + phdr->p_filesz < phdr->p_offset || phdr->p_offset + phdr->p_filesz > file_size) {
+               terminal_printf("  -> Error: Segment %d file range [%#lx-%#lx) exceeds file size (%lu) for '%s'.\n", (int)i, (unsigned long)phdr->p_offset, (unsigned long)(phdr->p_offset + phdr->p_filesz), (unsigned long)file_size, path);
                result = -ENOEXEC; goto cleanup_load_elf;
            }
- 
-          // Use %lu for Elf32_Word types in printf
-          terminal_printf("  Segment %d: VAddr=%#lx, MemSz=%lu, FileSz=%lu, Offset=%#lx, Flags=%c%c%c\n",
+
+          terminal_printf("  Segment %d: VAddr=%#lx, MemSz=%lu, FileSz=%lu, Offset=%#lx, Flags=%c%c%c",
                           (int)i, (unsigned long)phdr->p_vaddr, (unsigned long)phdr->p_memsz, (unsigned long)phdr->p_filesz, (unsigned long)phdr->p_offset,
                           (phdr->p_flags & PF_R) ? 'R' : '-',
                           (phdr->p_flags & PF_W) ? 'W' : '-',
                           (phdr->p_flags & PF_X) ? 'X' : '-');
- 
+
           // Calculate page-aligned virtual memory range for the VMA
           uintptr_t vm_start = PAGE_ALIGN_DOWN(phdr->p_vaddr);
           uintptr_t vm_end = PAGE_ALIGN_UP(phdr->p_vaddr + phdr->p_memsz);
-          if (vm_end <= vm_start) { // Skip if rounding results in zero size
-              continue;
-          }
- 
-          // Determine VMA flags and Page Protection flags based on segment flags
-          uint32_t vma_flags = VM_USER | VM_ANONYMOUS;    // Base VMA flags
+          if (vm_end <= vm_start) continue; // Skip zero-sized VMA after alignment
+
+          // --- FIXED: Correct VMA and Page Flag Derivation ---
+          uint32_t vma_flags = VM_USER | VM_ANONYMOUS; // Base VMA flags (ANONYMOUS assumes no file backing *yet*)
           uint32_t page_prot = PAGE_PRESENT | PAGE_USER; // Base Page flags
- 
+
+          // Set VMA flags based on ELF permissions
           if (phdr->p_flags & PF_R) vma_flags |= VM_READ;
+          if (phdr->p_flags & PF_W) vma_flags |= VM_WRITE;
+          if (phdr->p_flags & PF_X) vma_flags |= VM_EXEC;
+
+          // Set Page flags based on ELF permissions
           if (phdr->p_flags & PF_W) {
-              vma_flags |= VM_WRITE;
-              page_prot |= PAGE_RW;
+              page_prot |= PAGE_RW; // Writable page
           }
-          if (phdr->p_flags & PF_X) {
-              vma_flags |= VM_EXEC;
-              // Do NOT set PAGE_NX_BIT if executable
-          } else if (g_nx_supported) {
-              page_prot |= PAGE_NX_BIT; // Set NX bit if segment is not executable and NX is supported
+          // Set NX bit only if segment is NOT executable and NX is supported
+          if (!(phdr->p_flags & PF_X) && g_nx_supported) {
+              page_prot |= PAGE_NX_BIT;
           }
- 
-          terminal_printf("  -> VMA [%#lx - %#lx), VMA Flags=%#x, PageProt=%#x\n",
+          // --- END FIX ---
+
+          terminal_printf("  -> VMA [%#lx - %#lx), VMA Flags=%#x, PageProt=%#x",
                           (unsigned long)vm_start, (unsigned long)vm_end, (unsigned)vma_flags, (unsigned)page_prot);
- 
+
           // Insert VMA for this segment
+          // TODO: If implementing file-backed pages later, pass file pointer and offset here
           if (!insert_vma(mm, vm_start, vm_end, vma_flags, page_prot, NULL, 0)) {
               terminal_printf("[Process] load_elf: ERROR: Failed to insert VMA for segment %d of '%s'.\n", (int)i, path);
               result = -ENOMEM; // VMA insertion likely failed due to memory
               goto cleanup_load_elf;
           }
- 
+
           // Allocate frames, populate data, and map pages for this segment
-          terminal_printf("  -> Mapping and populating pages...\n");
+          terminal_printf("  -> Mapping and populating pages...");
           for (uintptr_t page_v = vm_start; page_v < vm_end; page_v += PAGE_SIZE) {
-              PROC_DEBUG_PRINTF("    Processing page V=%p...\n", (void*)page_v);
+              PROC_DEBUG_PRINTF("    Processing page V=%p...", (void*)page_v);
               phys_page = frame_alloc(); // Allocate a physical frame
               if (!phys_page) {
                   terminal_printf("[Process] load_elf: ERROR: Failed to allocate frame for V=%p in '%s'.\n", (void*)page_v, path);
                   result = -ENOMEM;
                   goto cleanup_load_elf; // phys_page != 0 will be handled in cleanup
               }
-              PROC_DEBUG_PRINTF("     Allocated frame P=%#lx\n", (unsigned long)phys_page);
- 
-              // Calculate how much data to copy from the file and how much to zero-pad for this specific page
+              PROC_DEBUG_PRINTF("     Allocated frame P=%#lx", (unsigned long)phys_page);
+
+              // Calculate data/padding for this specific page (logic remains the same)
               size_t copy_size_this_page = 0;
               size_t zero_padding_this_page = 0;
               size_t file_buffer_offset = 0;
- 
-              uintptr_t file_copy_start_vaddr = phdr->p_vaddr; // Virtual address where file data starts
-              uintptr_t file_copy_end_vaddr = phdr->p_vaddr + phdr->p_filesz; // Virtual address where file data ends
-              uintptr_t page_start_vaddr = page_v; // Current page's start virtual address
-              uintptr_t page_end_vaddr = page_v + PAGE_SIZE; // Current page's end virtual address
- 
-              // Calculate overlap between file data range [file_copy_start, file_copy_end) and current page range [page_start, page_end)
+              uintptr_t file_copy_start_vaddr = phdr->p_vaddr;
+              uintptr_t file_copy_end_vaddr = phdr->p_vaddr + phdr->p_filesz;
+              uintptr_t page_start_vaddr = page_v;
+              uintptr_t page_end_vaddr = page_v + PAGE_SIZE;
               uintptr_t copy_v_start = MAX(page_start_vaddr, file_copy_start_vaddr);
               uintptr_t copy_v_end = MIN(page_end_vaddr, file_copy_end_vaddr);
               copy_size_this_page = (copy_v_end > copy_v_start) ? (copy_v_end - copy_v_start) : 0;
- 
-              // Calculate offset into the file buffer for copying
               if (copy_size_this_page > 0) {
                   file_buffer_offset = (copy_v_start - phdr->p_vaddr) + phdr->p_offset;
-                  // Sanity check offset (already done partially above, but double check)
                   if (file_buffer_offset + copy_size_this_page > file_size || file_buffer_offset < phdr->p_offset) {
                       terminal_printf("[Process] load_elf: ERROR: File offset calculation error for V=%p in '%s'.\n", (void*)page_v, path);
                       result = -ENOEXEC; goto cleanup_load_elf;
                   }
               }
- 
-              // Calculate zero-padding size for this page (BSS portion within this page)
-              uintptr_t mem_end_vaddr = phdr->p_vaddr + phdr->p_memsz; // Virtual address where segment memory ends
-              uintptr_t zero_v_start = page_start_vaddr + copy_size_this_page; // Where zeroing starts in this page (after copied data)
-              uintptr_t zero_v_end = MIN(page_end_vaddr, mem_end_vaddr); // Where zeroing ends in this page
+              uintptr_t mem_end_vaddr = phdr->p_vaddr + phdr->p_memsz;
+              uintptr_t zero_v_start = page_start_vaddr + copy_size_this_page;
+              uintptr_t zero_v_end = MIN(page_end_vaddr, mem_end_vaddr);
               zero_padding_this_page = (zero_v_end > zero_v_start) ? (zero_v_end - zero_v_start) : 0;
- 
- 
-              PROC_DEBUG_PRINTF("     CopySize=%lu, ZeroPadding=%lu, FileOffset=%lu\n", (unsigned long)copy_size_this_page, (unsigned long)zero_padding_this_page, (unsigned long)file_buffer_offset);
               if (copy_size_this_page + zero_padding_this_page > PAGE_SIZE) {
                   terminal_printf("[Process] load_elf: ERROR: Calculated copy+zero size (%lu) exceeds PAGE_SIZE for V=%p in '%s'.\n",
                                   (unsigned long)(copy_size_this_page + zero_padding_this_page), (void*)page_v, path);
                   result = -ENOEXEC; goto cleanup_load_elf;
               }
- 
-              // Populate the allocated physical frame with data from file + zero padding
+              PROC_DEBUG_PRINTF("     CopySize=%lu, ZeroPadding=%lu, FileOffset=%lu", (unsigned long)copy_size_this_page, (unsigned long)zero_padding_this_page, (unsigned long)file_buffer_offset);
+
+              // Populate the allocated physical frame
               if (copy_elf_segment_data(phys_page, file_data, file_buffer_offset, copy_size_this_page, zero_padding_this_page) != 0) {
                   terminal_printf("[Process] load_elf: ERROR: copy_elf_segment_data failed for V=%p in '%s'.\n", (void*)page_v, path);
                   result = -EIO; // Indicate an I/O related error during population
                   goto cleanup_load_elf; // phys_page will be handled in cleanup
               }
- 
-              // Map the populated frame into the process's address space using the calculated protection flags
-              PROC_DEBUG_PRINTF("     Mapping V=%p -> P=%#lx with prot %#x\n", (void*)page_v, (unsigned long)phys_page, (unsigned)page_prot);
+
+              // Map the populated frame into the process's address space using the derived page protection flags
+              PROC_DEBUG_PRINTF("     Mapping V=%p -> P=%#lx with prot %#x", (void*)page_v, (unsigned long)phys_page, (unsigned)page_prot);
               int map_res = paging_map_single_4k(mm->pgd_phys, page_v, phys_page, page_prot);
               if (map_res != 0) {
                   terminal_printf("[Process] load_elf: ERROR: paging_map_single_4k failed for V=%p -> P=%#lx in '%s' (err %d).\n",
                                   (void*)page_v, (unsigned long)phys_page, path, map_res);
-                  // Frame was allocated but mapping failed, it needs explicit freeing here
-                  put_frame(phys_page);
+                  put_frame(phys_page); // Free the frame since mapping failed
                   phys_page = 0; // Reset tracker
                   result = -ENOMEM; // Mapping failure likely due to page table allocation
                   goto cleanup_load_elf;
@@ -572,38 +558,30 @@
               // Mapping successful, frame ownership transferred to page tables. Reset tracker.
               phys_page = 0;
           } // End loop for pages within a segment
- 
+
           // Update the highest virtual address loaded so far
           uintptr_t current_segment_end = phdr->p_vaddr + phdr->p_memsz;
-          // Handle potential overflow if segment wraps around
-          if (current_segment_end < phdr->p_vaddr) current_segment_end = UINTPTR_MAX;
+          if (current_segment_end < phdr->p_vaddr) current_segment_end = UINTPTR_MAX; // Handle overflow
           if (current_segment_end > highest_addr_loaded) {
               highest_addr_loaded = current_segment_end;
           }
-          PROC_DEBUG_PRINTF("  Segment %u processed. highest_addr_loaded=%#lx\n", (unsigned)i, (unsigned long)highest_addr_loaded);
+          PROC_DEBUG_PRINTF("  Segment %u processed. highest_addr_loaded=%#lx", (unsigned)i, (unsigned long)highest_addr_loaded);
       } // End loop through segments
- 
+
       // 4. Set Initial Program Break (end of loaded data, page-aligned up)
       *initial_brk = PAGE_ALIGN_UP(highest_addr_loaded);
-      // Handle potential overflow if highest_addr_loaded was already page aligned near the top
-      if (*initial_brk < highest_addr_loaded && highest_addr_loaded != 0) *initial_brk = UINTPTR_MAX;
+      if (*initial_brk < highest_addr_loaded && highest_addr_loaded != 0) *initial_brk = UINTPTR_MAX; // Handle overflow
       terminal_printf("  ELF load complete. initial_brk=%#lx\n", (unsigned long)*initial_brk);
       result = 0; // Success
- 
+
   cleanup_load_elf:
-      PROC_DEBUG_PRINTF("Cleanup: result=%d\n", result);
-      // Free the ELF file buffer if it was allocated by read_file
-      if (file_data) {
-          kfree(file_data);
-      }
-      // Free the physical page if one was allocated but not successfully mapped
-      if (phys_page != 0) {
-         PROC_DEBUG_PRINTF("  Freeing dangling phys_page P=%#lx\n", (unsigned long)phys_page);
+      PROC_DEBUG_PRINTF("Cleanup: result=%d", result);
+      if (file_data) { kfree(file_data); } // Free the buffer allocated by read_file
+      if (phys_page != 0) { // Free frame if allocation failed mid-segment
+         PROC_DEBUG_PRINTF("  Freeing dangling phys_page P=%#lx", (unsigned long)phys_page);
           put_frame(phys_page);
       }
-      // If loading failed, the caller (create_user_process) should handle cleanup
-      // of partially created mm_struct, VMAs, page tables etc via destroy_process.
-      PROC_DEBUG_PRINTF("Exit result=%d\n", result);
+      PROC_DEBUG_PRINTF("Exit result=%d", result);
       return result;
  }
  

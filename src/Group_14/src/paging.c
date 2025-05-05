@@ -1999,148 +1999,188 @@ void copy_kernel_pde_entries(uint32_t *dst_pd)
     terminal_printf("[CopyPDEs] Kernel PDE memcpy complete.\n");
 }
 
- int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr, size_t memsz) {
-     terminal_printf("[Unmap Range] V=[0x%#lx - 0x%#lx) in PD Phys %p\n",
-         (unsigned long)virt_start_addr, (unsigned long)(virt_start_addr + memsz), (void*)page_directory_phys);
+int paging_unmap_range(uint32_t *page_directory_phys, uintptr_t virt_start_addr, size_t memsz) {
+    PAGING_DEBUG_PRINTF("Enter: V=[0x%#lx - 0x%#lx) in PD Phys %p",
+        (unsigned long)virt_start_addr, (unsigned long)(virt_start_addr + memsz), (void*)page_directory_phys);
 
-     if (!page_directory_phys || memsz == 0) {
-         terminal_printf("[Unmap Range] Error: Invalid PD or zero size.\n");
-         return -1;
-     }
+    // Basic validation of input parameters
+    if (!page_directory_phys) {
+        terminal_printf("[Unmap Range] Error: Invalid Page Directory pointer (NULL).\n");
+        return -1;
+    }
+    // Handle zero size gracefully - it's not an error, just nothing to do.
+    if (memsz == 0) {
+        PAGING_DEBUG_PRINTF("Zero size requested, nothing to unmap.");
+        return 0;
+    }
 
-     uintptr_t v_start = PAGE_ALIGN_DOWN(virt_start_addr);
-     uintptr_t v_end;
-     if (virt_start_addr > UINTPTR_MAX - memsz) {
-         v_end = UINTPTR_MAX;
-     } else {
-         v_end = virt_start_addr + memsz;
-     }
-     v_end = PAGE_ALIGN_UP(v_end);
-     if (v_end < v_start) {
-         v_end = UINTPTR_MAX;
-     }
+    // Calculate page-aligned start and end virtual addresses
+    uintptr_t v_start = PAGE_ALIGN_DOWN(virt_start_addr);
+    uintptr_t v_end;
 
-     if (v_start == v_end) {
-         terminal_printf("[Unmap Range] Warning: Range is empty after alignment.\n");
-         return 0;
-     }
+    // Check for potential overflow when calculating the end address
+    if (virt_start_addr > UINTPTR_MAX - memsz) {
+        v_end = UINTPTR_MAX; // Cap at maximum address if overflow occurs
+    } else {
+        v_end = virt_start_addr + memsz;
+    }
+    v_end = PAGE_ALIGN_UP(v_end); // Align the end address up to the next page boundary
 
-     bool is_current_pd = ((uintptr_t)page_directory_phys == g_kernel_page_directory_phys);
-     uint32_t* target_pd_virt = NULL;
+    // Check for overflow after alignment or if start >= end
+    if (v_end <= v_start) { // Use <= to catch zero size after alignment
+        PAGING_DEBUG_PRINTF("Range is empty after alignment.");
+        return 0;
+    }
 
-     if (!is_current_pd) {
-         // FIX: Use paging_temp_map
-         target_pd_virt = paging_temp_map((uintptr_t)page_directory_phys, PTE_KERNEL_DATA_FLAGS);
-         if (!target_pd_virt) {
-             terminal_printf("[Unmap Range] Error: Failed to temp map target PD %p.\n", (void*)page_directory_phys);
+    // Determine if operating on the currently active page directory
+    bool is_current_pd = ((uintptr_t)page_directory_phys == g_kernel_page_directory_phys);
+    uint32_t* target_pd_virt = NULL; // Virtual address pointer to the target PD
+
+    // Get a virtual pointer to the target page directory
+    if (!is_current_pd) {
+        // Map the target PD temporarily if it's not the current one
+        target_pd_virt = paging_temp_map((uintptr_t)page_directory_phys, PTE_KERNEL_DATA_FLAGS); // Map RW
+        if (!target_pd_virt) {
+            terminal_printf("[Unmap Range] Error: Failed to temp map target PD %p.\n", (void*)page_directory_phys);
+            return -1; // Indicate failure
+        }
+    } else {
+        // Use the globally mapped kernel PD if it's the target
+        target_pd_virt = g_kernel_page_directory_virt;
+        if (!target_pd_virt) {
+             // This should not happen if paging is active
+             KERNEL_PANIC_HALT("Unmap Range on current PD, but kernel PD virt is NULL!");
              return -1;
-         }
-     } else {
-         target_pd_virt = g_kernel_page_directory_virt;
-         if (!target_pd_virt) {
-              PAGING_PANIC("Unmap Range on current PD, but kernel PD virt is NULL!");
-              return -1;
-         }
-     }
+        }
+    }
 
-     int unmapped_count = 0;
-     for (uintptr_t v_addr = v_start; v_addr < v_end; ) { // Increment handled inside loop
-         uint32_t pd_idx = PDE_INDEX(v_addr);
+    int unmapped_count = 0; // Counter for pages successfully unmapped
 
-         if (pd_idx >= KERNEL_PDE_INDEX) {
-             terminal_printf("[Unmap Range] Warning: Attempt to unmap kernel/recursive range V=0x%#lx skipped.\n", (unsigned long)v_addr);
+    // Iterate through the virtual address range, processing PDE by PDE
+    for (uintptr_t v_addr = v_start; v_addr < v_end; ) { // Increment is handled inside the loop
+        uint32_t pd_idx = PDE_INDEX(v_addr);
+
+        // --- FIXED WARNING: Use debug print for skipping kernel range ---
+        // Skip kernel space and recursive mapping area
+        if (pd_idx >= KERNEL_PDE_INDEX) {
+            PAGING_DEBUG_PRINTF("Skipping unmap for kernel/recursive range V=0x%#lx.", (unsigned long)v_addr);
+            // Calculate the start of the next PDE range (4MB boundary)
+            uintptr_t next_v_addr = PAGE_ALIGN_DOWN(v_addr) + PAGE_SIZE_LARGE;
+             // Check for overflow when calculating the next address
+             if (next_v_addr <= v_addr) {
+                 v_addr = v_end; // Reached end or overflowed, terminate loop
+             } else {
+                 v_addr = next_v_addr; // Advance to the next PDE boundary
+             }
+             continue; // Skip to the next iteration
+        }
+        // --- END FIX ---
+
+        // Read the Page Directory Entry from the (potentially temporarily mapped) PD
+        uint32_t pde = target_pd_virt[pd_idx];
+
+        // If the PDE is not present, skip this 4MB range
+        if (!(pde & PAGE_PRESENT)) {
+             PAGING_DEBUG_PRINTF("PDE[%u] for V=0x%#lx not present, skipping.", pd_idx, (unsigned long)v_addr);
              uintptr_t next_v_addr = PAGE_ALIGN_DOWN(v_addr) + PAGE_SIZE_LARGE; // Skip to next PDE boundary
-              if (next_v_addr <= v_addr) { // Overflow check
-                  v_addr = v_end;
-              } else {
-                  v_addr = next_v_addr;
-              }
-              continue;
-         }
+             if (next_v_addr <= v_addr) { v_addr = v_end; } else { v_addr = next_v_addr; }
+             continue;
+        }
 
-         uint32_t pde = target_pd_virt[pd_idx];
+        // This function cannot handle unmapping parts of a 4MB page
+        if (pde & PAGE_SIZE_4MB) {
+            terminal_printf("[Unmap Range] Error: Cannot unmap range overlapping 4MB page at V=0x%#lx (PDE[%u]=0x%lx).\n",
+                            (unsigned long)v_addr, pd_idx, (unsigned long)pde);
+            if (!is_current_pd) paging_temp_unmap(target_pd_virt); // Unmap temp PD if used
+            return -1; // Indicate error
+        }
 
-         if (!(pde & PAGE_PRESENT)) {
-              uintptr_t next_v_addr = PAGE_ALIGN_DOWN(v_addr) + PAGE_SIZE_LARGE; // Skip to next PDE boundary if not present
-              if (next_v_addr <= v_addr) { v_addr = v_end; } else { v_addr = next_v_addr; }
-              continue;
-         }
+        // PDE points to a 4KB Page Table
+        uintptr_t pt_phys = pde & PAGING_ADDR_MASK; // Physical address of the Page Table
+        uint32_t* pt_virt = NULL; // Virtual address pointer to the Page Table
+        bool pt_mapped_here = false; // Flag if we mapped the PT temporarily
+        bool pt_freed = false; // Flag if the PT was freed in this iteration
 
-         if (pde & PAGE_SIZE_4MB) {
-             terminal_printf("[Unmap Range] Error: Cannot unmap range overlapping 4MB page at V=0x%#lx.\n", (unsigned long)v_addr);
-             if (!is_current_pd) paging_temp_unmap(target_pd_virt); // FIX: Use correct unmap
-             return -1;
-         }
-
-         uintptr_t pt_phys = pde & PAGING_ADDR_MASK;
-         uint32_t* pt_virt = NULL;
-         bool pt_mapped_here = false;
-         bool pt_freed = false; // Flag to track if PT was freed in this iteration
-
-         if (is_current_pd) {
-              pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
-         } else {
-              // FIX: Use paging_temp_map
-              pt_virt = paging_temp_map(pt_phys, PTE_KERNEL_DATA_FLAGS);
-              if (!pt_virt) {
-                  terminal_printf("[Unmap Range] Error: Failed to temp map target PT %#lx for V=0x%#lx.\n", (unsigned long)pt_phys, (unsigned long)v_addr);
-                  if (!is_current_pd) paging_temp_unmap(target_pd_virt); // FIX: Use correct unmap
-                   return -1;
-              }
-              pt_mapped_here = true;
-         }
-
-         // Process pages within this PT until the end of the range or the end of the PT
-         uintptr_t pt_range_end = MIN(v_end, PAGE_ALIGN_DOWN(v_addr) + PAGE_SIZE_LARGE);
-         while (v_addr < pt_range_end) {
-             uint32_t pt_idx = PTE_INDEX(v_addr);
-             uint32_t pte = pt_virt[pt_idx];
-
-             if (pte & PAGE_PRESENT) {
-                 uintptr_t frame_phys = pte & PAGING_ADDR_MASK;
-                 pt_virt[pt_idx] = 0;
-                 paging_invalidate_page((void*)v_addr);
-                 put_frame(frame_phys);
-                 unmapped_count++;
+        // Get a virtual pointer to the Page Table
+        if (is_current_pd) {
+             // Use recursive mapping for the current PD
+             pt_virt = (uint32_t*)(RECURSIVE_PDE_VADDR + (pd_idx * PAGE_SIZE));
+        } else {
+             // Map the target PT temporarily
+             pt_virt = paging_temp_map(pt_phys, PTE_KERNEL_DATA_FLAGS); // Map RW
+             if (!pt_virt) {
+                 terminal_printf("[Unmap Range] Error: Failed to temp map target PT %#lx for V=0x%#lx.\n", (unsigned long)pt_phys, (unsigned long)v_addr);
+                 if (!is_current_pd) paging_temp_unmap(target_pd_virt); // Unmap temp PD
+                  return -1; // Indicate failure
              }
+             pt_mapped_here = true; // Mark that we mapped it
+        }
 
-             // Check overflow before incrementing
-             if (v_addr > UINTPTR_MAX - PAGE_SIZE) {
-                 v_addr = UINTPTR_MAX; // Prevent overflow and exit outer loop
-                 break;
-             }
-             v_addr += PAGE_SIZE;
-         } // End inner loop (pages within PT)
+        // Process pages within this Page Table until the end of the requested range
+        // or the end of the 4MB covered by this PT, whichever comes first.
+        uintptr_t pt_range_end = MIN(v_end, PAGE_ALIGN_DOWN(v_addr) + PAGE_SIZE_LARGE);
+        PAGING_DEBUG_PRINTF("Processing PT (Phys %#lx, Virt %p) for V=[%p - %p)",
+                            (unsigned long)pt_phys, pt_virt, (void*)v_addr, (void*)pt_range_end);
+
+        while (v_addr < pt_range_end) {
+            uint32_t pt_idx = PTE_INDEX(v_addr); // Index within the current Page Table
+            uint32_t pte = pt_virt[pt_idx]; // Read the Page Table Entry
+
+            // If the PTE is present, unmap the page
+            if (pte & PAGE_PRESENT) {
+                uintptr_t frame_phys = pte & PAGING_ADDR_MASK; // Physical address of the frame
+                PAGING_DEBUG_PRINTF("  Unmapping V=%p (PTE[%u]=0x%lx -> P=%#lx)",
+                                    (void*)v_addr, pt_idx, (unsigned long)pte, (unsigned long)frame_phys);
+                pt_virt[pt_idx] = 0; // Clear the PTE
+                paging_invalidate_page((void*)v_addr); // Invalidate TLB for this virtual address
+                put_frame(frame_phys); // Free the underlying physical frame
+                unmapped_count++; // Increment count of unmapped pages
+            }
+
+            // Check for overflow before incrementing the virtual address
+            if (v_addr > UINTPTR_MAX - PAGE_SIZE) {
+                PAGING_DEBUG_PRINTF("Virtual address overflow during inner loop.");
+                v_addr = UINTPTR_MAX; // Prevent overflow and ensure loop termination
+                break; // Exit the inner loop
+            }
+            v_addr += PAGE_SIZE; // Move to the next page address
+        } // End inner loop (pages within the current PT)
 
 
-         // Check if the PT is now empty ONLY IF we processed pages within it
-         if (pt_range_end > PAGE_ALIGN_DOWN(v_addr - PAGE_SIZE)) { // Check if we actually did work in this PT
-             if (is_page_table_empty(pt_virt)) {
-                 terminal_printf("[Unmap Range] PT at Phys 0x%#lx (PDE[%lu]) became empty. Freeing PT.\n",
-                 (unsigned long)pt_phys, (unsigned long)pd_idx);
-                 target_pd_virt[pd_idx] = 0;
-                 paging_invalidate_page((void*)(PAGE_ALIGN_DOWN(v_addr - PAGE_SIZE))); // Invalidate range covered by PDE
-                 put_frame(pt_phys);
-                 pt_freed = true;
-             }
-         }
+        // Check if the Page Table is now empty *after* processing pages within it
+        uintptr_t start_addr_of_pt_range = PAGE_ALIGN_DOWN(v_addr > PAGE_SIZE ? v_addr - PAGE_SIZE : 0);
+        if (pt_range_end > start_addr_of_pt_range) { // Check if we actually processed pages in this PT
+            if (is_page_table_empty(pt_virt)) {
+                PAGING_DEBUG_PRINTF("PT at Phys 0x%#lx (PDE[%lu]) became empty. Freeing PT.",
+                                    (unsigned long)pt_phys, (unsigned long)pd_idx);
+                target_pd_virt[pd_idx] = 0; // Clear the PDE in the target PD
+                // Invalidate TLB for an address covered by this PDE
+                paging_invalidate_page((void*)start_addr_of_pt_range);
+                put_frame(pt_phys); // Free the page table frame itself
+                pt_freed = true; // Mark that the PT was freed
+            }
+        }
 
-         if (pt_mapped_here) {
-             paging_temp_unmap(pt_virt); // FIX: Use correct unmap
-         }
+        // Unmap the temporary PT mapping if we created one
+        if (pt_mapped_here) {
+            paging_temp_unmap(pt_virt);
+        }
 
-         // If PT was freed, v_addr is already advanced correctly by inner loop reaching pt_range_end
-         // If PT was *not* freed, v_addr points to the next page to check (possibly in next PT)
+        // v_addr is already advanced correctly by the inner loop
 
-     } // End outer loop (virtual addresses / PDEs)
+    } // End outer loop (virtual addresses / PDEs)
 
-     if (!is_current_pd) {
-         paging_temp_unmap(target_pd_virt); // FIX: Use correct unmap
-     }
+    // Unmap the temporary PD mapping if we created one
+    if (!is_current_pd) {
+        paging_temp_unmap(target_pd_virt);
+    }
 
-     terminal_printf("[Unmap Range] Finished. Unmapped approx %d pages.\n", unmapped_count);
-     return 0;
- }
+    PAGING_DEBUG_PRINTF("Finished. Unmapped approx %d pages.", unmapped_count);
+    return 0; // Success
+}
+
+
+
 
  int paging_get_physical_address_and_flags(uint32_t *page_directory_phys,
                                           uintptr_t vaddr,

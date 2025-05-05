@@ -132,33 +132,63 @@
  // Helper callback for destroy_mm traversal
  // (Includes logging added previously)
  static void destroy_vma_node_callback(vma_struct_t *vma_node, void *data) {
-     mm_struct_t *mm = (mm_struct_t*)data;
-     if (vma_node) {
-         serial_write("[destroy_vma_cb] Processing VMA ["); // <-- Logging
-         // serial_print_hex(vma_node->vm_start);
-         serial_write("-");
-         // serial_print_hex(vma_node->vm_end);
-         serial_write(")\n"); // <-- Logging
- 
-         if (mm && mm->pgd_phys) {
-             serial_write("  Calling paging_unmap_range...\n"); // <-- Logging
-             int ret = paging_unmap_range(mm->pgd_phys, vma_node->vm_start, vma_node->vm_end - vma_node->vm_start);
-             serial_write("  Returned from paging_unmap_range.\n"); // <-- Logging
-             if (ret != 0) {
-                  terminal_printf("   Warning: paging_unmap_range failed during VMA destroy (code %d).\n", ret);
-             }
-         } else {
-              terminal_write("   Warning: Cannot unmap VMA during destroy, mm or pgd_phys is NULL.\n");
-         }
- 
-         serial_write("  Calling free_vma_resources (kfree)...\n"); // <-- Logging
-         free_vma_resources(vma_node); // Free the VMA struct itself (Calls kfree)
-         serial_write("  Returned from free_vma_resources.\n"); // <-- Logging
- 
-     } else {
-         serial_write("[destroy_vma_cb] Warning: Callback invoked with NULL vma_node.\n"); // <-- Logging
-     }
- }
+    mm_struct_t *mm = (mm_struct_t*)data;
+    if (!vma_node) {
+        serial_write("[destroy_vma_cb] Warning: Callback invoked with NULL vma_node.\n");
+        return;
+    }
+
+    // Logging the VMA being processed
+    serial_write("[destroy_vma_cb] Processing VMA [");
+    // serial_print_hex(vma_node->vm_start); // Placeholder for hex print if needed
+    serial_write("-");
+    // serial_print_hex(vma_node->vm_end);   // Placeholder for hex print if needed
+    serial_write(")\n");
+
+    // Check if the memory manager context and its page directory are valid
+    if (mm && mm->pgd_phys) {
+        serial_write("  Calling paging_unmap_range...\n");
+
+        // Calculate the size of the VMA, handling potential underflow
+        size_t vma_size = 0;
+        if (vma_node->vm_end >= vma_node->vm_start) {
+             vma_size = vma_node->vm_end - vma_node->vm_start;
+        } else {
+             // Log a warning if end address is less than start address
+             terminal_printf("   Warning: VMA end address 0x%lx < start 0x%lx during destroy. Treating size as 0.\n",
+                             (unsigned long)vma_node->vm_end, (unsigned long)vma_node->vm_start);
+        }
+
+        // Call the paging function to unmap the range
+        // Only proceed if size is greater than 0, as paging_unmap_range handles 0 size internally now.
+        int ret = 0; // Assume success for zero size
+        if (vma_size > 0) {
+            ret = paging_unmap_range(mm->pgd_phys, vma_node->vm_start, vma_size);
+        } else {
+            // If size is 0, no unmapping needed, but log it for clarity if desired
+            serial_write("  Skipping paging_unmap_range for zero-sized VMA.\n");
+        }
+        serial_write("  Returned from paging_unmap_range.\n");
+
+        // --- FIXED: Avoid warning for intentionally zero-sized VMAs ---
+        // Only print a warning if unmapping failed (ret != 0) for a non-zero sized VMA.
+        if (ret != 0 && vma_size > 0) {
+             terminal_printf("   Warning: paging_unmap_range failed during VMA destroy (code %d) for VMA [%p-%p).\n",
+                             ret, (void*)vma_node->vm_start, (void*)vma_node->vm_end);
+        }
+        // --- END FIX ---
+
+    } else {
+         // Log a warning if unmapping cannot be performed
+         terminal_write("   Warning: Cannot unmap VMA during destroy, mm or pgd_phys is NULL.\n");
+    }
+
+    // Free the resources associated with the VMA structure itself
+    serial_write("  Calling free_vma_resources (kfree)...\n");
+    free_vma_resources(vma_node); // Assumes this function calls kfree(vma_node)
+    serial_write("  Returned from free_vma_resources.\n");
+}
+
  
  
  // --- VMA Find/Insert Operations (Using RB Tree) ---

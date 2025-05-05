@@ -66,6 +66,7 @@
 
  // Helper function
  static int strncpy_from_user_safe(const char *u_src, char *k_dst, size_t maxlen);
+ typedef int (*syscall_fn_t)(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, syscall_regs_t *full_frame);
  extern void serial_print_hex(uint32_t n);
 
  //-----------------------------------------------------------------------------
@@ -185,146 +186,201 @@
 
  // *** USES NEW SIGNATURE ***
  static int sys_read_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, syscall_regs_t *regs) {
-     (void)regs; // Mark unused regs if only explicit args are needed now
-     serial_write(" FNC_ENTER: sys_read_impl\n");
-     int fd              = (int)arg1_ebx;    // *** Use explicitly passed EBX ***
-     void *user_buf      = (void*)arg2_ecx;  // *** Use explicitly passed ECX ***
-     size_t count        = (size_t)arg3_edx; // *** Use explicitly passed EDX ***
-     uint32_t pid        = get_current_process() ? get_current_process()->pid : 0;
+    (void)regs; // regs might be unused if only explicit args are needed now
+    serial_write(" FNC_ENTER: sys_read_impl\n");
+    int fd              = (int)arg1_ebx;
+    void *user_buf      = (void*)arg2_ecx; // Buffer pointer from ECX
+    size_t count        = (size_t)arg3_edx;
+    uint32_t pid        = get_current_process() ? get_current_process()->pid : 0;
 
-     SYSCALL_DEBUG_PRINTK("PID %lu: SYS_READ(fd=%d, buf=%p, count=%zu)", pid, fd, user_buf, count);
-     if ((ssize_t)count < 0) return -EINVAL;
-     if (count == 0) return 0;
+    SYSCALL_DEBUG_PRINTK("PID %lu: SYS_READ(fd=%d, buf=%p, count=%zu)", pid, fd, user_buf, count);
+    if ((ssize_t)count < 0) {
+        serial_write("  RET: -EINVAL (negative count)\n");
+        return -EINVAL;
+    }
+    if (count == 0) {
+        serial_write("  RET: 0 (zero count)\n");
+        return 0;
+    }
 
-     SYSCALL_DEBUG_PRINTK("  Checking access_ok(WRITE, %p, %zu)...", user_buf, count);
-     if (!access_ok(VERIFY_WRITE, user_buf, count)) { // Still need access_ok for validation
-         SYSCALL_DEBUG_PRINTK(" -> EFAULT (access_ok failed for user buffer %p)", user_buf);
-         serial_write("  RET: -EFAULT (access_ok failed)\n");
-         return -EFAULT;
-     }
-     SYSCALL_DEBUG_PRINTK("  access_ok passed.");
+    // --- ADDED Robust Serial Log Before access_ok ---
+    serial_write("  STEP: Pre-access_ok check for WRITE..."); // Check user buffer writability
+    serial_write(" fd="); serial_print_hex(fd);
+    serial_write(" buf="); serial_print_hex((uintptr_t)user_buf);
+    serial_write(" count="); serial_print_hex(count); serial_write("\n");
+    // --- END Added Log ---
 
-     size_t chunk_alloc_size = MIN(MAX_RW_CHUNK_SIZE, count);
-     char* kbuf = kmalloc(chunk_alloc_size);
-     if (!kbuf) return -ENOMEM;
-     SYSCALL_DEBUG_PRINTK("  Kernel buffer allocated at %p (size %zu).", kbuf, chunk_alloc_size);
+    // Check if the user buffer is WRITABLE (since kernel writes to it)
+    if (!access_ok(VERIFY_WRITE, user_buf, count)) {
+        SYSCALL_DEBUG_PRINTK(" -> EFAULT (access_ok failed for user buffer %p)", user_buf);
+        serial_write("  RET: -EFAULT (access_ok failed)\n"); // Log the failure reason
+        return -EFAULT; // Return EFAULT as per POSIX for bad address
+    }
+    serial_write("  STEP: access_ok passed.\n"); // Log success
 
-     ssize_t total_read = 0;
-     int final_ret_val = 0;
+    // Allocate kernel buffer for chunking
+    size_t chunk_alloc_size = MIN(MAX_RW_CHUNK_SIZE, count);
+    char* kbuf = kmalloc(chunk_alloc_size);
+    if (!kbuf) {
+        serial_write("  RET: -ENOMEM (kmalloc failed)\n");
+        return -ENOMEM;
+    }
+    SYSCALL_DEBUG_PRINTK("  Kernel buffer allocated at %p (size %zu).", kbuf, chunk_alloc_size);
 
-     serial_write("  STEP: Entering read loop\n");
-     while (total_read < (ssize_t)count) {
-         size_t current_chunk_size = MIN(chunk_alloc_size, count - total_read);
-         KERNEL_ASSERT(current_chunk_size > 0, "Zero chunk size");
-         SYSCALL_DEBUG_PRINTK("  Loop: Reading chunk size %zu (total_read %zd)", current_chunk_size, total_read);
+    ssize_t total_read = 0;
+    int final_ret_val = 0;
 
-         ssize_t bytes_read_this_chunk = sys_read(fd, kbuf, current_chunk_size); // Call sys_file impl
-         SYSCALL_DEBUG_PRINTK("   LOOP_READ: sys_read returned %zd", bytes_read_this_chunk);
+    serial_write("  STEP: Entering read loop\n");
+    while (total_read < (ssize_t)count) {
+        size_t current_chunk_size = MIN(chunk_alloc_size, count - total_read);
+        KERNEL_ASSERT(current_chunk_size > 0, "Zero chunk size in sys_read");
+        SYSCALL_DEBUG_PRINTK("  Loop: Reading chunk size %zu (total_read %zd)", current_chunk_size, total_read);
 
-         if (bytes_read_this_chunk < 0) { // Error?
-             final_ret_val = (total_read > 0) ? total_read : bytes_read_this_chunk;
-             goto sys_read_cleanup;
-         }
-         if (bytes_read_this_chunk == 0) { // EOF?
-             break;
-         }
+        // Call the underlying sys_file read implementation
+        ssize_t bytes_read_this_chunk = sys_read(fd, kbuf, current_chunk_size);
+        SYSCALL_DEBUG_PRINTK("   LOOP_READ: sys_read returned %zd", bytes_read_this_chunk);
 
-         size_t not_copied = copy_to_user((char*)user_buf + total_read, kbuf, bytes_read_this_chunk); // Copy to user
-         SYSCALL_DEBUG_PRINTK("   LOOP_READ: copy_to_user returned %zu (not copied)", not_copied);
-         size_t copied_back_this_chunk = bytes_read_this_chunk - not_copied;
-         total_read += copied_back_this_chunk;
+        if (bytes_read_this_chunk < 0) { // Error from sys_file layer?
+            final_ret_val = (total_read > 0) ? total_read : bytes_read_this_chunk; // Return bytes read so far or the error
+            serial_write("  LOOP: Error from sys_read\n");
+            goto sys_read_cleanup;
+        }
+        if (bytes_read_this_chunk == 0) { // EOF reached?
+             serial_write("  LOOP: EOF reached\n");
+            break; // Exit loop, return bytes read so far
+        }
 
-         if (not_copied > 0) { // Fault during copy?
-             final_ret_val = total_read;
-             goto sys_read_cleanup;
-         }
-         if ((size_t)bytes_read_this_chunk < current_chunk_size) { // Short read?
-             break;
-         }
-     }
-     final_ret_val = total_read;
- sys_read_cleanup:
-     if (kbuf) kfree(kbuf);
-     SYSCALL_DEBUG_PRINTK("  SYS_READ returning %d.", final_ret_val);
-     serial_write(" FNC_EXIT: sys_read_impl\n");
-     return final_ret_val;
- }
+        // Copy the data read into the kernel buffer to the user buffer
+        size_t not_copied = copy_to_user((char*)user_buf + total_read, kbuf, bytes_read_this_chunk);
+        SYSCALL_DEBUG_PRINTK("   LOOP_READ: copy_to_user returned %zu (not copied)", not_copied);
+        size_t copied_back_this_chunk = bytes_read_this_chunk - not_copied;
+        total_read += copied_back_this_chunk;
+
+        if (not_copied > 0) { // Fault during copy back to user?
+            final_ret_val = total_read; // Return bytes successfully copied back
+            serial_write("  LOOP: Fault during copy_to_user\n");
+            goto sys_read_cleanup;
+        }
+        // If we read less than requested in the chunk, it implies EOF or error on next read
+        if ((size_t)bytes_read_this_chunk < current_chunk_size) {
+            serial_write("  LOOP: Short read, breaking loop\n");
+            break;
+        }
+    } // End while loop
+
+    final_ret_val = total_read; // Success, return total bytes read
+
+sys_read_cleanup:
+    if (kbuf) kfree(kbuf);
+    SYSCALL_DEBUG_PRINTK("  SYS_READ returning %d.", final_ret_val);
+    serial_write(" FNC_EXIT: sys_read_impl\n");
+    return final_ret_val;
+}
 
  // *** USES NEW SIGNATURE ***
  static int sys_write_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, syscall_regs_t *regs) {
-     (void)regs; // Mark unused
-     serial_write(" FNC_ENTER: sys_write_impl\n");
-     int fd                = (int)arg1_ebx;          // *** Use explicitly passed EBX ***
-     const void *user_buf  = (const void*)arg2_ecx;  // *** Use explicitly passed ECX ***
-     size_t count          = (size_t)arg3_edx;      // *** Use explicitly passed EDX ***
-     uint32_t pid          = get_current_process() ? get_current_process()->pid : 0;
+    (void)regs;
+    serial_write(" FNC_ENTER: sys_write_impl\n");
+    int fd                = (int)arg1_ebx;
+    const void *user_buf  = (const void*)arg2_ecx; // Buffer pointer from ECX
+    size_t count          = (size_t)arg3_edx;
+    uint32_t pid          = get_current_process() ? get_current_process()->pid : 0;
 
-     SYSCALL_DEBUG_PRINTK("PID %lu: SYS_WRITE(fd=%d, buf=%p, count=%zu)", pid, fd, user_buf, count);
-     if ((ssize_t)count < 0) return -EINVAL;
-     if (count == 0) return 0;
+    SYSCALL_DEBUG_PRINTK("PID %lu: SYS_WRITE(fd=%d, buf=%p, count=%zu)", pid, fd, user_buf, count);
+    if ((ssize_t)count < 0) {
+        serial_write("  RET: -EINVAL (negative count)\n");
+        return -EINVAL;
+    }
+    if (count == 0) {
+        serial_write("  RET: 0 (zero count)\n");
+        return 0;
+    }
 
-     SYSCALL_DEBUG_PRINTK("  Checking access_ok(READ, %p, %zu)...", user_buf, count);
-     if (!access_ok(VERIFY_READ, user_buf, count)) { // Still need access_ok
-         SYSCALL_DEBUG_PRINTK(" -> EFAULT (access_ok failed for user buffer %p)", user_buf);
-         serial_write("  RET: -EFAULT (access_ok failed)\n");
-         return -EFAULT;
-     }
-     SYSCALL_DEBUG_PRINTK("  access_ok passed.");
+    // --- ADDED Robust Serial Log Before access_ok ---
+    serial_write("  STEP: Pre-access_ok check for READ..."); // Check user buffer readability
+    serial_write(" fd="); serial_print_hex(fd);
+    serial_write(" buf="); serial_print_hex((uintptr_t)user_buf);
+    serial_write(" count="); serial_print_hex(count); serial_write("\n");
+    // --- END Added Log ---
 
-     size_t chunk_alloc_size = MIN(MAX_RW_CHUNK_SIZE, count);
-     char* kbuf = kmalloc(chunk_alloc_size);
-     if (!kbuf) return -ENOMEM;
-     SYSCALL_DEBUG_PRINTK("  Kernel buffer allocated at %p (size %zu).", kbuf, chunk_alloc_size);
+    // Check if the user buffer is READABLE (since kernel reads from it)
+    if (!access_ok(VERIFY_READ, user_buf, count)) {
+        SYSCALL_DEBUG_PRINTK(" -> EFAULT (access_ok failed for user buffer %p)", user_buf);
+        serial_write("  RET: -EFAULT (access_ok failed)\n"); // Log the failure reason
+        return -EFAULT; // Return EFAULT as per POSIX for bad address
+    }
+     serial_write("  STEP: access_ok passed.\n"); // Log success
 
-     ssize_t total_written = 0;
-     int final_ret_val = 0;
+    // Allocate kernel buffer for chunking
+    size_t chunk_alloc_size = MIN(MAX_RW_CHUNK_SIZE, count);
+    char* kbuf = kmalloc(chunk_alloc_size);
+    if (!kbuf) {
+        serial_write("  RET: -ENOMEM (kmalloc failed)\n");
+        return -ENOMEM;
+    }
+    SYSCALL_DEBUG_PRINTK("  Kernel buffer allocated at %p (size %zu).", kbuf, chunk_alloc_size);
 
-     serial_write("  STEP: Entering write loop\n");
-     while (total_written < (ssize_t)count) {
-         size_t current_chunk_size = MIN(chunk_alloc_size, count - total_written);
-         KERNEL_ASSERT(current_chunk_size > 0, "Zero chunk size");
-         SYSCALL_DEBUG_PRINTK("  Loop: Writing chunk size %zu (total_written %zd)", current_chunk_size, total_written);
+    ssize_t total_written = 0;
+    int final_ret_val = 0;
 
-         size_t not_copied = copy_from_user(kbuf, (char*)user_buf + total_written, current_chunk_size); // Copy from user
-         SYSCALL_DEBUG_PRINTK("   LOOP_WRITE: copy_from_user returned %zu (not copied)", not_copied);
-         size_t copied_from_user_this_chunk = current_chunk_size - not_copied;
+    serial_write("  STEP: Entering write loop\n");
+    while (total_written < (ssize_t)count) {
+        size_t current_chunk_size = MIN(chunk_alloc_size, count - total_written);
+        KERNEL_ASSERT(current_chunk_size > 0, "Zero chunk size in sys_write");
+        SYSCALL_DEBUG_PRINTK("  Loop: Writing chunk size %zu (total_written %zd)", current_chunk_size, total_written);
 
-         if (copied_from_user_this_chunk > 0) {
-             ssize_t bytes_written_this_chunk = 0;
-             if (fd == STDOUT_FILENO || fd == STDERR_FILENO) { // Handle console/terminal
-                 terminal_write_bytes(kbuf, copied_from_user_this_chunk);
-                 bytes_written_this_chunk = copied_from_user_this_chunk;
-                 SYSCALL_DEBUG_PRINTK("   LOOP_WRITE: terminal_write_bytes returned (assumed %zd)", bytes_written_this_chunk);
-             } else { // Handle files
-                 bytes_written_this_chunk = sys_write(fd, kbuf, copied_from_user_this_chunk); // Call sys_file impl
-                 SYSCALL_DEBUG_PRINTK("   LOOP_WRITE: sys_write returned %zd", bytes_written_this_chunk);
-             }
+        // Copy data from user buffer to kernel buffer
+        size_t not_copied = copy_from_user(kbuf, (char*)user_buf + total_written, current_chunk_size);
+        SYSCALL_DEBUG_PRINTK("   LOOP_WRITE: copy_from_user returned %zu (not copied)", not_copied);
+        size_t copied_from_user_this_chunk = current_chunk_size - not_copied;
 
-             if (bytes_written_this_chunk < 0) { // Error?
-                 final_ret_val = (total_written > 0) ? total_written : bytes_written_this_chunk;
-                 goto sys_write_cleanup;
-             }
-             total_written += bytes_written_this_chunk;
-             if ((size_t)bytes_written_this_chunk < copied_from_user_this_chunk) { // Short write?
-                 break;
-             }
-         }
+        // Only proceed to write if data was successfully copied from user
+        if (copied_from_user_this_chunk > 0) {
+            ssize_t bytes_written_this_chunk = 0;
+            // Handle console/terminal output directly for efficiency
+            if (fd == STDOUT_FILENO || fd == STDERR_FILENO) {
+                terminal_write_bytes(kbuf, copied_from_user_this_chunk);
+                bytes_written_this_chunk = copied_from_user_this_chunk; // Assume terminal write succeeds fully
+                SYSCALL_DEBUG_PRINTK("   LOOP_WRITE: terminal_write_bytes returned (assumed %zd)", bytes_written_this_chunk);
+            } else { // Handle file writes via sys_file layer
+                bytes_written_this_chunk = sys_write(fd, kbuf, copied_from_user_this_chunk);
+                SYSCALL_DEBUG_PRINTK("   LOOP_WRITE: sys_write returned %zd", bytes_written_this_chunk);
+            }
 
-         if (not_copied > 0) { // Fault during copy from user?
-             final_ret_val = total_written;
-             goto sys_write_cleanup;
-         }
-         if (copied_from_user_this_chunk < current_chunk_size) { // Should not happen if no fault
-             break;
-         }
-     }
-     final_ret_val = total_written;
- sys_write_cleanup:
-     if (kbuf) kfree(kbuf);
-     SYSCALL_DEBUG_PRINTK("  SYS_WRITE returning %d.", final_ret_val);
-     serial_write(" FNC_EXIT: sys_write_impl\n");
-     return final_ret_val;
- }
+            if (bytes_written_this_chunk < 0) { // Error from sys_file or terminal layer?
+                final_ret_val = (total_written > 0) ? total_written : bytes_written_this_chunk; // Return bytes written so far or the error
+                 serial_write("  LOOP: Error during write operation\n");
+                goto sys_write_cleanup;
+            }
+            total_written += bytes_written_this_chunk; // Accumulate total bytes written
+
+            // If the underlying write wrote fewer bytes than copied from user (e.g., disk full), stop.
+            if ((size_t)bytes_written_this_chunk < copied_from_user_this_chunk) {
+                 serial_write("  LOOP: Short write, breaking loop\n");
+                break;
+            }
+        }
+
+        // If copy_from_user failed (not_copied > 0), return bytes written so far or EFAULT
+        if (not_copied > 0) {
+            final_ret_val = (total_written > 0) ? total_written : -EFAULT;
+             serial_write("  LOOP: Fault during copy_from_user\n");
+            goto sys_write_cleanup;
+        }
+        // This check should be redundant if copy_from_user behaves correctly
+        // if (copied_from_user_this_chunk < current_chunk_size) {
+        //     break;
+        // }
+    } // End while loop
+
+    final_ret_val = total_written; // Success, return total bytes written
+
+sys_write_cleanup:
+    if (kbuf) kfree(kbuf);
+    SYSCALL_DEBUG_PRINTK("  SYS_WRITE returning %d.", final_ret_val);
+    serial_write(" FNC_EXIT: sys_write_impl\n");
+    return final_ret_val;
+}
 
 
  // *** USES NEW SIGNATURE ***
