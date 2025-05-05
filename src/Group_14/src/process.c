@@ -661,316 +661,228 @@
  }
  
  
- // ------------------------------------------------------------------------
- // create_user_process - Main function to create a new process
- // ------------------------------------------------------------------------
  /**
-  * @brief Creates a new user process by loading an ELF executable.
-  * Sets up PCB, memory space (page directory, VMAs), kernel stack,
-  * user stack, loads ELF segments, prepares the initial kernel stack
-  * for context switching, and updates the TSS esp0 field.
-  * @param path Path to the executable file.
-  * @return Pointer to the newly created PCB on success, NULL on failure.
-  */
- // Function definition exists in the provided process.c content
+ * @brief Creates a new user process by loading an ELF executable.
+ * Sets up PCB, memory space (page directory, VMAs), kernel stack,
+ * user stack, loads ELF segments, prepares the initial kernel stack
+ * for context switching, and updates the TSS esp0 field.
+ * @param path Path to the executable file.
+ * @return Pointer to the newly created PCB on success, NULL on failure.
+ */
  pcb_t *create_user_process(const char *path)
  {
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Enter path='%s'\n", __func__, __LINE__, path ? path : "<NULL>");
-      KERNEL_ASSERT(path != NULL, "create_user_process: NULL path");
-      terminal_printf("[Process] Creating user process from '%s'.\n", path);
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Enter path='%s'\n", __func__, __LINE__, path ? path : "<NULL>");
+     KERNEL_ASSERT(path != NULL, "create_user_process: NULL path");
+     terminal_printf("[Process] Creating user process from '%s'.\n", path);
 
-      pcb_t *proc = NULL;
-      uintptr_t pd_phys = 0;
-      void* proc_pd_virt_temp = NULL;
-      bool pd_mapped_temp = false;
-      bool initial_stack_mapped = false;
-      uintptr_t initial_stack_phys_frame = 0;
-      int ret_status = 0; // Track status for cleanup message
+     pcb_t *proc = NULL;
+     uintptr_t pd_phys = 0;
+     void* proc_pd_virt_temp = NULL;
+     bool pd_mapped_temp = false;
+     bool initial_stack_mapped = false;
+     uintptr_t initial_stack_phys_frame = 0;
+     int ret_status = 0; // Track status for cleanup message
 
-      // --- Step 1: Allocate PCB ---
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 1: Allocate PCB\n", __func__, __LINE__);
-      proc = (pcb_t *)kmalloc(sizeof(pcb_t));
-      if (!proc) {
-          terminal_write("[Process] ERROR: kmalloc PCB failed.\n");
-          ret_status = -ENOMEM; // Example error code
-          // No resources allocated yet, just return NULL
-          return NULL;
-      }
-      memset(proc, 0, sizeof(pcb_t));
-      // TODO: Add locking for next_pid in SMP
-      proc->pid = next_pid++;
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] PCB allocated at %p, PID=%lu\n", __func__, __LINE__, proc, (unsigned long)proc->pid);
+     // === Declare local variables needed for ELF loading and verification ===
+     uint32_t entry_point = 0;           // <<< FIXED: Declare entry_point
+     uintptr_t initial_brk = 0;          // <<< FIXED: Declare initial_brk
+     bool mapping_error = false;        // <<< FIXED: Declare mapping_error
+     // =======================================================================
 
-      // --- Initialize File Descriptors ---
-      // Assuming process_init_fds exists and initializes proc->fd_table
-      process_init_fds(proc);
+     // --- Step 1: Allocate PCB ---
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 1: Allocate PCB\n", __func__, __LINE__);
+     proc = (pcb_t *)kmalloc(sizeof(pcb_t));
+     if (!proc) {
+         terminal_write("[Process] ERROR: kmalloc PCB failed.\n");
+         return NULL;
+     }
+     memset(proc, 0, sizeof(pcb_t));
+     proc->pid = next_pid++; // TODO: Lock this for SMP
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] PCB allocated at %p, PID=%lu\n", __func__, __LINE__, proc, (unsigned long)proc->pid);
 
-      // --- Step 2: Allocate Page Directory Frame ---
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 2: Allocate Page Directory Frame\n", __func__, __LINE__);
-      pd_phys = frame_alloc();
-      if (!pd_phys) {
-          terminal_printf("[Process] ERROR: frame_alloc PD failed for PID %lu.\n", (unsigned long)proc->pid);
-          ret_status = -ENOMEM;
-          goto fail_create; // Go to cleanup
-      }
-      proc->page_directory_phys = (uint32_t*)pd_phys;
-      terminal_printf("  Allocated PD Phys: %#lx for PID %lu\n", (unsigned long)pd_phys, (unsigned long)proc->pid);
+     // === Step 1.5: Initialize File Descriptors and Lock ===
+     process_init_fds(proc);
+     // =======================================================
 
-      // --- Step 3: Initialize Page Directory (Copy Kernel Entries, Set Recursive) ---
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 3: Initialize Page Directory (PD Phys=%#lx)\n", __func__, __LINE__, (unsigned long)pd_phys);
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   Calling paging_temp_map...\n", __func__, __LINE__);
-      proc_pd_virt_temp = paging_temp_map(pd_phys, PTE_KERNEL_DATA_FLAGS); // Map writable
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   paging_temp_map returned %p\n", __func__, __LINE__, proc_pd_virt_temp);
-      if (proc_pd_virt_temp == NULL) {
-          terminal_printf("[Process] ERROR: Failed to temp map new PD for PID %lu.\n", (unsigned long)proc->pid);
-          ret_status = -EIO; // Example error
-          goto fail_create;
-      }
-      pd_mapped_temp = true;
+     // --- Step 2: Allocate Page Directory Frame ---
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 2: Allocate Page Directory Frame\n", __func__, __LINE__);
+     pd_phys = frame_alloc();
+     if (!pd_phys) {
+         terminal_printf("[Process] ERROR: frame_alloc PD failed for PID %lu.\n", (unsigned long)proc->pid);
+         ret_status = -ENOMEM;
+         goto fail_create;
+     }
+     proc->page_directory_phys = (uint32_t*)pd_phys;
+     terminal_printf("  Allocated PD Phys: %#lx for PID %lu\n", (unsigned long)pd_phys, (unsigned long)proc->pid);
 
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   Calling memset on temp PD mapping %p...\n", __func__, __LINE__, proc_pd_virt_temp);
-      memset(proc_pd_virt_temp, 0, PAGE_SIZE); // Zero out the new PD
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   Calling copy_kernel_pde_entries to %p...\n", __func__, __LINE__, proc_pd_virt_temp);
-      copy_kernel_pde_entries((uint32_t*)proc_pd_virt_temp); // Copy kernel mappings (Indices >= KERNEL_PDE_INDEX)
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   Setting recursive entry in temp PD mapping %p...\n", __func__, __LINE__, proc_pd_virt_temp);
-      uint32_t recursive_flags = PAGE_PRESENT | PAGE_RW;
-      if(g_nx_supported) recursive_flags |= PAGE_NX_BIT; // NX ok for PD mapping itself
-      ((uint32_t*)proc_pd_virt_temp)[RECURSIVE_PDE_INDEX] = (pd_phys & PAGING_ADDR_MASK) | recursive_flags; // Set recursive entry pointing to self
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   Calling paging_temp_unmap for %p...\n", __func__, __LINE__, proc_pd_virt_temp);
-      paging_temp_unmap(proc_pd_virt_temp); // Unmap the temporary PD mapping
-      pd_mapped_temp = false;
-      proc_pd_virt_temp = NULL;
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   PD Initialization complete.\n", __func__, __LINE__);
+     // --- Step 3: Initialize Page Directory ---
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 3: Initialize Page Directory (PD Phys=%#lx)\n", __func__, __LINE__, (unsigned long)pd_phys);
+     // ... (Temp map PD, memset, copy_kernel_pde_entries, set recursive entry, unmap temp PD) ...
+     proc_pd_virt_temp = paging_temp_map(pd_phys, PTE_KERNEL_DATA_FLAGS);
+     if (!proc_pd_virt_temp) { /* ... error handling ... */ ret_status = -EIO; goto fail_create; }
+     pd_mapped_temp = true;
+     memset(proc_pd_virt_temp, 0, PAGE_SIZE);
+     copy_kernel_pde_entries((uint32_t*)proc_pd_virt_temp);
+     uint32_t recursive_flags = PAGE_PRESENT | PAGE_RW | (g_nx_supported ? PAGE_NX_BIT : 0);
+     ((uint32_t*)proc_pd_virt_temp)[RECURSIVE_PDE_INDEX] = (pd_phys & PAGING_ADDR_MASK) | recursive_flags;
+     paging_temp_unmap(proc_pd_virt_temp);
+     pd_mapped_temp = false;
+     proc_pd_virt_temp = NULL;
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   PD Initialization complete.\n", __func__, __LINE__);
 
-      // Optional: Verify copied kernel PDE entries if needed (using another temp map)
-      // ... (Verification block as in original code, using paging_temp_map again) ...
-       PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   Verifying copied kernel PDE entries...\n", __func__, __LINE__);
-       void* temp_pd_check = paging_temp_map(pd_phys, PTE_KERNEL_READONLY_FLAGS); // Map ReadOnly
+     // ... (Verification block - now uses declared `mapping_error`) ...
+      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   Verifying copied kernel PDE entries...\n", __func__, __LINE__);
+      // ... (rest of verification block using temp_pd_check...)
+      // It should correctly set `mapping_error = true;` on failure within this block.
+      void* temp_pd_check = paging_temp_map(pd_phys, PTE_KERNEL_READONLY_FLAGS);
        if (temp_pd_check) {
-           uint32_t process_kernel_base_pde = ((uint32_t*)temp_pd_check)[KERNEL_PDE_INDEX]; // Index 768
+           uint32_t process_kernel_base_pde = ((uint32_t*)temp_pd_check)[KERNEL_PDE_INDEX];
            uint32_t global_kernel_base_pde = g_kernel_page_directory_virt[KERNEL_PDE_INDEX];
            terminal_printf("  Verification: Proc PD[768]=%#08lx, Global PD[768]=%#08lx (Kernel Base PDE)\n",
                            (unsigned long)process_kernel_base_pde, (unsigned long)global_kernel_base_pde);
            if (!(process_kernel_base_pde & PAGE_PRESENT)) {
                terminal_printf("  [FATAL VERIFICATION ERROR] Kernel Base PDE missing in process PD!\n");
-               paging_temp_unmap(temp_pd_check);
-               ret_status = -EINVAL; goto fail_create; // Use a specific error code
+               mapping_error = true; // Set flag on error
            }
-           // Add checks for other important kernel ranges if necessary
            paging_temp_unmap(temp_pd_check);
        } else {
            terminal_printf("  Verification FAILED: Could not temp map process PD (%#lx) for checking.\n", (unsigned long)pd_phys);
-           ret_status = -EIO; goto fail_create;
+           mapping_error = true; // Set flag on error
+           ret_status = -EIO; // Set error code if temp map failed directly
+       }
+       // Check the flag AFTER unmapping
+       if (mapping_error) {
+           if (ret_status == 0) ret_status = -EINVAL; // Set a generic error if only PDE check failed
+           goto fail_create;
        }
 
-      // --- Step 4: Allocate Kernel Stack (with guard page) ---
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 4: Allocate Kernel Stack\n", __func__, __LINE__);
-      if (!allocate_kernel_stack(proc)) { // This now allocates usable + guard
-          terminal_printf("[Process] ERROR: Failed to allocate/map kernel stack for PID %lu.\n", (unsigned long)proc->pid);
-          ret_status = -ENOMEM;
-          goto fail_create;
-      }
 
-      // --- Step 5: Create Memory Management structure (mm_struct) ---
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 5: Create mm_struct\n", __func__, __LINE__);
-      // create_mm likely just allocates the struct and sets pgd_phys
-      proc->mm = create_mm(proc->page_directory_phys);
-      if (!proc->mm) {
-          terminal_printf("[Process] ERROR: create_mm failed for PID %lu.\n", (unsigned long)proc->pid);
-          ret_status = -ENOMEM;
-          goto fail_create;
-      }
+     // --- Step 4: Allocate Kernel Stack ---
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 4: Allocate Kernel Stack\n", __func__, __LINE__);
+     if (!allocate_kernel_stack(proc)) { ret_status = -ENOMEM; goto fail_create; }
 
-      // --- Step 6: Load ELF executable into memory space ---
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 6: Load ELF '%s'\n", __func__, __LINE__, path);
-      uint32_t entry_point = 0;
-      uintptr_t initial_brk = 0;
-      // load_elf_and_init_memory reads file, parses ELF, creates VMAs, allocates frames, maps pages in proc's PD
-      int load_res = load_elf_and_init_memory(path, proc->mm, &entry_point, &initial_brk);
+     // --- Step 5: Create Memory Management structure ---
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 5: Create mm_struct\n", __func__, __LINE__);
+     proc->mm = create_mm(proc->page_directory_phys);
+     if (!proc->mm) { ret_status = -ENOMEM; goto fail_create; }
+
+     // --- Step 6: Load ELF executable ---
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 6: Load ELF '%s'\n", __func__, __LINE__, path);
+     // <<< FIXED: Use the now-declared variables >>>
+     int load_res = load_elf_and_init_memory(path, proc->mm, &entry_point, &initial_brk);
       if (load_res != 0) {
           terminal_printf("[Process] ERROR: Failed to load ELF '%s' (Error code %d).\n", path, load_res);
-          ret_status = load_res; // Store the specific ELF error (e.g., -ENOENT, -ENOEXEC)
+          ret_status = load_res;
           goto fail_create;
       }
-      proc->entry_point = entry_point;
-      // Set initial heap start/end in mm_struct
-      if (proc->mm) {
-          proc->mm->start_brk = proc->mm->end_brk = initial_brk;
-      } else { // Should not happen if create_mm succeeded
-          terminal_printf("[Process] CRITICAL ERROR: mm_struct is NULL after successful ELF load!\n");
-          ret_status = -EINVAL; // Internal error state
-          goto fail_create;
-      }
+      proc->entry_point = entry_point; // Assign result to PCB member
+      if (proc->mm) { proc->mm->start_brk = proc->mm->end_brk = initial_brk; } // Assign result
+      else { /* Should not happen */ ret_status = -EINVAL; goto fail_create; }
 
-      // --- Step 7: Setup standard VMAs (Heap placeholder, User Stack) ---
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 7: Setup standard VMAs\n", __func__, __LINE__);
+
+     // --- Step 7: Setup standard VMAs ---
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 7: Setup standard VMAs\n", __func__, __LINE__);
+     // ... (Insert Heap and Stack VMAs) ...
       uintptr_t heap_start = proc->mm->end_brk;
-      // Define USER_STACK_BOTTOM_VIRT and USER_STACK_TOP_VIRT_ADDR in a header (e.g., process.h or mm.h)
       KERNEL_ASSERT(heap_start < USER_STACK_BOTTOM_VIRT, "Heap start overlaps user stack area");
-      // Heap VMA (zero size initially)
-      uint32_t heap_page_prot = PAGE_PRESENT | PAGE_RW | PAGE_USER;
-      if (g_nx_supported) heap_page_prot |= PAGE_NX_BIT;
-      if (!insert_vma(proc->mm, heap_start, heap_start, VM_READ | VM_WRITE | VM_USER | VM_GROWS_DOWN | VM_ANONYMOUS, heap_page_prot, NULL, 0)) {
-           terminal_printf("[Process] ERROR: Failed to insert initial heap VMA for PID %lu.\n", (unsigned long)proc->pid);
-           ret_status = -ENOMEM; goto fail_create;
+      uint32_t heap_page_prot = PAGE_PRESENT | PAGE_RW | PAGE_USER | (g_nx_supported ? PAGE_NX_BIT : 0);
+      if (!insert_vma(proc->mm, heap_start, heap_start, VM_READ | VM_WRITE | VM_USER | VM_ANONYMOUS, heap_page_prot, NULL, 0)) {
+           /* ... error handling ... */ ret_status = -ENOMEM; goto fail_create;
       }
       terminal_printf("  Initial Heap VMA placeholder added: [%#lx - %#lx)\n", (unsigned long)heap_start, (unsigned long)heap_start);
-
-      // User Stack VMA
-      uint32_t stack_page_prot = PAGE_PRESENT | PAGE_RW | PAGE_USER;
-      if (g_nx_supported) stack_page_prot |= PAGE_NX_BIT;
+      uint32_t stack_page_prot = PAGE_PRESENT | PAGE_RW | PAGE_USER | (g_nx_supported ? PAGE_NX_BIT : 0);
       if (!insert_vma(proc->mm, USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR, VM_READ | VM_WRITE | VM_USER | VM_GROWS_DOWN | VM_ANONYMOUS, stack_page_prot, NULL, 0)) {
-        terminal_printf("[Process] ERROR: Failed to insert user stack VMA for PID %lu.\n", (unsigned long)proc->pid);
-        ret_status = -ENOMEM; goto fail_create;
+        /* ... error handling ... */ ret_status = -ENOMEM; goto fail_create;
       }
       terminal_printf("  User Stack VMA added: [%#lx - %#lx)\n", (unsigned long)USER_STACK_BOTTOM_VIRT, (unsigned long)USER_STACK_TOP_VIRT_ADDR);
 
+     // --- Step 8: Allocate and Map Initial User Stack Page ---
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 8: Allocate initial user stack page\n", __func__, __LINE__);
+     initial_stack_phys_frame = frame_alloc();
+     if (!initial_stack_phys_frame) { /* ... error handling ... */ ret_status = -ENOMEM; goto fail_create; }
+     uintptr_t initial_user_stack_page_vaddr = USER_STACK_TOP_VIRT_ADDR - PAGE_SIZE;
+     int map_res = paging_map_single_4k(proc->page_directory_phys, initial_user_stack_page_vaddr, initial_stack_phys_frame, stack_page_prot);
+     if (map_res != 0) { /* ... error handling ... */ ret_status = -EIO; goto fail_create; }
+     initial_stack_mapped = true;
+     proc->user_stack_top = (void*)USER_STACK_TOP_VIRT_ADDR;
+     terminal_printf("  Initial user stack page allocated (P=%#lx) and mapped (V=%p). User ESP set to %p.\n",
+                     (unsigned long)initial_stack_phys_frame, (void*)initial_user_stack_page_vaddr, proc->user_stack_top);
+     // ... (Zero out stack page) ...
+     void* temp_stack_map = paging_temp_map(initial_stack_phys_frame, PTE_KERNEL_DATA_FLAGS);
+      if (temp_stack_map) { memset(temp_stack_map, 0, PAGE_SIZE); paging_temp_unmap(temp_stack_map); }
+      else { /* ... warning ... */ }
 
-      // --- Step 8: Allocate and Map Initial User Stack Page ---
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 8: Allocate initial user stack page\n", __func__, __LINE__);
-      initial_stack_phys_frame = frame_alloc();
-      if (!initial_stack_phys_frame) {
-          terminal_printf("[Process] ERROR: Failed to allocate initial user stack frame for PID %lu.\n", (unsigned long)proc->pid);
-          ret_status = -ENOMEM; goto fail_create;
+     // --- Step 8.5: Verify EIP/ESP Mappings ---
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   Verifying EIP and ESP mappings/flags in Proc PD P=%#lx...\n", __func__, __LINE__, (unsigned long)proc->page_directory_phys);
+     // ... (Actual verification logic block - unchanged, uses `mapping_error`) ...
+      // Verify EIP page
+      uintptr_t eip_vaddr = proc->entry_point;
+      uintptr_t eip_page_vaddr = PAGE_ALIGN_DOWN(eip_vaddr);
+      uintptr_t eip_phys = 0;
+      uint32_t eip_pte_flags = 0;
+      int eip_check_res = paging_get_physical_address_and_flags(proc->page_directory_phys, eip_page_vaddr, &eip_phys, &eip_pte_flags);
+      if (eip_check_res != 0 || eip_phys == 0) { /* ... set mapping_error ... */ mapping_error = true; }
+      else { /* ... check flags, set mapping_error if bad ... */
+          bool flags_ok = (eip_pte_flags & PAGE_PRESENT) && (eip_pte_flags & PAGE_USER);
+          // Add NX check if needed
+          if (!flags_ok) mapping_error = true;
       }
-      uintptr_t initial_user_stack_page_vaddr = USER_STACK_TOP_VIRT_ADDR - PAGE_SIZE; // Topmost page in the stack VMA
-      // Map it into the process's page directory with User+RW flags
-      int map_res = paging_map_single_4k(proc->page_directory_phys, initial_user_stack_page_vaddr, initial_stack_phys_frame, stack_page_prot); // Use stack_page_prot defined above
-      if (map_res != 0) {
-           terminal_printf("[Process] ERROR: Failed to map initial user stack page V=%p for PID %lu (err %d).\n",
-                           (void*)initial_user_stack_page_vaddr, (unsigned long)proc->pid, map_res);
-           initial_stack_mapped = false; // Ensure flag is false so frame is freed below
-           ret_status = -EIO; goto fail_create;
+      // Verify ESP page
+      uintptr_t esp_page_vaddr_check = USER_STACK_TOP_VIRT_ADDR - PAGE_SIZE;
+      uintptr_t esp_phys = 0;
+      uint32_t esp_pte_flags = 0;
+      int esp_check_res = paging_get_physical_address_and_flags(proc->page_directory_phys, esp_page_vaddr_check, &esp_phys, &esp_pte_flags);
+      if (esp_check_res != 0 || esp_phys == 0) { /* ... set mapping_error ... */ mapping_error = true; }
+      else { /* ... check flags, set mapping_error if bad ... */
+          bool flags_ok = (esp_pte_flags & PAGE_PRESENT) && (esp_pte_flags & PAGE_USER) && (esp_pte_flags & PAGE_RW);
+          if (!flags_ok) mapping_error = true;
       }
-      initial_stack_mapped = true; // Mark as mapped
-      proc->user_stack_top = (void*)USER_STACK_TOP_VIRT_ADDR; // Set user ESP register value to the top of the range
-      terminal_printf("  Initial user stack page allocated (P=%#lx) and mapped (V=%p). User ESP set to %p.\n",
-                      (unsigned long)initial_stack_phys_frame, (void*)initial_user_stack_page_vaddr, proc->user_stack_top);
-
-      // Zero out the initial user stack page using a temporary kernel mapping
-      void* temp_stack_map = paging_temp_map(initial_stack_phys_frame, PTE_KERNEL_DATA_FLAGS);
-      if (temp_stack_map) {
-            memset(temp_stack_map, 0, PAGE_SIZE);
-            paging_temp_unmap(temp_stack_map);
-      } else {
-          terminal_printf("[Process] Warning: Failed to temp map initial user stack P=%#lx for zeroing.\n", (unsigned long)initial_stack_phys_frame);
+      // Check overall flag
+      if (mapping_error) {
+          ret_status = -EFAULT;
+          terminal_printf("[Process] Aborting process creation due to mapping/flags verification failure.\n");
+          goto fail_create;
       }
-
-     // --- ADDED: Verify EIP and ESP Mappings and Flags in Process PD ---
-PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   Verifying EIP and ESP mappings/flags in Proc PD P=%#lx...\n", __func__, __LINE__, (unsigned long)proc->page_directory_phys);
-bool mapping_error = false;
-
-// Verify EIP page (using proc->entry_point)
-uintptr_t eip_vaddr = proc->entry_point; // e.g., 0x8048080
-uintptr_t eip_page_vaddr = PAGE_ALIGN_DOWN(eip_vaddr);
-uintptr_t eip_phys = 0;
-uint32_t eip_pte_flags = 0;
-
-int eip_check_res = paging_get_physical_address_and_flags(proc->page_directory_phys, eip_page_vaddr, &eip_phys, &eip_pte_flags);
-
-if (eip_check_res != 0 || eip_phys == 0) {
-    terminal_printf("  [FATAL VERIFICATION ERROR] User EIP V=%p page is NOT MAPPED in process PD! (Result: %d)\n", (void*)eip_page_vaddr, eip_check_res);
-    mapping_error = true;
-} else {
-    terminal_printf("  Verification Info: User EIP V=%p page maps to P=%#lx. Flags: %#lx\n",
-                    (void*)eip_page_vaddr, (unsigned long)eip_phys, (unsigned long)eip_pte_flags);
-    // Check required flags for user code execution
-    bool flags_ok = true;
-    if (!(eip_pte_flags & PAGE_PRESENT)) { terminal_printf("    ERROR: EIP Page Not Present!\n"); flags_ok = false; }
-    if (!(eip_pte_flags & PAGE_USER))   { terminal_printf("    ERROR: EIP Page Not User!\n"); flags_ok = false; }
-    // Add NX check if needed and supported:
-    // if (g_nx_supported && (eip_pte_flags & PAGE_NX_BIT)) { terminal_printf("    ERROR: EIP Page NX bit set!\n"); flags_ok = false; }
-
-    if (!flags_ok) {
-        mapping_error = true;
-    }
-}
-
-// Verify ESP page (using initial user stack page address)
-uintptr_t esp_page_vaddr_check = USER_STACK_TOP_VIRT_ADDR - PAGE_SIZE; // e.g., 0xbffff000
-uintptr_t esp_phys = 0;
-uint32_t esp_pte_flags = 0;
-
-int esp_check_res = paging_get_physical_address_and_flags(proc->page_directory_phys, esp_page_vaddr_check, &esp_phys, &esp_pte_flags);
-
-if (esp_check_res != 0 || esp_phys == 0) {
-    terminal_printf("  [FATAL VERIFICATION ERROR] User ESP V=%p page is NOT MAPPED in process PD! (Result: %d)\n", (void*)esp_page_vaddr_check, esp_check_res);
-    mapping_error = true;
-} else {
-    terminal_printf("  Verification Info: User ESP V=%p page maps to P=%#lx. Flags: %#lx\n",
-                     (void*)esp_page_vaddr_check, (unsigned long)esp_phys, (unsigned long)esp_pte_flags);
-    // Check required flags for user stack
-    bool flags_ok = true;
-    if (!(esp_pte_flags & PAGE_PRESENT)) { terminal_printf("    ERROR: ESP Page Not Present!\n"); flags_ok = false; }
-    if (!(esp_pte_flags & PAGE_USER))   { terminal_printf("    ERROR: ESP Page Not User!\n"); flags_ok = false; }
-    if (!(esp_pte_flags & PAGE_RW))     { terminal_printf("    ERROR: ESP Page Not Writable!\n"); flags_ok = false; }
-    // Stack should generally be No-Execute if supported
-    // if (g_nx_supported && !(esp_pte_flags & PAGE_NX_BIT)) { terminal_printf("    WARNING: ESP Page NX bit not set?\n"); /* Maybe not fatal */ }
-
-    if (!flags_ok) {
-        mapping_error = true;
-    }
-}
-
-if (mapping_error) {
-    ret_status = -EFAULT; // Use EFAULT or similar for mapping verification failure
-    terminal_printf("[Process] Aborting process creation due to mapping/flags verification failure.\n");
-    goto fail_create; // Jump to cleanup code in create_user_process
-}
-PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   User EIP and ESP mapping & flags verification passed.\n", __func__, __LINE__);
-// --- END UPDATED VERIFICATION BLOCK --
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   User EIP and ESP mapping & flags verification passed.\n", __func__, __LINE__);
 
 
-      // --- Step 9: Prepare Initial Kernel Stack for IRET ---
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 9: Prepare initial kernel stack for IRET\n", __func__, __LINE__);
-      // This function pushes SS, ESP, EFLAGS, CS, EIP onto the kernel stack
-      // and sets proc->kernel_esp_for_switch to the resulting ESP value.
-      prepare_initial_kernel_stack(proc);
+     // --- Step 9: Prepare Initial Kernel Stack for IRET ---
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Step 9: Prepare initial kernel stack for IRET\n", __func__, __LINE__);
+     prepare_initial_kernel_stack(proc);
 
-      // --- SUCCESS ---
-      terminal_printf("[Process] Successfully created PCB PID %lu structure for '%s'.\n",
-                      (unsigned long)proc->pid, path);
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Exit OK (proc=%p)\n", __func__, __LINE__, proc);
-      return proc; // Return the prepared PCB
+     // --- SUCCESS ---
+     terminal_printf("[Process] Successfully created PCB PID %lu structure for '%s'.\n",
+                     (unsigned long)proc->pid, path);
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Exit OK (proc=%p)\n", __func__, __LINE__, proc);
+     return proc; // Return the prepared PCB
 
-  fail_create:
-      // --- Cleanup on Failure ---
-      terminal_printf("[Process] Cleanup after create_user_process failed (PID %lu, Status %d).\n",
-                      (unsigned long)(proc ? proc->pid : 0), ret_status);
-
-      // Unmap temporary PD mapping if it was still active (shouldn't be normally)
+ fail_create:
+     // --- Cleanup on Failure ---
+     terminal_printf("[Process] Cleanup after create_user_process failed (PID %lu, Status %d).\n",
+                     (unsigned long)(proc ? proc->pid : 0), ret_status);
+     // ... (Cleanup logic as before, calling destroy_process if proc is valid) ...
       if (pd_mapped_temp && proc_pd_virt_temp != NULL) {
           PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   Cleaning up dangling temporary PD mapping %p\n", __func__, __LINE__, proc_pd_virt_temp);
           paging_temp_unmap(proc_pd_virt_temp);
       }
-
-      // Free initial user stack frame if it was allocated but mapping failed
       if (initial_stack_phys_frame != 0 && !initial_stack_mapped) {
            PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   Freeing unmapped initial user stack frame P=%#lx\n", __func__, __LINE__, (unsigned long)initial_stack_phys_frame);
            put_frame(initial_stack_phys_frame);
-           // Ensure PCB doesn't point to freed frame if destroy_process is called later
            initial_stack_phys_frame = 0;
-           initial_stack_mapped = false; // Redundant but clear
+           initial_stack_mapped = false;
       }
-
-      // Destroy partially created process
-      // destroy_process should handle NULL mm, NULL kernel stack, NULL page dir, NULL pcb gracefully.
       if (proc) {
           PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   Calling destroy_process for partially created PID %lu\n", __func__, __LINE__, (unsigned long)proc->pid);
-          // destroy_process handles freeing FDs, mm (VMAs/user pages/PTs), kernel stack (frames/mappings), PD frame, and PCB itself.
-          // It should use the values stored in the pcb struct.
-          destroy_process(proc);
+          destroy_process(proc); // Handles FDs, MM, kernel stack, PD frame, PCB kfree
       } else {
-          // If even PCB allocation failed, but PD was somehow allocated (unlikely path), free PD frame manually.
-          if (pd_phys) {
+          if (pd_phys) { // Only free PD frame if PCB wasn't allocated but PD was
                PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   Freeing PD frame P=%#lx (PCB allocation failed)\n", __func__, __LINE__, (unsigned long)pd_phys);
               put_frame(pd_phys);
           }
       }
 
-
-      PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Exit FAIL (NULL)\n", __func__, __LINE__);
-      return NULL; // Indicate failure
+     PROC_DEBUG_PRINTF("[Process DEBUG %s:%d] Exit FAIL (NULL)\n", __func__, __LINE__);
+     return NULL; // Indicate failure
  }
  
  // ------------------------------------------------------------------------
@@ -1106,21 +1018,29 @@ PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   User EIP and ESP mapping & flags veri
   *
   * @param proc Pointer to the new process's PCB.
   */
- void process_init_fds(pcb_t *proc) {
-     KERNEL_ASSERT(proc != NULL, "Cannot initialize FDs for NULL process");
-     // Zero out the entire file descriptor table array
-     // *** IMPORTANT: Assumes pcb_t has member `struct sys_file *fd_table[MAX_FD];` ***
-     // *** YOU MUST ADD THIS TO process.h ***
-     memset(proc->fd_table, 0, sizeof(proc->fd_table));
- 
-     // Optional: Initialize stdin, stdout, stderr if you have
-     // corresponding VFS file_t structures for console/terminal I/O.
-     // Example (requires console_get_stdin_file(), etc. and sys_file_alloc helper):
-     // proc->fd_table[STDIN_FILENO] = sys_file_alloc(console_get_stdin_file(), O_RDONLY);
-     // proc->fd_table[STDOUT_FILENO] = sys_file_alloc(console_get_stdout_file(), O_WRONLY);
-     // proc->fd_table[STDERR_FILENO] = sys_file_alloc(console_get_stderr_file(), O_WRONLY);
-     // For now, leave them NULL.
- }
+  void process_init_fds(pcb_t *proc) {
+    // Use KERNEL_ASSERT for critical preconditions
+    KERNEL_ASSERT(proc != NULL, "Cannot initialize FDs for NULL process");
+
+    // Initialize the spinlock associated with this process's FD table
+    spinlock_init(&proc->fd_table_lock);
+
+    // Zero out the file descriptor table array.
+    // While locking isn't strictly needed here if called only from the
+    // single thread creating the process before it runs, it's harmless
+    // and good defensive practice.
+    uintptr_t irq_flags = spinlock_acquire_irqsave(&proc->fd_table_lock);
+    memset(proc->fd_table, 0, sizeof(proc->fd_table));
+    spinlock_release_irqrestore(&proc->fd_table_lock, irq_flags);
+
+    // --- Optional: Initialize Standard I/O Descriptors ---
+    // If your kernel provides standard I/O handles (e.g., via a console device driver),
+    // you would allocate sys_file_t structures for them and place them in fd_table[0], [1], [2] here.
+    // This requires interacting with your device/console driver API.
+    // Example Placeholder:
+    // assign_standard_io_fds(proc); // Hypothetical function
+    // ----------------------------------------------------
+}
  
  /**
   * @brief Closes all open file descriptors for a terminating process.
@@ -1129,46 +1049,52 @@ PROC_DEBUG_PRINTF("[Process DEBUG %s:%d]   User EIP and ESP mapping & flags veri
   *
   * @param proc Pointer to the terminating process's PCB.
   */
- void process_close_fds(pcb_t *proc) {
-     KERNEL_ASSERT(proc != NULL, "Cannot close FDs for NULL process");
-     // terminal_printf("[Proc %lu] Closing all file descriptors...\n", proc->pid);
- 
-     // We need a way to call sys_close in the context of the target process,
-     // or sys_close needs to be modified to take a pcb_t*.
-     // Simplification: Assume sys_close uses get_current_process().
-     // If proc != current_process, we do manual cleanup. This is NOT ideal
-     // but avoids modifying sys_close signature for now.
-     pcb_t *current = get_current_process();
-     bool closing_self = (proc == current);
- 
-     // Iterate through the entire file descriptor table
-     for (int fd = 0; fd < MAX_FD; fd++) {
-         // *** IMPORTANT: Assumes pcb_t has member `struct sys_file *fd_table[MAX_FD];` ***
-         // *** YOU MUST ADD THIS TO process.h ***
-         sys_file_t *sf = proc->fd_table[fd];
-         if (sf != NULL) { // Check if the file descriptor is currently open
-             // terminal_printf("[Proc %lu] Closing fd %d\n", proc->pid, fd);
-             if (closing_self) {
-                 // Call sys_close for this file descriptor.
-                 // sys_close() handles VFS close, freeing sys_file_t,
-                 // and setting proc->fd_table[fd] back to NULL.
-                 sys_close(fd);
-             } else {
-                 // Manual cleanup if closing FDs for another process
-                 // This assumes no other process shares this sys_file_t via fork/dup.
-                 // terminal_printf("[Proc %lu WARN] Manually closing fd %d for other process %lu\n", current ? current->pid : 0, fd, proc->pid);
-                 if (sf->vfs_file) { // Assumes sys_file_t has vfs_file member
-                     vfs_close(sf->vfs_file); // Close VFS file
-                 }
-                 kfree(sf);              // Free kernel struct
-                 proc->fd_table[fd] = NULL; // Clear table entry
-             }
-         }
-     }
-     // terminal_printf("[Proc %lu] All FDs closed.\n", proc->pid);
- }
- 
- // Other process management functions...
- // e.g., assign_new_pid(), setup_process_paging(), free_process_paging(), etc.
+  void process_close_fds(pcb_t *proc) {
+    KERNEL_ASSERT(proc != NULL, "Cannot close FDs for NULL process");
+    terminal_printf("[Proc %lu] Closing all file descriptors...\n", (unsigned long)proc->pid);
+
+    // Acquire the lock for the FD table of the process being destroyed.
+    // Even though the process isn't running, the reaper (e.g., idle task)
+    // needs exclusive access during cleanup.
+    uintptr_t irq_flags = spinlock_acquire_irqsave(&proc->fd_table_lock);
+
+    // Iterate through the entire file descriptor table
+    for (int fd = 0; fd < MAX_FD; fd++) {
+        sys_file_t *sf = proc->fd_table[fd];
+
+        if (sf != NULL) { // Check if the file descriptor is currently open
+            terminal_printf("  [Proc %lu] Closing fd %d (sys_file_t* %p, vfs_file* %p)\n",
+                           (unsigned long)proc->pid, fd, sf, sf->vfs_file);
+
+            // Clear the FD table entry FIRST while holding the lock
+            proc->fd_table[fd] = NULL;
+
+            // Release the lock *before* calling potentially blocking/complex operations
+            // like vfs_close or kfree. This minimizes lock contention, although
+            // in this specific cleanup context it might be less critical.
+            spinlock_release_irqrestore(&proc->fd_table_lock, irq_flags);
+
+            // --- Perform cleanup outside the FD table lock ---
+            // Call VFS close (safe to call now that FD entry is clear)
+            int vfs_ret = vfs_close(sf->vfs_file); // vfs_close handles freeing sf->vfs_file->data and the vnode
+            if (vfs_ret < 0) {
+                terminal_printf("   [Proc %lu] Warning: vfs_close for fd %d returned error %d.\n",
+                               (unsigned long)proc->pid, fd, vfs_ret);
+            }
+            // Free the sys_file structure itself
+            kfree(sf);
+            // --- End cleanup outside lock ---
+
+            // Re-acquire the lock to continue the loop safely
+            irq_flags = spinlock_acquire_irqsave(&proc->fd_table_lock);
+
+        } // end if (sf != NULL)
+    } // end for
+
+    // Release the lock after the loop finishes
+    spinlock_release_irqrestore(&proc->fd_table_lock, irq_flags);
+
+    terminal_printf("[Proc %lu] All FDs processed for closing.\n", (unsigned long)proc->pid);
+}
  
  

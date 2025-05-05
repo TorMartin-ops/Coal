@@ -50,6 +50,7 @@ typedef struct pcb {
 
     // Per-process file descriptor table
     struct sys_file *fd_table[MAX_FD]; // MAX_FD is now defined above
+    spinlock_t       fd_table_lock;
 
     // Kernel Stack Info (Used when process is in kernel mode)
     uint32_t kernel_stack_phys_base; // Physical address of the base frame (for potential debugging/info)

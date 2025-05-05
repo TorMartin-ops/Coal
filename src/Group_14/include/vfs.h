@@ -1,3 +1,4 @@
+/* include/vfs.h */
 #pragma once
 #ifndef VFS_H
 #define VFS_H
@@ -6,11 +7,11 @@
 #include <libc/stdint.h>    // For uint32_t and friends
 #include <libc/stdbool.h>   // For bool
 #include "types.h"
+#include "spinlock.h"       // <<< ADDED: Include for spinlock_t
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
 
 /* Define SEEK macros if not already defined */
 #ifndef SEEK_SET
@@ -31,9 +32,10 @@ typedef struct vnode vnode_t;
 
 /* VFS file handle structure */
 typedef struct file {
-    vnode_t *vnode;    // Underlying vnode pointer
-    uint32_t flags;    // Open flags
-    off_t offset;      // Current file offset
+    vnode_t    *vnode;    // Underlying vnode pointer
+    uint32_t    flags;    // Open flags
+    off_t       offset;   // Current file offset (protected by lock)
+    spinlock_t  lock;     // <<< ADDED: Lock to protect file offset and concurrent driver access
 } file_t;
 
 /* VFS driver interface */
