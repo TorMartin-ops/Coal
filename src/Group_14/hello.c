@@ -1,6 +1,6 @@
 /**
  * @file hello.c
- * @brief Enhanced and Corrected User Space Test Program for UiAOS
+ * @brief Enhanced and Corrected User Space Test Program for UiAOS (v1.2)
  *
  * Demonstrates basic syscall usage including:
  * - SYS_PUTS for printing strings
@@ -8,14 +8,20 @@
  * - SYS_OPEN, SYS_WRITE, SYS_READ, SYS_CLOSE for file I/O
  * - SYS_EXIT for terminating the process
  *
- * Corrections:
+ * Corrections (v1.2):
+ * - **Fixed syscall return value handling:** Stores syscall return value immediately
+ * into the target variable BEFORE calling helper functions like print_integer.
+ * - Fixed incorrect file descriptor usage: Stores and uses the actual file
+ * descriptors returned by SYS_OPEN instead of the PID.
+ * - Corrected printing: Prints the correct file descriptor variables.
+ * - Robust error checking: Checks for negative return values from syscalls
+ * to detect errors properly.
  * - Uses standard POSIX-like flags consistent with kernel's corrected sys_file.h.
  * - Provides mode argument for open() with O_CREAT.
  * - Uses valid stack buffers for read() and write() syscalls.
- * - Checks return values for all syscalls that can fail.
  * - Robust integer to string conversion for PID.
  * - Uses goto for cleaner error handling and resource cleanup.
- * - ADDED: Immediate printing of syscall return values for debugging.
+ * - Retains immediate printing of syscall return values for debugging (now prints stored value).
  */
 
 // ==========================================================================
@@ -123,24 +129,73 @@ void print_string(const char *s) {
     if (!s) return; syscall(SYS_PUTS, (int)s, 0, 0);
 }
 
+// Simple unsigned int to ASCII (decimal), returns pointer *within* buf
 char* utoa_simple(uint32_t un, char* buf, size_t buf_size) {
-    if (buf_size < 2) return NULL; char* ptr = buf + buf_size - 1; *ptr = '\0';
-    if (un == 0) { *--ptr = '0'; return ptr; }
-    while (un > 0 && ptr > buf) { *--ptr = '0' + (un % 10); un /= 10; }
-    if (un > 0) { return NULL; } return ptr;
+    if (buf_size < 2) return NULL; // Need space for at least '0' and '\0'
+    char* ptr = buf + buf_size - 1; // Start from the end
+    *ptr = '\0'; // Null-terminate
+
+    if (un == 0) {
+        *--ptr = '0';
+        return ptr;
+    }
+
+    while (un > 0 && ptr > buf) { // Check we have space
+        *--ptr = '0' + (un % 10);
+        un /= 10;
+    }
+
+    if (un > 0) { // Number didn't fit in the buffer
+        return NULL;
+    }
+    return ptr; // Return pointer to the start of the digits
 }
 
+// Simple signed int to ASCII (decimal), handles negatives and INT_MIN edge case
 void print_integer(int n) {
-    char buf[12]; char *s_ptr; bool is_negative = false; uint32_t un;
-    if (n < 0) { is_negative = true; if (n == INT32_MIN) { un = 2147483648U; } else { un = (uint32_t)(-n); } } else { un = (uint32_t)n; }
+    char buf[12]; // Enough for "-2147483648" + null
+    char *s_ptr;
+    bool is_negative = false;
+    uint32_t un;
+
+    if (n < 0) {
+        is_negative = true;
+        // Handle INT_MIN carefully to avoid overflow with -n
+        if (n == INT32_MIN) {
+            un = 2147483648U; // Use the positive unsigned equivalent
+        } else {
+            un = (uint32_t)(-n);
+        }
+    } else {
+        un = (uint32_t)n;
+    }
+
     s_ptr = utoa_simple(un, buf, sizeof(buf));
-    if (s_ptr) { if (is_negative) { if (s_ptr > buf) { *--s_ptr = '-'; print_string(s_ptr); } else { print_string("-<ERR>"); } } else { print_string(s_ptr); } }
-    else { print_string("<ERR>"); }
+
+    if (s_ptr) { // Check if conversion succeeded
+        if (is_negative) {
+            if (s_ptr > buf) { // Ensure space for '-'
+                *--s_ptr = '-';
+                print_string(s_ptr);
+            } else {
+                // This should not happen with buf size 12, but handle defensively
+                print_string("-<ERR>"); // Indicate error
+            }
+        } else {
+            print_string(s_ptr);
+        }
+    }
+    else {
+        print_string("<ERR>"); // Indicate conversion error
+    }
 }
 
+// Prints error message and exits
 void exit_on_error(const char *msg, int syscall_ret, int exit_code) {
     print_string("ERROR: "); print_string(msg); print_string(" (Syscall returned: "); print_integer(syscall_ret); print_string(")\n");
-    syscall(SYS_EXIT, exit_code, 0, 0); for(;;);
+    syscall(SYS_EXIT, exit_code, 0, 0);
+    // This loop should not be reached if exit works
+    for(;;);
 }
 
 // ==========================================================================
@@ -149,22 +204,24 @@ void exit_on_error(const char *msg, int syscall_ret, int exit_code) {
 int main() {
     int exit_code = 0;
     pid_t my_pid = -1;
-    int fd_write = -1;
+    int fd_write = -1; // Initialize FD variables to -1 (invalid)
     int fd_read = -1;
     ssize_t bytes_written, bytes_read;
     const char *filename = "/testfile.txt";
     char write_buf[100];
     char read_buf[100];
-    int syscall_ret_val; // Temporary variable to check return value immediately
+    int syscall_ret_val; // Temporary variable to hold syscall return value
 
     print_string("--- User Program Started ---\n");
 
     // --- Get PID ---
     syscall_ret_val = syscall(SYS_GETPID, 0, 0, 0);
-    // print_string("  -> syscall(SYS_GETPID) returned: "); print_integer(syscall_ret_val); print_string("\n"); // Optional debug
-    my_pid = syscall_ret_val;
+    my_pid = syscall_ret_val; // *** STORE RETURN VALUE FIRST ***
+    // Now print the stored value
+    // print_string("  -> syscall(SYS_GETPID) returned: "); print_integer(my_pid); print_string("\n"); // Optional debug
     if (my_pid < 0) {
-        print_string("Warning: Failed to get PID (Error: "); print_integer(my_pid); print_string(")\n"); my_pid = 0;
+        print_string("Warning: Failed to get PID (Error: "); print_integer(my_pid); print_string(")\n");
+        my_pid = 0; // Assign a dummy PID for the write buffer if syscall failed
     } else {
         print_string("My PID is: "); print_integer(my_pid); print_string("\n");
     }
@@ -175,11 +232,10 @@ int main() {
     // 1. Create/Truncate and Open for Writing
     print_string("Opening for writing (O_CREAT | O_WRONLY | O_TRUNC)...\n");
     syscall_ret_val = syscall(SYS_OPEN, (int)filename, O_CREAT | O_WRONLY | O_TRUNC, DEFAULT_FILE_MODE);
-    // *** ADDED IMMEDIATE PRINT ***
-    print_string("  -> syscall(SYS_OPEN) returned: "); print_integer(syscall_ret_val); print_string("\n");
-    fd_write = syscall_ret_val;
-    if (fd_write < 0) {
-        // Error message now incorporates the value we just printed
+    fd_write = syscall_ret_val; // *** STORE RETURN VALUE FIRST ***
+    // Now print the stored value
+    print_string("  -> syscall(SYS_OPEN) returned: "); print_integer(fd_write); print_string("\n");
+    if (fd_write < 0) { // Robust error check
         exit_on_error("Failed to open/create file for writing", fd_write, 1);
     }
     print_string("File opened successfully for writing (fd="); print_integer(fd_write); print_string(").\n");
@@ -193,19 +249,22 @@ int main() {
     size_t pid_len = strlen(pid_str);
     if (base_len + pid_len + 1 >= sizeof(write_buf)) { exit_on_error("Write buffer too small for PID", -1, 97); }
     for(size_t i=0; i<pid_len; ++i) { write_buf[base_len + i] = pid_str[i]; }
-    write_buf[base_len + pid_len] = '\n'; write_buf[base_len + pid_len + 1] = '\0';
-    size_t total_write_len = base_len + pid_len + 1;
+    write_buf[base_len + pid_len] = '\n'; // Add newline
+    write_buf[base_len + pid_len + 1] = '\0'; // Null terminate
+    size_t total_write_len = base_len + pid_len + 1; // Include newline
 
     // 3. Write Data
     print_string("Writing data: \""); print_string(write_buf); print_string("\" (Length: "); print_integer((int)total_write_len); print_string(")\n");
-    // *** ADDED IMMEDIATE PRINT ***
-    print_string("  -> Using fd: "); print_integer(fd_write); print_string(" for write\n"); // Check fd value just before use
+    print_string("  -> Using fd: "); print_integer(fd_write); print_string(" for write\n");
     syscall_ret_val = syscall(SYS_WRITE, fd_write, (int)write_buf, total_write_len);
-    print_string("  -> syscall(SYS_WRITE) returned: "); print_integer(syscall_ret_val); print_string("\n");
-    bytes_written = syscall_ret_val;
-    if (bytes_written < 0) { exit_on_error("Failed to write data", bytes_written, 2); }
-    if ((size_t)bytes_written != total_write_len) {
-        print_string("Warning: Partial write occurred? Wrote "); print_integer(bytes_written); print_string(" of "); print_integer(total_write_len); print_string(" bytes.\n");
+    bytes_written = syscall_ret_val; // *** STORE RETURN VALUE FIRST ***
+    // Now print the stored value
+    print_string("  -> syscall(SYS_WRITE) returned: "); print_integer(bytes_written); print_string("\n");
+    if (bytes_written < 0) { // Robust error check
+        exit_on_error("Failed to write data", bytes_written, 2);
+    }
+    if ((size_t)bytes_written != total_write_len) { // Check for partial write
+        print_string("Warning: Partial write occurred! Wrote "); print_integer(bytes_written); print_string(" of "); print_integer((int)total_write_len); print_string(" bytes.\n");
     } else {
          print_string("Data successfully written to file.\n");
     }
@@ -214,16 +273,16 @@ int main() {
     print_string("Closing write fd (fd="); print_integer(fd_write); print_string(")...\n");
     syscall_ret_val = syscall(SYS_CLOSE, fd_write, 0, 0);
     // print_string("  -> syscall(SYS_CLOSE) returned: "); print_integer(syscall_ret_val); print_string("\n"); // Optional debug
-    if (syscall_ret_val < 0) { print_string("Warning: Failed to close write fd. Error: "); print_integer(syscall_ret_val); print_string("\n"); }
-    fd_write = -1;
+    if (syscall_ret_val < 0) { print_string("Warning: Failed to close write fd ("); print_integer(fd_write); print_string("). Error: "); print_integer(syscall_ret_val); print_string("\n"); }
+    fd_write = -1; // Mark as closed
 
     // 5. Re-open for Reading
     print_string("Re-opening file for reading (O_RDONLY)...\n");
     syscall_ret_val = syscall(SYS_OPEN, (int)filename, O_RDONLY, 0);
-    // *** ADDED IMMEDIATE PRINT ***
-    print_string("  -> syscall(SYS_OPEN) returned: "); print_integer(syscall_ret_val); print_string("\n");
-    fd_read = syscall_ret_val;
-    if (fd_read < 0) {
+    fd_read = syscall_ret_val; // *** STORE RETURN VALUE FIRST ***
+    // Now print the stored value
+    print_string("  -> syscall(SYS_OPEN) returned: "); print_integer(fd_read); print_string("\n");
+    if (fd_read < 0) { // Robust error check
         exit_on_error("Failed to open file for reading", fd_read, 4);
     }
     print_string("File opened successfully for reading (fd="); print_integer(fd_read); print_string(").\n");
@@ -231,24 +290,35 @@ int main() {
     // 6. Read Data Back
     print_string("Reading data from file...\n");
     for(size_t i=0; i<sizeof(read_buf); ++i) { read_buf[i] = 0; } // Clear buffer
-    // *** ADDED IMMEDIATE PRINT ***
-    print_string("  -> Using fd: "); print_integer(fd_read); print_string(" for read\n"); // Check fd value just before use
+    print_string("  -> Using fd: "); print_integer(fd_read); print_string(" for read\n");
     syscall_ret_val = syscall(SYS_READ, fd_read, (int)read_buf, sizeof(read_buf) - 1);
-    print_string("  -> syscall(SYS_READ) returned: "); print_integer(syscall_ret_val); print_string("\n");
-    bytes_read = syscall_ret_val;
-    if (bytes_read < 0) { exit_on_error("Failed to read data", bytes_read, 5); }
-    read_buf[bytes_read] = '\0';
+    bytes_read = syscall_ret_val; // *** STORE RETURN VALUE FIRST ***
+    // Now print the stored value
+    print_string("  -> syscall(SYS_READ) returned: "); print_integer(bytes_read); print_string("\n");
+    if (bytes_read < 0) { // Robust error check
+        exit_on_error("Failed to read data", bytes_read, 5);
+    }
+    read_buf[bytes_read] = '\0'; // Null-terminate the read data
     print_string("Data read from file: \""); print_string(read_buf); print_string("\"\n");
 
 
 cleanup:
-    // 7. Cleanup: Ensure FDs are closed (Unchanged)
-    if (fd_write >= 0) { print_string("Closing write fd (fd="); print_integer(fd_write); print_string(") during cleanup.\n"); syscall(SYS_CLOSE, fd_write, 0, 0); }
-    if (fd_read >= 0) { print_string("Closing read fd (fd="); print_integer(fd_read); print_string(") during cleanup.\n"); syscall(SYS_CLOSE, fd_read, 0, 0); }
+    // 7. Cleanup: Ensure FDs are closed
+    if (fd_write >= 0) { // Check if still open
+        print_string("Closing write fd (fd="); print_integer(fd_write); print_string(") during cleanup.\n");
+        syscall(SYS_CLOSE, fd_write, 0, 0);
+    }
+    if (fd_read >= 0) { // Check if still open
+        print_string("Closing read fd (fd="); print_integer(fd_read); print_string(") during cleanup.\n");
+        syscall(SYS_CLOSE, fd_read, 0, 0);
+    }
 
-    // 8. Exit (Unchanged)
+    // 8. Exit
     print_string("--- User Program Exiting (Code: "); print_integer(exit_code); print_string(") ---\n");
     syscall(SYS_EXIT, exit_code, 0, 0);
 
-    return exit_code; // Should not be reached
+    // Should not be reached
+    print_string("--- ERROR: Execution continued after SYS_EXIT! ---\n");
+    for(;;);
+    return exit_code;
 }

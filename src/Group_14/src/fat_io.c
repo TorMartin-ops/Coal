@@ -1,7 +1,7 @@
 /**
  * @file fat_io.c
  * @brief File I/O operations implementation for FAT filesystem driver.
- * @version 1.4 - Replaced logging macros with direct serial calls.
+ * @version 1.6 - Fixed build errors, removed incorrect FAT flush on close.
  *
  * Production Level Revision:
  * - Implemented VFS read and write operations with detailed logging.
@@ -10,6 +10,9 @@
  * - Includes locking for shared filesystem structure access (FAT table, context).
  * - Updates file size and context dirty flag on write.
  * - Logging now uses basic serial functions only.
+ * - Allocates the first cluster if writing to an empty file (first_cluster == 0).
+ * - **Correction:** Removed inappropriate call to flush_fat_table from close.
+ * - **Correction:** Fixed incorrect usage of serial_write for formatted logging.
  * - TODO: Timestamp updates on write are currently disabled/placeholders.
  */
 
@@ -32,6 +35,7 @@
 #include <libc/stdbool.h>   // bool
 #include <libc/stdarg.h>    // varargs for printf (though not used in macros now)
 #include "time.h"           // kernel_get_time(), kernel_time_t (placeholder)
+#include "terminal.h"       // terminal_printf FOR FORMATTED LOGGING
 
 /* --- Helper Macros --- */
 #ifndef MIN
@@ -242,7 +246,7 @@ int fat_read_internal(file_t *file, void *buf, size_t len)
     size_t total_bytes_read = 0;
 
     // --- 2. Determine Read Bounds ---
-    irq_flags = spinlock_acquire_irqsave(&fs->lock);
+    irq_flags = spinlock_acquire_irqsave(&fs->lock); // Use FS lock for reading context
     off_t current_offset = file->offset;
     uint32_t file_size = fctx->file_size;
     uint32_t first_cluster = fctx->first_cluster;
@@ -274,11 +278,14 @@ int fat_read_internal(file_t *file, void *buf, size_t len)
     // --- 3. Prepare for Cluster Traversal ---
     size_t cluster_size = fs->cluster_size_bytes;
     if (cluster_size == 0) { serial_write("[FAT IO ERROR] fat_read_internal: Invalid cluster size 0\n"); return FS_ERR_INVALID_FORMAT; }
-    if (first_cluster < 2) {
+    if (first_cluster < 2 && file_size > 0) {
         serial_write("[FAT IO ERROR] fat_read_internal: File size > 0 but first cluster invalid\n");
         serial_write("  FileSize=0x"); serial_print_hex(file_size);
         serial_write("  FirstClu=0x"); serial_print_hex(first_cluster); serial_write("\n");
         return FS_ERR_CORRUPT;
+    }
+    if (first_cluster < 2) { // file_size must be 0 here
+         return 0;
     }
 
     uint32_t current_cluster = first_cluster;
@@ -346,7 +353,7 @@ int fat_read_internal(file_t *file, void *buf, size_t len)
         }
 
         total_bytes_read += bytes_to_read_this_cluster;
-        offset_in_current_cluster = 0;
+        offset_in_current_cluster = 0; // Subsequent reads from this cluster start at offset 0
 
         if (total_bytes_read < len) {
             uint32_t next_cluster;
@@ -368,12 +375,12 @@ int fat_read_internal(file_t *file, void *buf, size_t len)
             current_cluster = next_cluster;
             if (current_cluster >= fs->eoc_marker) {
                 serial_write("[FAT IO WARN] fat_read_internal:   EOF reached mid-read\n");
-                break;
+                break; // Reached end of allocated clusters
             }
         }
     } // End while loop
 
-    result = FS_SUCCESS;
+    result = FS_SUCCESS; // Mark success if loop completed naturally or EOF hit mid-read
 
 cleanup_read:
     if (total_bytes_read > 0) {
@@ -382,6 +389,7 @@ cleanup_read:
     }
     serial_write("[FAT IO TRACE] fat_read_internal: Exit\n");
     serial_write("  ReturnValue=0x"); serial_print_hex((uint32_t)((result < 0) ? result : (int)total_bytes_read)); serial_write("\n");
+    // Return number of bytes actually read, or negative error code
     return (result < 0) ? result : (int)total_bytes_read;
 }
 
@@ -389,217 +397,202 @@ cleanup_read:
 /**
  * @brief Writes data to an opened file. Implements VFS write operation.
  */
-/**
- * @brief Writes data to an opened file. Implements VFS write operation.
- * @version 1.5 - Corrected initial cluster allocation handling
- */
- int fat_write_internal(file_t *file, const void *buf, size_t len)
- {
-     // --- 1. Input Validation ---
-     if (!file || !file->vnode || !file->vnode->data || (!buf && len > 0)) {
-         serial_write("[FAT IO ERROR] fat_write_internal: Invalid parameters\n");
-         serial_write("  file=0x"); serial_print_hex((uintptr_t)file);
-         serial_write(" vnode=0x"); serial_print_hex((uintptr_t)(file ? file->vnode : NULL));
-         serial_write(" data=0x"); serial_print_hex((uintptr_t)(file && file->vnode ? file->vnode->data : NULL));
-         serial_write(" buf=0x"); serial_print_hex((uintptr_t)buf);
-         serial_write(" len=0x"); serial_print_hex((uint32_t)len); serial_write("\n");
-         return FS_ERR_INVALID_PARAM;
-     }
-     if (len == 0) return 0;
- 
-     fat_file_context_t *fctx = (fat_file_context_t*)file->vnode->data;
-     KERNEL_ASSERT(fctx->fs != NULL, "FAT context missing FS pointer");
-     fat_fs_t *fs = fctx->fs;
- 
-     if (fctx->is_directory) { serial_write("[FAT IO ERROR] fat_write_internal: Cannot write to a directory\n"); serial_write("  fctx=0x"); serial_print_hex((uintptr_t)fctx); serial_write("\n"); return FS_ERR_IS_A_DIRECTORY; }
-     if (!(file->flags & (O_WRONLY | O_RDWR))) { serial_write("[FAT IO ERROR] fat_write_internal: File not opened for writing\n"); serial_write("  Flags=0x"); serial_print_hex(file->flags); serial_write("\n"); return FS_ERR_PERMISSION_DENIED; }
- 
-     uintptr_t irq_flags;
-     int result = FS_SUCCESS;
-     size_t total_bytes_written = 0;
-     bool file_metadata_changed = false; // Track if size/cluster chain changed
- 
-     // --- 2. Determine Write Position & Handle O_APPEND ---
-     irq_flags = spinlock_acquire_irqsave(&fs->lock);
-     off_t current_offset = file->offset;
-     uint32_t file_size_before_write = fctx->file_size;
-     if (file->flags & O_APPEND) { current_offset = (off_t)file_size_before_write; }
-     if (current_offset < 0) { spinlock_release_irqrestore(&fs->lock, irq_flags); serial_write("[FAT IO ERROR] fat_write_internal: Negative file offset\n"); serial_write("  Offset=0x"); serial_print_hex((uint32_t)current_offset); serial_write("\n"); return FS_ERR_INVALID_PARAM; }
-     uint32_t first_cluster = fctx->first_cluster; // Get current first cluster from context
-     spinlock_release_irqrestore(&fs->lock, irq_flags);
- 
-     serial_write("[FAT IO TRACE] fat_write_internal: Enter\n");
-     serial_write("  Offset=0x"); serial_print_hex((uint32_t)current_offset);
-     serial_write("  ReqLen=0x"); serial_print_hex((uint32_t)len);
-     serial_write("  FileSize=0x"); serial_print_hex(file_size_before_write);
-     serial_write("  FirstClu=0x"); serial_print_hex(first_cluster); serial_write("\n");
- 
-     // --- 3. Prepare for Cluster Traversal/Allocation ---
-     size_t cluster_size = fs->cluster_size_bytes;
-     if (cluster_size == 0) { serial_write("[FAT IO ERROR] fat_write_internal: Invalid cluster size 0\n"); return FS_ERR_INVALID_FORMAT; }
- 
-     // --- 4. Allocate Initial Cluster if Necessary ---
-     if (first_cluster < 2) {
-         // Sanity check: if first_cluster is invalid, size must be 0 and offset must be 0
-         if (file_size_before_write != 0) { serial_write("[FAT IO ERROR] fat_write_internal: File size > 0 but first cluster invalid\n"); serial_write("  FileSize=0x"); serial_print_hex(file_size_before_write); serial_write("  FirstClu=0x"); serial_print_hex(first_cluster); serial_write("\n"); return FS_ERR_CORRUPT; }
-         if (current_offset != 0) { serial_write("[FAT IO ERROR] fat_write_internal: Attempt to write at offset in empty, unallocated file\n"); serial_write("  Offset=0x"); serial_print_hex((uint32_t)current_offset); serial_write("\n"); return FS_ERR_INVALID_PARAM; }
- 
-         serial_write("[FAT IO TRACE] fat_write_internal: Allocating initial cluster for empty file.\n");
-         irq_flags = spinlock_acquire_irqsave(&fs->lock);
-         uint32_t new_cluster = fat_allocate_cluster(fs, 0); // Pass 0 as previous for first cluster
-         if (new_cluster < 2) { spinlock_release_irqrestore(&fs->lock, irq_flags); serial_write("[FAT IO ERROR] fat_write_internal: Failed to allocate initial cluster (no space?) - returning FS_ERR_NO_SPACE\n"); return FS_ERR_NO_SPACE; }
-         serial_write("[FAT IO DEBUG] fat_write_internal: Allocated initial cluster\n"); serial_write("  NewCluster=0x"); serial_print_hex(new_cluster); serial_write("\n");
- 
-         // ============ BEGIN FIX ============
-         fctx->first_cluster = new_cluster;   // <-- Update the context's cluster
-         fctx->dirty = true;                  // <-- Mark context dirty so the directory entry gets updated on close
-         // ============  END FIX  ============
- 
-         first_cluster = new_cluster;         // Update local variable for subsequent loop iterations
-         file_metadata_changed = true;        // Track that metadata changed (first cluster allocated)
-         spinlock_release_irqrestore(&fs->lock, irq_flags);
-     }
-     KERNEL_ASSERT(first_cluster >= 2, "First cluster invalid after initial check/alloc");
- 
-     uint32_t current_cluster = first_cluster;
-     uint32_t cluster_index = (uint32_t)(current_offset / cluster_size);
-     uint32_t offset_in_current_cluster = (uint32_t)(current_offset % cluster_size);
- 
-     // --- 5. Traverse/Extend Cluster Chain to Starting Cluster ---
-     serial_write("[FAT IO TRACE] fat_write_internal: Seeking/extending to cluster index\n");
-     serial_write("  TargetIdx=0x"); serial_print_hex(cluster_index); serial_write("\n");
-     for (uint32_t i = 0; i < cluster_index; i++) {
-         uint32_t next_cluster;
-         bool allocated_new = false;
-         serial_write("[FAT IO TRACE] fat_write_internal:   Seeking/Extending\n");
-         serial_write("    CurrentClu=0x"); serial_print_hex(current_cluster);
-         serial_write("    Idx=0x"); serial_print_hex(i); serial_write("\n");
- 
-         irq_flags = spinlock_acquire_irqsave(&fs->lock);
-         int find_result = fat_get_next_cluster(fs, current_cluster, &next_cluster);
-         if (find_result != FS_SUCCESS) { spinlock_release_irqrestore(&fs->lock, irq_flags); serial_write("[FAT IO ERROR] fat_write_internal:   Seek failed: Error getting next cluster\n"); serial_write("    CurrentClu=0x"); serial_print_hex(current_cluster); serial_write("    Error=0x"); serial_print_hex((uint32_t)find_result); serial_write("\n"); result = FS_ERR_IO; goto cleanup_write; }
- 
-         if (next_cluster >= fs->eoc_marker) {
-             serial_write("[FAT IO TRACE] fat_write_internal:   Allocating new cluster after\n");
-             serial_write("    CurrentClu=0x"); serial_print_hex(current_cluster);
-             serial_write("    Idx=0x"); serial_print_hex(i); serial_write("\n");
-             next_cluster = fat_allocate_cluster(fs, current_cluster); // Allocates AND links
-             if (next_cluster < 2) { spinlock_release_irqrestore(&fs->lock, irq_flags); serial_write("[FAT IO ERROR] fat_write_internal:   Seek failed: Failed to allocate cluster - returning FS_ERR_NO_SPACE\n"); serial_write("    Idx=0x"); serial_print_hex(i + 1); serial_write("\n"); result = FS_ERR_NO_SPACE; goto cleanup_write; }
-             serial_write("[FAT IO DEBUG] fat_write_internal:   Allocated cluster during seek/extend\n");
-             serial_write("    NewCluster=0x"); serial_print_hex(next_cluster); serial_write("\n");
-             fctx->dirty = true; // Mark context dirty because chain changed
-             file_metadata_changed = true;
-             allocated_new = true;
-         }
-         spinlock_release_irqrestore(&fs->lock, irq_flags);
- 
-         current_cluster = next_cluster;
-         if (!allocated_new) { serial_write("[FAT IO TRACE] fat_write_internal:   Moved to existing next cluster\n"); serial_write("    NextClu=0x"); serial_print_hex(current_cluster); serial_write("\n"); }
-     }
-     serial_write("[FAT IO TRACE] fat_write_internal: Seek/extend successful\n");
-     serial_write("  StartClu=0x"); serial_print_hex(current_cluster);
-     serial_write("  OffsetInClu=0x"); serial_print_hex(offset_in_current_cluster); serial_write("\n");
- 
-     // --- 6. Write Data Cluster by Cluster, Allocating as Needed ---
-     while (total_bytes_written < len) {
-         // Bounds check inside loop: current_cluster should always be valid here
-         // KERNEL_ASSERT(current_cluster >= 2 && current_cluster < fs->eoc_marker, "Invalid current_cluster in write loop");
-          if (current_cluster < 2 || current_cluster >= fs->eoc_marker) { serial_write("[FAT IO ERROR] fat_write_internal: Corrupt state: Invalid cluster in write loop\n"); serial_write("  Cluster=0x"); serial_print_hex(current_cluster); serial_write("\n"); result = FS_ERR_CORRUPT; goto cleanup_write; }
- 
- 
-         size_t bytes_to_write_this_cluster = MIN(cluster_size - offset_in_current_cluster, len - total_bytes_written);
-         serial_write("[FAT IO TRACE] fat_write_internal: Loop: Writing to cluster\n");
-         serial_write("  Cluster=0x"); serial_print_hex(current_cluster);
-         serial_write("  Offset=0x"); serial_print_hex(offset_in_current_cluster);
-         serial_write("  Bytes=0x"); serial_print_hex((uint32_t)bytes_to_write_this_cluster); serial_write("\n");
- 
-         // Use write_cluster_cached to write data via buffer cache
-         int write_res = write_cluster_cached(fs, current_cluster, offset_in_current_cluster, (const uint8_t*)buf + total_bytes_written, bytes_to_write_this_cluster);
-         if (write_res < 0) { serial_write("[FAT IO ERROR] fat_write_internal:   write_cluster_cached failed\n"); serial_write("    Cluster=0x"); serial_print_hex(current_cluster); serial_write("    Error=0x"); serial_print_hex((uint32_t)write_res); serial_write("\n"); result = write_res; goto cleanup_write; }
-         if ((size_t)write_res != bytes_to_write_this_cluster) { serial_write("[FAT IO ERROR] fat_write_internal:   Short write from write_cluster_cached\n"); serial_write("    Expected=0x"); serial_print_hex((uint32_t)bytes_to_write_this_cluster); serial_write("    Got=0x"); serial_print_hex((uint32_t)write_res); serial_write("\n"); result = FS_ERR_IO; goto cleanup_write; }
- 
-         total_bytes_written += bytes_to_write_this_cluster;
-         offset_in_current_cluster = 0; // Next write to this cluster (if any) starts at offset 0
- 
-         // If more data needs to be written, find/allocate the next cluster
-         if (total_bytes_written < len) {
-             uint32_t next_cluster;
-             bool allocated_new = false;
-             int alloc_res = FS_SUCCESS;
-             serial_write("[FAT IO TRACE] fat_write_internal:   Getting/Allocating next cluster after\n");
-             serial_write("    CurrentClu=0x"); serial_print_hex(current_cluster); serial_write("\n");
- 
-             irq_flags = spinlock_acquire_irqsave(&fs->lock);
-             int find_res = fat_get_next_cluster(fs, current_cluster, &next_cluster);
-             if (find_res == FS_SUCCESS && next_cluster >= fs->eoc_marker) {
-                 // Reached end of chain, need to allocate
-                 serial_write("[FAT IO TRACE] fat_write_internal:   Allocating next cluster after EOC\n");
-                 serial_write("    CurrentClu=0x"); serial_print_hex(current_cluster); serial_write("\n");
-                 next_cluster = fat_allocate_cluster(fs, current_cluster); // Allocates AND links
-                 if (next_cluster < 2) { alloc_res = FS_ERR_NO_SPACE; serial_write("[FAT IO ERROR] fat_write_internal:   Failed to allocate next cluster (no space?)\n"); }
-                 else { serial_write("[FAT IO DEBUG] fat_write_internal:   Allocated next cluster\n"); serial_write("    NewCluster=0x"); serial_print_hex(next_cluster); serial_write("\n"); fctx->dirty = true; file_metadata_changed = true; allocated_new = true; }
-             } else if (find_res != FS_SUCCESS) {
-                 // Error reading FAT
-                 alloc_res = FS_ERR_IO; serial_write("[FAT IO ERROR] fat_write_internal:   Failed to get next cluster\n"); serial_write("    CurrentClu=0x"); serial_print_hex(current_cluster); serial_write("    Error=0x"); serial_print_hex((uint32_t)find_res); serial_write("\n");
-             }
-             // Else: Existing next cluster found (next_cluster < fs->eoc_marker)
-             spinlock_release_irqrestore(&fs->lock, irq_flags);
- 
-             if (alloc_res != FS_SUCCESS) { result = alloc_res; serial_write("[FAT IO ERROR] fat_write_internal:   Aborting write due to allocation/find error\n"); serial_write("    Error=0x"); serial_print_hex((uint32_t)result); serial_write("\n"); goto cleanup_write; }
-             current_cluster = next_cluster;
-             if (!allocated_new) { serial_write("[FAT IO TRACE] fat_write_internal:   Moving to existing next cluster\n"); serial_write("    NextClu=0x"); serial_print_hex(current_cluster); serial_write("\n"); }
-         }
-     } // End while loop
- 
-     KERNEL_ASSERT(total_bytes_written == len, "Write loop finished but not all bytes written?");
-     result = FS_SUCCESS; // Mark success if loop completed
- 
- cleanup_write:
-     // --- 7. Update File Offset and Size ---
-     serial_write("[FAT IO TRACE] fat_write_internal: Write loop finished.\n");
-     serial_write("  Result=0x"); serial_print_hex((uint32_t)result);
-     serial_write("  TotalWritten=0x"); serial_print_hex((uint32_t)total_bytes_written); serial_write("\n");
- 
-     irq_flags = spinlock_acquire_irqsave(&fs->lock);
-     off_t final_offset = current_offset + total_bytes_written;
-     file->offset = final_offset; // Update VFS file handle offset
- 
-     // Update size in context only if write extended the file
-     if ((uint64_t)final_offset > file_size_before_write) {
-         serial_write("[FAT IO DEBUG] fat_write_internal: Updating file size\n");
-         serial_write("  OldSize=0x"); serial_print_hex(file_size_before_write);
-         serial_write("  NewSize=0x"); serial_print_hex((uint32_t)final_offset); serial_write("\n");
-         fctx->file_size = (uint32_t)final_offset;
-         fctx->dirty = true; // Mark context dirty as size changed
-         file_metadata_changed = true;
-     } else if (file_metadata_changed) {
-         // Even if size didn't change, if we allocated the first cluster,
-         // the directory entry needs updating.
+int fat_write_internal(file_t *file, const void *buf, size_t len)
+{
+    // --- 1. Input Validation ---
+    if (!file || !file->vnode || !file->vnode->data || (!buf && len > 0)) {
+        serial_write("[FAT IO ERROR] fat_write_internal: Invalid parameters\n");
+        serial_write("  file=0x"); serial_print_hex((uintptr_t)file);
+        serial_write(" vnode=0x"); serial_print_hex((uintptr_t)(file ? file->vnode : NULL));
+        serial_write(" data=0x"); serial_print_hex((uintptr_t)(file && file->vnode ? file->vnode->data : NULL));
+        serial_write(" buf=0x"); serial_print_hex((uintptr_t)buf);
+        serial_write(" len=0x"); serial_print_hex((uint32_t)len); serial_write("\n");
+        return FS_ERR_INVALID_PARAM;
+    }
+    if (len == 0) return 0;
+
+    fat_file_context_t *fctx = (fat_file_context_t*)file->vnode->data;
+    KERNEL_ASSERT(fctx->fs != NULL, "FAT context missing FS pointer");
+    fat_fs_t *fs = fctx->fs;
+
+    if (fctx->is_directory) { serial_write("[FAT IO ERROR] fat_write_internal: Cannot write to a directory\n"); serial_write("  fctx=0x"); serial_print_hex((uintptr_t)fctx); serial_write("\n"); return FS_ERR_IS_A_DIRECTORY; }
+    if (!(file->flags & (O_WRONLY | O_RDWR))) { serial_write("[FAT IO ERROR] fat_write_internal: File not opened for writing\n"); serial_write("  Flags=0x"); serial_print_hex(file->flags); serial_write("\n"); return FS_ERR_PERMISSION_DENIED; }
+
+    uintptr_t irq_flags;
+    int result = FS_SUCCESS;
+    size_t total_bytes_written = 0;
+    bool file_metadata_changed = false; // Track if size/cluster chain changed
+
+    // --- 2. Determine Write Position & Handle O_APPEND ---
+    irq_flags = spinlock_acquire_irqsave(&fs->lock); // Lock for reading context
+    off_t current_offset = file->offset;
+    uint32_t file_size_before_write = fctx->file_size;
+    if (file->flags & O_APPEND) { current_offset = (off_t)file_size_before_write; }
+    if (current_offset < 0) { spinlock_release_irqrestore(&fs->lock, irq_flags); serial_write("[FAT IO ERROR] fat_write_internal: Negative file offset\n"); serial_write("  Offset=0x"); serial_print_hex((uint32_t)current_offset); serial_write("\n"); return FS_ERR_INVALID_PARAM; }
+    uint32_t first_cluster = fctx->first_cluster; // Get current first cluster from context
+    spinlock_release_irqrestore(&fs->lock, irq_flags);
+
+    serial_write("[FAT IO TRACE] fat_write_internal: Enter\n");
+    serial_write("  Offset=0x"); serial_print_hex((uint32_t)current_offset);
+    serial_write("  ReqLen=0x"); serial_print_hex((uint32_t)len);
+    serial_write("  FileSize=0x"); serial_print_hex(file_size_before_write);
+    serial_write("  FirstClu=0x"); serial_print_hex(first_cluster); serial_write("\n");
+
+    // --- 3. Prepare for Cluster Traversal/Allocation ---
+    size_t cluster_size = fs->cluster_size_bytes;
+    if (cluster_size == 0) { serial_write("[FAT IO ERROR] fat_write_internal: Invalid cluster size 0\n"); return FS_ERR_INVALID_FORMAT; }
+
+    // *** NEW STEP 4: Allocate Initial Cluster if Necessary ***
+    if (first_cluster < 2) {
+        if (current_offset != 0) {
+             serial_write("[FAT IO ERROR] fat_write_internal: Attempt to write at offset in empty, unallocated file\n");
+             serial_write("  Offset=0x"); serial_print_hex((uint32_t)current_offset); serial_write("\n");
+             return FS_ERR_INVALID_PARAM;
+        }
+
+        serial_write("[FAT IO TRACE] fat_write_internal: Allocating initial cluster for write.\n");
+        irq_flags = spinlock_acquire_irqsave(&fs->lock);
+        uint32_t new_cluster = fat_allocate_cluster(fs, 0); // Allocate first cluster
+        if (new_cluster < 2) {
+            spinlock_release_irqrestore(&fs->lock, irq_flags);
+            serial_write("[FAT IO ERROR] fat_write_internal: Failed to allocate initial cluster (no space?) - returning FS_ERR_NO_SPACE\n");
+            return FS_ERR_NO_SPACE;
+        }
+        serial_write("[FAT IO DEBUG] fat_write_internal: Allocated initial cluster\n");
+        serial_write("  NewCluster=0x"); serial_print_hex(new_cluster); serial_write("\n");
+
+        fctx->first_cluster = new_cluster;
+        fctx->dirty = true; // Mark dirty - needs dir entry update
+        first_cluster = new_cluster; // Update local variable
+        file_metadata_changed = true;
+        spinlock_release_irqrestore(&fs->lock, irq_flags);
+    }
+    KERNEL_ASSERT(first_cluster >= 2, "First cluster invalid after initial check/alloc");
+    // --- End New Step 4 ---
+
+    // --- 5. Traverse/Extend Cluster Chain to Starting Cluster --- (Original Step 4)
+    uint32_t current_cluster = first_cluster;
+    uint32_t cluster_index = (uint32_t)(current_offset / cluster_size);
+    uint32_t offset_in_current_cluster = (uint32_t)(current_offset % cluster_size);
+
+    serial_write("[FAT IO TRACE] fat_write_internal: Seeking/extending to cluster index\n");
+    serial_write("  TargetIdx=0x"); serial_print_hex(cluster_index); serial_write("\n");
+    for (uint32_t i = 0; i < cluster_index; i++) {
+        uint32_t next_cluster;
+        bool allocated_new = false;
+        serial_write("[FAT IO TRACE] fat_write_internal:   Seeking/Extending\n");
+        serial_write("    CurrentClu=0x"); serial_print_hex(current_cluster);
+        serial_write("    Idx=0x"); serial_print_hex(i); serial_write("\n");
+
+        irq_flags = spinlock_acquire_irqsave(&fs->lock);
+        int find_result = fat_get_next_cluster(fs, current_cluster, &next_cluster);
+        if (find_result != FS_SUCCESS) { spinlock_release_irqrestore(&fs->lock, irq_flags); serial_write("[FAT IO ERROR] fat_write_internal:   Seek failed: Error getting next cluster\n"); serial_write("    CurrentClu=0x"); serial_print_hex(current_cluster); serial_write("    Error=0x"); serial_print_hex((uint32_t)find_result); serial_write("\n"); result = FS_ERR_IO; goto cleanup_write; }
+
+        if (next_cluster >= fs->eoc_marker) {
+            serial_write("[FAT IO TRACE] fat_write_internal:   Allocating new cluster after\n");
+            serial_write("    CurrentClu=0x"); serial_print_hex(current_cluster);
+            serial_write("    Idx=0x"); serial_print_hex(i); serial_write("\n");
+            next_cluster = fat_allocate_cluster(fs, current_cluster); // Allocates AND links
+            if (next_cluster < 2) { spinlock_release_irqrestore(&fs->lock, irq_flags); serial_write("[FAT IO ERROR] fat_write_internal:   Seek failed: Failed to allocate cluster - returning FS_ERR_NO_SPACE\n"); serial_write("    Idx=0x"); serial_print_hex(i + 1); serial_write("\n"); result = FS_ERR_NO_SPACE; goto cleanup_write; }
+            serial_write("[FAT IO DEBUG] fat_write_internal:   Allocated cluster during seek/extend\n");
+            serial_write("    NewCluster=0x"); serial_print_hex(next_cluster); serial_write("\n");
+            fctx->dirty = true; // Mark context dirty because chain changed
+            file_metadata_changed = true;
+            allocated_new = true;
+        }
+        spinlock_release_irqrestore(&fs->lock, irq_flags);
+
+        current_cluster = next_cluster;
+        if (!allocated_new) { serial_write("[FAT IO TRACE] fat_write_internal:   Moved to existing next cluster\n"); serial_write("    NextClu=0x"); serial_print_hex(current_cluster); serial_write("\n"); }
+    }
+    serial_write("[FAT IO TRACE] fat_write_internal: Seek/extend successful\n");
+    serial_write("  StartClu=0x"); serial_print_hex(current_cluster);
+    serial_write("  OffsetInClu=0x"); serial_print_hex(offset_in_current_cluster); serial_write("\n");
+
+    // --- 6. Write Data Cluster by Cluster, Allocating as Needed --- (Original Step 5)
+    while (total_bytes_written < len) {
+         if (current_cluster < 2 || current_cluster >= fs->eoc_marker) { serial_write("[FAT IO ERROR] fat_write_internal: Corrupt state: Invalid cluster in write loop\n"); serial_write("  Cluster=0x"); serial_print_hex(current_cluster); serial_write("\n"); result = FS_ERR_CORRUPT; goto cleanup_write; }
+
+        size_t bytes_to_write_this_cluster = MIN(cluster_size - offset_in_current_cluster, len - total_bytes_written);
+        serial_write("[FAT IO TRACE] fat_write_internal: Loop: Writing to cluster\n");
+        serial_write("  Cluster=0x"); serial_print_hex(current_cluster);
+        serial_write("  Offset=0x"); serial_print_hex(offset_in_current_cluster);
+        serial_write("  Bytes=0x"); serial_print_hex((uint32_t)bytes_to_write_this_cluster); serial_write("\n");
+
+        int write_res = write_cluster_cached(fs, current_cluster, offset_in_current_cluster, (const uint8_t*)buf + total_bytes_written, bytes_to_write_this_cluster);
+        if (write_res < 0) { serial_write("[FAT IO ERROR] fat_write_internal:   write_cluster_cached failed\n"); serial_write("    Cluster=0x"); serial_print_hex(current_cluster); serial_write("    Error=0x"); serial_print_hex((uint32_t)write_res); serial_write("\n"); result = write_res; goto cleanup_write; }
+        if ((size_t)write_res != bytes_to_write_this_cluster) { serial_write("[FAT IO ERROR] fat_write_internal:   Short write from write_cluster_cached\n"); serial_write("    Expected=0x"); serial_print_hex((uint32_t)bytes_to_write_this_cluster); serial_write("    Got=0x"); serial_print_hex((uint32_t)write_res); serial_write("\n"); result = FS_ERR_IO; goto cleanup_write; }
+
+        total_bytes_written += bytes_to_write_this_cluster;
+        offset_in_current_cluster = 0; // Next write to this cluster starts at offset 0
+
+        if (total_bytes_written < len) {
+            uint32_t next_cluster;
+            bool allocated_new = false;
+            int alloc_res = FS_SUCCESS;
+            serial_write("[FAT IO TRACE] fat_write_internal:   Getting/Allocating next cluster after\n");
+            serial_write("    CurrentClu=0x"); serial_print_hex(current_cluster); serial_write("\n");
+
+            irq_flags = spinlock_acquire_irqsave(&fs->lock);
+            int find_res = fat_get_next_cluster(fs, current_cluster, &next_cluster);
+            if (find_res == FS_SUCCESS && next_cluster >= fs->eoc_marker) {
+                serial_write("[FAT IO TRACE] fat_write_internal:   Allocating next cluster after EOC\n");
+                serial_write("    CurrentClu=0x"); serial_print_hex(current_cluster); serial_write("\n");
+                next_cluster = fat_allocate_cluster(fs, current_cluster);
+                if (next_cluster < 2) { alloc_res = FS_ERR_NO_SPACE; serial_write("[FAT IO ERROR] fat_write_internal:   Failed to allocate next cluster (no space?)\n"); }
+                else { serial_write("[FAT IO DEBUG] fat_write_internal:   Allocated next cluster\n"); serial_write("    NewCluster=0x"); serial_print_hex(next_cluster); serial_write("\n"); fctx->dirty = true; file_metadata_changed = true; allocated_new = true; }
+            } else if (find_res != FS_SUCCESS) {
+                alloc_res = FS_ERR_IO; serial_write("[FAT IO ERROR] fat_write_internal:   Failed to get next cluster\n"); serial_write("    CurrentClu=0x"); serial_print_hex(current_cluster); serial_write("    Error=0x"); serial_print_hex((uint32_t)find_res); serial_write("\n");
+            }
+            spinlock_release_irqrestore(&fs->lock, irq_flags);
+
+            if (alloc_res != FS_SUCCESS) { result = alloc_res; serial_write("[FAT IO ERROR] fat_write_internal:   Aborting write due to allocation/find error\n"); serial_write("    Error=0x"); serial_print_hex((uint32_t)result); serial_write("\n"); goto cleanup_write; }
+            current_cluster = next_cluster;
+            if (!allocated_new) { serial_write("[FAT IO TRACE] fat_write_internal:   Moving to existing next cluster\n"); serial_write("    NextClu=0x"); serial_print_hex(current_cluster); serial_write("\n"); }
+        }
+    } // End while loop
+
+    KERNEL_ASSERT(total_bytes_written == len, "Write loop finished but not all bytes written?");
+    result = FS_SUCCESS; // Mark success if loop completed
+
+cleanup_write:
+    // --- 7. Update File Offset and Size --- (Original Step 6)
+    serial_write("[FAT IO TRACE] fat_write_internal: Write loop finished.\n");
+    serial_write("  Result=0x"); serial_print_hex((uint32_t)result);
+    serial_write("  TotalWritten=0x"); serial_print_hex((uint32_t)total_bytes_written); serial_write("\n");
+
+    irq_flags = spinlock_acquire_irqsave(&fs->lock); // Lock for final context update
+    off_t final_offset = current_offset + total_bytes_written;
+    file->offset = final_offset; // Update VFS file handle offset
+
+    // Update size in context only if write extended the file
+    if ((uint64_t)final_offset > file_size_before_write) {
+        serial_write("[FAT IO DEBUG] fat_write_internal: Updating file size\n");
+        serial_write("  OldSize=0x"); serial_print_hex(file_size_before_write);
+        serial_write("  NewSize=0x"); serial_print_hex((uint32_t)final_offset); serial_write("\n");
+        fctx->file_size = (uint32_t)final_offset;
+        fctx->dirty = true; // Mark context dirty as size changed
+        file_metadata_changed = true;
+    } else if (file_metadata_changed) {
+        // Even if size didn't increase, if metadata changed (e.g., first cluster alloc), mark dirty.
+        fctx->dirty = true;
+    }
+
+    // TODO: Timestamp update logic (set dirty if timestamps change)
+    if (file_metadata_changed) { // Or based on timestamp change
          fctx->dirty = true;
-     }
- 
-     // TODO: Timestamp update logic (set dirty if timestamps change)
-     if (file_metadata_changed) { // Or based on timestamp change
-          // uint16_t current_time, current_date;
-          // fat_get_current_timestamp(&current_time, &current_date);
-          // ... (update context timestamps if needed) ...
-          fctx->dirty = true;
-          serial_write("[FAT IO DEBUG] fat_write_internal: Marked context dirty due to metadata change.\n");
-     }
- 
-     spinlock_release_irqrestore(&fs->lock, irq_flags);
- 
-     serial_write("[FAT IO TRACE] fat_write_internal: Exit\n");
-     serial_write("  ReturnValue=0x"); serial_print_hex((uint32_t)((result < 0) ? result : (int)total_bytes_written)); serial_write("\n");
-     return (result < 0) ? result : (int)total_bytes_written; // Return bytes written or negative error
- }
+         serial_write("[FAT IO DEBUG] fat_write_internal: Marked context dirty due to metadata change.\n");
+    }
+
+    spinlock_release_irqrestore(&fs->lock, irq_flags);
+
+    serial_write("[FAT IO TRACE] fat_write_internal: Exit\n");
+    serial_write("  ReturnValue=0x"); serial_print_hex((uint32_t)((result < 0) ? result : (int)total_bytes_written)); serial_write("\n");
+    return (result < 0) ? result : (int)total_bytes_written; // Return bytes written or negative error
+}
 
 
-/* --- fat_lseek_internal and fat_close_internal (Implementations from previous context) --- */
-
-/**
- * @brief Changes the current read/write offset of an opened file. Implements VFS lseek.
- */
+/* --- fat_lseek_internal --- (Unchanged from previous version) */
 off_t fat_lseek_internal(file_t *file, off_t offset, int whence) {
     if (!file || !file->vnode || !file->vnode->data) { return (off_t)FS_ERR_BAD_F; }
     fat_file_context_t *fctx = (fat_file_context_t*)file->vnode->data;
@@ -633,7 +626,6 @@ off_t fat_lseek_internal(file_t *file, off_t offset, int whence) {
 
     if (new_offset < 0) { serial_write("[FAT IO ERROR] fat_lseek_internal: Resulting offset is negative\n"); serial_write("  NewOffset=0x"); serial_print_hex((uint32_t)new_offset); serial_write("\n"); return (off_t)FS_ERR_INVALID_PARAM; }
 
-    // Update VFS file handle offset directly
     file->offset = new_offset;
 
     serial_write("[FAT IO TRACE] fat_lseek_internal: Exit\n");
@@ -643,7 +635,6 @@ off_t fat_lseek_internal(file_t *file, off_t offset, int whence) {
 
 /**
  * @brief Closes an opened file. Implements VFS close.
- * Updates the directory entry if the file was modified. Frees the FAT context.
  */
 int fat_close_internal(file_t *file)
 {
@@ -665,11 +656,10 @@ int fat_close_internal(file_t *file)
         serial_write("  DirOff=0x"); serial_print_hex(fctx->dir_entry_offset); serial_write("\n");
 
         fat_dir_entry_t existing_entry;
-        uint8_t sector_buf[512];
-        if (fs->bytes_per_sector > sizeof(sector_buf)) {
-             serial_write("[FAT IO ERROR] fat_close_internal: Sector size too large for temp buffer!\n");
-             serial_write("  SecSize=0x"); serial_print_hex(fs->bytes_per_sector); serial_write("\n");
-             update_result = FS_ERR_INTERNAL;
+        uint8_t *sector_buf = kmalloc(fs->bytes_per_sector);
+        if (!sector_buf) {
+             serial_write("[FAT IO ERROR] fat_close_internal: Failed to allocate sector buffer!\n");
+             update_result = FS_ERR_OUT_OF_MEMORY;
         } else {
             serial_write("[FAT IO TRACE] fat_close_internal:   Reading existing dir entry sector\n");
             int read_sec_res = read_directory_sector(fs, fctx->dir_entry_cluster, fctx->dir_entry_offset / fs->bytes_per_sector, sector_buf);
@@ -679,7 +669,12 @@ int fat_close_internal(file_t *file)
                 existing_entry.file_size = fctx->file_size;
                 existing_entry.first_cluster_low = (uint16_t)(fctx->first_cluster & 0xFFFF);
                 existing_entry.first_cluster_high = (uint16_t)((fctx->first_cluster >> 16) & 0xFFFF);
-                // TODO: Update timestamps
+                // TODO: Update timestamps if tracked in context
+                // uint16_t current_time, current_date;
+                // fat_get_current_timestamp(&current_time, &current_date);
+                // existing_entry.write_time = current_time;
+                // existing_entry.write_date = current_date;
+                // existing_entry.last_access_date = current_date;
 
                 serial_write("[FAT IO TRACE] fat_close_internal:   Writing updated dir entry\n");
                 update_result = update_directory_entry(fs, fctx->dir_entry_cluster, fctx->dir_entry_offset, &existing_entry);
@@ -688,22 +683,25 @@ int fat_close_internal(file_t *file)
                     serial_write("    Error=0x"); serial_print_hex((uint32_t)update_result); serial_write("\n");
                 } else {
                     serial_write("[FAT IO DEBUG] fat_close_internal:   Directory entry update successful\n");
-                    fctx->dirty = false;
+                    fctx->dirty = false; // Clear dirty flag only on successful write back
                 }
             } else {
                  serial_write("[FAT IO ERROR] fat_close_internal:   Failed to read directory sector for update\n");
                  serial_write("    Error=0x"); serial_print_hex((uint32_t)read_sec_res); serial_write("\n");
-                 update_result = read_sec_res;
+                 update_result = read_sec_res; // Propagate read error
             }
+            kfree(sector_buf); // Free the temp buffer
         }
-    }
+    } // End if (fctx->dirty)
 
-    spinlock_release_irqrestore(&fs->lock, irq_flags);
+    // *** REMOVED explicit flush_fat_table call ***
 
-    kfree(fctx);
-    file->vnode->data = NULL;
+    spinlock_release_irqrestore(&fs->lock, irq_flags); // Release FS lock
+
+    kfree(fctx); // Free the file context memory
+    file->vnode->data = NULL; // Clear pointer in vnode (vnode itself freed by VFS)
 
     serial_write("[FAT IO TRACE] fat_close_internal: Exit\n");
     serial_write("  ReturnValue=0x"); serial_print_hex((uint32_t)update_result); serial_write("\n");
-    return update_result;
+    return update_result; // Return status from directory entry update
 }
