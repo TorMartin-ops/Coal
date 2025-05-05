@@ -102,7 +102,7 @@
      size_t lfn_len = strlen(long_name);
      if (lfn_len == 0 || lfn_len > FAT_MAX_LFN_CHARS) {
          terminal_printf("[FAT LFN Generate] Error: Invalid long name length (%u).\n", (unsigned int)lfn_len);
-         return -1; // Use negative error code, e.g., -FS_ERR_NAMETOOLONG
+         return -1; // Use negative error code, e.g., FS_ERR_NAMETOOLONG
      }
  
      int needed_entries = (int)((lfn_len + 12) / 13);
@@ -111,7 +111,7 @@
      if (needed_entries > max_lfn_entries) {
          terminal_printf("[FAT LFN Generate] Error: Long name '%s' requires %d LFN entries, buffer only holds %d.\n",
                           long_name, needed_entries, max_lfn_entries);
-         return -1; // Use negative error code, e.g., -FS_ERR_BUFFER_TOO_SMALL
+         return -1; // Use negative error code, e.g., FS_ERR_BUFFER_TOO_SMALL
      }
  
      // Fill entries in reverse order (matching disk layout)

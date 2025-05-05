@@ -75,14 +75,14 @@
          start_lba = fat_cluster_to_lba(fs, cluster); // Assumed declared in fat_utils.h
          if (start_lba == 0) {
              FAT_ERROR("Failed to convert data cluster %lu to LBA", (long unsigned int)cluster);
-             return -FS_ERR_IO;
+             return FS_ERR_IO;
          }
          // Caller must validate offset and length against location_size
          KERNEL_ASSERT(offset_in_location < location_size, "Offset out of cluster bounds");
          KERNEL_ASSERT(offset_in_location + len <= location_size, "Length out of cluster bounds");
      } else {
          FAT_ERROR("Invalid cluster number %lu for read", (long unsigned int)cluster);
-         return -FS_ERR_INVALID_PARAM; // Should not happen if used correctly (e.g., for root dir needs cluster=0)
+         return FS_ERR_INVALID_PARAM; // Should not happen if used correctly (e.g., for root dir needs cluster=0)
      }
  
      KERNEL_ASSERT(sector_size > 0, "Invalid sector size");
@@ -101,7 +101,7 @@
          buffer_t* b = buffer_get(fs->disk_ptr->blk_dev.device_name, current_lba); // Assumes fs->disk_ptr is valid
          if (!b) {
              FAT_ERROR("Failed to get buffer for LBA %lu", (long unsigned int)current_lba);
-             return -FS_ERR_IO; // Cannot complete read
+             return FS_ERR_IO; // Cannot complete read
          }
  
          size_t offset_within_this_sector = (sec_idx == start_sector_in_location) ? (offset_in_location % sector_size) : 0;
@@ -151,7 +151,7 @@
      uint32_t cluster_lba = fat_cluster_to_lba(fs, cluster); // Assumed declared in fat_utils.h
      if (cluster_lba == 0) {
          FAT_ERROR("Failed to convert cluster %lu to LBA", (long unsigned int)cluster);
-         return -FS_ERR_IO;
+         return FS_ERR_IO;
      }
  
      size_t bytes_written_total = 0;
@@ -166,7 +166,7 @@
           buffer_t* b = buffer_get(fs->disk_ptr->blk_dev.device_name, current_lba); // Assumes fs->disk_ptr valid
           if (!b) {
               FAT_ERROR("Failed to get buffer for LBA %lu", (long unsigned int)current_lba);
-              result = -FS_ERR_IO; // Store error, but attempt cleanup
+              result = FS_ERR_IO; // Store error, but attempt cleanup
               goto write_cluster_cleanup;
           }
  
@@ -212,7 +212,7 @@
  int fat_read_internal(file_t *file, void *buf, size_t len)
  {
      if (!file || !file->vnode || !file->vnode->data || (!buf && len > 0)) {
-         return -FS_ERR_INVALID_PARAM;
+         return FS_ERR_INVALID_PARAM;
      }
      if (len == 0) return 0;
  
@@ -222,7 +222,7 @@
  
      if (fctx->is_directory) { // Check context flag
          FAT_ERROR("Cannot read from a directory using file read operation");
-         return -FS_ERR_IS_A_DIRECTORY;
+         return FS_ERR_IS_A_DIRECTORY;
      }
  
      uintptr_t irq_flags;
@@ -243,7 +243,7 @@
      // Validate offset
      if (current_offset < 0) {
          FAT_ERROR("Negative file offset %ld", current_offset);
-         return -FS_ERR_INVALID_PARAM;
+         return FS_ERR_INVALID_PARAM;
      }
      if ((uint64_t)current_offset >= file_size) {
          FAT_TRACE("Read attempt at or beyond EOF (offset %ld >= size %lu)", current_offset, (long unsigned int)file_size);
@@ -263,12 +263,12 @@
      size_t cluster_size = fs->cluster_size_bytes; // Correct access
      if (cluster_size == 0) {
          FAT_ERROR("Invalid cluster size 0 for FS associated with file");
-         return -FS_ERR_INVALID_FORMAT; // Or FS_ERR_IO
+         return FS_ERR_INVALID_FORMAT; // Or FS_ERR_IO
      }
      if (first_cluster < 2) {
          // File size is guaranteed > 0 if we reached here, so this is corruption
          FAT_ERROR("File size %lu but first cluster invalid (%lu)", (long unsigned int)file_size, (long unsigned int)first_cluster);
-         return -FS_ERR_CORRUPT;
+         return FS_ERR_CORRUPT;
      }
  
      uint32_t current_cluster = first_cluster;
@@ -285,12 +285,12 @@
  
          if (result != FS_SUCCESS) {
              FAT_ERROR("Failed to get next cluster after %lu during seek (err %d)", (long unsigned int)current_cluster, result);
-             return -FS_ERR_IO; // Error reading FAT
+             return FS_ERR_IO; // Error reading FAT
          }
          if (next_cluster >= fs->eoc_marker) { // Check against EOC marker
              FAT_ERROR("Corrupt file: Reached EOC at cluster index %lu while seeking to %lu for offset %ld (filesize %lu)",
                        (long unsigned int)i, (long unsigned int)cluster_index, current_offset, (long unsigned int)file_size);
-             return -FS_ERR_CORRUPT; // Offset indicates data beyond allocated chain
+             return FS_ERR_CORRUPT; // Offset indicates data beyond allocated chain
          }
          current_cluster = next_cluster;
      }
@@ -301,7 +301,7 @@
          if (current_cluster < 2 || current_cluster >= fs->eoc_marker) { // Check cluster validity
              FAT_ERROR("Corrupt file: Invalid cluster (%lu) encountered during read loop (offset %ld, read %lu/%lu)",
                        (long unsigned int)current_cluster, current_offset + total_bytes_read, (long unsigned int)total_bytes_read, (long unsigned int)len);
-             result = -FS_ERR_CORRUPT;
+             result = FS_ERR_CORRUPT;
              goto cleanup_read; // Go to update offset based on potentially partial read
          }
  
@@ -336,7 +336,7 @@
  
              if (result != FS_SUCCESS) {
                  FAT_ERROR("Failed to get next cluster after %lu during read (err %d)", (long unsigned int)current_cluster, result);
-                 result = -FS_ERR_IO; // Return I/O error, update offset for partial read
+                 result = FS_ERR_IO; // Return I/O error, update offset for partial read
                  goto cleanup_read;
              }
              FAT_TRACE("Moved to next cluster %lu", (long unsigned int)next_cluster);
@@ -365,7 +365,7 @@
  int fat_write_internal(file_t *file, const void *buf, size_t len)
  {
       if (!file || !file->vnode || !file->vnode->data || (!buf && len > 0)) {
-          return -FS_ERR_INVALID_PARAM;
+          return FS_ERR_INVALID_PARAM;
       }
       if (len == 0) return 0;
  
@@ -375,11 +375,11 @@
  
       if (fctx->is_directory) { // Check context flag
           FAT_ERROR("Cannot write to a directory using file write operation");
-          return -FS_ERR_IS_A_DIRECTORY;
+          return FS_ERR_IS_A_DIRECTORY;
       }
       if (!(file->flags & (O_WRONLY | O_RDWR))) { // Check VFS flags
           FAT_ERROR("File not opened for writing (flags: 0x%lx)", (long unsigned int)file->flags);
-          return -FS_ERR_PERMISSION_DENIED;
+          return FS_ERR_PERMISSION_DENIED;
       }
  
       uintptr_t irq_flags;
@@ -398,7 +398,7 @@
       if (current_offset < 0) {
           spinlock_release_irqrestore(&fs->lock, irq_flags);
           FAT_ERROR("Negative file offset %ld", current_offset);
-          return -FS_ERR_INVALID_PARAM;
+          return FS_ERR_INVALID_PARAM;
       }
       uint32_t first_cluster = fctx->first_cluster; // Read context first cluster
       spinlock_release_irqrestore(&fs->lock, irq_flags); // Unlock FS
@@ -410,19 +410,19 @@
       size_t cluster_size = fs->cluster_size_bytes; // Correct access
       if (cluster_size == 0) {
           FAT_ERROR("Invalid cluster size 0 for FS associated with file");
-          return -FS_ERR_INVALID_FORMAT;
+          return FS_ERR_INVALID_FORMAT;
       }
  
       // Handle allocation of the very first cluster if file is currently empty
       if (first_cluster < 2) {
           if (file_size_before_write != 0) {
               FAT_ERROR("File size %lu but first cluster invalid (%lu)", (long unsigned int)file_size_before_write, (long unsigned int)first_cluster);
-              return -FS_ERR_CORRUPT;
+              return FS_ERR_CORRUPT;
           }
           if (current_offset != 0) {
               // Cannot seek in an unallocated file before writing if not O_APPEND
               FAT_ERROR("Attempt to write at offset %ld in empty, unallocated file", current_offset);
-              return -FS_ERR_INVALID_PARAM;
+              return FS_ERR_INVALID_PARAM;
           }
           FAT_TRACE("Allocating initial cluster for empty file.");
           irq_flags = spinlock_acquire_irqsave(&fs->lock); // Lock for FAT alloc/update
@@ -430,7 +430,7 @@
           if (new_cluster < 2) {
               spinlock_release_irqrestore(&fs->lock, irq_flags);
               FAT_ERROR("Failed to allocate initial cluster (no space?)");
-              return -FS_ERR_NO_SPACE;
+              return FS_ERR_NO_SPACE;
           }
           fctx->first_cluster = new_cluster; // Update context
           fctx->dirty = true; // Mark context dirty
@@ -458,7 +458,7 @@
           if (find_result != FS_SUCCESS) {
               spinlock_release_irqrestore(&fs->lock, irq_flags);
               FAT_ERROR("Failed to get next cluster after %lu (err %d)", (long unsigned int)current_cluster, find_result);
-              result = -FS_ERR_IO; // Treat as I/O error
+              result = FS_ERR_IO; // Treat as I/O error
               goto cleanup_write; // Can't proceed
           }
  
@@ -468,7 +468,7 @@
               if (next_cluster < 2) {
                   spinlock_release_irqrestore(&fs->lock, irq_flags);
                   FAT_ERROR("Failed to allocate cluster %lu during seek/extend", (long unsigned int)i + 1);
-                  result = -FS_ERR_NO_SPACE;
+                  result = FS_ERR_NO_SPACE;
                   goto cleanup_write; // Go to update size/offset based on partial progress
               }
               fctx->dirty = true; // FAT changed, mark context dirty
@@ -489,7 +489,7 @@
           if (current_cluster < 2 || current_cluster >= fs->eoc_marker) { // Check cluster validity
               FAT_ERROR("Corrupt state: Invalid cluster (%lu) reached during write loop (offset %ld, written %lu/%lu)",
                         (long unsigned int)current_cluster, current_offset, (long unsigned int)total_bytes_written, (long unsigned int)len);
-              result = -FS_ERR_CORRUPT;
+              result = FS_ERR_CORRUPT;
               goto cleanup_write;
           }
  
@@ -528,7 +528,7 @@
                   FAT_TRACE("Allocating next cluster after %lu for write", (long unsigned int)current_cluster);
                   next_cluster = fat_allocate_cluster(fs, current_cluster); // Assumed declared
                   if (next_cluster < 2) {
-                      alloc_res = -FS_ERR_NO_SPACE;
+                      alloc_res = FS_ERR_NO_SPACE;
                       FAT_ERROR("Failed to allocate next cluster (no space?)");
                   } else {
                        fctx->dirty = true; // FAT changed, mark context dirty
@@ -536,7 +536,7 @@
                        allocated_new = true;
                   }
               } else if (find_res != FS_SUCCESS) {
-                  alloc_res = -FS_ERR_IO; // Error finding next cluster
+                  alloc_res = FS_ERR_IO; // Error finding next cluster
                   FAT_ERROR("Failed to get next cluster after %lu (err %d)", (long unsigned int)current_cluster, find_res);
               }
               spinlock_release_irqrestore(&fs->lock, irq_flags); // Unlock
@@ -604,7 +604,7 @@
   */
  off_t fat_lseek_internal(file_t *file, off_t offset, int whence) { // Changed name to match VFS convention typically
      if (!file || !file->vnode || !file->vnode->data) {
-         return (off_t)-FS_ERR_BAD_F;
+         return (off_t)FS_ERR_BAD_F;
      }
  
      fat_file_context_t *fctx = (fat_file_context_t*)file->vnode->data; // Cast from vnode data
@@ -632,7 +632,7 @@
              if ((offset > 0 && current_offset > (LONG_MAX - offset)) ||
                  (offset < 0 && current_offset < (LONG_MIN - offset))) {
                  FAT_ERROR("SEEK_CUR overflow: current=%ld, offset=%ld", current_offset, offset);
-                 return (off_t)-FS_ERR_OVERFLOW;
+                 return (off_t)FS_ERR_OVERFLOW;
              }
              new_offset = current_offset + offset;
              break;
@@ -641,13 +641,13 @@
              if ((offset > 0 && file_size > (LONG_MAX - offset)) ||
                  (offset < 0 && file_size < (LONG_MIN - offset))) {
                  FAT_ERROR("SEEK_END overflow: size=%ld, offset=%ld", file_size, offset);
-                 return (off_t)-FS_ERR_OVERFLOW;
+                 return (off_t)FS_ERR_OVERFLOW;
              }
              new_offset = file_size + offset;
              break;
          default:
              FAT_ERROR("Invalid whence value: %d", whence);
-             return (off_t)-FS_ERR_INVALID_PARAM;
+             return (off_t)FS_ERR_INVALID_PARAM;
      }
  
      // --- Validate resulting offset ---
@@ -655,7 +655,7 @@
          FAT_ERROR("Resulting offset %ld is negative", new_offset);
          // POSIX allows seeking before the beginning but reads/writes fail.
          // Kernel filesystems often disallow seeking before start. Return EINVAL.
-         return (off_t)-FS_ERR_INVALID_PARAM;
+         return (off_t)FS_ERR_INVALID_PARAM;
      }
      // Seeking beyond EOF is allowed by POSIX, writes will extend/create hole.
  
@@ -673,7 +673,7 @@
  int fat_close_internal(file_t *file)
  {
      if (!file || !file->vnode || !file->vnode->data) {
-         return -FS_ERR_BAD_F;
+         return FS_ERR_BAD_F;
      }
  
      fat_file_context_t *fctx = (fat_file_context_t*)file->vnode->data; // Cast from vnode data

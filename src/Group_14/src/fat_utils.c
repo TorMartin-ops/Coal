@@ -59,7 +59,7 @@ int fat_get_next_cluster(fat_fs_t *fs, uint32_t current_cluster, uint32_t *next_
     // Calculate max valid cluster index based on FAT size and type
     size_t fat_size_bytes = (size_t)fs->fat_size_sectors * fs->bytes_per_sector;
     size_t entry_size = (fs->type == FAT_TYPE_FAT16 ? 2 : (fs->type == FAT_TYPE_FAT32 ? 4 : 0));
-    if (entry_size == 0) return -FS_ERR_INVALID_FORMAT; // Includes FAT12 currently
+    if (entry_size == 0) return FS_ERR_INVALID_FORMAT; // Includes FAT12 currently
     // Max index is one less than the total number of entries possible
     uint32_t max_cluster_index = (fat_size_bytes / entry_size) - 1;
 
@@ -73,7 +73,7 @@ int fat_get_next_cluster(fat_fs_t *fs, uint32_t current_cluster, uint32_t *next_
      if (current_cluster > max_cluster_index) {
          terminal_printf("[FAT Get Next] Error: Current cluster %lu out of FAT table bounds (max index %lu).\n",
                          (unsigned long)current_cluster, (unsigned long)max_cluster_index);
-         return -FS_ERR_INVALID_PARAM;
+         return FS_ERR_INVALID_PARAM;
      }
 
 
@@ -85,7 +85,7 @@ int fat_get_next_cluster(fat_fs_t *fs, uint32_t current_cluster, uint32_t *next_
         *next_cluster = FAT16[current_cluster];
     } else { // FAT12 - Not fully supported here
          FAT_ERROR_LOG("fat_get_next_cluster: FAT12 not implemented.");
-        return -FS_ERR_NOT_SUPPORTED;
+        return FS_ERR_NOT_SUPPORTED;
     }
     return FS_SUCCESS;
 }
@@ -101,14 +101,14 @@ int fat_get_cluster_entry(fat_fs_t *fs, uint32_t cluster, uint32_t *entry_value)
     size_t fat_offset;
     size_t fat_size_bytes = (size_t)fs->fat_size_sectors * fs->bytes_per_sector;
     size_t entry_size = (fs->type == FAT_TYPE_FAT16 ? 2 : (fs->type == FAT_TYPE_FAT32 ? 4 : 0));
-    if (entry_size == 0) return -FS_ERR_INVALID_FORMAT; // Includes FAT12
+    if (entry_size == 0) return FS_ERR_INVALID_FORMAT; // Includes FAT12
     uint32_t max_cluster_index = (fat_size_bytes / entry_size) - 1; // Max valid index
 
      // Check bounds
      if (cluster > max_cluster_index) {
          terminal_printf("[FAT Get Entry] Error: Cluster index %lu out of FAT table bounds (max index %lu).\n",
                          (unsigned long)cluster, (unsigned long)max_cluster_index);
-         return -FS_ERR_INVALID_PARAM;
+         return FS_ERR_INVALID_PARAM;
      }
 
 
@@ -125,9 +125,9 @@ int fat_get_cluster_entry(fat_fs_t *fs, uint32_t cluster, uint32_t *entry_value)
             break;
         case FAT_TYPE_FAT12:
             FAT_ERROR_LOG("FAT12 get_cluster_entry not fully implemented.");
-            return -FS_ERR_NOT_SUPPORTED;
+            return FS_ERR_NOT_SUPPORTED;
         default:
-            return -FS_ERR_INVALID_FORMAT;
+            return FS_ERR_INVALID_FORMAT;
     }
     return FS_SUCCESS;
 }
@@ -141,14 +141,14 @@ int fat_set_cluster_entry(fat_fs_t *fs, uint32_t cluster, uint32_t value)
 
     size_t fat_size_bytes = (size_t)fs->fat_size_sectors * fs->bytes_per_sector;
     size_t entry_size = (fs->type == FAT_TYPE_FAT16 ? 2 : (fs->type == FAT_TYPE_FAT32 ? 4 : 0));
-      if (entry_size == 0) return -FS_ERR_INVALID_FORMAT; // Includes FAT12
+      if (entry_size == 0) return FS_ERR_INVALID_FORMAT; // Includes FAT12
     uint32_t max_cluster_index = (fat_size_bytes / entry_size) - 1; // Max valid index
 
      // Check bounds
      if (cluster < 2 || cluster > max_cluster_index) { // Cannot set entries 0 or 1 normally
          terminal_printf("[FAT Set Entry] Error: Cluster index %lu out of valid range (2-%lu).\n",
                          (unsigned long)cluster, (unsigned long)max_cluster_index);
-         return -FS_ERR_INVALID_PARAM;
+         return FS_ERR_INVALID_PARAM;
      }
 
 
@@ -161,7 +161,7 @@ int fat_set_cluster_entry(fat_fs_t *fs, uint32_t cluster, uint32_t value)
         FAT16[cluster] = (uint16_t)value;
     } else { // FAT12
          FAT_ERROR_LOG("fat_set_cluster_entry: FAT12 not implemented.");
-        return -FS_ERR_NOT_SUPPORTED;
+        return FS_ERR_NOT_SUPPORTED;
     }
 
     fs->fat_dirty = true; // Mark FAT as modified
@@ -423,7 +423,7 @@ int fat_generate_short_name(fat_fs_t *fs,
         int num_len = _itoa_simple(n, num_suffix + 1, sizeof(num_suffix) - 1);
         if (num_len < 0) {
             FAT_ERROR_LOG("Failed to convert suffix number %d to string.", n);
-            return -FS_ERR_INTERNAL;
+            return FS_ERR_INTERNAL;
         }
         int suffix_len = 1 + num_len;
 
@@ -445,8 +445,8 @@ int fat_generate_short_name(fat_fs_t *fs,
     }
 
     FAT_ERROR_LOG("Could not generate unique short name for '%s' after %d attempts.", long_name, 999999);
-    return -FS_ERR_NAMETOOLONG; // Or appropriate error like FS_ERR_EXISTS
+    return FS_ERR_NAMETOOLONG; // Or appropriate error like FS_ERR_EXISTS
 }
 
 
-// --- End of file fat_utils.c ---
+// --- End of file fat_utils.c FS

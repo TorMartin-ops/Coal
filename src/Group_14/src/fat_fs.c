@@ -57,7 +57,7 @@
      fs = kmalloc(sizeof(fat_fs_t));
      if (!fs) {
          terminal_write("[FAT Mount] Error: Failed to allocate memory for fat_fs_t.\n");
-         result = -FS_ERR_OUT_OF_MEMORY;
+         result = FS_ERR_OUT_OF_MEMORY;
          goto mount_fail;
      }
      memset(fs, 0, sizeof(*fs));
@@ -70,13 +70,13 @@
      bs_buf = buffer_get(device_name, 0);
      if (!bs_buf) {
          terminal_printf("[FAT Mount] Error: Failed to read boot sector (LBA 0) for device '%s' via buffer cache.\n", device_name);
-         result = -FS_ERR_IO;
+         result = FS_ERR_IO;
          goto mount_fail;
      }
      // Ensure the buffer cache found the underlying disk structure
      if (!bs_buf->disk) {
           terminal_printf("[FAT Mount] Error: Buffer cache lookup failed for device '%s' (disk_t is NULL).\n", device_name);
-          result = -FS_ERR_INTERNAL; // Or perhaps -FS_ERR_INVALID_PARAM if device isn't registered
+          result = FS_ERR_INTERNAL; // Or perhaps FS_ERR_INVALID_PARAM if device isn't registered
           goto mount_fail;
      }
      // Store the pointer to the disk structure
@@ -90,7 +90,7 @@
      // Check boot signature (0xAA55 at offset 510)
      if (((uint8_t*)bs_buf->data)[510] != 0x55 || ((uint8_t*)bs_buf->data)[511] != 0xAA) {
          terminal_printf("[FAT Mount] Error: Invalid boot sector signature (0xAA55 missing) on device '%s'.\n", device_name);
-         result = -FS_ERR_INVALID_FORMAT;
+         result = FS_ERR_INVALID_FORMAT;
          goto mount_fail;
      }
      buffer_release(bs_buf); // Release boot sector buffer now
@@ -105,7 +105,7 @@
      {
          terminal_printf("[FAT Mount] Error: Invalid geometry on device '%s' (BPB BytesPerSector=%u, SectorsPerCluster=%u).\n",
                          device_name, fs->bytes_per_sector, fs->sectors_per_cluster);
-         result = -FS_ERR_INVALID_FORMAT;
+         result = FS_ERR_INVALID_FORMAT;
          goto mount_fail;
      }
      fs->cluster_size_bytes = (uint32_t)fs->bytes_per_sector * fs->sectors_per_cluster; // Check for overflow? Unlikely.
@@ -119,7 +119,7 @@
      if (fs->total_sectors == 0 || fs->fat_size_sectors == 0 || fs->num_fats == 0 || bpb.reserved_sector_count == 0) {
          terminal_printf("[FAT Mount] Error: Invalid BPB values on device '%s' (TotalSect=%u, FATSize=%u, NumFATs=%u, Resvd=%u).\n",
                          device_name, fs->total_sectors, fs->fat_size_sectors, fs->num_fats, bpb.reserved_sector_count);
-         result = -FS_ERR_INVALID_FORMAT;
+         result = FS_ERR_INVALID_FORMAT;
          goto mount_fail;
      }
      fs->fat_start_lba = bpb.reserved_sector_count;
@@ -135,13 +135,13 @@
      if (fs->first_data_sector >= fs->total_sectors) {
          terminal_printf("[FAT Mount] Error: Calculated data sector start (%u) beyond total sectors (%u).\n",
                           fs->first_data_sector, fs->total_sectors);
-         result = -FS_ERR_INVALID_FORMAT;
+         result = FS_ERR_INVALID_FORMAT;
          goto mount_fail;
      }
      uint32_t data_sectors = fs->total_sectors - fs->first_data_sector;
      if (fs->sectors_per_cluster == 0) { // Prevent division by zero
           terminal_printf("[FAT Mount] Error: Sectors per cluster is zero.\n");
-          result = -FS_ERR_INVALID_FORMAT;
+          result = FS_ERR_INVALID_FORMAT;
           goto mount_fail;
      }
      fs->total_data_clusters = data_sectors / fs->sectors_per_cluster;
@@ -175,7 +175,7 @@
          // fs->total_data_clusters = data_sectors / fs->sectors_per_cluster;
          if (fs->root_cluster < 2) { // Root cluster must be valid
               terminal_printf("[FAT Mount] Error: Invalid root cluster value (%u) for FAT32.\n", fs->root_cluster);
-              result = -FS_ERR_INVALID_FORMAT;
+              result = FS_ERR_INVALID_FORMAT;
               goto mount_fail;
          }
          terminal_write("[FAT Mount] Detected FAT32.\n");
@@ -184,7 +184,7 @@
       if (fs->first_data_sector >= fs->total_sectors) {
          terminal_printf("[FAT Mount] Error: Final data sector start (%u) beyond total sectors (%u).\n",
                           fs->first_data_sector, fs->total_sectors);
-         result = -FS_ERR_INVALID_FORMAT;
+         result = FS_ERR_INVALID_FORMAT;
          goto mount_fail;
       }
  
@@ -227,7 +227,7 @@
      fat_fs_t *fs = (fat_fs_t*)fs_context;
      if (!fs) {
          terminal_printf("[FAT Unmount] Error: Invalid NULL context provided.\n");
-         return -FS_ERR_INVALID_PARAM;
+         return FS_ERR_INVALID_PARAM;
      }
       // Use disk name from stored pointer if available, otherwise context address for logging
      const char *dev_name = (fs->disk_ptr && fs->disk_ptr->blk_dev.device_name) ?
@@ -295,7 +295,7 @@
      // Check for potential overflow before multiplication
      if (bytes_per_sector_sz > 0 && fat_size_sectors_sz > SIZE_MAX / bytes_per_sector_sz) {
          terminal_write("[FAT Load FAT] Error: FAT table size calculation overflows size_t.\n");
-         return -FS_ERR_OVERFLOW;
+         return FS_ERR_OVERFLOW;
      }
      fs->fat_table_size_bytes = fat_size_sectors_sz * bytes_per_sector_sz;
  
@@ -308,7 +308,7 @@
          terminal_printf("[FAT Load FAT] Error: Failed to allocate %u bytes for FAT table.\n",
                           (unsigned int)fs->fat_table_size_bytes);
          fs->fat_table_size_bytes = 0; // Reset size
-         return -FS_ERR_OUT_OF_MEMORY;
+         return FS_ERR_OUT_OF_MEMORY;
      }
  
      // Read FAT sectors using buffer cache
@@ -324,7 +324,7 @@
              kfree(fs->fat_table); // Clean up allocation
              fs->fat_table = NULL;
              fs->fat_table_size_bytes = 0;
-             return -FS_ERR_IO;
+             return FS_ERR_IO;
          }
  
          // Copy data from buffer cache to our allocated FAT table buffer
@@ -359,7 +359,7 @@
      if (fs->fat_size_sectors == 0 || fs->bytes_per_sector == 0 || !fs->disk_ptr || !fs->disk_ptr->blk_dev.device_name) {
          terminal_printf("[FAT Flush FAT] Error: Invalid FS state for flushing (size=%u, bps=%u, disk=%p).\n",
                           fs->fat_size_sectors, fs->bytes_per_sector, fs->disk_ptr);
-         return -FS_ERR_INTERNAL; // Indicates FS struct wasn't properly initialized
+         return FS_ERR_INTERNAL; // Indicates FS struct wasn't properly initialized
      }
  
      terminal_printf("[FAT Flush FAT] Flushing %u modified FAT sectors via buffer cache...\n", fs->fat_size_sectors);
@@ -403,6 +403,6 @@
          terminal_printf("[FAT Flush FAT] Flush completed with %d errors. %d sectors written. FAT remains marked dirty.\n",
                           errors_encountered, sectors_written);
          // Do NOT clear fs->fat_dirty - indicates flush may be incomplete
-         return -FS_ERR_IO;
+         return FS_ERR_IO;
      }
  }

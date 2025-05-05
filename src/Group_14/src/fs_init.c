@@ -76,7 +76,7 @@
           terminal_write("[FS_INIT] Error: Root device name or FS type configuration is invalid (NULL).\n");
           fat_unregister_driver();
           vfs_shutdown();
-          return -FS_ERR_INVALID_PARAM;
+          return FS_ERR_INVALID_PARAM;
      }
  
      terminal_printf("[FS_INIT] Initializing root block device '%s'...\n", root_device_name);
@@ -208,11 +208,11 @@
  {
      if (!s_fs_initialized) {
          terminal_write("[FS_TEST] Error: File system not initialized.\n");
-         return -FS_ERR_NOT_INIT;
+         return FS_ERR_NOT_INIT;
      }
      if (!path) {
          terminal_write("[FS_TEST] Error: NULL path provided.\n");
-         return -FS_ERR_INVALID_PARAM;
+         return FS_ERR_INVALID_PARAM;
      }
  
      terminal_printf("[FS_TEST] Testing file access: '%s'\n", path);
@@ -225,14 +225,14 @@
      file = vfs_open(path, O_RDONLY);
      if (!file) {
          terminal_printf("[FS_TEST] Error: vfs_open failed for file '%s'.\n", path);
-         return -FS_ERR_UNKNOWN; // Assuming failure means not found or other error
+         return FS_ERR_UNKNOWN; // Assuming failure means not found or other error
      }
  
      // Allocate a buffer for reading
      buffer = kmalloc(128); // Allocate a reasonable size buffer
      if (!buffer) {
           terminal_printf("[FS_TEST] Error: Failed to allocate read buffer for '%s'.\n", path); // Corrected typo
-          ret = -FS_ERR_OUT_OF_MEMORY;
+          ret = FS_ERR_OUT_OF_MEMORY;
           goto cleanup;
      }
  

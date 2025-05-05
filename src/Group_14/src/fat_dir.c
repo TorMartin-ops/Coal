@@ -137,7 +137,7 @@
          FAT_DEBUG_LOG("Checking O_EXCL: (flags & O_CREAT)=%d, (flags & O_EXCL)=%d -> conflict=%d", (flags & O_CREAT) != 0, (flags & O_EXCL) != 0, o_excl_check); // Added log
          if (o_excl_check) {
              FAT_ERROR_LOG("File '%s' exists and O_CREAT|O_EXCL flags were specified.", path);
-             ret_err = -FS_ERR_FILE_EXISTS; // POSIX EEXIST
+             ret_err = FS_ERR_FILE_EXISTS; // POSIX EEXIST
              goto open_fail_locked;
          }
  
@@ -146,7 +146,7 @@
          FAT_DEBUG_LOG("Checking write/truncate on dir: is_dir=%d, (flags & (O_WRONLY|O_RDWR|O_TRUNC))=%d -> conflict=%d", is_dir, (flags & (O_WRONLY | O_RDWR | O_TRUNC)) != 0, write_truncate_dir_check); // Added log
          if (write_truncate_dir_check) {
              FAT_ERROR_LOG("Cannot open directory '%s' with write or truncate flags (0x%x).", path, flags);
-             ret_err = -FS_ERR_IS_A_DIRECTORY;
+             ret_err = FS_ERR_IS_A_DIRECTORY;
              goto open_fail_locked;
          }
  
@@ -172,7 +172,7 @@
              }
          }
  
-     } else if (find_res == -FS_ERR_NOT_FOUND) {
+     } else if (find_res == FS_ERR_NOT_FOUND) {
          FAT_DEBUG_LOG("Branch: File/Directory Not Found."); // Added log
          exists = false;
          ret_err = find_res; // Store the error code (-5)
@@ -219,7 +219,7 @@
      FAT_DEBUG_LOG("kmalloc for file_ctx returned %p", file_ctx); // Added log
      if (!vnode || !file_ctx) {
          FAT_ERROR_LOG("kmalloc failed (vnode=%p, file_ctx=%p). Out of memory.", vnode, file_ctx);
-         ret_err = -FS_ERR_OUT_OF_MEMORY;
+         ret_err = FS_ERR_OUT_OF_MEMORY;
          goto open_fail_locked;
      }
      memset(vnode, 0, sizeof(*vnode));
@@ -284,13 +284,13 @@ int fat_readdir_internal(file_t *dir_file, struct dirent *d_entry_out, size_t en
         FAT_ERROR_LOG("Invalid parameters: dir_file=%p, vnode=%p, data=%p, d_entry_out=%p",
                       dir_file, dir_file ? dir_file->vnode : NULL,
                       dir_file && dir_file->vnode ? dir_file->vnode->data : NULL, d_entry_out);
-        return -FS_ERR_INVALID_PARAM;
+        return FS_ERR_INVALID_PARAM;
     }
 
     fat_file_context_t *fctx = (fat_file_context_t*)dir_file->vnode->data;
     if (!fctx->fs || !fctx->is_directory) {
         FAT_ERROR_LOG("Context error: fs=%p, is_directory=%d. Not a valid directory context.", fctx->fs, fctx->is_directory);
-        return -FS_ERR_NOT_A_DIRECTORY;
+        return FS_ERR_NOT_A_DIRECTORY;
     }
     fat_fs_t *fs = fctx->fs;
     FAT_DEBUG_LOG("Context valid: fs=%p, first_cluster=%lu", fs, (unsigned long)fctx->first_cluster);
@@ -323,7 +323,7 @@ int fat_readdir_internal(file_t *dir_file, struct dirent *d_entry_out, size_t en
         FAT_WARN_LOG("Non-sequential index requested (%lu requested, %lu expected). Seeking not implemented, failing.", // Now uses DEBUG log
                      (unsigned long)entry_index, (unsigned long)(fctx->readdir_last_index + 1));
         spinlock_release_irqrestore(&fs->lock, irq_flags);
-        return -FS_ERR_INVALID_PARAM;
+        return FS_ERR_INVALID_PARAM;
     }
 
     // --- Allocate buffer --- (Code unchanged)
@@ -331,7 +331,7 @@ int fat_readdir_internal(file_t *dir_file, struct dirent *d_entry_out, size_t en
     if (!sector_buffer) {
         FAT_ERROR_LOG("Failed to allocate %u bytes for sector buffer.", fs->bytes_per_sector);
         spinlock_release_irqrestore(&fs->lock, irq_flags);
-        return -FS_ERR_OUT_OF_MEMORY;
+        return FS_ERR_OUT_OF_MEMORY;
     }
     FAT_DEBUG_LOG("Allocated sector buffer at %p (%u bytes).", sector_buffer, fs->bytes_per_sector);
 
@@ -500,7 +500,7 @@ readdir_done:
  int fat_unlink_internal(void *fs_context, const char *path)
  {
      fat_fs_t *fs = (fat_fs_t*)fs_context;
-     if (!fs || !path) return -FS_ERR_INVALID_PARAM;
+     if (!fs || !path) return FS_ERR_INVALID_PARAM;
  
      uintptr_t irq_flags = spinlock_acquire_irqsave(&fs->lock);
      int ret = FS_SUCCESS; // Assume success initially
@@ -509,11 +509,11 @@ readdir_done:
      char parent_path[FS_MAX_PATH_LENGTH];
      char component_name[MAX_FILENAME_LEN + 1];
      if (fs_util_split_path(path, parent_path, sizeof(parent_path), component_name, sizeof(component_name)) != 0) {
-         ret = -FS_ERR_NAMETOOLONG;
+         ret = FS_ERR_NAMETOOLONG;
          goto unlink_fail_locked;
      }
       if (strlen(component_name) == 0 || strcmp(component_name, ".") == 0 || strcmp(component_name, "..") == 0) {
-         ret = -FS_ERR_INVALID_PARAM; // Cannot unlink empty name, ".", or ".."
+         ret = FS_ERR_INVALID_PARAM; // Cannot unlink empty name, ".", or ".."
          goto unlink_fail_locked;
      }
  
@@ -527,7 +527,7 @@ readdir_done:
          goto unlink_fail_locked;
      }
      if (!(parent_entry.attr & FAT_ATTR_DIRECTORY)) {
-         ret = -FS_ERR_NOT_A_DIRECTORY; // Parent path is not a directory
+         ret = FS_ERR_NOT_A_DIRECTORY; // Parent path is not a directory
          goto unlink_fail_locked;
      }
      uint32_t parent_cluster = fat_get_entry_cluster(&parent_entry);
@@ -551,12 +551,12 @@ readdir_done:
      // --- Perform Checks ---
      // Check if it's a directory - cannot unlink directories with this function
      if (entry_to_delete.attr & FAT_ATTR_DIRECTORY) {
-         ret = -FS_ERR_IS_A_DIRECTORY; // Use rmdir instead
+         ret = FS_ERR_IS_A_DIRECTORY; // Use rmdir instead
          goto unlink_fail_locked;
      }
      // Check if it's read-only
      if (entry_to_delete.attr & FAT_ATTR_READ_ONLY) {
-         ret = -FS_ERR_PERMISSION_DENIED;
+         ret = FS_ERR_PERMISSION_DENIED;
          goto unlink_fail_locked;
      }
  
@@ -643,7 +643,7 @@ int fat_find_in_dir(fat_fs_t *fs,
     uint8_t *sector_data = kmalloc(fs->bytes_per_sector);
     if (!sector_data) {
         terminal_printf("[FAT FIND DEBUG] ERROR: Failed to allocate sector buffer (%u bytes)\n", fs->bytes_per_sector);
-        return -FS_ERR_OUT_OF_MEMORY;
+        return FS_ERR_OUT_OF_MEMORY;
     }
     terminal_printf("[FAT FIND DEBUG] Allocated sector buffer at %p\n", sector_data);
 
@@ -813,7 +813,7 @@ find_done:
     // --- Tokenize the path ---
     // Make a mutable copy of the path for strtok
     char *path_copy = kmalloc(strlen(path) + 1);
-    if (!path_copy) return -FS_ERR_OUT_OF_MEMORY;
+    if (!path_copy) return FS_ERR_OUT_OF_MEMORY;
     strcpy(path_copy, path);
 
     // --- ADJUSTED TOKENIZATION START ---
@@ -854,7 +854,7 @@ find_done:
         // Handle ".." (parent directory) - Currently NOT SUPPORTED
         if (strcmp(component, "..") == 0) {
             terminal_printf("[FAT lookup] Error: '..' component not yet supported.\n");
-            ret = -FS_ERR_NOT_SUPPORTED;
+            ret = FS_ERR_NOT_SUPPORTED;
             goto lookup_done;
         }
 
@@ -894,7 +894,7 @@ find_done:
         // If not the last component, it MUST be a directory to continue traversal
         if (!(current_entry.attr & FAT_ATTR_DIRECTORY)) {
             terminal_printf("[FAT lookup] Error: Component '%s' is not a directory, but path continues.\n", component);
-            ret = -FS_ERR_NOT_A_DIRECTORY; // Path component is not a directory
+            ret = FS_ERR_NOT_A_DIRECTORY; // Path component is not a directory
             goto lookup_done;
         }
 
@@ -907,7 +907,7 @@ find_done:
         if (fs->type != FAT_TYPE_FAT32 && current_dir_cluster == 0 && previous_dir_cluster != 0) {
              // This should only happen if the directory entry is corrupted or points back to root incorrectly.
              terminal_printf("[FAT lookup] Error: Invalid traversal into FAT12/16 root (cluster 0) from non-root parent.\n");
-             ret = -FS_ERR_INVALID_FORMAT; // Indicate potential FS corruption
+             ret = FS_ERR_INVALID_FORMAT; // Indicate potential FS corruption
              goto lookup_done;
          }
 
@@ -978,7 +978,7 @@ lookup_done:
          uint32_t cluster_start_lba = fat_cluster_to_lba(fs, current_scan_cluster);
          if (cluster_start_lba == 0) { // fat_cluster_to_lba returns 0 on error/invalid cluster
              // DIAG_PRINTK("[FAT read_dir_sector] Invalid LBA for cluster %u\n", current_scan_cluster);
-             return -FS_ERR_IO; // Treat as I/O error
+             return FS_ERR_IO; // Treat as I/O error
          }
          // Add the offset within the cluster to get the final LBA
          lba = cluster_start_lba + sector_in_final_cluster;
@@ -988,7 +988,7 @@ lookup_done:
      } else {
          // Invalid starting cluster number (0 or 1 for non-FAT12/16 root)
          // DIAG_PRINTK("[FAT read_dir_sector] Invalid start cluster %u provided\n", cluster);
-         return -FS_ERR_INVALID_PARAM;
+         return FS_ERR_INVALID_PARAM;
      }
  
      // --- Read the sector using the buffer cache ---
@@ -996,7 +996,7 @@ lookup_done:
      buffer_t* b = buffer_get(fs->disk_ptr->blk_dev.device_name, lba);
      if (!b) {
          // DIAG_PRINTK("[FAT read_dir_sector] buffer_get failed for LBA %u\n", lba); // DIAGNOSTIC PRINTK
-         return -FS_ERR_IO; // Buffer cache failed (likely underlying disk read error)
+         return FS_ERR_IO; // Buffer cache failed (likely underlying disk read error)
      }
  
      // Copy data from buffer cache to output buffer
@@ -1034,7 +1034,7 @@ lookup_done:
      uint32_t lba;
      int ret = FS_SUCCESS;
      if (dir_cluster == 0 && fs->type != FAT_TYPE_FAT32) { // FAT12/16 Root
-          if (sector_offset_in_chain >= fs->root_dir_sectors) return -FS_ERR_INVALID_PARAM;
+          if (sector_offset_in_chain >= fs->root_dir_sectors) return FS_ERR_INVALID_PARAM;
           lba = fs->root_dir_start_lba + sector_offset_in_chain;
      } else if (dir_cluster >= 2) { // Subdirectory or FAT32 Root
           uint32_t current_cluster = dir_cluster;
@@ -1046,19 +1046,19 @@ lookup_done:
               uint32_t next_cluster;
               ret = fat_get_next_cluster(fs, current_cluster, &next_cluster);
               if (ret != FS_SUCCESS) return ret; // Propagate I/O error
-              if (next_cluster >= fs->eoc_marker) return -FS_ERR_INVALID_PARAM; // Offset beyond chain end
+              if (next_cluster >= fs->eoc_marker) return FS_ERR_INVALID_PARAM; // Offset beyond chain end
               current_cluster = next_cluster;
           }
           uint32_t cluster_lba = fat_cluster_to_lba(fs, current_cluster);
-          if (cluster_lba == 0) return -FS_ERR_IO; // Invalid cluster mapping
+          if (cluster_lba == 0) return FS_ERR_IO; // Invalid cluster mapping
           lba = cluster_lba + sector_in_final_cluster;
      } else {
-         return -FS_ERR_INVALID_PARAM; // Invalid dir_cluster value
+         return FS_ERR_INVALID_PARAM; // Invalid dir_cluster value
      }
  
      // --- Read-Modify-Write the sector via Buffer Cache ---
      buffer_t* b = buffer_get(fs->disk_ptr->blk_dev.device_name, lba);
-     if (!b) return -FS_ERR_IO; // Failed to read sector
+     if (!b) return FS_ERR_IO; // Failed to read sector
  
      // Overwrite the specific entry within the sector buffer
      memcpy(b->data + offset_in_sector, new_entry, sizeof(fat_dir_entry_t));
@@ -1098,7 +1098,7 @@ lookup_done:
          // --- Determine LBA of the current sector ---
          uint32_t lba;
           if (dir_cluster == 0 && fs->type != FAT_TYPE_FAT32) { // FAT12/16 Root
-              if (sector_offset_in_chain >= fs->root_dir_sectors) { result = -FS_ERR_INVALID_PARAM; break; }
+              if (sector_offset_in_chain >= fs->root_dir_sectors) { result = FS_ERR_INVALID_PARAM; break; }
               lba = fs->root_dir_start_lba + sector_offset_in_chain;
           } else if (dir_cluster >= 2) { // Subdirectory or FAT32 Root
               uint32_t current_data_cluster = dir_cluster;
@@ -1110,19 +1110,19 @@ lookup_done:
                   uint32_t next_cluster;
                   result = fat_get_next_cluster(fs, current_data_cluster, &next_cluster);
                   if (result != FS_SUCCESS) goto mark_fail; // Propagate IO error
-                  if (next_cluster >= fs->eoc_marker) { result = -FS_ERR_INVALID_PARAM; goto mark_fail; } // Offset beyond chain end
+                  if (next_cluster >= fs->eoc_marker) { result = FS_ERR_INVALID_PARAM; goto mark_fail; } // Offset beyond chain end
                   current_data_cluster = next_cluster;
               }
               uint32_t cluster_lba = fat_cluster_to_lba(fs, current_data_cluster);
-              if (cluster_lba == 0) { result = -FS_ERR_IO; break; } // Invalid cluster mapping
+              if (cluster_lba == 0) { result = FS_ERR_IO; break; } // Invalid cluster mapping
               lba = cluster_lba + sector_in_final_cluster;
           } else {
-              result = -FS_ERR_INVALID_PARAM; break; // Invalid dir_cluster
+              result = FS_ERR_INVALID_PARAM; break; // Invalid dir_cluster
           }
  
          // --- Read-Modify-Write the sector via Buffer Cache ---
          buffer_t* b = buffer_get(fs->disk_ptr->blk_dev.device_name, lba);
-         if (!b) { result = -FS_ERR_IO; break; } // Failed to read sector
+         if (!b) { result = FS_ERR_IO; break; } // Failed to read sector
  
          bool buffer_dirtied = false;
          // Mark entries within the current sector
@@ -1183,7 +1183,7 @@ lookup_done:
          // --- Determine LBA of the current sector ---
          uint32_t lba;
           if (dir_cluster == 0 && fs->type != FAT_TYPE_FAT32) { // FAT12/16 Root
-              if (sector_offset_in_chain >= fs->root_dir_sectors) { result = -FS_ERR_INVALID_PARAM; break; } // Offset out of bounds
+              if (sector_offset_in_chain >= fs->root_dir_sectors) { result = FS_ERR_INVALID_PARAM; break; } // Offset out of bounds
               lba = fs->root_dir_start_lba + sector_offset_in_chain;
           } else if (dir_cluster >= 2) { // Subdirectory or FAT32 Root
               uint32_t current_data_cluster = dir_cluster;
@@ -1195,19 +1195,19 @@ lookup_done:
                   uint32_t next_cluster;
                   result = fat_get_next_cluster(fs, current_data_cluster, &next_cluster);
                   if (result != FS_SUCCESS) goto write_fail; // Propagate IO error
-                  if (next_cluster >= fs->eoc_marker) { result = -FS_ERR_INVALID_PARAM; goto write_fail; } // Offset beyond chain end
+                  if (next_cluster >= fs->eoc_marker) { result = FS_ERR_INVALID_PARAM; goto write_fail; } // Offset beyond chain end
                   current_data_cluster = next_cluster;
               }
               uint32_t cluster_lba = fat_cluster_to_lba(fs, current_data_cluster);
-               if (cluster_lba == 0) { result = -FS_ERR_IO; break; } // Invalid cluster mapping
+               if (cluster_lba == 0) { result = FS_ERR_IO; break; } // Invalid cluster mapping
               lba = cluster_lba + sector_in_final_cluster;
           } else {
-              result = -FS_ERR_INVALID_PARAM; break; // Invalid dir_cluster
+              result = FS_ERR_INVALID_PARAM; break; // Invalid dir_cluster
           }
  
          // --- Read-Modify-Write the sector via Buffer Cache ---
          buffer_t* b = buffer_get(fs->disk_ptr->blk_dev.device_name, lba);
-         if (!b) { result = -FS_ERR_IO; break; } // Failed to read sector
+         if (!b) { result = FS_ERR_IO; break; } // Failed to read sector
  
          // Calculate how many bytes to write into *this* sector buffer
          size_t bytes_to_write_this_sector = sector_size - offset_in_sector;
@@ -1241,197 +1241,141 @@ lookup_done:
   * and link a new cluster.
   * (This definition should NOT be static if declared in fat_dir.h)
   */
- int find_free_directory_slot(fat_fs_t *fs, uint32_t parent_dir_cluster,
-                              size_t needed_slots,
-                              uint32_t *out_slot_cluster,
-                              uint32_t *out_slot_offset)
- {
-     KERNEL_ASSERT(fs != NULL && needed_slots > 0 && out_slot_cluster != NULL && out_slot_offset != NULL,
-                   "Invalid arguments passed to find_free_directory_slot");
-     // Basic sanity check - unlikely to need more slots than fit in one cluster
-     KERNEL_ASSERT(needed_slots <= (fs->bytes_per_sector / sizeof(fat_dir_entry_t)) * fs->sectors_per_cluster,
-                   "Requesting excessively large number of contiguous slots");
-     KERNEL_ASSERT(fs->bytes_per_sector > 0, "Invalid bytes_per_sector");
- 
-     // DIAG_PRINTK("[FAT find_free_directory_slot] Searching %u slots in dir cluster %u.\n", needed_slots, parent_dir_cluster);
- 
-     uint32_t current_cluster = parent_dir_cluster;
-     uint32_t last_valid_cluster = parent_dir_cluster; // Track the last cluster number seen before EOC/error
-     bool scanning_fixed_root = (fs->type != FAT_TYPE_FAT32 && parent_dir_cluster == 0);
-     uint32_t current_byte_offset = 0;
-     size_t contiguous_free_count = 0;
-     uint32_t potential_start_offset = 0;
-     int ret = -FS_ERR_NO_SPACE; // Default outcome: no space found
- 
-     // Allocate buffer for scanning sectors
-     uint8_t *sector_data = kmalloc(fs->bytes_per_sector);
-     if (!sector_data) return -FS_ERR_OUT_OF_MEMORY;
- 
-     // --- Phase 1: Scan Existing Directory Structure ---
-     while (true) {
-         // Check for end of cluster chain (only applies if not scanning fixed root)
-         if (current_cluster >= fs->eoc_marker && !scanning_fixed_root) {
-             ret = -FS_ERR_NO_SPACE; // Reached end of chain without finding enough space
-             break;
-         }
- 
-         uint32_t sector_offset_in_chain = current_byte_offset / fs->bytes_per_sector;
-         size_t entries_per_sector = fs->bytes_per_sector / sizeof(fat_dir_entry_t);
- 
-         // Read the current directory sector
-         int read_res = read_directory_sector(fs, current_cluster, sector_offset_in_chain, sector_data);
-         if (read_res != FS_SUCCESS) {
-             ret = read_res; // Propagate I/O error or other read failures
-             goto find_slot_done; // Exit immediately on read error
-         }
- 
-         // Scan entries within the loaded sector
-         for (size_t e_idx = 0; e_idx < entries_per_sector; e_idx++) {
-             fat_dir_entry_t *de = (fat_dir_entry_t*)(sector_data + e_idx * sizeof(fat_dir_entry_t));
-             uint32_t entry_abs_offset = current_byte_offset + (uint32_t)(e_idx * sizeof(fat_dir_entry_t));
- 
-             // Check if entry is free (Unused 0x00 or Deleted 0xE5)
-             if (de->name[0] == FAT_DIR_ENTRY_UNUSED || de->name[0] == FAT_DIR_ENTRY_DELETED) {
-                 if (contiguous_free_count == 0) {
-                     // Mark the start of a potential contiguous block
-                     potential_start_offset = entry_abs_offset;
-                 }
-                 contiguous_free_count++;
-                 // Check if we have found enough contiguous slots
-                 if (contiguous_free_count >= needed_slots) {
-                     *out_slot_cluster = current_cluster; // Cluster where the block starts
-                     *out_slot_offset = potential_start_offset; // Byte offset where the block starts
-                     ret = FS_SUCCESS;
-                     goto find_slot_done; // Success! Found space.
-                 }
-             } else {
-                 // Entry is in use, reset the contiguous count
-                 contiguous_free_count = 0;
-             }
- 
-             // Check for the absolute end-of-directory marker (0x00)
-             // If we see this, there are no more used entries after this point.
-             if (de->name[0] == FAT_DIR_ENTRY_UNUSED) {
-                 // If we haven't found enough contiguous slots by now, we won't find them
-                 // in the rest of this cluster chain segment (unless we extend).
-                 ret = -FS_ERR_NO_SPACE;
-                 goto find_slot_check_extend; // Proceed to check if directory can be extended
-             }
-         } // End loop through entries in sector
- 
-         // Advance byte offset to the start of the next sector
-         current_byte_offset += fs->bytes_per_sector;
- 
-         // Check if we need to move to the next cluster
-         if (!scanning_fixed_root && (current_byte_offset % fs->cluster_size_bytes == 0)) {
-             last_valid_cluster = current_cluster; // Remember the cluster we just finished scanning
-             uint32_t next_c;
-             int get_next_res = fat_get_next_cluster(fs, current_cluster, &next_c);
-             if (get_next_res != FS_SUCCESS) {
-                 ret = get_next_res; // Propagate I/O error reading FAT
-                 goto find_slot_done; // Exit on FAT read error
-             }
-             if (next_c >= fs->eoc_marker) { // Reached the end of the cluster chain
-                 ret = -FS_ERR_NO_SPACE;
-                 break; // Exit the main loop, proceed to check extension
-             }
-             current_cluster = next_c;     // Move to the next cluster
-             current_byte_offset = 0;      // Reset offset for the new cluster
-             contiguous_free_count = 0;    // Reset count when crossing cluster boundary (simplification)
-                                           // Note: FAT spec allows entries to span clusters, but handling
-                                           // finding free slots across cluster boundaries is complex.
-                                           // This implementation finds slots *within* a cluster. If more
-                                           // robust cross-cluster slot finding is needed, this logic
-                                           // would need significant enhancement.
-         }
-         // Otherwise, loop continues to read the next sector of the current cluster
- 
-     } // End while(true) scanning loop
- 
- find_slot_check_extend:
-     // --- Phase 2: Attempt Directory Extension (if applicable) ---
-     // This section is reached if the loop finished because:
-     // 1. End of cluster chain was reached (`ret == -FS_ERR_NO_SPACE`).
-     // 2. End marker (0x00) was found (`ret == -FS_ERR_NO_SPACE`).
- 
-     if (ret == -FS_ERR_NO_SPACE && !scanning_fixed_root) {
-         // Directory is extendable (not FAT12/16 root) and no space was found.
-         // DIAG_PRINTK("[FAT find_free_directory_slot] No slot found in existing chain (last cluster %u), attempting extension.\n", last_valid_cluster);
- 
-         terminal_printf("[FAT find_free_directory_slot] Attempting allocation, linking from cluster %lu\n", (unsigned long)last_valid_cluster); // Added Log
-         uint32_t new_cluster = fat_allocate_cluster(fs, last_valid_cluster); // CORRECT CALL: Pass cluster to link from, get new cluster number back
-         if (new_cluster == 0) { // Check return value for failure (0 means error/no space)
-             terminal_printf("[FAT find_free_directory_slot] fat_allocate_cluster failed (returned 0).\n");
-             ret = -FS_ERR_NO_SPACE; // Allocation failure means no space
-             goto find_slot_done;    // Exit without extending
-         }
-         // DIAG_PRINTK("[FAT find_free_directory_slot] Allocated new cluster %u.\n", new_cluster);
- 
-         // Zero out the newly allocated cluster
-         uint8_t *zero_buffer = sector_data; // Reuse the allocated sector buffer
-         memset(zero_buffer, 0, fs->bytes_per_sector);
-         uint32_t new_cluster_lba = fat_cluster_to_lba(fs, new_cluster);
-         if (new_cluster_lba == 0) {
-             // Failed to convert new cluster to LBA - should not happen if allocation succeeded
-             fat_free_cluster_chain(fs, new_cluster); // Attempt to free allocated cluster
-             ret = -FS_ERR_IO;
-             goto find_slot_done;
-         }
- 
-         for (uint32_t i = 0; i < fs->sectors_per_cluster; i++) {
-             buffer_t *b = buffer_get(fs->disk_ptr->blk_dev.device_name, new_cluster_lba + i);
-             if (!b) {
-                  // DIAG_PRINTK("[FAT find_free_directory_slot] Failed to get buffer for LBA %u during zeroing.\n", new_cluster_lba + i);
-                  fat_free_cluster_chain(fs, new_cluster); // Attempt to free
-                  ret = -FS_ERR_IO;
-                  goto find_slot_done;
-             }
-             // Check if buffer already contains zeros (optimization - unlikely necessary)
-             // bool already_zero = true;
-             // for(size_t j=0; j<fs->bytes_per_sector; ++j) if(b->data[j] != 0) { already_zero = false; break;}
-             // if(!already_zero) { ... }
-             memcpy(b->data, zero_buffer, fs->bytes_per_sector); // Zero the buffer content
-             buffer_mark_dirty(b); // Mark for write-back
-             buffer_release(b);
-         }
-         // DIAG_PRINTK("[FAT find_free_directory_slot] Zeroed new cluster %u.\n", new_cluster);
- 
-         // Link the *last* cluster of the old chain to the new cluster
-         int link_res = fat_set_cluster_entry(fs, last_valid_cluster, new_cluster);
-         if (link_res != FS_SUCCESS) {
-              // DIAG_PRINTK("[FAT find_free_directory_slot] Failed to link last cluster %u to new cluster %u: %d\n", last_valid_cluster, new_cluster, link_res);
-              fat_free_cluster_chain(fs, new_cluster); // Attempt to free
-              ret = link_res; // Propagate FAT write error
-              goto find_slot_done;
-         }
- 
-         // Mark the new cluster itself as the End Of Chain (EOC)
-         int eoc_res = fat_set_cluster_entry(fs, new_cluster, fs->eoc_marker);
-          if (eoc_res != FS_SUCCESS) {
-               // DIAG_PRINTK("[FAT find_free_directory_slot] Failed to set EOC marker for new cluster %u: %d\n", new_cluster, eoc_res);
-               // Attempt rollback? Difficult. Mark filesystem potentially inconsistent?
-               // We might have linked the cluster but failed to mark it EOC.
-               // Try to free the allocated cluster at least.
-               fat_set_cluster_entry(fs, last_valid_cluster, fs->eoc_marker); // Try to restore EOC on previous last cluster
-               fat_free_cluster_chain(fs, new_cluster); // Attempt to free
-               ret = eoc_res;
-               goto find_slot_done;
-          }
- 
-         // Extension successful! The first slot is at the beginning of the new cluster.
-         *out_slot_cluster = new_cluster;
-         *out_slot_offset = 0;
-         ret = FS_SUCCESS;
-         // DIAG_PRINTK("[FAT find_free_directory_slot] Successfully extended directory, using cluster %u offset 0.\n", new_cluster);
- 
-     } else if (ret == -FS_ERR_NO_SPACE && scanning_fixed_root) {
-          // Cannot extend FAT12/16 root directory.
-          // DIAG_PRINTK("[FAT find_free_directory_slot] Cannot extend FAT12/16 root directory.\n");
-          ret = -FS_ERR_NO_SPACE; // Explicitly ensure correct error code
-     }
- 
- find_slot_done:
-     kfree(sector_data); // Free the buffer used for scanning/zeroing
-     return ret; // Return final status code
- }
+/**
+ * Find a run of `needed_slots` consecutive free directory entries
+ * (0xE5 = deleted, 0x00 = end-of-directory).  
+ * If the directory is growable (sub-dir or FAT32 root) and no
+ * space is found, the function allocates & zeroes a new cluster
+ * and returns its first entry.
+ */
+int find_free_directory_slot(fat_fs_t    *fs,
+                             uint32_t     parent_dir_cluster,
+                             size_t       needed_slots,
+                             uint32_t    *out_slot_cluster,
+                             uint32_t    *out_slot_offset)
+{
+    KERNEL_ASSERT(fs && needed_slots && out_slot_cluster && out_slot_offset,
+                  "find_free_directory_slot: bad args");
+
+    const bool fixed_root = (fs->type != FAT_TYPE_FAT32 && parent_dir_cluster == 0);
+    const uint32_t bytes_per_entry = sizeof(fat_dir_entry_t);
+    uint32_t cur_cluster   = parent_dir_cluster;
+    uint32_t last_cluster  = parent_dir_cluster;
+    uint32_t byte_offset   = 0;
+    uint32_t cand_offset   = 0;
+    size_t   free_run      = 0;
+
+    uint8_t *sector_buf = kmalloc(fs->bytes_per_sector);
+    if (!sector_buf) return FS_ERR_OUT_OF_MEMORY;
+
+    int status = FS_ERR_NO_SPACE;
+
+    /* ------------  Phase 1 : scan existing space  ------------ */
+    while (true)
+    {
+        /* If we walked past EOC we are out of space inside the chain */
+        if (cur_cluster >= fs->eoc_marker && !fixed_root) break;
+
+        uint32_t sector_idx   = byte_offset / fs->bytes_per_sector;
+        uint32_t entries_per_sector = fs->bytes_per_sector / bytes_per_entry;
+
+        /* Read the sector that contains `byte_offset` */
+        status = read_directory_sector(fs, cur_cluster, sector_idx, sector_buf);
+        if (status != FS_SUCCESS) goto out;           /* I/O error */
+
+        /* Scan every entry inside that sector */
+        for (size_t i = 0; i < entries_per_sector; ++i)
+        {
+            fat_dir_entry_t *de = (fat_dir_entry_t *)(sector_buf + i * bytes_per_entry);
+            uint8_t tag = de->name[0];
+
+            if (tag == FAT_DIR_ENTRY_UNUSED || tag == FAT_DIR_ENTRY_DELETED)
+            {
+                /* (Re-)start the count if this is the first free in the run */
+                if (free_run == 0) cand_offset = byte_offset + (uint32_t)i * bytes_per_entry;
+                ++free_run;
+
+                /*   >>>  SUCCESS   <<<  */
+                if (free_run >= needed_slots)
+                {
+                    *out_slot_cluster = cur_cluster;
+                    *out_slot_offset  = cand_offset;
+                    status = FS_SUCCESS;
+                    goto out;
+                }
+
+                /* 0x00 means “nothing after this is in use” – treat it as
+                 * an indefinitely long free run. */
+                if (tag == FAT_DIR_ENTRY_UNUSED)
+                {
+                    *out_slot_cluster = cur_cluster;
+                    *out_slot_offset  = cand_offset;
+                    status = FS_SUCCESS;
+                    goto out;
+                }
+            }
+            else
+            {
+                /* run interrupted */
+                free_run = 0;
+            }
+        }
+
+        /* Next sector / next cluster bookkeeping */
+        byte_offset += fs->bytes_per_sector;
+
+        if (!fixed_root && (byte_offset % fs->cluster_size_bytes == 0))
+        {
+            last_cluster = cur_cluster;
+            uint32_t next;
+            status = fat_get_next_cluster(fs, cur_cluster, &next);
+            if (status != FS_SUCCESS) goto out;
+            if (next >= fs->eoc_marker) break;        /* reached end */
+            cur_cluster  = next;
+            byte_offset  = 0;
+            free_run     = 0;
+        }
+        else if (fixed_root &&
+                 byte_offset >= fs->root_dir_sectors * fs->bytes_per_sector)
+        {
+            break;   /* fixed root – cannot go further */
+        }
+    }
+
+    /* ---- Phase 2 : extend directory if allowed and still no space ---- */
+    if (status == FS_ERR_NO_SPACE && !fixed_root)
+    {
+        uint32_t new_clu = fat_allocate_cluster(fs, last_cluster);
+        if (new_clu == 0) { status = FS_ERR_NO_SPACE; goto out; }
+
+        /* zero the whole new cluster via buffer-cache */
+        memset(sector_buf, 0, fs->bytes_per_sector);
+        uint32_t lba = fat_cluster_to_lba(fs, new_clu);
+        for (uint32_t s = 0; s < fs->sectors_per_cluster; ++s)
+        {
+            buffer_t *b = buffer_get(fs->disk_ptr->blk_dev.device_name, lba + s);
+            if (!b) { status = FS_ERR_IO; goto out_free; }
+            memcpy(b->data, sector_buf, fs->bytes_per_sector);
+            buffer_mark_dirty(b);
+            buffer_release(b);
+        }
+
+        /* link it and mark EOC */
+        if ((status = fat_set_cluster_entry(fs, last_cluster, new_clu)) != FS_SUCCESS) goto out_free;
+        if ((status = fat_set_cluster_entry(fs, new_clu, fs->eoc_marker))  != FS_SUCCESS) goto out_free;
+
+        *out_slot_cluster = new_clu;
+        *out_slot_offset  = 0;
+        status = FS_SUCCESS;
+        goto out;
+    }
+
+    /* --------------------------- cleanup --------------------------- */
+out_free:
+    if (status != FS_SUCCESS) fat_free_cluster_chain(fs, cur_cluster);
+out:
+    kfree(sector_buf);
+    return status;
+}
+
  
