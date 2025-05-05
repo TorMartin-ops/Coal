@@ -181,7 +181,7 @@ static void pic_unmask_required_irqs(void) {
 
     // Calculate new masks (clear bits to unmask/enable)
     // Bit 0 = IRQ 0, Bit 1 = IRQ 1, etc.
-    uint8_t new_mask1 = mask1 & ~((1 << 2) | (1 << 0)); // Unmask Master IRQ 2 (Cascade) AND IRQ 0 (PIT)
+    uint8_t new_mask1 = mask1 & ~((1 << 0) | (1 << 1) | (1 << 2)); // Added (1 << 1) for IRQ 1
     uint8_t new_mask2 = mask2 & ~(1 << 6); // Unmask Slave IRQ 6 (which corresponds to hardware IRQ 14)
 
     // Write new masks

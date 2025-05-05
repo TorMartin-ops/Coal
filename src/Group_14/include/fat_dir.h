@@ -202,6 +202,17 @@
                              uint32_t dir_offset,
                              const void *entries_buf,
                              size_t num_entries);
+
+                             
+
+
+
+
+
+
+int read_directory_sector(fat_fs_t *fs, uint32_t cluster,
+uint32_t sector_offset_in_chain,
+uint8_t* buffer);
  
  /**
   * @brief Finds a sequence of free slots in a directory.
@@ -222,5 +233,9 @@
                               size_t needed_slots,
                               uint32_t *out_slot_cluster,
                               uint32_t *out_slot_offset);
- 
+
+
+
+
+
  #endif /* FAT_DIR_H */

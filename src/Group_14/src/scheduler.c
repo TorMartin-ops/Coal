@@ -514,6 +514,7 @@ uint32_t scheduler_get_ticks(void) {
 
         asm volatile ("sti; hlt"); // Atomically enable interrupts and halt
 
+
         // ---> ADDED: Log after waking from hlt <---
         // This will only print if an interrupt woke the CPU
         serial_write("[Idle Loop] Woke up from hlt.\n");
