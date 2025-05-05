@@ -211,119 +211,137 @@ int fat_free_cluster_chain(fat_fs_t *fs, uint32_t start_cluster)
  */
 int fat_create_file(fat_fs_t          *fs,
                     const char        *path,
-                    uint8_t            attributes,       /* FAT_ATTR_ARCHIVE etc. */
-                    fat_dir_entry_t   *entry_out,        /* optional */
-                    uint32_t          *dir_cluster_out,  /* where entry lives   */
-                    uint32_t          *dir_offset_out)   /* byte offset within cluster */
+                    uint8_t            attributes,
+                    fat_dir_entry_t   *entry_out,        /* out */
+                    uint32_t          *dir_cluster_out,  /* out */
+                    uint32_t          *dir_offset_out)   /* out */
 {
+    FAT_ALLOC_DEBUG_LOG("Enter: path='%s', attributes=0x%02x", path ? path : "<NULL>", attributes);
     KERNEL_ASSERT(fs && path && entry_out && dir_cluster_out && dir_offset_out,
                   "fat_create_file: bad args");
 
-    /* ------------------------------------------------------------------
-     * 1) Split path into parent and leaf
-     * ------------------------------------------------------------------ */
+    // 1. Split path into parent directory path and the filename component
     char parent_path[FS_MAX_PATH_LENGTH];
-    char filename   [MAX_FILENAME_LEN + 1];
-
-    if (fs_util_split_path(path,
-                           parent_path, sizeof parent_path,
-                           filename,    sizeof filename) != 0)
+    char filename[MAX_FILENAME_LEN + 1];
+    if (fs_util_split_path(path, parent_path, sizeof(parent_path), filename, sizeof(filename)) != 0) {
+        FAT_ALLOC_ERROR_LOG("Path '%s' is too long or invalid.", path);
         return FS_ERR_NAMETOOLONG;
+    }
+    if (filename[0] == '\0') {
+        FAT_ALLOC_ERROR_LOG("Cannot create file with empty filename component in path '%s'.", path);
+        return FS_ERR_INVALID_PARAM; // Cannot create file with empty name
+    }
+    FAT_ALLOC_DEBUG_LOG("Split path: Parent='%s', Filename='%s'", parent_path, filename);
 
-    if (filename[0] == '\0')
-        return FS_ERR_INVALID_PARAM;
-
-    /* ------------------------------------------------------------------
-     * 2) Locate the parent directory
-     * ------------------------------------------------------------------ */
+    // 2. Locate the parent directory cluster
     fat_dir_entry_t parent_dir_entry;
     uint32_t parent_dir_cluster;
-    int rc = fat_lookup_path(fs, parent_path,
-                             &parent_dir_entry,
-                             NULL, 0,         /* no LFN buffer */
-                             NULL, NULL);
-    if (rc  != FS_SUCCESS)          return rc;
-    if (!(parent_dir_entry.attr & FAT_ATTR_DIRECTORY))
-                                  return FS_ERR_NOT_A_DIRECTORY;
-
+    // We don't need the parent's own dir cluster or offset here
+    int rc = fat_lookup_path(fs, parent_path, &parent_dir_entry, NULL, 0, NULL, NULL);
+    if (rc != FS_SUCCESS) {
+        FAT_ALLOC_ERROR_LOG("Parent directory '%s' lookup failed (err %d).", parent_path, rc);
+        return rc; // Parent not found or other error
+    }
+    if (!(parent_dir_entry.attr & FAT_ATTR_DIRECTORY)) {
+        FAT_ALLOC_ERROR_LOG("Parent path '%s' is not a directory.", parent_path);
+        return FS_ERR_NOT_A_DIRECTORY;
+    }
+    // Get the cluster number for the parent directory
     parent_dir_cluster = fat_get_entry_cluster(&parent_dir_entry);
-    if (fs->type != FAT_TYPE_FAT32 && parent_dir_cluster == 0)
-        /* FAT12/16 root dir is cluster 0 by convention inside driver */
+    // Handle FAT12/16 root directory case
+    if (fs->type != FAT_TYPE_FAT32 && strcmp(parent_path, "/") == 0) {
         parent_dir_cluster = 0;
+    }
+    FAT_ALLOC_DEBUG_LOG("Parent directory found: Cluster=%lu", (unsigned long)parent_dir_cluster);
 
-    /* ------------------------------------------------------------------
-     * 3) Build names: short 8.3 + the needed LFN entries
-     * ------------------------------------------------------------------ */
+    // 3. Generate the unique 8.3 short name and LFN entries
     uint8_t short_name[11];
-    rc = fat_generate_short_name(fs, parent_dir_cluster,
-                                 filename, short_name);
-    if (rc != FS_SUCCESS)           return rc;
+    // *** CALL the real helper ***
+    rc = fat_generate_short_name(filename, fs, parent_dir_cluster, short_name);
+    if (rc != FS_SUCCESS) {
+        FAT_ALLOC_ERROR_LOG("Failed to generate unique short name for '%s' (err %d).", filename, rc);
+        return rc;
+    }
+    FAT_ALLOC_DEBUG_LOG("Generated short name: '%.11s'", short_name); // Use %.*s to print non-null-terminated
 
-    uint8_t   checksum = fat_calculate_lfn_checksum(short_name);
+    uint8_t checksum = fat_calculate_lfn_checksum(short_name);
+    fat_lfn_entry_t lfn_buf[FAT_MAX_LFN_ENTRIES]; // Buffer on stack
+    int lfn_slots = fat_generate_lfn_entries(filename, checksum, lfn_buf, FAT_MAX_LFN_ENTRIES);
+    if (lfn_slots < 0) {
+        FAT_ALLOC_ERROR_LOG("Failed to generate LFN entries for '%s' (err %d).", filename, lfn_slots);
+        return lfn_slots; // Propagate error
+    }
+    size_t total_slots_needed = (size_t)lfn_slots + 1; // LFN slots + 1 for 8.3 entry
+    FAT_ALLOC_DEBUG_LOG("Generated %d LFN entries (Total slots needed: %lu). Checksum: 0x%02x", lfn_slots, (unsigned long)total_slots_needed, checksum);
 
-    fat_lfn_entry_t lfn_buf[FAT_MAX_LFN_ENTRIES];
-    int lfn_slots = fat_generate_lfn_entries(filename,
-                                             checksum,
-                                             lfn_buf, FAT_MAX_LFN_ENTRIES);
-    if (lfn_slots < 0)              return lfn_slots;
-
-    size_t total_slots = (size_t)lfn_slots + 1;  /* +8.3 entry */
-
-    /* ------------------------------------------------------------------
-     * 4) Reserve directory space
-     * ------------------------------------------------------------------ */
+    // 4. Find free space in the parent directory
     uint32_t slot_cluster, slot_offset;
-    rc = find_free_directory_slot(fs, parent_dir_cluster,
-                                  total_slots,
-                                  &slot_cluster, &slot_offset);
-    if (rc != FS_SUCCESS)           return rc;
+    FAT_ALLOC_DEBUG_LOG("Finding %lu free slots in parent cluster %lu...", (unsigned long)total_slots_needed, (unsigned long)parent_dir_cluster);
+    // *** CALL the real helper ***
+    rc = find_free_directory_slot(fs, parent_dir_cluster, total_slots_needed, &slot_cluster, &slot_offset);
+    if (rc != FS_SUCCESS) {
+        FAT_ALLOC_ERROR_LOG("Failed to find %lu free slots in directory cluster %lu (err %d).", (unsigned long)total_slots_needed, (unsigned long)parent_dir_cluster, rc);
+        return rc; // No space or other error
+    }
+    FAT_ALLOC_DEBUG_LOG("Found free slot at Cluster=%lu, Offset=%lu", (unsigned long)slot_cluster, (unsigned long)slot_offset);
 
-    /* ------------------------------------------------------------------
-     * 5) Fill in the on-disk 8.3 directory entry structure
-     * ------------------------------------------------------------------ */
+    // 5. Prepare the 8.3 directory entry structure in memory
     fat_dir_entry_t entry83;
-    memset(&entry83, 0, sizeof entry83);
-    memcpy(entry83.name, short_name, 11);
-    entry83.attr          = attributes | FAT_ATTR_ARCHIVE;
-    entry83.file_size     = 0;
-    entry83.first_cluster_low  = 0;
+    memset(&entry83, 0, sizeof(entry83)); // Zero out the structure first
+    memcpy(entry83.name, short_name, 11); // Copy the generated short name
+    entry83.attr = attributes | FAT_ATTR_ARCHIVE; // Set specified attributes + Archive bit
+    entry83.file_size = 0; // New files have size 0
+    entry83.first_cluster_low = 0; // No clusters allocated yet
     entry83.first_cluster_high = 0;
-
+    // *** CALL the real helper ***
     uint16_t fat_time, fat_date;
-    fat_get_current_timestamp(&fat_time, &fat_date);
-    entry83.creation_time   = fat_time;
-    entry83.creation_date   = fat_date;
-    entry83.last_access_date= fat_date;
-    entry83.write_time      = fat_time;
-    entry83.write_date      = fat_date;
+    fat_get_current_timestamp(&fat_time, &fat_date); // Get current time/date
+    entry83.creation_time = fat_time;
+    entry83.creation_date = fat_date;
+    entry83.last_access_date = fat_date; // Set access date to creation date initially
+    entry83.write_time = fat_time;       // Set write time to creation time initially
+    entry83.write_date = fat_date;       // Set write date to creation date initially
+    FAT_ALLOC_DEBUG_LOG("Prepared 8.3 entry: Attr=0x%02x, Time=0x%04x, Date=0x%04x", entry83.attr, entry83.write_time, entry83.write_date);
 
-    /* ------------------------------------------------------------------
-     * 6) Write Long-File-Name entries (if any) then the 8.3 entry
-     * ------------------------------------------------------------------ */
-    uint32_t write_off = slot_offset;
-    if (lfn_slots)
-    {
-        rc = write_directory_entries(fs,
-                                     slot_cluster, write_off,
-                                     lfn_buf, (size_t)lfn_slots);
-        if (rc != FS_SUCCESS)       return rc;
-        write_off += lfn_slots * sizeof(fat_dir_entry_t);
+    // 6. Write the LFN entries (if any) and then the 8.3 entry to disk
+    uint32_t current_write_offset = slot_offset;
+    // Write LFN entries first (they precede the 8.3 entry on disk)
+    if (lfn_slots > 0) {
+        FAT_ALLOC_DEBUG_LOG("Writing %d LFN entries to Cluster=%lu, Offset=%lu...", lfn_slots, (unsigned long)slot_cluster, (unsigned long)current_write_offset);
+        // *** CALL the real helper ***
+        rc = write_directory_entries(fs, slot_cluster, current_write_offset, lfn_buf, (size_t)lfn_slots);
+        if (rc != FS_SUCCESS) {
+            FAT_ALLOC_ERROR_LOG("Failed to write LFN entries (err %d)", rc);
+            // TODO: Potential cleanup/rollback needed? Difficult.
+            return rc;
+        }
+        current_write_offset += lfn_slots * sizeof(fat_dir_entry_t); // Advance offset
+        FAT_ALLOC_DEBUG_LOG("LFN entries written successfully.");
     }
 
-    rc = write_directory_entries(fs,
-                                 slot_cluster, write_off,
-                                 &entry83, 1);
-    if (rc != FS_SUCCESS)           return rc;
+    // Write the 8.3 entry
+    FAT_ALLOC_DEBUG_LOG("Writing 8.3 entry to Cluster=%lu, Offset=%lu...", (unsigned long)slot_cluster, (unsigned long)current_write_offset);
+    // *** CALL the real helper ***
+    rc = write_directory_entries(fs, slot_cluster, current_write_offset, &entry83, 1);
+    if (rc != FS_SUCCESS) {
+        FAT_ALLOC_ERROR_LOG("Failed to write 8.3 entry (err %d)", rc);
+        // TODO: Potential cleanup/rollback needed?
+        return rc;
+    }
+    FAT_ALLOC_DEBUG_LOG("8.3 entry written successfully.");
 
-    /* ------------------------------------------------------------------
-     * 7) Return information to caller
-     * ------------------------------------------------------------------ */
-    *dir_cluster_out = slot_cluster;
-    *dir_offset_out  = write_off;
-    if (entry_out) memcpy(entry_out, &entry83, sizeof entry83);
+    // 7. Return success and output information
+    *dir_cluster_out = slot_cluster; // Cluster where the entries were written
+    *dir_offset_out = current_write_offset; // Byte offset *of the 8.3 entry*
+    if (entry_out) {
+        memcpy(entry_out, &entry83, sizeof(entry83)); // Copy the created 8.3 entry data
+    }
 
+    FAT_ALLOC_INFO_LOG("Successfully created entry for '%s' (Short: '%.11s') at Cluster=%lu, Offset=%lu",
+                       filename, short_name, (unsigned long)slot_cluster, (unsigned long)current_write_offset);
     return FS_SUCCESS;
 }
+
 
 
 

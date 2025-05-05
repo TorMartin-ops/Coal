@@ -78,202 +78,229 @@
  
  
 /**
- * @brief Opens or creates a file/directory node within the FAT filesystem. (HEAVILY LOGGED)
- * @note This function handles the logic for O_CREAT and O_TRUNC flags.
- * @return Pointer to the allocated vnode on success, NULL on failure.
- */
- vnode_t *fat_open_internal(void *fs_context, const char *path, int flags)
- {
-     FAT_DEBUG_LOG("Enter: path='%s', flags=0x%x", path ? path : "<NULL>", flags); // Existing log
- 
-     fat_fs_t *fs = (fat_fs_t *)fs_context;
-     if (!fs || !path) {
-         FAT_ERROR_LOG("Invalid parameters: fs=%p, path=%p", fs, path);
-         return NULL;
-     }
-     FAT_DEBUG_LOG("Parameters validated: fs=%p, path='%s'", fs, path); // Added log
- 
-     uintptr_t irq_flags = spinlock_acquire_irqsave(&fs->lock);
-     FAT_DEBUG_LOG("Lock acquired."); // Added log
- 
-     // Initialize variables
-     fat_dir_entry_t entry;
-     char lfn_buffer[FAT_MAX_LFN_CHARS];
-     uint32_t entry_dir_cluster = 0;
-     uint32_t entry_offset_in_dir = 0;
-     int find_res;
-     bool exists = false;
-     bool created = false;
-     bool truncated = false;
-     vnode_t *vnode = NULL;
-     fat_file_context_t *file_ctx = NULL;
-     int ret_err = FS_SUCCESS; // Initialize potential error
-     FAT_DEBUG_LOG("Variables initialized."); // Added log
- 
-     // --- 1. Lookup the path ---
-     FAT_DEBUG_LOG("Step 1: Looking up path '%s'...", path);
-     find_res = fat_lookup_path(fs, path, &entry, lfn_buffer, sizeof(lfn_buffer),
-                                &entry_dir_cluster, &entry_offset_in_dir);
-     FAT_DEBUG_LOG("Lookup finished. find_res = %d, flags = 0x%x", find_res, flags); // Existing log
-     FAT_DEBUG_LOG("Value FS_ERR_NOT_FOUND = %d", FS_ERR_NOT_FOUND); // Existing log
-     FAT_DEBUG_LOG("Value O_CREAT = 0x%x", O_CREAT);                // Existing log
- 
-     // --- 2. Handle Lookup Result ---
-     FAT_DEBUG_LOG("Step 2: Handling lookup result (%d)...", find_res); // Added log
-     if (find_res == FS_SUCCESS) {
-         FAT_DEBUG_LOG("Branch: File/Directory Exists."); // Added log
-         exists = true;
-         ret_err = FS_SUCCESS;
-         FAT_DEBUG_LOG("Lookup success: Attr=0x%02x, Size=%lu, Cluster=%lu, DirClu=%lu, DirOff=%lu",
-                       entry.attr, (unsigned long)entry.file_size,
-                       (unsigned long)fat_get_entry_cluster(&entry),
-                       (unsigned long)entry_dir_cluster, (unsigned long)entry_offset_in_dir); // Existing log
- 
-         bool is_dir = (entry.attr & FAT_ATTR_DIRECTORY);
-         FAT_DEBUG_LOG("is_dir = %d", is_dir); // Added log
- 
-         // Check O_EXCL
-         bool o_excl_check = (flags & O_CREAT) && (flags & O_EXCL);
-         FAT_DEBUG_LOG("Checking O_EXCL: (flags & O_CREAT)=%d, (flags & O_EXCL)=%d -> conflict=%d", (flags & O_CREAT) != 0, (flags & O_EXCL) != 0, o_excl_check); // Added log
-         if (o_excl_check) {
-             FAT_ERROR_LOG("File '%s' exists and O_CREAT|O_EXCL flags were specified.", path);
-             ret_err = FS_ERR_FILE_EXISTS; // POSIX EEXIST
-             goto open_fail_locked;
-         }
- 
-         // Check write/truncate on directory
-         bool write_truncate_dir_check = is_dir && (flags & (O_WRONLY | O_RDWR | O_TRUNC));
-         FAT_DEBUG_LOG("Checking write/truncate on dir: is_dir=%d, (flags & (O_WRONLY|O_RDWR|O_TRUNC))=%d -> conflict=%d", is_dir, (flags & (O_WRONLY | O_RDWR | O_TRUNC)) != 0, write_truncate_dir_check); // Added log
-         if (write_truncate_dir_check) {
-             FAT_ERROR_LOG("Cannot open directory '%s' with write or truncate flags (0x%x).", path, flags);
-             ret_err = FS_ERR_IS_A_DIRECTORY;
-             goto open_fail_locked;
-         }
- 
-         // Handle O_TRUNC
-         bool should_truncate = !is_dir && (flags & O_TRUNC);
-         FAT_DEBUG_LOG("Checking O_TRUNC: !is_dir=%d, (flags & O_TRUNC)=%d -> should_truncate=%d", !is_dir, (flags & O_TRUNC) != 0, should_truncate); // Added log
-         if (should_truncate) {
-             FAT_INFO_LOG("Handling O_TRUNC for existing file '%s', original size=%lu", path, (unsigned long)entry.file_size); // Existing log
-             if (entry.file_size > 0) {
-                 FAT_DEBUG_LOG("Calling fat_truncate_file..."); // Added log
-                 int trunc_res = fat_truncate_file(fs, &entry, entry_dir_cluster, entry_offset_in_dir);
-                 FAT_DEBUG_LOG("fat_truncate_file returned %d", trunc_res); // Added log
-                 if (trunc_res != FS_SUCCESS) {
-                     FAT_ERROR_LOG("fat_truncate_file failed for '%s', error: %d (%s)", path, trunc_res, fs_strerror(trunc_res));
-                     ret_err = trunc_res;
-                     goto open_fail_locked;
-                 }
-                 truncated = true;
-                 FAT_DEBUG_LOG("O_TRUNC successful, entry size is now 0"); // Existing log
-             } else {
-                 FAT_DEBUG_LOG("O_TRUNC specified but file size is already 0 for '%s'. No action needed.", path); // Existing log
-                 truncated = true;
-             }
-         }
- 
-     } else if (find_res == FS_ERR_NOT_FOUND) {
-         FAT_DEBUG_LOG("Branch: File/Directory Not Found."); // Added log
-         exists = false;
-         ret_err = find_res; // Store the error code (-5)
- 
-         // Handle O_CREAT
-         bool should_create = (flags & O_CREAT);
-         FAT_DEBUG_LOG("Checking O_CREAT: (flags & O_CREAT)=%d -> should_create=%d", (flags & O_CREAT) != 0, should_create); // Added log
-         if (should_create) {
-             FAT_INFO_LOG("O_CREAT flag is set (flags=0x%x), attempting to call fat_create_file...", flags); // Existing log
-             FAT_DEBUG_LOG("Calling fat_create_file..."); // Added log
-             int create_res = fat_create_file(fs, path, FAT_ATTR_ARCHIVE, &entry, &entry_dir_cluster, &entry_offset_in_dir);
-             FAT_DEBUG_LOG("fat_create_file returned %d", create_res); // Added log
-             if (create_res == FS_SUCCESS) {
-                 created = true;
-                 exists = true;
-                 ret_err = FS_SUCCESS;
-                 FAT_DEBUG_LOG("O_CREAT successful, new entry Size=%lu, Cluster=%lu",
-                               (unsigned long)entry.file_size, (unsigned long)fat_get_entry_cluster(&entry)); // Existing log
-             } else {
-                 FAT_ERROR_LOG("fat_create_file failed for '%s', error: %d (%s)", path, create_res, fs_strerror(create_res));
-                 ret_err = create_res;
-                 goto open_fail_locked;
-             }
-         } else {
-             FAT_DEBUG_LOG("Condition FALSE: (flags & O_CREAT). File not found and O_CREAT not specified."); // Added log
-             goto open_fail_locked;
-         }
-     } else {
-         FAT_DEBUG_LOG("Branch: Other Lookup Error (%d).", find_res); // Added log
-         FAT_WARN_LOG("Lookup failed for '%s' with unexpected error: %d (%s)", path, find_res, fs_strerror(find_res));
-         ret_err = find_res;
-         goto open_fail_locked;
-     }
- 
-     // --- 3. Assertion Check ---
-     FAT_DEBUG_LOG("Step 3: Asserting 'exists' flag (should be true)."); // Added log
-     KERNEL_ASSERT(exists, "Internal logic error: 'exists' is false after create/lookup checks");
- 
-     // --- 4. Allocation & Setup ---
-     FAT_DEBUG_LOG("Step 4: Allocating vnode and file context structure..."); // Existing log
-     vnode = kmalloc(sizeof(vnode_t));
-     FAT_DEBUG_LOG("kmalloc for vnode returned %p", vnode); // Added log
-     file_ctx = kmalloc(sizeof(fat_file_context_t));
-     FAT_DEBUG_LOG("kmalloc for file_ctx returned %p", file_ctx); // Added log
-     if (!vnode || !file_ctx) {
-         FAT_ERROR_LOG("kmalloc failed (vnode=%p, file_ctx=%p). Out of memory.", vnode, file_ctx);
-         ret_err = FS_ERR_OUT_OF_MEMORY;
-         goto open_fail_locked;
-     }
-     memset(vnode, 0, sizeof(*vnode));
-     memset(file_ctx, 0, sizeof(*file_ctx));
-     FAT_DEBUG_LOG("Allocation successful: vnode=%p, file_ctx=%p", vnode, file_ctx); // Existing log
- 
-     // --- 5. Populate context ---
-     FAT_DEBUG_LOG("Step 5: Populating file context..."); // Added log
-     uint32_t first_cluster_final = fat_get_entry_cluster(&entry);
-     file_ctx->fs                  = fs;
-     file_ctx->first_cluster       = first_cluster_final;
-     file_ctx->file_size           = entry.file_size;
-     file_ctx->dir_entry_cluster   = entry_dir_cluster;
-     file_ctx->dir_entry_offset    = entry_offset_in_dir;
-     file_ctx->is_directory        = (entry.attr & FAT_ATTR_DIRECTORY);
-     file_ctx->dirty               = (created || truncated);
-     file_ctx->readdir_current_cluster = first_cluster_final;
-     if (fs->type != FAT_TYPE_FAT32 && first_cluster_final == 0 && file_ctx->is_directory) {
-          file_ctx->readdir_current_cluster = 0;
-     }
-     file_ctx->readdir_current_offset = 0;
-     file_ctx->readdir_last_index = (size_t)-1;
-     FAT_DEBUG_LOG("Context populated: first_cluster=%lu, size=%lu, is_dir=%d, dirty=%d", // Existing log
+  * @brief Opens or creates a file/directory node within the FAT filesystem. (HEAVILY LOGGED + CORRECTED O_CREAT)
+  * @note This function handles the logic for O_CREAT and O_TRUNC flags.
+  * @return Pointer to the allocated vnode on success, NULL on failure.
+  */
+  vnode_t *fat_open_internal(void *fs_context, const char *path, int flags)
+  {
+      FAT_DEBUG_LOG("Enter: path='%s', flags=0x%x", path ? path : "<NULL>", flags);
+  
+      fat_fs_t *fs = (fat_fs_t *)fs_context;
+      if (!fs || !path) {
+          FAT_ERROR_LOG("Invalid parameters: fs=%p, path=%p", fs, path);
+          return NULL;
+      }
+      FAT_DEBUG_LOG("Parameters validated: fs=%p, path='%s'", fs, path);
+  
+      // Acquire filesystem lock early
+      uintptr_t irq_flags = spinlock_acquire_irqsave(&fs->lock);
+      FAT_DEBUG_LOG("Lock acquired.");
+  
+      // Initialize variables for results and context
+      fat_dir_entry_t entry; // Holds the 8.3 entry found or created
+      char lfn_buffer[FAT_MAX_LFN_CHARS]; // Buffer for LFN name (optional)
+      uint32_t entry_dir_cluster = 0; // Cluster containing the entry
+      uint32_t entry_offset_in_dir = 0; // Offset of the 8.3 entry within its directory
+      int find_res;
+      bool exists = false; // Flag if the entry exists after lookup/create
+      bool created = false; // Flag if the entry was newly created
+      bool truncated = false; // Flag if the entry was truncated
+      vnode_t *vnode = NULL; // VFS node to return
+      fat_file_context_t *file_ctx = NULL; // FAT-specific context
+      int ret_err = FS_SUCCESS; // Store potential error codes
+  
+      FAT_DEBUG_LOG("Variables initialized.");
+  
+      // --- 1. Lookup the path using fat_lookup_path ---
+      FAT_DEBUG_LOG("Step 1: Looking up path '%s'...", path);
+      find_res = fat_lookup_path(fs, path, &entry, lfn_buffer, sizeof(lfn_buffer),
+                                 &entry_dir_cluster, &entry_offset_in_dir);
+      FAT_DEBUG_LOG("Lookup finished. find_res = %d (%s)", find_res, fs_strerror(find_res));
+  
+      // --- 2. Handle Lookup Result ---
+      FAT_DEBUG_LOG("Step 2: Handling lookup result (%d)...", find_res);
+      if (find_res == FS_SUCCESS) {
+          FAT_DEBUG_LOG("Branch: File/Directory Exists.");
+          exists = true;
+          ret_err = FS_SUCCESS;
+          FAT_DEBUG_LOG("Lookup success: Attr=0x%02x, Size=%lu, Cluster=%lu, DirClu=%lu, DirOff=%lu",
+                        entry.attr, (unsigned long)entry.file_size,
+                        (unsigned long)fat_get_entry_cluster(&entry),
+                        (unsigned long)entry_dir_cluster, (unsigned long)entry_offset_in_dir);
+  
+          bool is_dir = (entry.attr & FAT_ATTR_DIRECTORY);
+          FAT_DEBUG_LOG("is_dir = %d", is_dir);
+  
+          // Check O_EXCL flag combination
+          bool o_excl_check = (flags & O_CREAT) && (flags & O_EXCL);
+          FAT_DEBUG_LOG("Checking O_EXCL: (flags & O_CREAT)=%d, (flags & O_EXCL)=%d -> conflict=%d", (flags & O_CREAT) != 0, (flags & O_EXCL) != 0, o_excl_check);
+          if (o_excl_check) {
+              FAT_ERROR_LOG("File '%s' exists and O_CREAT|O_EXCL flags were specified.", path);
+              ret_err = FS_ERR_FILE_EXISTS; // POSIX EEXIST
+              goto open_fail_locked;
+          }
+  
+          // Check incompatible flags for directories
+          bool write_truncate_dir_check = is_dir && (flags & (O_WRONLY | O_RDWR | O_TRUNC | O_APPEND));
+          FAT_DEBUG_LOG("Checking write/truncate/append on dir: is_dir=%d, flags=0x%x -> conflict=%d", is_dir, flags, write_truncate_dir_check);
+          if (write_truncate_dir_check) {
+              FAT_ERROR_LOG("Cannot open directory '%s' with write/truncate/append flags (0x%x).", path, flags);
+              ret_err = FS_ERR_IS_A_DIRECTORY;
+              goto open_fail_locked;
+          }
+  
+          // Handle O_TRUNC flag for existing files
+          bool should_truncate = !is_dir && (flags & O_TRUNC);
+          FAT_DEBUG_LOG("Checking O_TRUNC: !is_dir=%d, (flags & O_TRUNC)=%d -> should_truncate=%d", !is_dir, (flags & O_TRUNC) != 0, should_truncate);
+          if (should_truncate) {
+              if (!(flags & (O_WRONLY | O_RDWR))) {
+                   FAT_ERROR_LOG("O_TRUNC specified for '%s' but no write permission requested (flags 0x%x).", path, flags);
+                   ret_err = FS_ERR_PERMISSION_DENIED;
+                   goto open_fail_locked;
+              }
+              FAT_INFO_LOG("Handling O_TRUNC for existing file '%s', original size=%lu", path, (unsigned long)entry.file_size);
+              if (entry.file_size > 0) {
+                  FAT_DEBUG_LOG("Calling fat_truncate_file...");
+                  // fat_truncate_file modifies 'entry' in memory and writes changes to disk
+                  int trunc_res = fat_truncate_file(fs, &entry, entry_dir_cluster, entry_offset_in_dir);
+                  FAT_DEBUG_LOG("fat_truncate_file returned %d", trunc_res);
+                  if (trunc_res != FS_SUCCESS) {
+                      FAT_ERROR_LOG("fat_truncate_file failed for '%s', error: %d (%s)", path, trunc_res, fs_strerror(trunc_res));
+                      ret_err = trunc_res;
+                      goto open_fail_locked;
+                  }
+                  truncated = true; // Mark that truncation occurred
+                  FAT_DEBUG_LOG("O_TRUNC successful, entry size is now 0");
+              } else {
+                  FAT_DEBUG_LOG("O_TRUNC specified but file size is already 0 for '%s'. No action needed.", path);
+                  truncated = true; // Still mark as truncated for context dirty flag
+              }
+          }
+          // If file exists and no errors occurred, proceed to allocation/setup
+  
+      } else if (find_res == FS_ERR_NOT_FOUND) {
+          // ****** CORRECTED O_CREAT LOGIC ******
+          FAT_DEBUG_LOG("Branch: File/Directory Not Found.");
+          exists = false;
+          ret_err = find_res; // Keep the original error code (-5)
+  
+          bool should_create = (flags & O_CREAT);
+          FAT_DEBUG_LOG("Checking O_CREAT: (flags & O_CREAT)=%d -> should_create=%d", (flags & O_CREAT) != 0, should_create);
+          if (should_create) {
+              // O_CREAT is set, attempt to create the file
+              FAT_INFO_LOG("O_CREAT flag is set, attempting to create file '%s'...", path);
+              // Call fat_create_file - Assumes path contains parent path + filename component
+              // fat_create_file handles finding space, generating names, writing entries.
+              int create_res = fat_create_file(fs, path, FAT_ATTR_ARCHIVE, // Default attribute for new file
+                                               &entry, // Get the newly created entry's data
+                                               &entry_dir_cluster, // Get the parent cluster where it was created
+                                               &entry_offset_in_dir); // Get the offset within the parent
+              FAT_DEBUG_LOG("fat_create_file returned %d", create_res);
+              if (create_res == FS_SUCCESS) {
+                  // Creation succeeded
+                  created = true; // Mark that we created it
+                  exists = true; // It now exists
+                  ret_err = FS_SUCCESS; // Reset error status
+                  FAT_DEBUG_LOG("O_CREAT successful, new entry Size=%lu, Cluster=%lu",
+                                (unsigned long)entry.file_size, (unsigned long)fat_get_entry_cluster(&entry));
+                  // Proceed to allocation/setup phase below
+              } else {
+                  // Creation failed (e.g., parent dir not found, no space, I/O err)
+                  FAT_ERROR_LOG("fat_create_file failed for '%s', error: %d (%s)", path, create_res, fs_strerror(create_res));
+                  ret_err = create_res; // Store the creation error
+                  goto open_fail_locked; // Go to cleanup
+              }
+          } else {
+              // File not found and O_CREAT is NOT set - this is an error
+              FAT_DEBUG_LOG("Condition FALSE: (flags & O_CREAT). File not found and O_CREAT not specified.");
+              // ret_err is already FS_ERR_NOT_FOUND
+              goto open_fail_locked; // Go to cleanup
+          }
+          // ****** END OF CORRECTED O_CREAT LOGIC ******
+      } else {
+          // Other error during lookup (e.g., I/O error, invalid path component)
+          FAT_DEBUG_LOG("Branch: Other Lookup Error (%d).", find_res);
+          FAT_WARN_LOG("Lookup failed for '%s' with unexpected error: %d (%s)", path, find_res, fs_strerror(find_res));
+          ret_err = find_res; // Store the lookup error
+          goto open_fail_locked; // Go to cleanup
+      }
+  
+      // --- 3. Assertion Check ---
+      // At this point, if ret_err is FS_SUCCESS, 'exists' must be true
+      FAT_DEBUG_LOG("Step 3: Asserting 'exists' flag if ret_err is SUCCESS.");
+      KERNEL_ASSERT(ret_err == FS_SUCCESS && exists, "Internal logic error: Reached allocation stage but file doesn't exist");
+  
+      // --- 4. Allocation & Setup ---
+      FAT_DEBUG_LOG("Step 4: Allocating vnode and file context structure...");
+      vnode = kmalloc(sizeof(vnode_t));
+      FAT_DEBUG_LOG("kmalloc for vnode returned %p", vnode);
+      file_ctx = kmalloc(sizeof(fat_file_context_t));
+      FAT_DEBUG_LOG("kmalloc for file_ctx returned %p", file_ctx);
+      if (!vnode || !file_ctx) {
+          FAT_ERROR_LOG("kmalloc failed (vnode=%p, file_ctx=%p). Out of memory.", vnode, file_ctx);
+          ret_err = FS_ERR_OUT_OF_MEMORY;
+          goto open_fail_locked; // Go to cleanup
+      }
+      // Zero out structures for safety
+      memset(vnode, 0, sizeof(*vnode));
+      memset(file_ctx, 0, sizeof(*file_ctx));
+      FAT_DEBUG_LOG("Allocation successful: vnode=%p, file_ctx=%p", vnode, file_ctx);
+  
+      // --- 5. Populate context ---
+      FAT_DEBUG_LOG("Step 5: Populating file context...");
+      uint32_t first_cluster_final = fat_get_entry_cluster(&entry);
+      file_ctx->fs                  = fs;
+      file_ctx->first_cluster       = first_cluster_final;
+      file_ctx->file_size           = entry.file_size; // Size is 0 if created/truncated
+      file_ctx->dir_entry_cluster   = entry_dir_cluster;
+      file_ctx->dir_entry_offset    = entry_offset_in_dir;
+      file_ctx->is_directory        = (entry.attr & FAT_ATTR_DIRECTORY);
+      file_ctx->dirty               = (created || truncated); // Mark dirty if created or truncated
+      // Initialize readdir state correctly
+      file_ctx->readdir_current_cluster = first_cluster_final;
+      // Special handling for FAT12/16 root directory
+      if (fs->type != FAT_TYPE_FAT32 && first_cluster_final == 0 && file_ctx->is_directory) {
+          file_ctx->readdir_current_cluster = 0; // Ensure root scan starts correctly
+      }
+      file_ctx->readdir_current_offset = 0;
+      file_ctx->readdir_last_index = (size_t)-1; // Start readdir from logical index 0
+      FAT_DEBUG_LOG("Context populated: first_cluster=%lu, size=%lu, is_dir=%d, dirty=%d",
                     (unsigned long)file_ctx->first_cluster, (unsigned long)file_ctx->file_size,
                     file_ctx->is_directory, file_ctx->dirty);
- 
-     // --- 6. Link context to Vnode ---
-     FAT_DEBUG_LOG("Step 6: Linking context %p to vnode %p...", file_ctx, vnode); // Added log
-     vnode->data    = file_ctx;
-     vnode->fs_driver = &fat_vfs_driver;
- 
-     // --- Success ---
-     FAT_DEBUG_LOG("Step 7: Success Path."); // Added log
-     spinlock_release_irqrestore(&fs->lock, irq_flags);
-     FAT_DEBUG_LOG("Lock released."); // Added log
-     FAT_INFO_LOG("Open successful: path='%s', vnode=%p, size=%lu", path ? path : "<NULL>", vnode, (unsigned long)file_ctx->file_size); // Existing log
-     return vnode;
- 
- // --- Failure Path ---
- open_fail_locked:
-     FAT_DEBUG_LOG("Step F: Failure Path Entered (ret_err=%d).", ret_err); // Added log
-     FAT_ERROR_LOG("Open failed: path='%s', error=%d (%s)", path ? path : "<NULL>", ret_err, fs_strerror(ret_err)); // Existing log
-     if (vnode) {
-         FAT_DEBUG_LOG("Freeing vnode %p", vnode); // Added log
-         kfree(vnode);
-     }
-     if (file_ctx) {
-         FAT_DEBUG_LOG("Freeing file_ctx %p", file_ctx); // Added log
-         kfree(file_ctx);
-     }
-     spinlock_release_irqrestore(&fs->lock, irq_flags);
-     FAT_DEBUG_LOG("Lock released."); // Added log
-     return NULL;
- }
+  
+      // --- 6. Link context to Vnode ---
+      FAT_DEBUG_LOG("Step 6: Linking context %p to vnode %p...", file_ctx, vnode);
+      vnode->data = file_ctx;
+      vnode->fs_driver = &fat_vfs_driver; // Link back to our driver struct
+  
+      // --- Success ---
+      FAT_DEBUG_LOG("Step 7: Success Path.");
+      spinlock_release_irqrestore(&fs->lock, irq_flags); // Release lock
+      FAT_DEBUG_LOG("Lock released.");
+      FAT_INFO_LOG("Open successful: path='%s', vnode=%p, size=%lu", path ? path : "<NULL>", vnode, (unsigned long)file_ctx->file_size);
+      return vnode;
+  
+  // --- Failure Path ---
+  open_fail_locked:
+      FAT_DEBUG_LOG("Step F: Failure Path Entered (ret_err=%d).", ret_err);
+      FAT_ERROR_LOG("Open failed: path='%s', error=%d (%s)", path ? path : "<NULL>", ret_err, fs_strerror(ret_err));
+      // Clean up allocated structures if necessary
+      if (vnode) {
+          FAT_DEBUG_LOG("Freeing vnode %p", vnode);
+          kfree(vnode);
+      }
+      if (file_ctx) {
+          FAT_DEBUG_LOG("Freeing file_ctx %p", file_ctx);
+          kfree(file_ctx);
+      }
+      // Release lock before returning
+      spinlock_release_irqrestore(&fs->lock, irq_flags);
+      FAT_DEBUG_LOG("Lock released.");
+      // fs_set_errno(ret_err); // Optional: Set thread-local errno
+      return NULL; // Return NULL to indicate failure
+  }
+
 
 
 int fat_readdir_internal(file_t *dir_file, struct dirent *d_entry_out, size_t entry_index)
