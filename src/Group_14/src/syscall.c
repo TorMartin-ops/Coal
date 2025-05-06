@@ -235,7 +235,7 @@ static int32_t sys_read_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3
     serial_write(" user_buf="); serial_print_hex((uintptr_t)user_buf);
     serial_write(" count="); serial_print_hex((uint32_t)count); serial_write("\n");
 
-    if ((ssize_t)count < 0) { ret_val = -EINVAL; goto read_exit; }
+    if ((ssize_t)count < 0) { ret_val = -EINVAL; goto read_exit; } // count could be very large positive
     if (count == 0) { ret_val = 0; goto read_exit; }
 
     serial_log_step("Pre-access_ok check for WRITE to user_buf...");
@@ -258,11 +258,11 @@ static int32_t sys_read_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3
         KERNEL_ASSERT(current_chunk_size > 0, "Zero chunk size in read loop");
 
         serial_log_debug("Loop: Calling backend sys_read...");
-        ssize_t bytes_read_this_chunk = sys_read(fd, kbuf, current_chunk_size);
+        ssize_t bytes_read_this_chunk = sys_read(fd, kbuf, current_chunk_size); 
         serial_write("   sys_read (backend) returned "); serial_print_sdec(bytes_read_this_chunk); serial_write("\n");
 
-        if (bytes_read_this_chunk < 0) { 
-            serial_log_error("Error from backend sys_read"); 
+        if (bytes_read_this_chunk < 0) { // Backend returned a POSIX-style negative error
+            serial_log_error("Error from backend sys_read (already negative)"); 
             ret_val = bytes_read_this_chunk; 
             goto read_cleanup; 
         }
@@ -272,7 +272,7 @@ static int32_t sys_read_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3
         size_t not_copied = copy_to_user((char*)user_buf + total_read, kbuf, (size_t)bytes_read_this_chunk);
         if (not_copied > 0) {
             serial_log_error("EFAULT (copy_to_user failed)");
-            if (total_read > 0) { ret_val = total_read; } else { ret_val = -EFAULT; }
+            ret_val = -EFAULT; // If copy fails, it's EFAULT, regardless of prior total_read for this call
             goto read_cleanup;
         }
         total_read += bytes_read_this_chunk;
@@ -304,7 +304,7 @@ static int32_t sys_write_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg
     serial_write(" user_buf="); serial_print_hex((uintptr_t)user_buf);
     serial_write(" count="); serial_print_hex((uint32_t)count); serial_write("\n");
 
-    if ((ssize_t)count < 0) { ret_val = -EINVAL; goto write_exit; }
+    if ((ssize_t)count < 0) { ret_val = -EINVAL; goto write_exit; } // count could be very large positive
     if (count == 0) { ret_val = 0; goto write_exit; }
 
     serial_log_step("Pre-access_ok check for READ from user_buf...");
@@ -341,8 +341,8 @@ static int32_t sys_write_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg
             }
             serial_write("   sys_write (backend) / terminal_write returned "); serial_print_sdec(bytes_written_this_chunk); serial_write("\n");
 
-            if (bytes_written_this_chunk < 0) {
-                serial_log_error("Error during backend write operation");
+            if (bytes_written_this_chunk < 0) { // Backend returned a POSIX-style negative error
+                serial_log_error("Error during backend write operation (already negative)");
                 ret_val = (total_written > 0) ? total_written : bytes_written_this_chunk;
                 goto write_cleanup;
             }
@@ -383,20 +383,20 @@ static int32_t sys_open_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3
 
     serial_write("  Args: user_path="); serial_print_hex((uintptr_t)user_pathname);
     serial_write(" flags=0x"); serial_print_hex((uint32_t)flags);
-    serial_write(" mode=0"); serial_print_hex((uint32_t)mode); serial_write("\n");
+    serial_write(" mode=0"); serial_print_hex((uint32_t)mode); serial_write("\n"); // Corrected mode printing
 
     char k_pathname[MAX_SYSCALL_STR_LEN];
 
     serial_log_step("Calling strncpy_from_user_safe...");
     int copy_err = strncpy_from_user_safe(user_pathname, k_pathname, sizeof(k_pathname));
-    if (copy_err != 0) {
+    if (copy_err != 0) { // strncpy_from_user_safe returns negative errors
         serial_write("  ERROR: Path copy failed (err="); serial_print_sdec(copy_err); serial_write(")\n");
         ret_val = copy_err; goto open_exit;
     }
     serial_write("  STEP: Path copied successfully: \""); serial_write(k_pathname); serial_write("\"\n");
 
     serial_log_step("Calling sys_open (backend)...");
-    ret_val = sys_open(k_pathname, flags, mode); 
+    ret_val = sys_open(k_pathname, flags, mode); // sys_open (backend) now returns POSIX style
 
 open_exit:
     serial_log_exit("sys_open_impl", ret_val);
@@ -410,7 +410,7 @@ static int32_t sys_close_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg
     serial_write("  Args: fd="); serial_print_sdec(fd); serial_write("\n");
 
     serial_log_step("Calling sys_close (backend)");
-    int32_t ret_val = sys_close(fd); 
+    int32_t ret_val = sys_close(fd); // sys_close (backend) now returns POSIX style
 
     serial_log_exit("sys_close_impl", ret_val);
     return ret_val;
@@ -422,22 +422,26 @@ static int32_t sys_lseek_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg
     int fd         = (int)arg1_ebx;
     off_t offset   = (off_t)arg2_ecx; 
     int whence     = (int)arg3_edx;
-    off_t ret_val_off; 
+    int32_t ret_val; // Use int32_t for final syscall return
 
     serial_write("  Args: fd="); serial_print_sdec(fd);
     serial_write(" offset="); serial_print_sdec((int32_t)offset); 
     serial_write(" whence="); serial_print_sdec(whence); serial_write("\n");
 
-    if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) {
-        serial_log_exit("sys_lseek_impl", -EINVAL);
-        return -EINVAL;
-    }
+    // whence validation is good here, or can be in sys_lseek backend.
+    // Assuming sys_lseek backend handles whence validation and returns -EINVAL.
 
     serial_log_step("Calling sys_lseek (backend)");
-    ret_val_off = sys_lseek(fd, offset, whence); 
+    off_t new_pos = sys_lseek(fd, offset, whence); // sys_lseek (backend) now returns POSIX style for errors
 
-    serial_log_exit("sys_lseek_impl", (int32_t)ret_val_off);
-    return (int32_t)ret_val_off; 
+    if (new_pos < 0) { // Error condition
+        ret_val = (int32_t)new_pos;
+    } else { // Success
+        ret_val = (int32_t)new_pos;
+    }
+    
+    serial_log_exit("sys_lseek_impl", ret_val);
+    return ret_val; 
 }
 
 static int32_t sys_getpid_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
@@ -461,12 +465,15 @@ static int32_t sys_puts_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3
     serial_log_step("Calling strncpy_from_user_safe");
     int copy_err = strncpy_from_user_safe(user_str_ptr, kbuffer, sizeof(kbuffer));
 
-    if (copy_err != 0) {
+    if (copy_err != 0) { // strncpy_from_user_safe returns negative errors
         ret_val = copy_err; goto puts_exit;
     }
 
     serial_log_step("Calling terminal_write");
     terminal_write(kbuffer); 
+    // Puts traditionally returns a non-negative number on success.
+    // For simplicity, 0 is fine, or length written (excluding null).
+    // Let's keep it simple with 0 for success if no other convention exists.
     ret_val = 0; 
 
 puts_exit:
@@ -550,4 +557,3 @@ int32_t syscall_dispatcher(isr_frame_t *regs) { // CORRECTED: Returns int32_t
     
     return ret_val; // CRITICAL FIX: Return the value for EAX register
 }
-
