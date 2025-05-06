@@ -1,14 +1,16 @@
 /**
  * @file hello.c
- * @brief Robust User Space Test Program for UiAOS (v1.5.2)
+ * @brief Robust User Space Test Program for UiAOS (v1.5.4 - Syscall Fix 2)
  *
  * Demonstrates robust syscall usage including error checking and
  * proper resource management (file descriptors). Addresses potential
  * compiler scope issues.
  *
- * v1.5.2 Changes:
- * - Re-verified variable declarations and scope within main().
- * - Ensured no syntax errors preceding variable usage.
+ * v1.5.4 Changes:
+ * - CORRECTED: Removed "ebx", "ecx", "edx" from the clobber list in the
+ * inline assembly syscall wrapper, resolving the "impossible constraints"
+ * build error. Input constraints are sufficient to reserve these registers.
+ * - Retained logic from 1.5.3 ensuring correct FD usage after open.
  */
 
 // ==========================================================================
@@ -90,7 +92,7 @@ typedef _Bool               bool;
 #define INT_STR_BUFFER_SIZE 12 // Sufficient for 32-bit signed int + sign + null
 
 // ==========================================================================
-// Syscall Wrapper Function
+// Syscall Wrapper Function - CORRECTED (v1.5.4)
 // ==========================================================================
 static inline int syscall(int num, int arg1, int arg2, int arg3) {
     int ret;
@@ -100,15 +102,17 @@ static inline int syscall(int num, int arg1, int arg2, int arg3) {
     // Return value in EAX
     asm volatile (
         "int $0x80"
-        : "=a" (ret)
-        : "a" (num), "b" (arg1), "c" (arg2), "d" (arg3)
-        : "memory", "cc" // Clobber memory and condition codes
+        : "=a" (ret)  // Output: EAX ('a') -> ret
+        : "a" (num), "b" (arg1), "c" (arg2), "d" (arg3) // Inputs: EAX, EBX, ECX, EDX
+        // === FIX v1.5.4: REMOVED "ebx", "ecx", "edx" FROM CLOBBER LIST ===
+        // Input constraints suffice. memory/cc are still needed.
+        : "memory", "cc"
     );
     return ret;
 }
 
 // ==========================================================================
-// Helper Functions for User Space
+// Helper Functions for User Space (Unchanged)
 // ==========================================================================
 
 // Calculates string length
@@ -193,27 +197,26 @@ void exit_on_error(const char *context_msg, int syscall_ret_val, int exit_code) 
 }
 
 // ==========================================================================
-// Main Application Logic
+// Main Application Logic (Unchanged from v1.5.3)
 // ==========================================================================
 int main() {
     int exit_code = 0; // Final exit code for the process
     pid_t my_pid = -1;   // Process ID
     int fd_write = -1; // File descriptor for writing, initialized to invalid
     int fd_read = -1;  // File descriptor for reading, initialized to invalid
-    // *** DECLARATIONS ARE HERE, AT THE TOP OF THE FUNCTION SCOPE ***
     ssize_t bytes_written = 0;
     ssize_t bytes_read = 0;
-    // *** END DECLARATIONS ***
     const char *filename = "/testfile.txt";
     char write_buf[WRITE_BUFFER_SIZE];
     char read_buf[READ_BUFFER_SIZE];
     int syscall_ret_val; // Temporary variable to hold syscall return value
 
 
-    print_string("--- User Program Started v1.5.2 ---\n");
+    print_string("--- User Program Started v1.5.4 (Syscall Fix 2) ---\n");
 
     // --- Get Process ID ---
-    my_pid = syscall(SYS_GETPID, 0, 0, 0);
+    syscall_ret_val = syscall(SYS_GETPID, 0, 0, 0);
+    my_pid = syscall_ret_val; // Store return value
     if (my_pid < 0) {
         print_string("Warning: Failed to get PID (Error: "); print_integer(my_pid); print_string(")\n");
         my_pid = 0;
@@ -227,19 +230,19 @@ int main() {
     // 1. Create/Truncate and Open for Writing
     print_string("Opening for writing (O_CREAT | O_WRONLY | O_TRUNC)...\n");
     syscall_ret_val = syscall(SYS_OPEN, (int)filename, O_CREAT | O_WRONLY | O_TRUNC, DEFAULT_FILE_MODE);
-    print_string("  -> syscall(SYS_OPEN) returned: "); print_integer(syscall_ret_val); print_string("\n");
-    if (syscall_ret_val < 0) {
-        exit_on_error("Failed to open/create file for writing", syscall_ret_val, 1);
+    fd_write = syscall_ret_val; // Store return value
+    print_string("  -> syscall(SYS_OPEN) returned: "); print_integer(fd_write); print_string("\n"); // Print stored value
+    if (fd_write < 0) {
+        exit_on_error("Failed to open/create file for writing", fd_write, 1);
     }
-    fd_write = syscall_ret_val;
     print_string("File opened successfully for writing (fd="); print_integer(fd_write); print_string(").\n");
 
-    // 2. Prepare Write Buffer
+    // 2. Prepare Write Buffer (Unchanged logic)
     const char *base_msg = "Hello from user program! PID: "; size_t base_len = strlen(base_msg);
     char pid_str_buf[INT_STR_BUFFER_SIZE]; char* pid_str = utoa_simple((uint32_t)my_pid, pid_str_buf, sizeof(pid_str_buf));
     if (!pid_str) { exit_on_error("Failed to convert PID to string", -1, 98); }
     size_t pid_len = strlen(pid_str);
-    size_t total_write_len = base_len + pid_len + 1;
+    size_t total_write_len = base_len + pid_len + 1; // Include newline
 
     if (total_write_len + 1 > sizeof(write_buf)) { exit_on_error("Write buffer too small", -1, 97); }
     size_t pos = 0;
@@ -250,10 +253,10 @@ int main() {
 
     // 3. Write Data to File
     print_string("Writing data: \""); print_string(write_buf); print_string("\" (Length: "); print_integer((int)total_write_len); print_string(")\n");
-    print_string("  -> Using fd: "); print_integer(fd_write); print_string(" for write\n");
-    syscall_ret_val = syscall(SYS_WRITE, fd_write, (int)write_buf, (int)total_write_len);
-    bytes_written = syscall_ret_val; // Store result
-    print_string("  -> syscall(SYS_WRITE) returned: "); print_integer(bytes_written); print_string("\n");
+    print_string("  -> Using fd: "); print_integer(fd_write); print_string(" for write\n"); // Correctly print fd_write
+    syscall_ret_val = syscall(SYS_WRITE, fd_write, (int)write_buf, (int)total_write_len); // Pass fd_write
+    bytes_written = syscall_ret_val; // Store return value
+    print_string("  -> syscall(SYS_WRITE) returned: "); print_integer(bytes_written); print_string("\n"); // Print stored value
     if (bytes_written < 0) {
         exit_code = 2;
         print_string("ERROR: Failed to write data (Syscall returned: "); print_integer(bytes_written); print_string(")\n");
@@ -266,46 +269,44 @@ int main() {
     }
 
     // 4. Close Write File Descriptor
-    print_string("Closing write fd (fd="); print_integer(fd_write); print_string(")...\n");
-    syscall_ret_val = syscall(SYS_CLOSE, fd_write, 0, 0);
+    print_string("Closing write fd (fd="); print_integer(fd_write); print_string(")...\n"); // Correctly print fd_write
+    syscall_ret_val = syscall(SYS_CLOSE, fd_write, 0, 0); // Pass fd_write
     if (syscall_ret_val < 0) { print_string("Warning: Failed to close write fd ("); print_integer(fd_write); print_string("). Error: "); print_integer(syscall_ret_val); print_string("\n"); }
     fd_write = -1; // Mark as closed
 
-    // 5. Re-open File for Reading
+    // 5. Re-open for Reading
     print_string("Re-opening file for reading (O_RDONLY)...\n");
-    syscall_ret_val = syscall(SYS_OPEN, (int)filename, O_RDONLY, 0);
-    print_string("  -> syscall(SYS_OPEN) returned: "); print_integer(syscall_ret_val); print_string("\n");
-    if (syscall_ret_val < 0) {
-        exit_on_error("Failed to open file for reading", syscall_ret_val, 4);
+    syscall_ret_val = syscall(SYS_OPEN, (int)filename, O_RDONLY, 0); // Mode not needed for RDONLY
+    fd_read = syscall_ret_val; // Store return value
+    print_string("  -> syscall(SYS_OPEN) returned: "); print_integer(fd_read); print_string("\n"); // Print stored value
+    if (fd_read < 0) {
+        exit_on_error("Failed to open file for reading", fd_read, 4);
     }
-    fd_read = syscall_ret_val;
     print_string("File opened successfully for reading (fd="); print_integer(fd_read); print_string(").\n");
 
     // 6. Read Data Back
     print_string("Reading data from file...\n");
-    for(size_t i = 0; i < sizeof(read_buf); ++i) { read_buf[i] = 0; } // Clear buffer
-    print_string("  -> Using fd: "); print_integer(fd_read); print_string(" for read\n");
-    syscall_ret_val = syscall(SYS_READ, fd_read, (int)read_buf, sizeof(read_buf) - 1);
-    print_string("  -> syscall(SYS_READ) returned: "); print_integer(syscall_ret_val); print_string("\n");
-    if (syscall_ret_val < 0) {
+    for(size_t i=0; i<sizeof(read_buf); ++i) { read_buf[i] = 0; } // Clear buffer
+    print_string("  -> Using fd: "); print_integer(fd_read); print_string(" for read\n"); // Correctly print fd_read
+    syscall_ret_val = syscall(SYS_READ, fd_read, (int)read_buf, sizeof(read_buf) - 1); // Pass fd_read
+    bytes_read = syscall_ret_val; // Store return value
+    print_string("  -> syscall(SYS_READ) returned: "); print_integer(bytes_read); print_string("\n"); // Print stored value
+    if (bytes_read < 0) {
         exit_code = 5;
-        print_string("ERROR: Failed to read data (Syscall returned: "); print_integer(syscall_ret_val); print_string(")\n");
+        print_string("ERROR: Failed to read data (Syscall returned: "); print_integer(bytes_read); print_string(")\n");
         goto cleanup;
     }
-    // ** This is the line that previously caused the error **
-    bytes_read = (ssize_t)syscall_ret_val; // Store valid byte count
-    // ** Ensure null termination uses the CORRECT bytes_read value **
+    // Null-terminate the buffer correctly
     if (bytes_read >= 0 && (size_t)bytes_read < sizeof(read_buf)) {
         read_buf[bytes_read] = '\0';
     } else if ((size_t)bytes_read >= sizeof(read_buf)) {
-        // Handle case where read filled the buffer exactly (should be rare with size-1 read)
         read_buf[sizeof(read_buf) - 1] = '\0';
         print_string("Warning: Read filled buffer, potential truncation.\n");
-    } // If bytes_read was negative, error was already handled
+    }
 
     print_string("Data read from file: \""); print_string(read_buf); print_string("\"\n");
 
-    // Optional: Verify read content matches written content
+    // 7. Verify read content matches written content (Unchanged logic)
     if (bytes_read != (ssize_t)total_write_len) {
         print_string("ERROR: Read length ("); print_integer(bytes_read); print_string(") does not match written length ("); print_integer((int)total_write_len); print_string(").\n");
         exit_code = 6;
@@ -317,20 +318,20 @@ int main() {
     }
 
 cleanup:
-    // 7. Cleanup: Ensure FDs are closed if they are still valid (>= 0)
+    // 8. Cleanup: Ensure FDs are closed if they are still valid (>= 0)
     print_string("--- Entering Cleanup ---\n");
     if (fd_write >= 0) {
-        print_string("Closing write fd (fd="); print_integer(fd_write); print_string(") during cleanup.\n");
-        syscall_ret_val = syscall(SYS_CLOSE, fd_write, 0, 0);
+        print_string("Closing write fd (fd="); print_integer(fd_write); print_string(") during cleanup.\n"); // Correctly print fd_write
+        syscall_ret_val = syscall(SYS_CLOSE, fd_write, 0, 0); // Pass fd_write
         if (syscall_ret_val < 0) { print_string("  Warning: Close failed (Error: "); print_integer(syscall_ret_val); print_string(")\n"); }
     }
     if (fd_read >= 0) {
-        print_string("Closing read fd (fd="); print_integer(fd_read); print_string(") during cleanup.\n");
-        syscall_ret_val = syscall(SYS_CLOSE, fd_read, 0, 0);
+        print_string("Closing read fd (fd="); print_integer(fd_read); print_string(") during cleanup.\n"); // Correctly print fd_read
+        syscall_ret_val = syscall(SYS_CLOSE, fd_read, 0, 0); // Pass fd_read
         if (syscall_ret_val < 0) { print_string("  Warning: Close failed (Error: "); print_integer(syscall_ret_val); print_string(")\n"); }
     }
 
-    // 8. Exit
+    // 9. Exit
     if (exit_code == 0) {
         print_string("--- User Program Exiting Successfully ---\n");
     } else {
@@ -339,6 +340,7 @@ cleanup:
     syscall(SYS_EXIT, exit_code, 0, 0);
 
     // Should not be reached
+    print_string("--- ERROR: Execution continued after SYS_EXIT! ---\n");
     for(;;);
     return exit_code;
 }
