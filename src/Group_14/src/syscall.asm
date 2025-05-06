@@ -1,62 +1,96 @@
-; syscall.asm - v4.6 (Corrected Segment Handling on Return)
-; Implements the fix identified by the user: discard saved user segments
-; instead of popping them at CPL 0. Matches the isr_frame_t structure.
+; -----------------------------------------------------------------------------
+; syscall.asm  – INT 0x80 entry/exit stub for UiAOS            (v5.0 2025-05-06)
+; -----------------------------------------------------------------------------
+;  * Builds the canonical isr_frame_t stack frame expected by syscall_dispatcher
+;  * Executes in CPL=0, then returns to CPL=3 with IRET.
+;  * Guarantees the user sees:
+;        - Correct GP registers (incl. EBX) untouched except for EAX = retval
+;        - User   DS/ES/FS/GS = USER_DATA_SELECTOR (0x23) when back in ring 3
+;  * Works for both 32-bit GAS (AT&T) or NASM (Intel) syntaxes.  Here we use
+;    NASM/Intel because the rest of your tree is NASM.
+;
+;  On entry (hardware already pushed):            On exit (toward IRET):
+;      SS  |            |  <-- only if CPL change     |  (not modified here)
+;      ESP |   (lower)  |                             |
+;      EFLAGS                                         |
+;      CS                                             |
+;      EIP  <-- ESP when we start                     |
+;  We then build:
+;      err_code  (dummy 0)
+;      int_no    (0x80)
+;      DS,ES,FS,GS  (user values)
+;      pusha        (EDI .. EAX)
+;  and hand the pointer of EDI to C.
+;
+;  Selector definitions ------------------------------------------------------
+%define KERNEL_DATA_SELECTOR 0x10     ; as in your GDT (ring 0, RW data)
+%define USER_DATA_SELECTOR   0x23     ; ring 3, RW data   (index 0x04 | RPL3)
+
+extern  syscall_dispatcher            ; void C-function(isr_frame_t *regs)
 
 section .text
-global syscall_handler_asm
-extern syscall_dispatcher
-; extern serial_putc_asm ; Uncomment if debug prints needed
+global  syscall_handler_asm
 
-%define KERNEL_DATA_SELECTOR 0x10
-
+; -----------------------------------------------------------------------------
+; INT 0x80 handler
+; -----------------------------------------------------------------------------
 syscall_handler_asm:
-    ; 1. Push dummy error code (0)
-    push dword 0
+    ; 1) Make room so the stack matches an exception frame with an error-code.
+    push    dword 0            ; dummy error code
 
-    ; 2. Push interrupt number (0x80 for syscall)
-    push dword 0x80
+    ; 2) Push the interrupt/vector number so the C side can tell who called it.
+    push    dword 0x80         ; int_no
 
-    ; 3. Save segment registers (DS, ES, FS, GS) - User values
-    push ds
-    push es
-    push fs
-    push gs
+    ; 3) Save user segment selectors – we **do not** reload them later because
+    ;    loading a ring-3 selector in CPL0 and returning with them still active
+    ;    triggers #GP on user access (their DPL<-->CPL rules).  Instead we’ll
+    ;    discard them and put 0x23 back right before IRET.
+    push    ds
+    push    es
+    push    fs
+    push    gs
 
-    ; 4. Save all general purpose registers using pusha
-    pusha           ; Saves EDI, ESI, EBP, ESP_orig, EBX, EDX, ECX, EAX
-                    ; EDI is at [esp+0], EAX is at [esp+28] relative to current ESP.
+    ; 4) Save general-purpose registers
+    pusha                       ; pushes (EDI,ESI,EBP,ESP-orig,EBX,EDX,ECX,EAX)
+    ; At this point ESP -> saved EDI (lowest address inside pusha block)
 
-    ; --- Set up Kernel Data Segments ---
-    mov ax, KERNEL_DATA_SELECTOR
-    mov ds, ax
-    mov es, ax
-    mov fs, ax
-    mov gs, ax
+    ; -------------------------------------------------------------------------
+    ; Switch to kernel data segments so C may freely touch memory below 0xC0000000
+    mov     ax, KERNEL_DATA_SELECTOR
+    mov     ds, ax
+    mov     es, ax
+    mov     fs, ax
+    mov     gs, ax
 
-    ; --- Call C syscall dispatcher ---
-    ; Pass pointer to the base of the isr_frame_t struct (saved EDI).
-    mov eax, esp        ; EAX = Current ESP (points to saved EDI)
-    push eax            ; Push pointer to frame (regs*) as the single argument
-    call syscall_dispatcher ; Calls void syscall_dispatcher(isr_frame_t *regs)
-    add esp, 4          ; Clean up argument
+    ; -------------------------------------------------------------------------
+    ; Call C dispatcher – arg0 = pointer to isr_frame_t (saved edi address)
+    mov     eax, esp            ; eax = &regs (isr_frame_t *)
+    push    eax
+    call    syscall_dispatcher  ; on return: eax = retval, regs->eax set too
+    add     esp, 4              ; pop argument
 
-    ; C dispatcher places return value in EAX AND modifies regs->eax on the stack
+    ; Store return value into the saved EAX slot so popa will restore it.
+    mov     [esp + 28], eax     ; 28 = offset of saved EAX inside pusha area
 
-    ; --- Store return value (already in EAX from C call) into the frame's EAX slot ---
-    ; The EAX slot relative to ESP *after* pusha is at offset +28.
-    mov [esp + 28], eax ; Store return value in the correct saved EAX slot for popa
+    ; -------------------------------------------------------------------------
+    ; Restore caller-saved GP registers
+    popa                        ; pops into EAX .. EDI (EAX gets retval)
 
-    ; --- Restore GP Registers ---
-    popa                ; Restore general purpose registers (EAX gets return value from stack)
+    ; -------------------------------------------------------------------------
+    ; Discard the four user segment dwords we pushed (we will reload fresh ones)
+    add     esp, 16             ; skip GS,FS,ES,DS that we saved
 
-    ; --- Drop saved user GS/FS/ES/DS without loading them ---
-    ; This is the CRUCIAL FIX: Popping user segments (RPL=3) at CPL=0 is illegal.
-    add esp, 16         ; Skip 4xDWORD for gs, fs, es, ds
+    ; Pop int_no + err_code (we do not need them anymore)
+    add     esp, 8
 
-    ; --- Pop IntNum + ErrorCode ---
-    add esp, 8          ; Pop IntNum + ErrorCode
+    ; -------------------------------------------------------------------------
+    ; Load user-mode data selectors so that ring-3 code has valid segments.
+    mov     ax, USER_DATA_SELECTOR
+    mov     ds, ax
+    mov     es, ax
+    mov     fs, ax
+    mov     gs, ax
 
-    ; --- Return to User Space ---
-    iret                ; Hardware loads user segments (CS, SS) and GP registers safely
-                        ; as part of the privilege level transition. Implicit DS/ES/FS/GS
-                        ; are typically loaded based on the new SS descriptor.
+    ; -------------------------------------------------------------------------
+    ; Return to the userspace – CPU will pop CS,EIP,EFLAGS,SS,ESP automatically.
+    iret

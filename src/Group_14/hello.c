@@ -1,348 +1,169 @@
-/**
- * @file hello.c
- * @brief Robust User Space Test Program for UiAOS (v1.5.5 - Syscall Constraint Fix)
- *
- * Demonstrates robust syscall usage including error checking and
- * proper resource management (file descriptors). Addresses potential
- * compiler scope issues.
- *
- * v1.5.5 Changes:
- * - CORRECTED: Updated inline assembly constraints for the syscall wrapper
- * to use the "0" input/output constraint for EAX and standard input
- * constraints for EBX, ECX, EDX. Removed ebx, ecx, edx from clobbers.
- * This resolves the runtime FD corruption issue in PIC/PIE code.
- * - Retained logic from 1.5.3 ensuring correct FD usage after open.
- */
+/* =========================================================================
+ *  hello.c  –  UiAOS user-space test (v2.1, ultra-verbose debug build)
+ * =========================================================================
+ *  – single translation unit, no #include
+ *  – i686-ELF, static, -nostdlib friendly
+ *  – build:  i686-elf-gcc -m32 -Wall -Wextra -nostdlib -fno-builtin \
+ *                               -fno-stack-protector -std=gnu99 -c hello.c
+ * -------------------------------------------------------------------------*/
 
-// ==========================================================================
-// Includes & Type Definitions (Minimal Userspace Simulation)
-// ==========================================================================
-// Standard integer types (assuming custom libc headers)
-typedef signed char         int8_t;
-typedef unsigned char       uint8_t;
-typedef signed short        int16_t;
-typedef unsigned short      uint16_t;
-typedef signed int          int32_t;
-typedef unsigned int        uint32_t;
-typedef signed long long    int64_t;
-typedef unsigned long long  uint64_t;
-
-// Standard size/pointer types (assuming custom libc headers)
-typedef uint32_t            size_t;
-typedef int32_t             ssize_t; // Signed size for read/write returns
-typedef uint32_t            uintptr_t;
-
-// Process/File related types
-typedef int32_t             pid_t;   // Process ID
-typedef int64_t             off_t;   // File offset (64-bit recommended)
-typedef unsigned int        mode_t;  // File mode
-
-// Boolean type (assuming custom libc header)
-typedef _Bool               bool;
-#define true 1
-#define false 0
-
-// NULL definition (assuming custom libc header)
-#define NULL ((void*)0)
-
-// Standard Integer Limits (Approximate for typical 32-bit int)
-#define INT32_MIN (-2147483647 - 1)
-
-// ==========================================================================
-// System Call Definitions (Must match kernel's syscall.h exactly)
-// ==========================================================================
-#define SYS_EXIT     1
-#define SYS_READ     3
-#define SYS_WRITE    4
-#define SYS_OPEN     5
-#define SYS_CLOSE    6
-#define SYS_PUTS     7 // Non-standard, assumes kernel provides it
-#define SYS_LSEEK   19
-#define SYS_GETPID  20
-
-// ==========================================================================
-// File Operation Flags & Constants (Match kernel's sys_file.h)
-// ==========================================================================
-#define O_RDONLY    0x0000
-#define O_WRONLY    0x0001
-#define O_RDWR      0x0002
-#define O_ACCMODE   0x0003
-#define O_CREAT     0x0040
-#define O_EXCL      0x0080
-#define O_NOCTTY    0x0100
-#define O_TRUNC     0x0200
-#define O_APPEND    0x0400
-
-#define SEEK_SET    0
-#define SEEK_CUR    1
-#define SEEK_END    2
-
-#define S_IRUSR 0400
-#define S_IWUSR 0200
-#define S_IRGRP 0040
-#define S_IWGRP 0020
-#define S_IROTH 0004
-#define S_IWOTH 0002
-#define DEFAULT_FILE_MODE (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH) // 0666
-
-// ==========================================================================
-// Buffer Sizes
-// ==========================================================================
-#define WRITE_BUFFER_SIZE   100
-#define READ_BUFFER_SIZE    100
-#define INT_STR_BUFFER_SIZE 12 // Sufficient for 32-bit signed int + sign + null
-
-// ==========================================================================
-// Syscall Wrapper Function - CORRECTED (v1.5.5)
-// ==========================================================================
-static inline int syscall(int num, int arg1, int arg2, int arg3) {
-    int ret;
-    // Use "0" constraint for EAX: signifies it's the same register for
-    // both the 0th input operand (num) and the 0th output operand (ret).
-    // Use standard input constraints for b, c, d.
-    // "memory" and "cc" clobbers are sufficient.
-    asm volatile (
-        "int $0x80"
-        : "=a" (ret)  // Output 0: EAX ('a') -> ret
-        : "0" (num),  // Input 0: num -> EAX ('a') (Use '0' to match output register)
-          "b" (arg1), // Input 1: arg1 -> EBX ('b')
-          "c" (arg2), // Input 2: arg2 -> ECX ('c')
-          "d" (arg3)  // Input 3: arg3 -> EDX ('d')
-        : "memory", "cc" // Clobbers memory and flags
-    );
-    return ret;
-}
-
-// ==========================================================================
-// Helper Functions for User Space (Unchanged)
-// ==========================================================================
-
-// Calculates string length
-size_t strlen(const char *s) {
-    size_t i = 0; if (!s) return 0; while (s[i] != '\0') { i++; } return i;
-}
-
-// Prints a null-terminated string using SYS_PUTS
-void print_string(const char *s) {
-    if (!s) return;
-    syscall(SYS_PUTS, (int)(uintptr_t)s, 0, 0); // Cast pointer via uintptr_t
-}
-
-// Simple unsigned int to ASCII (decimal), returns pointer *within* buf
-// Writes backwards from the end of the buffer.
-char* utoa_simple(uint32_t un, char* buf, size_t buf_size) {
-    if (buf_size < 2) return NULL; // Need space for at least '0' and '\0'
-    char* ptr = buf + buf_size - 1; // Start from the end
-    *ptr = '\0'; // Null-terminate
-
-    if (un == 0) {
-        if (ptr == buf) return NULL; // Buffer too small even for "0"
-        *--ptr = '0';
-        return ptr;
-    }
-
-    while (un > 0) {
-        if (ptr == buf) return NULL; // Buffer too small
-        *--ptr = '0' + (un % 10);
-        un /= 10;
-    }
-    return ptr; // Return pointer to the start of the digits
-}
-
-// Simple signed int to ASCII (decimal), handles negatives and INT_MIN edge case
-// Uses a static buffer to prevent reuse issues between consecutive calls.
-void print_integer(int n) {
-    // NOTE: Using a static buffer makes this function non-reentrant.
-    static char buf[INT_STR_BUFFER_SIZE];
-    char *s_ptr;
-    bool is_negative = (n < 0);
-    uint32_t un;
-
-    // Handle sign and potential INT_MIN overflow
-    if (is_negative) {
-        un = (n == INT32_MIN) ? 2147483648U : (uint32_t)(-n);
-    } else {
-        un = (uint32_t)n;
-    }
-
-    // Convert the unsigned number part
-    s_ptr = utoa_simple(un, buf, sizeof(buf));
-
-    if (!s_ptr) { // Check if conversion failed (buffer too small)
-        print_string("<INT_ERR>");
-        return;
-    }
-
-    // Prepend '-' if negative and space allows
-    if (is_negative) {
-        if (s_ptr > buf) {
-            *--s_ptr = '-';
-        } else {
-            // Error: buffer too small for sign (should not happen with size 12)
-            print_string("-<ERR>");
-            return;
-        }
-    }
-    print_string(s_ptr); // Print the resulting string
-}
-
-// Prints error message using print_string/print_integer and exits via syscall
-void exit_on_error(const char *context_msg, int syscall_ret_val, int exit_code) {
-    print_string("FATAL ERROR: ");
-    print_string(context_msg);
-    print_string(" (Syscall returned: ");
-    print_integer(syscall_ret_val); // Print the actual (likely negative) error code
-    print_string(")\n");
-    syscall(SYS_EXIT, exit_code, 0, 0);
-    // Halt loop in case exit syscall fails (should not happen)
-    for(;;);
-}
-
-// ==========================================================================
-// Main Application Logic (Unchanged from v1.5.3)
-// ==========================================================================
-int main() {
-    int exit_code = 0; // Final exit code for the process
-    pid_t my_pid = -1;   // Process ID
-    int fd_write = -1; // File descriptor for writing, initialized to invalid
-    int fd_read = -1;  // File descriptor for reading, initialized to invalid
-    ssize_t bytes_written = 0;
-    ssize_t bytes_read = 0;
-    const char *filename = "/testfile.txt";
-    char write_buf[WRITE_BUFFER_SIZE];
-    char read_buf[READ_BUFFER_SIZE];
-    int syscall_ret_val; // Temporary variable to hold syscall return value
-
-
-    print_string("--- User Program Started v1.5.5 (Syscall Constraint Fix) ---\n");
-
-    // --- Get Process ID ---
-    syscall_ret_val = syscall(SYS_GETPID, 0, 0, 0);
-    my_pid = syscall_ret_val; // Store return value
-    if (my_pid < 0) {
-        print_string("Warning: Failed to get PID (Error: "); print_integer(my_pid); print_string(")\n");
-        my_pid = 0;
-    } else {
-        print_string("My PID is: "); print_integer(my_pid); print_string("\n");
-    }
-
-    // --- File I/O Test ---
-    print_string("Attempting file I/O with '"); print_string(filename); print_string("'...\n");
-
-    // 1. Create/Truncate and Open for Writing
-    print_string("Opening for writing (O_CREAT | O_WRONLY | O_TRUNC)...\n");
-    syscall_ret_val = syscall(SYS_OPEN, (int)(uintptr_t)filename, O_CREAT | O_WRONLY | O_TRUNC, DEFAULT_FILE_MODE); // Cast via uintptr_t
-    fd_write = syscall_ret_val; // Store return value
-    print_string("  -> syscall(SYS_OPEN) returned: "); print_integer(fd_write); print_string("\n"); // Print stored value
-    if (fd_write < 0) {
-        exit_on_error("Failed to open/create file for writing", fd_write, 1);
-    }
-    print_string("File opened successfully for writing (fd="); print_integer(fd_write); print_string(").\n");
-
-    // 2. Prepare Write Buffer (Unchanged logic)
-    const char *base_msg = "Hello from user program! PID: "; size_t base_len = strlen(base_msg);
-    char pid_str_buf[INT_STR_BUFFER_SIZE]; char* pid_str = utoa_simple((uint32_t)my_pid, pid_str_buf, sizeof(pid_str_buf));
-    if (!pid_str) { exit_on_error("Failed to convert PID to string", -1, 98); }
-    size_t pid_len = strlen(pid_str);
-    size_t total_write_len = base_len + pid_len + 1; // Include newline
-
-    if (total_write_len + 1 > sizeof(write_buf)) { exit_on_error("Write buffer too small", -1, 97); }
-    size_t pos = 0;
-    for(size_t i = 0; i < base_len; ++i) write_buf[pos++] = base_msg[i];
-    for(size_t i = 0; i < pid_len; ++i) write_buf[pos++] = pid_str[i];
-    write_buf[pos++] = '\n';
-    write_buf[pos++] = '\0';
-
-    // 3. Write Data to File
-    print_string("Writing data: \""); print_string(write_buf); print_string("\" (Length: "); print_integer((int)total_write_len); print_string(")\n");
-    print_string("  -> Using fd: "); print_integer(fd_write); print_string(" for write\n"); // Correctly print fd_write
-    syscall_ret_val = syscall(SYS_WRITE, fd_write, (int)(uintptr_t)write_buf, (int)total_write_len); // Pass fd_write, Cast via uintptr_t
-    bytes_written = syscall_ret_val; // Store return value
-    print_string("  -> syscall(SYS_WRITE) returned: "); print_integer(bytes_written); print_string("\n"); // Print stored value
-    if (bytes_written < 0) {
-        exit_code = 2;
-        print_string("ERROR: Failed to write data (Syscall returned: "); print_integer(bytes_written); print_string(")\n");
-        goto cleanup;
-    }
-    if ((size_t)bytes_written != total_write_len) {
-        print_string("Warning: Partial write occurred! Wrote "); print_integer(bytes_written); print_string(" of "); print_integer((int)total_write_len); print_string(" bytes.\n");
-    } else {
-         print_string("Data successfully written to file.\n");
-    }
-
-    // 4. Close Write File Descriptor
-    print_string("Closing write fd (fd="); print_integer(fd_write); print_string(")...\n"); // Correctly print fd_write
-    syscall_ret_val = syscall(SYS_CLOSE, fd_write, 0, 0); // Pass fd_write
-    if (syscall_ret_val < 0) { print_string("Warning: Failed to close write fd ("); print_integer(fd_write); print_string("). Error: "); print_integer(syscall_ret_val); print_string("\n"); }
-    fd_write = -1; // Mark as closed
-
-    // 5. Re-open for Reading
-    print_string("Re-opening file for reading (O_RDONLY)...\n");
-    syscall_ret_val = syscall(SYS_OPEN, (int)(uintptr_t)filename, O_RDONLY, 0); // Mode not needed for RDONLY, Cast via uintptr_t
-    fd_read = syscall_ret_val; // Store return value
-    print_string("  -> syscall(SYS_OPEN) returned: "); print_integer(fd_read); print_string("\n"); // Print stored value
-    if (fd_read < 0) {
-        exit_on_error("Failed to open file for reading", fd_read, 4);
-    }
-    print_string("File opened successfully for reading (fd="); print_integer(fd_read); print_string(").\n");
-
-    // 6. Read Data Back
-    print_string("Reading data from file...\n");
-    for(size_t i=0; i<sizeof(read_buf); ++i) { read_buf[i] = 0; } // Clear buffer
-    print_string("  -> Using fd: "); print_integer(fd_read); print_string(" for read\n"); // Correctly print fd_read
-    syscall_ret_val = syscall(SYS_READ, fd_read, (int)(uintptr_t)read_buf, sizeof(read_buf) - 1); // Pass fd_read, Cast via uintptr_t
-    bytes_read = syscall_ret_val; // Store return value
-    print_string("  -> syscall(SYS_READ) returned: "); print_integer(bytes_read); print_string("\n"); // Print stored value
-    if (bytes_read < 0) {
-        exit_code = 5;
-        print_string("ERROR: Failed to read data (Syscall returned: "); print_integer(bytes_read); print_string(")\n");
-        goto cleanup;
-    }
-    // Null-terminate the buffer correctly
-    if (bytes_read >= 0 && (size_t)bytes_read < sizeof(read_buf)) {
-        read_buf[bytes_read] = '\0';
-    } else if ((size_t)bytes_read >= sizeof(read_buf)) {
-        read_buf[sizeof(read_buf) - 1] = '\0';
-        print_string("Warning: Read filled buffer, potential truncation.\n");
-    }
-
-    print_string("Data read from file: \""); print_string(read_buf); print_string("\"\n");
-
-    // 7. Verify read content matches written content (Unchanged logic)
-    if (bytes_read != (ssize_t)total_write_len) {
-        print_string("ERROR: Read length ("); print_integer(bytes_read); print_string(") does not match written length ("); print_integer((int)total_write_len); print_string(").\n");
-        exit_code = 6;
-    } else {
-        bool content_match = true;
-        for(size_t i=0; i<total_write_len; ++i) { if(read_buf[i] != write_buf[i]) { content_match = false; break; } }
-        if (!content_match) { print_string("ERROR: Read content does not match written content!\n"); exit_code = 7; }
-        else { print_string("Read content matches written content.\n"); }
-    }
-
-cleanup:
-    // 8. Cleanup: Ensure FDs are closed if they are still valid (>= 0)
-    print_string("--- Entering Cleanup ---\n");
-    if (fd_write >= 0) {
-        print_string("Closing write fd (fd="); print_integer(fd_write); print_string(") during cleanup.\n"); // Correctly print fd_write
-        syscall_ret_val = syscall(SYS_CLOSE, fd_write, 0, 0); // Pass fd_write
-        if (syscall_ret_val < 0) { print_string("  Warning: Close failed (Error: "); print_integer(syscall_ret_val); print_string(")\n"); }
-    }
-    if (fd_read >= 0) {
-        print_string("Closing read fd (fd="); print_integer(fd_read); print_string(") during cleanup.\n"); // Correctly print fd_read
-        syscall_ret_val = syscall(SYS_CLOSE, fd_read, 0, 0); // Pass fd_read
-        if (syscall_ret_val < 0) { print_string("  Warning: Close failed (Error: "); print_integer(syscall_ret_val); print_string(")\n"); }
-    }
-
-    // 9. Exit
-    if (exit_code == 0) {
-        print_string("--- User Program Exiting Successfully ---\n");
-    } else {
-        print_string("--- User Program Exiting with Error Code: "); print_integer(exit_code); print_string(" ---\n");
-    }
-    syscall(SYS_EXIT, exit_code, 0, 0);
-
-    // Should not be reached
-    print_string("--- ERROR: Execution continued after SYS_EXIT! ---\n");
-    for(;;);
-    return exit_code;
-}
+ typedef  signed   char      int8_t;
+ typedef  unsigned char      uint8_t;
+ typedef  signed   short     int16_t;
+ typedef  unsigned short     uint16_t;
+ typedef  signed   int       int32_t;
+ typedef  unsigned int       uint32_t;
+ typedef  signed   long long int64_t;
+ typedef  unsigned long long uint64_t;
+ typedef  uint32_t           size_t;
+ typedef  int32_t            ssize_t;
+ typedef  uint32_t           uintptr_t;
+ typedef  int32_t            pid_t;
+ typedef  int32_t            bool;
+ #define true  1
+ #define false 0
+ #define NULL ((void*)0)
+ 
+ /* -------------------------------------------------------------------------
+  *  Kernel ABI
+  * -------------------------------------------------------------------------*/
+ #define SYS_EXIT     1
+ #define SYS_READ     3
+ #define SYS_WRITE    4
+ #define SYS_OPEN     5
+ #define SYS_CLOSE    6
+ #define SYS_PUTS     7
+ #define SYS_LSEEK   19
+ #define SYS_GETPID  20
+ 
+ #define O_RDONLY    0x0000
+ #define O_WRONLY    0x0001
+ #define O_RDWR      0x0002
+ #define O_CREAT     0x0040
+ #define O_TRUNC     0x0200
+ #define DEFAULT_MODE 0666u
+ 
+ /* ------------------------------------------------------------------------
+  *  syscall3 – EBX-safe wrapper (EBX is an *input*, so PIC is unharmed)
+  * ----------------------------------------------------------------------*/
+ static inline int syscall3(int num, int arg1, int arg2, int arg3)
+ {
+     int ret;
+     asm volatile(
+         "int $0x80"
+         : "=a"(ret)
+         : "0"(num), "b"(arg1), "c"(arg2), "d"(arg3)
+         : "memory"
+     );
+     return ret;
+ }
+ 
+ /* thin convenience wrappers ------------------------------------------------*/
+ #define sys_exit(x)          syscall3(SYS_EXIT , (x), 0, 0)
+ #define sys_read(fd,buf,n)   syscall3(SYS_READ , (fd), (int)(buf), (n))
+ #define sys_write(fd,buf,n)  syscall3(SYS_WRITE, (fd), (int)(buf), (n))
+ #define sys_open(p,f,m)      syscall3(SYS_OPEN , (int)(p), (f), (m))
+ #define sys_close(fd)        syscall3(SYS_CLOSE, (fd), 0, 0)
+ #define sys_puts(p)          syscall3(SYS_PUTS , (int)(p), 0, 0)
+ #define sys_getpid()         syscall3(SYS_GETPID,0,0,0)
+ 
+ /* --------------------------------------------------------------------- */
+ /*  tiny helpers – strlen / integer printing / hex-dump                  */
+ /* ---------------------------------------------------------------------*/
+ static size_t strlen_c(const char *s){ size_t i=0; while(s&&s[i]) ++i; return i; }
+ static void   print_str(const char *s){ if(s) sys_puts(s); }
+ 
+ static void utoa_base(uint32_t v,unsigned b,char *o){
+     char tmp[32]; int i=0;
+     if(!v) tmp[i++]='0';
+     while(v){ uint32_t d=v%b; tmp[i++]=(d<10)?('0'+d):('a'+d-10); v/=b; }
+     int j=0; while(i) o[j++]=tmp[--i]; o[j]=0;
+ }
+ static void print_int(int v){
+     char buf[16]; bool neg=(v<0); uint32_t u=neg?-(uint32_t)v:(uint32_t)v;
+     if(neg){ buf[0]='-'; utoa_base(u,10,buf+1); } else utoa_base(u,10,buf);
+     print_str(buf);
+ }
+ static void print_hex(uint32_t v){ char b[16]; b[0]='0'; b[1]='x'; utoa_base(v,16,b+2); print_str(b); }
+ 
+ static void log_fd(const char *tag,int fd){
+     print_str(tag); print_int(fd); print_str(" ("); print_hex((uint32_t)fd); print_str(")\n");
+ }
+ 
+ /* optional: print raw bytes as hex ----------------------------------------*/
+ static void hexdump(const char *prefix,const void *buf,size_t n){
+     const uint8_t *p=(const uint8_t*)buf;
+     print_str(prefix); print_str("len="); print_int((int)n); print_str(": ");
+     for(size_t i=0;i<n;i++){
+         char h[4]; utoa_base(p[i],16,h); if(p[i]<16){ print_str("0"); }
+         print_str(h); if(i+1<n) print_str(" ");
+     }
+     print_str("\n");
+ }
+ 
+ /* --------------------------------------------------------------------- */
+ #define WBUF_SZ  128
+ #define RBUF_SZ  128
+ 
+ int main(void)
+ {
+     const char *fname="/testfile.txt";
+     char wbuf[WBUF_SZ];
+     char rbuf[RBUF_SZ];
+ 
+     print_str("=== hello.c ultra-verbose v2.1 ===\n");
+ 
+     /* ------------------------------------------------------------------ */
+     int pid=sys_getpid();
+     print_str("[DBG] sys_getpid() -> "); print_int(pid); print_str("\n");
+ 
+     /* -------- open (write/create) ------------------------------------- */
+     print_str("[DBG] open(O_CREAT|O_WRONLY|O_TRUNC) path="); print_str(fname); print_str("\n");
+     int fdw=sys_open(fname,O_CREAT|O_WRONLY|O_TRUNC,DEFAULT_MODE);
+     log_fd("[DBG] open() returned ",fdw);
+     if(fdw<0){ print_str("[ERR] open failed – aborting\n"); goto done; }
+ 
+     /* prepare buffer ---------------------------------------------------- */
+     const char *msg="Hello from ultra-verbose build!\n";
+     size_t wl=0; while(msg[wl]&&wl<WBUF_SZ-1){ wbuf[wl]=msg[wl]; ++wl; }
+     wbuf[wl]=0;
+ 
+     hexdump("[DBG] write-buffer ",wbuf,wl);
+ 
+     /* write ------------------------------------------------------------- */
+     log_fd("[DBG] write() using ",fdw);
+     int wr=sys_write(fdw,wbuf,(int)wl);
+     print_str("[DBG] sys_write ret="); print_int(wr); print_str("\n");
+     if(wr!= (int)wl){ print_str("[WARN] partial/failed write\n"); }
+ 
+     /* close write fd ---------------------------------------------------- */
+     log_fd("[DBG] close() fd ",fdw);
+     sys_close(fdw);
+ 
+     /* open read-only ---------------------------------------------------- */
+     print_str("[DBG] reopen read-only\n");
+     int fdr=sys_open(fname,O_RDONLY,0);
+     log_fd("[DBG] open(RD) -> ",fdr);
+     if(fdr<0){ print_str("[ERR] open(RD) failed\n"); goto done; }
+ 
+     /* read -------------------------------------------------------------- */
+     print_str("[DBG] read() up to "); print_int(RBUF_SZ-1); print_str(" bytes\n");
+     int rd=sys_read(fdr,rbuf,RBUF_SZ-1);
+     print_str("[DBG] sys_read ret="); print_int(rd); print_str("\n");
+     if(rd<0){ print_str("[ERR] read failed\n"); goto close_rd; }
+ 
+     rbuf[rd]=0;
+     hexdump("[DBG] read-buffer ",rbuf,(size_t)rd);
+     print_str("[DBG] read text: "); print_str(rbuf);
+ 
+ close_rd:
+     log_fd("\n[DBG] close() fd ",fdr);
+     sys_close(fdr);
+ 
+ done:
+     print_str("\n=== done ===\n");
+     sys_exit(0);
+     for(;;);                              /* not reached, placate linker   */
+     return 0;
+ }
+ 

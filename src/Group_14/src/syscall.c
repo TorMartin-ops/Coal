@@ -366,31 +366,41 @@ write_exit:
 
 static int sys_open_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
     (void)regs;
-    serial_log_entry("sys_open_impl");
+    // serial_log_entry("sys_open_impl"); // REMOVED
+    serial_write(" FNC_ENTER: sys_open_impl\n"); // REPLACED
     const char *user_pathname = (const char*)arg1_ebx;
     int flags                 = (int)arg2_ecx;
     int mode                  = (int)arg3_edx;
     int ret_val               = 0;
 
-    serial_write("  Args: user_path="); serial_print_hex((uintptr_t)user_pathname);
+    serial_write("   Args: user_path="); serial_print_hex((uintptr_t)user_pathname);
     serial_write(" flags=0x"); serial_print_hex((uint32_t)flags);
     serial_write(" mode=0"); serial_print_hex((uint32_t)mode); serial_write("\n");
 
-    char k_pathname[MAX_SYSCALL_STR_LEN];
-    serial_log_step("Calling strncpy_from_user_safe");
+    // Use a size appropriate for your system limits
+    char k_pathname[MAX_SYSCALL_STR_LEN]; // Ensure MAX_SYSCALL_STR_LEN is defined
+
+    // serial_log_step("Calling strncpy_from_user_safe"); // REMOVED
+    serial_write("   STEP: Calling strncpy_from_user_safe...\n"); // REPLACED
     int copy_err = strncpy_from_user_safe(user_pathname, k_pathname, sizeof(k_pathname));
     if (copy_err != 0) {
-        serial_log_error("Path copy failed");
+        // serial_log_error("Path copy failed"); // REMOVED
+        serial_write("   ERROR: Path copy failed (err="); serial_print_sdec(copy_err); serial_write(")\n"); // REPLACED
         ret_val = copy_err; goto open_exit;
     }
+    serial_write("   STEP: Path copied successfully: \""); serial_write(k_pathname); serial_write("\"\n");
 
-    serial_log_step("Calling sys_open (underlying)");
+
+    // serial_log_step("Calling sys_open (underlying)"); // REMOVED
+    serial_write("   STEP: Calling sys_open (backend)...\n"); // REPLACED
     ret_val = sys_open(k_pathname, flags, mode); // Call backend
 
 open_exit:
-    serial_log_exit("sys_open_impl", ret_val);
+    // serial_log_exit("sys_open_impl", ret_val); // REMOVED
+    serial_write(" FNC_EXIT: sys_open_impl ret="); serial_print_sdec(ret_val); serial_write("\n"); // REPLACED
     return ret_val;
 }
+
 
 static int sys_close_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
     (void)arg2_ecx; (void)arg3_edx; (void)regs;
