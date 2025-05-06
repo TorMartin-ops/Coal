@@ -117,6 +117,15 @@
   */
  int write_cluster_cached(fat_fs_t *fs, uint32_t cluster, uint32_t offset_in_cluster,
                           const void *buf, size_t len);
+
+
+
+                          
+int update_directory_entry_first_cluster_now(fat_fs_t *fs, fat_file_context_t *fctx);
+
+int update_directory_entry_size_now(fat_fs_t *fs, fat_file_context_t *fctx);
+
+
  
  #ifdef __cplusplus
  }
