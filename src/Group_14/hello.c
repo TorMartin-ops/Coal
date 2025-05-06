@@ -1,8 +1,8 @@
 /*
- * hello.c – UiAOS User-Space Kernel Test Suite (v3.9 - Full Suite)
+ * hello.c – UiAOS User-Space Kernel Test Suite (v3.9.1 - POSIX Error Codes)
  *
  * Purpose: Rigorously test kernel syscalls, focusing on PID, file I/O,
- * and lseek operations. Uses standard "=a" for syscall return.
+ * and lseek operations. Expects standard POSIX negative error codes.
  *
  * Build: i686-elf-gcc -m32 -Wall -Wextra -nostdlib -fno-builtin \
  * -fno-stack-protector -std=gnu99 -o hello.elf hello.c
@@ -20,14 +20,14 @@ typedef unsigned int       uint32_t;
 typedef uint32_t           size_t;
 typedef int32_t            ssize_t;
 typedef int32_t            pid_t;
-typedef int32_t            off_t;
+typedef int32_t            off_t; // Changed from int64_t to match syscall return in current kernel
 
 #ifndef _UINTPTR_T_DEFINED_HELLO_C
 #define _UINTPTR_T_DEFINED_HELLO_C
 typedef uint32_t uintptr_t;
 #endif
 
-typedef int32_t bool;
+typedef int32_t bool; // Keep as int32_t for consistency if stdbool.h not directly used
 #define true  1
 #define false 0
 #define NULL  ((void*)0)
@@ -35,7 +35,7 @@ typedef int32_t bool;
 #ifndef INT32_MIN
 #define INT32_MIN (-2147483647 - 1)
 #endif
-#ifndef SSIZE_MAX
+#ifndef SSIZE_MAX // Max value for ssize_t (typically int32_t max)
 #define SSIZE_MAX (2147483647)
 #endif
 
@@ -58,7 +58,7 @@ typedef int32_t bool;
 #define O_APPEND     0x0400 // Append to file instead of overwriting.
 #define O_EXCL       0x0080 // With O_CREAT, fail if file exists.
 
-#define DEFAULT_MODE 0666u // User r/w, Group r/w, Other r/w
+#define DEFAULT_MODE 0666u // User r/w, Group r/w, Other r/w (kernel might ignore this)
 
 #ifndef SEEK_SET
 #define SEEK_SET    0 // Seek from beginning of file.
@@ -66,12 +66,19 @@ typedef int32_t bool;
 #define SEEK_END    2 // Seek from end of file.
 #endif
 
-// Expected error codes (negative values from kernel)
-#define EBADF        9
-#define ENOENT       2
-#define EACCES      13
-#define EINVAL      22
-#define EEXIST      17
+// Expected NEGATIVE error codes (POSIX style)
+// Your fs_errno.h defines positive EBADF etc.
+// The syscall layer should return -(value_from_fs_errno).
+#define NEG_EBADF        (-9)
+#define NEG_ENOENT       (-2)
+#define NEG_EACCES       (-13)
+#define NEG_EINVAL       (-22)
+#define NEG_EEXIST       (-17)
+#define NEG_EMFILE       (-24) // If too many open files
+#define NEG_ENOSPC       (-28) // No space left on device
+#define NEG_EISDIR       (-21) // Is a directory
+#define NEG_ENOTDIR      (-20) // Not a directory
+#define NEG_EFAULT       (-14) // Bad address
 
 /* ==== Syscall Wrapper (Standard "=a" output) =========================== */
 static inline int32_t syscall(int32_t syscall_number,
@@ -98,9 +105,9 @@ static inline int32_t syscall(int32_t syscall_number,
         // EAX still holds the kernel's return value here
         : "=a" (return_value)        // Output %0: value in EAX goes to C var return_value
         : "m" (syscall_number),      // Input %1
-          "m" (arg1_val),          // Input %2
-          "m" (arg2_val),          // Input %3
-          "m" (arg3_val)           // Input %4
+          "m" (arg1_val),            // Input %2
+          "m" (arg2_val),            // Input %3
+          "m" (arg3_val)             // Input %4
         : "cc", "memory"             // EAX is output. EBX, ECX, EDX are clobbered by movl but restored.
     );
     return return_value;
@@ -130,15 +137,15 @@ static void my_memset(void *s, int c, size_t n) {
 }
 static char* my_strcpy(char *dest, const char *src) {
     char *ret = dest;
-    if (!dest || !src) return dest; // Or handle error
+    if (!dest || !src) return dest; 
     while ((*dest++ = *src++));
     return ret;
 }
 static char* my_strcat(char *dest, const char *src) {
     char *ret = dest;
     if (!dest || !src) return dest;
-    while (*dest) dest++; // Find end of dest
-    while ((*dest++ = *src++)); // Append src
+    while (*dest) dest++; 
+    while ((*dest++ = *src++)); 
     return ret;
 }
 
@@ -169,7 +176,7 @@ static void print_hex32(uint32_t v) {
 /* ==== Test Framework ===================================================== */
 static int tests_run = 0;
 static int tests_failed = 0;
-static char fail_msg_buf[128]; // Buffer for formatting failure messages
+static char fail_msg_buf[128]; 
 
 #define TC_START(desc) do { \
     tests_run++; \
@@ -187,23 +194,23 @@ static char fail_msg_buf[128]; // Buffer for formatting failure messages
     } \
 } while(0)
 
-#define TC_EXPECT_EQ_DETAIL(val, exp, detail_label) do { \
+// Updated TC_EXPECT_EQ_DETAIL to handle simple string formatting for detail_label
+#define TC_EXPECT_EQ_DETAIL(val, exp, detail_label_prefix) do { \
     bool _cond = ((val) == (exp)); \
     if (!_cond) { \
-        my_strcpy(fail_msg_buf, detail_label); \
+        my_strcpy(fail_msg_buf, detail_label_prefix); \
         my_strcat(fail_msg_buf, ": Expected "); \
-        /* Simple itoa for fail_msg_buf */ \
-        char temp_buf[12]; char *tp = temp_buf+11; *tp = '\0'; \
+        char temp_buf_exp[12]; char *tp_exp = temp_buf_exp+11; *tp_exp = '\0'; \
         int32_t _exp = (exp); \
-        if(_exp == 0) *--tp = '0'; else { bool _neg = _exp < 0; uint32_t _n = _neg ? -_exp : _exp; \
-        while(_n>0) {*--tp=(_n%10)+'0'; _n/=10;} if(_neg) *--tp = '-';} \
-        my_strcat(fail_msg_buf, tp); \
+        if(_exp == 0) *--tp_exp = '0'; else { bool _neg_exp = _exp < 0; uint32_t _n_exp = _neg_exp ? -_exp : _exp; \
+        while(_n_exp>0) {*--tp_exp=(_n_exp%10)+'0'; _n_exp/=10;} if(_neg_exp) *--tp_exp = '-';} \
+        my_strcat(fail_msg_buf, tp_exp); \
         my_strcat(fail_msg_buf, ", Got "); \
-        tp = temp_buf+11; *tp = '\0'; \
+        char temp_buf_val[12]; char *tp_val = temp_buf_val+11; *tp_val = '\0'; \
         int32_t _val = (val); \
-        if(_val == 0) *--tp = '0'; else { bool _neg = _val < 0; uint32_t _n = _neg ? -_val : _val; \
-        while(_n>0) {*--tp=(_n%10)+'0'; _n/=10;} if(_neg) *--tp = '-';} \
-        my_strcat(fail_msg_buf, tp); \
+        if(_val == 0) *--tp_val = '0'; else { bool _neg_val = _val < 0; uint32_t _n_val = _neg_val ? -_val : _val; \
+        while(_n_val>0) {*--tp_val=(_n_val%10)+'0'; _n_val/=10;} if(_neg_val) *--tp_val = '-';} \
+        my_strcat(fail_msg_buf, tp_val); \
         TC_RESULT_MSG(_cond, fail_msg_buf); \
     } else { \
         TC_RESULT_MSG(_cond, NULL); \
@@ -211,10 +218,6 @@ static char fail_msg_buf[128]; // Buffer for formatting failure messages
 } while(0)
 
 #define TC_EXPECT_TRUE(cond, msg_on_fail) TC_RESULT_MSG(cond, msg_on_fail)
-#define TC_EXPECT_FALSE(cond, msg_on_fail) TC_RESULT_MSG(!(cond), msg_on_fail)
-#define TC_EXPECT_NE(val, exp, msg_on_fail) TC_RESULT_MSG((val) != (exp), msg_on_fail)
-#define TC_EXPECT_GE(val, exp, msg_on_fail) TC_RESULT_MSG((val) >= (exp), msg_on_fail)
-#define TC_EXPECT_LT(val, exp, msg_on_fail) TC_RESULT_MSG((val) < (exp), msg_on_fail)
 
 
 /* ==== Individual Test Cases ============================================== */
@@ -222,15 +225,26 @@ void test_pid_syscall() {
     print_str("\n--- PID Tests ---\n");
     TC_START("sys_getpid returns a non-negative PID");
     pid_t pid = sys_getpid();
-    TC_EXPECT_GE(pid, 0, "PID was negative!");
-    if(pid >= 0) { print_str(" (Note: PID is "); print_sdec(pid); print_str(")\n"); }
+    // Check if PID is non-negative. PID 0 is often kernel/idle, PID 1 first user process.
+    bool cond = (pid >= 0);
+    if (!cond) { my_strcpy(fail_msg_buf, "PID was negative!"); }
+    else { // Construct pass message with PID
+        my_strcpy(fail_msg_buf, " (Note: PID is ");
+        char temp_pid_buf[12]; char *tp_pid = temp_pid_buf+11; *tp_pid = '\0';
+        if(pid == 0) *--tp_pid = '0'; else { uint32_t _p = pid; while(_p>0) {*--tp_pid=(_p%10)+'0'; _p/=10;} }
+        my_strcat(fail_msg_buf, tp_pid);
+        my_strcat(fail_msg_buf, ")");
+    }
+    TC_RESULT_MSG(cond, cond ? NULL : fail_msg_buf); // Only print fail_msg_buf on failure
+    if (cond) print_str(fail_msg_buf); // Print note on pass
+    print_nl();
 }
 
 void test_core_file_operations() {
     print_str("\n--- Core File I/O Tests ---\n");
     const char* FNAME1 = "/testfile1.txt";
-    const char* CONTENT1 = "Hello Kernel World!"; // 17 chars + null
-    const char* CONTENT2 = " Appended data.";    // 15 chars + null
+    const char* CONTENT1 = "Hello Kernel FS!"; // 17 chars + null
+    const char* CONTENT2 = " Appended Text.";   // 15 chars + null
     char read_buf[128];
     int fd = -1;
     ssize_t ret_s;
@@ -240,8 +254,8 @@ void test_core_file_operations() {
     // 1. Create, Write, Close
     TC_START("Create, Write, Close");
     fd = sys_open(FNAME1, O_CREAT | O_WRONLY | O_TRUNC, DEFAULT_MODE);
-    TC_EXPECT_GE(fd, 0, "sys_open for create/write failed");
-    if (fd < 0) return; // Critical failure
+    TC_EXPECT_TRUE(fd >= 0, "sys_open for create/write failed");
+    if (fd < 0) return;
 
     ret_s = sys_write(fd, CONTENT1, content1_len);
     TC_EXPECT_EQ_DETAIL(ret_s, (ssize_t)content1_len, "sys_write initial content");
@@ -252,7 +266,7 @@ void test_core_file_operations() {
     // 2. Re-open, Read, Verify
     TC_START("Re-open, Read, Verify");
     fd = sys_open(FNAME1, O_RDONLY, 0);
-    TC_EXPECT_GE(fd, 0, "sys_open for read failed");
+    TC_EXPECT_TRUE(fd >= 0, "sys_open for read failed");
     if (fd < 0) return;
 
     my_memset(read_buf, 0, sizeof(read_buf));
@@ -273,7 +287,7 @@ void test_core_file_operations() {
     // 3. Append Mode Test
     TC_START("Append Mode (O_APPEND)");
     fd = sys_open(FNAME1, O_WRONLY | O_APPEND, 0); // No O_CREAT, file must exist
-    TC_EXPECT_GE(fd, 0, "sys_open for append failed");
+    TC_EXPECT_TRUE(fd >= 0, "sys_open for append failed");
     if (fd < 0) return;
 
     ret_s = sys_write(fd, CONTENT2, content2_len);
@@ -285,7 +299,7 @@ void test_core_file_operations() {
     // 4. Verify Appended Content
     TC_START("Verify Appended Content");
     fd = sys_open(FNAME1, O_RDONLY, 0);
-    TC_EXPECT_GE(fd, 0, "sys_open for append verification failed");
+    TC_EXPECT_TRUE(fd >= 0, "sys_open for append verification failed");
     if (fd < 0) return;
 
     my_memset(read_buf, 0, sizeof(read_buf));
@@ -294,7 +308,7 @@ void test_core_file_operations() {
     TC_EXPECT_EQ_DETAIL(ret_s, (ssize_t)total_len, "sys_read appended content length");
 
     if (ret_s == (ssize_t)total_len) {
-        char expected_total_content[64]; // Ensure large enough
+        char expected_total_content[64]; 
         my_strcpy(expected_total_content, CONTENT1);
         my_strcat(expected_total_content, CONTENT2);
         TC_EXPECT_EQ_DETAIL(my_strcmp(read_buf, expected_total_content), 0, "Appended content verification");
@@ -308,15 +322,15 @@ void test_lseek_operations() {
     print_str("\n--- Lseek Tests ---\n");
     const char* FNAME_LSEEK = "/lseektest.txt";
     const char* DATA1 = "0123456789"; // 10 bytes
-    const char* DATA2 = "ABCDE";    // 5 bytes
+    const char* DATA2 = "XYZ";      // 3 bytes (changed from ABCDE for easier distinctness)
     char buf[32];
     int fd = -1;
-    ssize_t ret_s;
-    off_t ret_o;
+    ssize_t ret_s; // Use for read/write results
+    off_t ret_o;   // Use for lseek results
 
     // Setup: Create a file with known content
     fd = sys_open(FNAME_LSEEK, O_CREAT | O_RDWR | O_TRUNC, DEFAULT_MODE);
-    TC_EXPECT_GE(fd, 0, "lseek test: sys_open for setup failed");
+    TC_EXPECT_TRUE(fd >= 0, "lseek test: sys_open for setup failed");
     if (fd < 0) return;
     ret_s = sys_write(fd, DATA1, my_strlen(DATA1));
     TC_EXPECT_EQ_DETAIL(ret_s, (ssize_t)my_strlen(DATA1), "lseek test: initial write");
@@ -356,20 +370,21 @@ void test_lseek_operations() {
     TC_START("lseek write after SEEK_END");
     ret_o = sys_lseek(fd, 0, SEEK_END); // Ensure at end
     TC_EXPECT_EQ_DETAIL(ret_o, 10, "lseek SEEK_END before extend");
-    ret_s = sys_write(fd, DATA2, my_strlen(DATA2)); // Write "ABCDE"
+    ret_s = sys_write(fd, DATA2, my_strlen(DATA2)); // Write "XYZ"
     TC_EXPECT_EQ_DETAIL(ret_s, (ssize_t)my_strlen(DATA2), "lseek test: write to extend file");
     
+    size_t expected_new_size = my_strlen(DATA1) + my_strlen(DATA2);
     ret_o = sys_lseek(fd, 0, SEEK_END); // Check new size
-    TC_EXPECT_EQ_DETAIL(ret_o, 10 + (off_t)my_strlen(DATA2), "lseek test: new file size after extend");
+    TC_EXPECT_EQ_DETAIL(ret_o, (off_t)expected_new_size, "lseek test: new file size after extend");
 
     // Verify extended content
     ret_o = sys_lseek(fd, 0, SEEK_SET);
     TC_EXPECT_EQ_DETAIL(ret_o, 0, "lseek test: seek to start for verification");
     my_memset(buf, 0, sizeof(buf));
-    ret_s = sys_read(fd, buf, sizeof(buf)-1);
-    TC_EXPECT_EQ_DETAIL(ret_s, (ssize_t)(my_strlen(DATA1) + my_strlen(DATA2)), "lseek test: read full extended content");
-    if (ret_s == (ssize_t)(my_strlen(DATA1) + my_strlen(DATA2))) {
-        char expected_content[32];
+    ret_s = sys_read(fd, buf, sizeof(buf)-1); // Read up to buffer capacity
+    TC_EXPECT_EQ_DETAIL(ret_s, (ssize_t)expected_new_size, "lseek test: read full extended content");
+    if (ret_s == (ssize_t)expected_new_size) {
+        char expected_content[32]; // Ensure large enough
         my_strcpy(expected_content, DATA1);
         my_strcat(expected_content, DATA2);
         TC_EXPECT_EQ_DETAIL(my_strcmp(buf, expected_content), 0, "lseek test: verify extended content");
@@ -388,67 +403,63 @@ void test_error_conditions() {
 
     TC_START("Open non-existent file (no O_CREAT)");
     fd = sys_open("/no_such_file.txt", O_RDONLY, 0);
-    TC_EXPECT_EQ_DETAIL(fd, -ENOENT, "sys_open non-existent (expected -ENOENT)");
-    if (fd >= 0) sys_close(fd);
+    TC_EXPECT_EQ_DETAIL(fd, NEG_ENOENT, "sys_open non-existent (expected -ENOENT)");
+    if (fd >= 0) sys_close(fd); fd = -1;
 
     TC_START("Open existing file with O_CREAT | O_EXCL");
-    // First, create a file
     fd = sys_open("/exist_test.txt", O_CREAT | O_WRONLY | O_TRUNC, DEFAULT_MODE);
-    TC_EXPECT_GE(fd, 0, "Error test: setup open");
-    if (fd < 0) return;
-    sys_close(fd);
+    TC_EXPECT_TRUE(fd >= 0, "Error test: setup open for O_EXCL failed");
+    if (fd < 0) return; // Cannot continue this test path
+    sys_close(fd); fd = -1;
     // Now try to open with O_EXCL
     fd = sys_open("/exist_test.txt", O_CREAT | O_EXCL, DEFAULT_MODE);
-    TC_EXPECT_EQ_DETAIL(fd, -EEXIST, "sys_open O_EXCL on existing (expected -EEXIST)");
-    if (fd >= 0) sys_close(fd);
+    TC_EXPECT_EQ_DETAIL(fd, NEG_EEXIST, "sys_open O_EXCL on existing (expected -EEXIST)");
+    if (fd >= 0) sys_close(fd); fd = -1;
 
     TC_START("Write to invalid FD (-1)");
     ret_s = sys_write(-1, "data", 4);
-    TC_EXPECT_EQ_DETAIL(ret_s, -EBADF, "sys_write to FD -1 (expected -EBADF)");
+    TC_EXPECT_EQ_DETAIL(ret_s, NEG_EBADF, "sys_write to FD -1 (expected -EBADF)");
 
     TC_START("Read from invalid FD (999)");
     ret_s = sys_read(999, buf, 1);
-    TC_EXPECT_EQ_DETAIL(ret_s, -EBADF, "sys_read from FD 999 (expected -EBADF)");
+    TC_EXPECT_EQ_DETAIL(ret_s, NEG_EBADF, "sys_read from FD 999 (expected -EBADF)");
     
     TC_START("Close invalid FD (-5)");
     ret_s = sys_close(-5);
-    TC_EXPECT_EQ_DETAIL(ret_s, -EBADF, "sys_close FD -5 (expected -EBADF)");
+    TC_EXPECT_EQ_DETAIL(ret_s, NEG_EBADF, "sys_close FD -5 (expected -EBADF)");
 
     TC_START("Lseek on invalid FD (123)");
     ret_s = (ssize_t)sys_lseek(123, 0, SEEK_SET); // Cast off_t to ssize_t for TC_EXPECT_EQ_DETAIL
-    TC_EXPECT_EQ_DETAIL(ret_s, -EBADF, "sys_lseek on FD 123 (expected -EBADF)");
+    TC_EXPECT_EQ_DETAIL(ret_s, NEG_EBADF, "sys_lseek on FD 123 (expected -EBADF)");
 
-    // Test write to RDONLY file
     TC_START("Write to RDONLY file descriptor");
-    fd = sys_open("/rdonly_test.txt", O_CREAT | O_RDWR | O_TRUNC, DEFAULT_MODE); // Create with RDWR
-    TC_EXPECT_GE(fd, 0, "Error test: RDONLY setup open RDWR");
+    fd = sys_open("/rdonly_test.txt", O_CREAT | O_RDWR | O_TRUNC, DEFAULT_MODE); 
+    TC_EXPECT_TRUE(fd >= 0, "Error test: RDONLY setup open RDWR failed");
     if(fd < 0) return;
     sys_write(fd, "tmp", 3);
-    sys_close(fd);
+    sys_close(fd); fd = -1;
     fd = sys_open("/rdonly_test.txt", O_RDONLY, 0); // Reopen RDONLY
-    TC_EXPECT_GE(fd, 0, "Error test: RDONLY setup open RDONLY");
+    TC_EXPECT_TRUE(fd >= 0, "Error test: RDONLY setup open O_RDONLY failed");
     if(fd < 0) return;
     ret_s = sys_write(fd, "test", 4);
-    TC_EXPECT_EQ_DETAIL(ret_s, -EACCES, "sys_write to RDONLY fd (expected -EACCES or -EBADF)");
-    sys_close(fd);
+    TC_EXPECT_EQ_DETAIL(ret_s, NEG_EACCES, "sys_write to RDONLY fd (expected -EACCES)");
+    sys_close(fd); fd = -1;
 
-    // Test read from WRONLY file (Note: some systems might allow this, POSIX is underspecified)
     TC_START("Read from WRONLY file descriptor");
     fd = sys_open("/wronly_test.txt", O_CREAT | O_WRONLY | O_TRUNC, DEFAULT_MODE);
-    TC_EXPECT_GE(fd, 0, "Error test: WRONLY setup open");
+    TC_EXPECT_TRUE(fd >= 0, "Error test: WRONLY setup open failed");
     if(fd < 0) return;
-    sys_write(fd, "tmp", 3); // Write something so it's not empty
-    // Some systems require lseek to 0 before read if opened WRONLY then trying to read
-    // sys_lseek(fd, 0, SEEK_SET); // Not strictly WRONLY anymore if lseek works
+    sys_write(fd, "tmp", 3); 
+    // sys_lseek(fd, 0, SEEK_SET); // Some OS might require seek to 0 before read if WRONLY
     ret_s = sys_read(fd, buf, 1);
-    TC_EXPECT_EQ_DETAIL(ret_s, -EACCES, "sys_read from WRONLY fd (expected -EACCES or -EBADF)");
-    sys_close(fd);
+    TC_EXPECT_EQ_DETAIL(ret_s, NEG_EACCES, "sys_read from WRONLY fd (expected -EACCES)");
+    sys_close(fd); fd = -1;
 }
 
 
 /* ==== Main Test Runner =================================================== */
 int main(void) {
-    print_str("=== UiAOS Kernel Test Suite v3.9 (Full Suite) ===\n");
+    print_str("=== UiAOS Kernel Test Suite v3.9.1 (POSIX Errors) ===\n");
 
     test_pid_syscall();
     test_core_file_operations();
@@ -468,5 +479,5 @@ int main(void) {
     }
 
     sys_exit(tests_failed > 0 ? 1 : 0); 
-    return 0; 
+    return 0; // Should not be reached
 }
