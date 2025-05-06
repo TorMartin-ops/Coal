@@ -123,12 +123,12 @@ void syscall_init(void) {
  * @param u_src User space source address.
  * @param k_dst Kernel space destination buffer.
  * @param maxlen Maximum number of bytes to copy (including null terminator).
- * @return 0 on success, -EFAULT on access error, -ENAMETOOLONG if maxlen reached before null terminator.
+ * @return 0 on success, EFAULT on access error, -ENAMETOOLONG if maxlen reached before null terminator.
  */
 static int strncpy_from_user_safe(const char *u_src, char *k_dst, size_t maxlen) {
     serial_write(" FNC_ENTER: strncpy_from_user_safe\n");
     KERNEL_ASSERT(k_dst != NULL, "Kernel destination buffer cannot be NULL");
-    if (maxlen == 0) return -EINVAL;
+    if (maxlen == 0) return EINVAL;
     k_dst[0] = '\0'; // Ensure null termination on error/empty
 
     // Basic pointer check (NULL or kernel address)
@@ -137,8 +137,8 @@ static int strncpy_from_user_safe(const char *u_src, char *k_dst, size_t maxlen)
     serial_write(" against KERNEL_SPACE_VIRT_START: "); serial_print_hex(KERNEL_SPACE_VIRT_START); serial_write("\n");
     if (!u_src || (uintptr_t)u_src >= KERNEL_SPACE_VIRT_START) {
         SYSCALL_ERROR("strncpy: Basic check failed (NULL or kernel addr %p)", u_src);
-        serial_write("  RET: -EFAULT (bad u_src basic check)\n");
-        return -EFAULT;
+        serial_write("  RET: EFAULT (bad u_src basic check)\n");
+        return EFAULT;
     }
 
     // Check accessibility using access_ok (verifies VMA existence and permissions)
@@ -150,8 +150,8 @@ static int strncpy_from_user_safe(const char *u_src, char *k_dst, size_t maxlen)
     // A more robust check might iterate or check the whole maxlen if performance allows.
     if (!access_ok(VERIFY_READ, u_src, 1)) {
         SYSCALL_ERROR("strncpy: access_ok failed for user buffer %p", u_src);
-        serial_write("  RET: -EFAULT (access_ok failed)\n");
-        return -EFAULT;
+        serial_write("  RET: EFAULT (access_ok failed)\n");
+        return EFAULT;
     }
     SYSCALL_DEBUG_PRINTK("  strncpy: access_ok passed for first byte.");
 
@@ -166,9 +166,9 @@ static int strncpy_from_user_safe(const char *u_src, char *k_dst, size_t maxlen)
         if (not_copied > 0) {
             serial_write("  LOOP: Fault detected!\n");
             k_dst[len > 0 ? len - 1 : 0] = '\0'; // Try to null-terminate what we got
-            SYSCALL_ERROR("strncpy: Fault copying byte %zu from %p. Returning -EFAULT", len, u_src + len);
-            serial_write("  RET: -EFAULT (fault during copy)\n");
-            return -EFAULT;
+            SYSCALL_ERROR("strncpy: Fault copying byte %zu from %p. Returning EFAULT", len, u_src + len);
+            serial_write("  RET: EFAULT (fault during copy)\n");
+            return EFAULT;
         }
 
         k_dst[len] = current_char;
@@ -195,7 +195,7 @@ static int strncpy_from_user_safe(const char *u_src, char *k_dst, size_t maxlen)
 
 /**
  * @brief Handles unimplemented system calls.
- * @return -ENOSYS always.
+ * @return ENOSYS always.
  */
 static int sys_not_implemented(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
     (void)arg1_ebx; (void)arg2_ecx; (void)arg3_edx; // Mark unused arguments
@@ -203,10 +203,10 @@ static int sys_not_implemented(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t ar
     KERNEL_ASSERT(regs != NULL, "NULL regs");
     pcb_t* current_proc = get_current_process();
     KERNEL_ASSERT(current_proc != NULL, "No process context");
-    SYSCALL_ERROR("PID %lu: Called unimplemented syscall %u. Returning -ENOSYS.",
+    SYSCALL_ERROR("PID %lu: Called unimplemented syscall %u. Returning ENOSYS.",
                   (unsigned long)current_proc->pid, (unsigned int)regs->eax);
-    serial_write(" FNC_EXIT: sys_not_implemented (-ENOSYS)\n");
-    return -ENOSYS; // System call not implemented
+    serial_write(" FNC_EXIT: sys_not_implemented (ENOSYS)\n");
+    return ENOSYS; // System call not implemented
 }
 
 /**
@@ -232,10 +232,6 @@ static int sys_exit_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx
     return 0; // Unreachable code
 }
 
-/**
- * @brief Handles the read() system call. Reads data from a file descriptor.
- * Copies data from kernel space (read via sys_read backend) to user space buffer.
- */
 static int sys_read_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
     (void)regs; // Mark unused
     serial_write(" FNC_ENTER: sys_read_impl\n");
@@ -243,7 +239,9 @@ static int sys_read_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx
     void *user_buf         = (void*)arg2_ecx;
     size_t count           = (size_t)arg3_edx;
     uint32_t pid           = get_current_process() ? get_current_process()->pid : 0;
-    int actual_ret_val     = 0; // *** Store the ACTUAL return value ***
+    int actual_ret_val     = 0; // Final return value (positive count or negative errno)
+    ssize_t total_read     = 0; // Track bytes successfully read AND copied to user
+    char* kbuf             = NULL; // Kernel temporary buffer
 
     SYSCALL_DEBUG_PRINTK("PID %lu: SYS_READ(fd=%d, buf=%p, count=%zu)", (unsigned long)pid, fd, user_buf, count);
 
@@ -261,14 +259,14 @@ static int sys_read_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx
     serial_write(" buf="); serial_print_hex((uintptr_t)user_buf); serial_write(" count="); serial_print_hex((uint32_t)count); serial_write("\n");
     if (!access_ok(VERIFY_WRITE, user_buf, count)) {
         SYSCALL_ERROR("PID %lu: SYS_READ failed - EFAULT (access_ok failed for user buffer %p)", (unsigned long)pid, user_buf);
-        serial_write("  RET: -EFAULT (access_ok failed)\n");
-        return -EFAULT;
+        serial_write("  RET: EFAULT (access_ok failed)\n");
+        return EFAULT;
     }
     serial_write("  STEP: access_ok passed.\n");
 
     // --- 2. Allocate Kernel Buffer ---
     size_t chunk_alloc_size = MIN(MAX_RW_CHUNK_SIZE, count);
-    char* kbuf = kmalloc(chunk_alloc_size);
+    kbuf = kmalloc(chunk_alloc_size);
     if (!kbuf) {
         SYSCALL_ERROR("PID %lu: SYS_READ failed - ENOMEM (kmalloc failed for size %zu)", (unsigned long)pid, chunk_alloc_size);
         serial_write("  RET: -ENOMEM (kmalloc failed)\n");
@@ -277,43 +275,44 @@ static int sys_read_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx
     SYSCALL_DEBUG_PRINTK("  Kernel buffer allocated at %p (size %zu).", kbuf, chunk_alloc_size);
 
     // --- 3. Read Loop (Chunked) ---
-    ssize_t total_read = 0;
-    // Removed final_ret_val, will use actual_ret_val directly
     serial_write("  STEP: Entering read loop\n");
     while (total_read < (ssize_t)count) {
         size_t current_chunk_size = MIN(chunk_alloc_size, count - total_read);
         KERNEL_ASSERT(current_chunk_size > 0, "Zero chunk size in sys_read loop");
         SYSCALL_DEBUG_PRINTK("  Loop: Reading chunk size %zu (total_read %zd)", current_chunk_size, total_read);
 
-        ssize_t bytes_read_this_chunk = sys_read(fd, kbuf, current_chunk_size); // Call sys_file backend
+        // Call sys_file backend to read into kernel buffer
+        ssize_t bytes_read_this_chunk = sys_read(fd, kbuf, current_chunk_size);
         SYSCALL_DEBUG_PRINTK("   LOOP_READ: sys_read returned %zd", bytes_read_this_chunk);
 
         if (bytes_read_this_chunk < 0) {
             serial_write("  LOOP: Error from sys_read\n");
-            actual_ret_val = (total_read > 0) ? total_read : bytes_read_this_chunk; // Return partial read or error
+            actual_ret_val = bytes_read_this_chunk; // *** Prioritize returning the error code ***
             goto sys_read_cleanup;
         }
         if (bytes_read_this_chunk == 0) {
             serial_write("  LOOP: EOF reached\n");
-            actual_ret_val = total_read; // Return total read so far
+            actual_ret_val = total_read; // Return total successfully read so far
             goto sys_read_cleanup;
         }
 
+        // Copy data from kernel buffer to user buffer
         size_t not_copied = copy_to_user((char*)user_buf + total_read, kbuf, bytes_read_this_chunk);
         SYSCALL_DEBUG_PRINTK("   LOOP_READ: copy_to_user returned %zu (not copied)", not_copied);
 
-        size_t copied_back_this_chunk = bytes_read_this_chunk - not_copied;
-        total_read += copied_back_this_chunk;
-
         if (not_copied > 0) {
             serial_write("  LOOP: Fault during copy_to_user\n");
-            SYSCALL_ERROR("PID %lu: SYS_READ failed - EFAULT during copy_to_user (copied %zd total)", (unsigned long)pid, total_read);
-            actual_ret_val = (total_read > 0) ? total_read : -EFAULT; // Return partial read or error
+            SYSCALL_ERROR("PID %lu: SYS_READ failed - EFAULT during copy_to_user (processed %zd bytes OK before fault)", (unsigned long)pid, total_read);
+            actual_ret_val = EFAULT; // *** Prioritize returning EFAULT ***
             goto sys_read_cleanup;
         }
 
+        // Successfully copied this chunk
+        total_read += bytes_read_this_chunk;
+
+        // Check if the underlying read returned fewer bytes than requested (EOF for this chunk)
         if ((size_t)bytes_read_this_chunk < current_chunk_size) {
-            serial_write("  LOOP: Short read, breaking loop\n");
+            serial_write("  LOOP: Short read from sys_read, breaking loop\n");
             break; // Reached EOF on the underlying read
         }
     }
@@ -324,8 +323,9 @@ sys_read_cleanup:
     if (kbuf) kfree(kbuf);
     SYSCALL_DEBUG_PRINTK("  SYS_READ returning %d.", actual_ret_val);
     serial_write(" FNC_EXIT: sys_read_impl\n");
-    return actual_ret_val; // *** RETURN THE ACTUAL RESULT ***
+    return actual_ret_val; // Return total bytes read or negative errno
 }
+
 
 /**
  * @brief Handles the write() system call. Writes data to a file descriptor.
@@ -345,8 +345,8 @@ static int sys_write_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_ed
     // --- 1. Validate Arguments ---
     if ((ssize_t)count < 0) {
         SYSCALL_ERROR("PID %lu: SYS_WRITE failed - negative count %ld", (unsigned long)pid, (long)count);
-        serial_write("  RET: -EINVAL (negative count)\n");
-        return -EINVAL;
+        serial_write("  RET: EINVAL (negative count)\n");
+        return EINVAL;
     }
     if (count == 0) {
         serial_write("  RET: 0 (zero count)\n");
@@ -356,8 +356,8 @@ static int sys_write_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_ed
     serial_write(" buf="); serial_print_hex((uintptr_t)user_buf); serial_write(" count="); serial_print_hex((uint32_t)count); serial_write("\n");
     if (!access_ok(VERIFY_READ, user_buf, count)) {
         SYSCALL_ERROR("PID %lu: SYS_WRITE failed - EFAULT (access_ok failed for user buffer %p)", (unsigned long)pid, user_buf);
-        serial_write("  RET: -EFAULT (access_ok failed)\n");
-        return -EFAULT;
+        serial_write("  RET: EFAULT (access_ok failed)\n");
+        return EFAULT;
     }
     serial_write("  STEP: access_ok passed.\n");
 
@@ -366,8 +366,8 @@ static int sys_write_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_ed
     char* kbuf = kmalloc(chunk_alloc_size);
     if (!kbuf) {
         SYSCALL_ERROR("PID %lu: SYS_WRITE failed - ENOMEM (kmalloc failed for size %zu)", (unsigned long)pid, chunk_alloc_size);
-        serial_write("  RET: -ENOMEM (kmalloc failed)\n");
-        return -ENOMEM;
+        serial_write("  RET: ENOMEM (kmalloc failed)\n");
+        return ENOMEM;
     }
     SYSCALL_DEBUG_PRINTK("  Kernel buffer allocated at %p (size %zu).", kbuf, chunk_alloc_size);
 
@@ -413,7 +413,7 @@ static int sys_write_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_ed
         if (not_copied > 0) {
             serial_write("  LOOP: Fault during copy_from_user\n");
             SYSCALL_ERROR("PID %lu: SYS_WRITE failed - EFAULT during copy_from_user (wrote %zd total)", (unsigned long)pid, total_written);
-            actual_ret_val = (total_written > 0) ? total_written : -EFAULT; // Return partial write or error
+            actual_ret_val = (total_written > 0) ? total_written : EFAULT; // Return partial write or error
             goto sys_write_cleanup;
         }
     }
@@ -450,7 +450,7 @@ static int sys_open_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx
     if (copy_err != 0) {
         SYSCALL_ERROR("PID %lu: SYS_OPEN failed - Error %d copying path from user %p", (unsigned long)pid, copy_err, user_pathname);
         serial_write("  RET: Error from strncpy\n");
-        return copy_err; // Return -EFAULT or -ENAMETOOLONG
+        return copy_err; // Return EFAULT or -ENAMETOOLONG
     }
     SYSCALL_DEBUG_PRINTK("  Copied path to kernel: '%s'", k_pathname);
 
@@ -498,7 +498,7 @@ static int sys_lseek_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_ed
     // Basic validation of whence
     if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) {
          SYSCALL_ERROR("PID %lu: SYS_LSEEK failed - Invalid whence %d", (unsigned long)pid, whence);
-         return -EINVAL;
+         return EINVAL;
     }
 
     serial_write("  STEP: Calling sys_lseek (underlying)\n");
@@ -511,7 +511,7 @@ static int sys_lseek_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_ed
         // Ensure the error code fits within int range if off_t is larger
         if (result_offset < INT32_MIN) {
             SYSCALL_ERROR("PID %lu: SYS_LSEEK error %ld overflowed int return type", (unsigned long)pid, (long)result_offset);
-            actual_ret_val = -EINVAL; // Return EINVAL for overflow condition
+            actual_ret_val = EINVAL; // Return EINVAL for overflow condition
         } else {
             actual_ret_val = (int)result_offset; // Return negative error code
         }
@@ -519,7 +519,7 @@ static int sys_lseek_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_ed
         // Check if positive offset fits within int range
         if (result_offset > INT32_MAX) {
             SYSCALL_ERROR("PID %lu: SYS_LSEEK result %ld overflowed int return type", (unsigned long)pid, (long)result_offset);
-            actual_ret_val = -EINVAL; // Return EINVAL for overflow condition
+            actual_ret_val = EINVAL; // Return EINVAL for overflow condition
         } else {
             actual_ret_val = (int)result_offset; // Return positive offset
         }
@@ -563,7 +563,7 @@ static int sys_puts_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx
         SYSCALL_ERROR("PID %lu: SYS_PUTS failed - Error %d copying string from user %p", (unsigned long)pid, copy_err, user_str_ptr);
         serial_write(" [WARN syscall] sys_puts_impl: Invalid user pointer (strncpy failed code=");
         serial_print_hex((uint32_t)copy_err); serial_write(")\n");
-        return copy_err; // Return -EFAULT or -ENAMETOOLONG
+        return copy_err; // Return EFAULT or -ENAMETOOLONG
     }
 
     SYSCALL_DEBUG_PRINTK("  String copied to kernel buffer: '%.*s'", (int)sizeof(kbuffer)-1, kbuffer);
@@ -632,13 +632,13 @@ void syscall_dispatcher(isr_frame_t *regs) {
             // Should not happen if table initialized correctly, but handle defensively
             serial_write("SD: ERR NullHnd\n");
              SYSCALL_ERROR("PID %lu: Syscall %u has NULL handler in table!", (unsigned long)current_proc->pid, syscall_num);
-            ret_val = -ENOSYS;
+            ret_val = ENOSYS;
         }
     } else {
         // Syscall number out of bounds
         serial_write("SD: ERR Bounds\n");
         SYSCALL_ERROR("PID %lu: Invalid syscall number %u (>= MAX_SYSCALLS %d)", (unsigned long)current_proc->pid, syscall_num, MAX_SYSCALLS);
-        ret_val = -ENOSYS; // Or -EINVAL? ENOSYS seems more appropriate.
+        ret_val = ENOSYS; // Or EINVAL? ENOSYS seems more appropriate.
     }
 
     // Store the return value back into the EAX field of the stack frame

@@ -163,60 +163,144 @@
  }
 
  /**
-  * @brief Backend implementation for the read() system call.
-  */
- ssize_t sys_read(int fd, void *kbuf, size_t count) {
-     KERNEL_ASSERT(kbuf != NULL || count == 0, "NULL kernel buffer passed to sys_read with count > 0");
-     pcb_t *current_proc = get_current_process();
-     if (!current_proc) return -EFAULT;
+ * @brief Backend implementation for the read() system call.
+ */
+ssize_t sys_read(int fd, void *kbuf, size_t count) {
+    // --- Entry Logging ---
+    serial_write("[sys_read] Enter. fd="); serial_print_hex((uint32_t)fd);
+    serial_write(" kbuf=0x"); serial_print_hex((uintptr_t)kbuf);
+    serial_write(" count="); serial_print_hex((uint32_t)count); serial_write("\n");
 
-     SYSFILE_DEBUG_PRINTK("PID %lu: sys_read(fd=%d, kbuf=%p, count=%zu)", (unsigned long)current_proc->pid, fd, kbuf, count);
+    // KERNEL_ASSERT(kbuf != NULL || count == 0, "NULL kernel buffer passed to sys_read with count > 0");
+    if (kbuf == NULL && count != 0) {
+        serial_write("[sys_read] Error: NULL kernel buffer with non-zero count.\n");
+        return -EFAULT; // Use EFAULT for bad buffer pointer
+    }
 
-     // --- Retrieve sys_file_t safely (Handles locking) ---
-     sys_file_t *sf = get_sys_file(current_proc, fd);
-     if (!sf) return -EBADF;
+    pcb_t *current_proc = get_current_process();
+    if (!current_proc) {
+        serial_write("[sys_read] Error: No current process context.\n");
+        return -EFAULT;
+    }
+    // Add PID to subsequent logs for clarity
+    serial_write("[sys_read] PID="); serial_print_hex(current_proc->pid); serial_write("\n");
 
-     // --- Permission Check (Uses sf->flags, no table access needed) ---
-     int access_mode = sf->flags & O_ACCMODE;
-     if (access_mode != O_RDONLY && access_mode != O_RDWR) {
-         SYSFILE_DEBUG_PRINTK(" -> Failed: fd %d not opened for reading (flags=0x%x, access_mode=0x%x, -EACCES)", fd, sf->flags, access_mode);
-         return -EACCES;
-     }
-     if (count == 0) return 0;
 
-     // --- Call VFS (VFS handles file->lock for offset) ---
-     ssize_t bytes_read = vfs_read(sf->vfs_file, kbuf, count);
-     SYSFILE_DEBUG_PRINTK(" -> vfs_read returned %zd", bytes_read);
-     return bytes_read; // Return bytes read or negative error code from VFS
- }
+    SYSFILE_DEBUG_PRINTK("PID %lu: sys_read(fd=%d, kbuf=%p, count=%zu)", (unsigned long)current_proc->pid, fd, kbuf, count);
 
- /**
-  * @brief Backend implementation for the write() system call.
-  */
- ssize_t sys_write(int fd, const void *kbuf, size_t count) {
-     KERNEL_ASSERT(kbuf != NULL || count == 0, "NULL kernel buffer passed to sys_write with count > 0");
-     pcb_t *current_proc = get_current_process();
-     if (!current_proc) return -EFAULT;
+    // --- Retrieve sys_file_t safely (Handles locking) ---
+    serial_write("[sys_read] Calling get_sys_file...\n");
+    sys_file_t *sf = get_sys_file(current_proc, fd);
+    serial_write("[sys_read] get_sys_file returned: 0x"); serial_print_hex((uintptr_t)sf); serial_write("\n");
 
-     SYSFILE_DEBUG_PRINTK("PID %lu: sys_write(fd=%d, kbuf=%p, count=%zu)", (unsigned long)current_proc->pid, fd, kbuf, count);
+    if (!sf) {
+        serial_write("[sys_read] Error: Invalid file descriptor (EBADF).\n");
+        return -EBADF;
+    }
 
-     // --- Retrieve sys_file_t safely (Handles locking) ---
-     sys_file_t *sf = get_sys_file(current_proc, fd);
-     if (!sf) return -EBADF;
+    // --- Permission Check (Uses sf->flags, no table access needed) ---
+    serial_write("[sys_read] Checking file permissions...\n");
+    int access_mode = sf->flags & O_ACCMODE;
+    serial_write("  -> Flags=0x"); serial_print_hex((uint32_t)sf->flags);
+    serial_write(" AccessMode=0x"); serial_print_hex((uint32_t)access_mode); serial_write("\n");
 
-     // --- Permission Check (Uses sf->flags, no table access needed) ---
-     int access_mode = sf->flags & O_ACCMODE;
-     if (access_mode != O_WRONLY && access_mode != O_RDWR) {
-         SYSFILE_DEBUG_PRINTK(" -> Failed: fd %d not opened for writing (flags=0x%x, access_mode=0x%x, -EACCES)", fd, sf->flags, access_mode);
-         return -EACCES;
-     }
-     if (count == 0) return 0;
+    if (access_mode != O_RDONLY && access_mode != O_RDWR) {
+        SYSFILE_DEBUG_PRINTK(" -> Failed: fd %d not opened for reading (flags=0x%x, access_mode=0x%x, -EACCES)", fd, sf->flags, access_mode);
+        serial_write("[sys_read] Error: File not opened for reading (EACCES).\n");
+        return -EACCES;
+    }
+    if (count == 0) {
+        serial_write("[sys_read] Count is 0, returning 0.\n");
+        return 0;
+    }
+    serial_write("[sys_read] Permission check passed.\n");
 
-     // --- Call VFS (VFS handles file->lock for offset) ---
-     ssize_t bytes_written = vfs_write(sf->vfs_file, kbuf, count);
-     SYSFILE_DEBUG_PRINTK(" -> vfs_write returned %zd", bytes_written);
-     return bytes_written; // Return bytes written or negative error code from VFS
- }
+    // --- Call VFS (VFS handles file->lock for offset) ---
+    serial_write("[sys_read] Calling vfs_read(vfs_file=0x"); serial_print_hex((uintptr_t)sf->vfs_file);
+    serial_write(", kbuf=0x"); serial_print_hex((uintptr_t)kbuf);
+    serial_write(", count="); serial_print_hex((uint32_t)count); serial_write(")...\n");
+
+    ssize_t bytes_read = vfs_read(sf->vfs_file, kbuf, count);
+
+    serial_write("[sys_read] vfs_read returned: "); serial_print_hex((uint32_t)bytes_read); // Print as hex to see negative errors
+    // Or print as signed decimal (requires a helper function)
+    // serial_print_sdec(bytes_read); // Assuming such a function exists
+    serial_write("\n");
+
+    SYSFILE_DEBUG_PRINTK(" -> vfs_read returned %zd", bytes_read);
+    serial_write("[sys_read] Exit.\n");
+    return bytes_read; // Return bytes read or negative error code from VFS
+}
+
+/**
+ * @brief Backend implementation for the write() system call.
+ */
+ssize_t sys_write(int fd, const void *kbuf, size_t count) {
+    // --- Entry Logging ---
+    serial_write("[sys_write] Enter. fd="); serial_print_hex((uint32_t)fd);
+    serial_write(" kbuf=0x"); serial_print_hex((uintptr_t)kbuf);
+    serial_write(" count="); serial_print_hex((uint32_t)count); serial_write("\n");
+
+    // KERNEL_ASSERT(kbuf != NULL || count == 0, "NULL kernel buffer passed to sys_write with count > 0");
+     if (kbuf == NULL && count != 0) {
+        serial_write("[sys_write] Error: NULL kernel buffer with non-zero count.\n");
+        return -EFAULT; // Use EFAULT for bad buffer pointer
+    }
+
+    pcb_t *current_proc = get_current_process();
+    if (!current_proc) {
+        serial_write("[sys_write] Error: No current process context.\n");
+        return -EFAULT;
+    }
+    // Add PID to subsequent logs for clarity
+    serial_write("[sys_write] PID="); serial_print_hex(current_proc->pid); serial_write("\n");
+
+
+    SYSFILE_DEBUG_PRINTK("PID %lu: sys_write(fd=%d, kbuf=%p, count=%zu)", (unsigned long)current_proc->pid, fd, kbuf, count);
+
+    // --- Retrieve sys_file_t safely (Handles locking) ---
+    serial_write("[sys_write] Calling get_sys_file...\n");
+    sys_file_t *sf = get_sys_file(current_proc, fd);
+    serial_write("[sys_write] get_sys_file returned: 0x"); serial_print_hex((uintptr_t)sf); serial_write("\n");
+
+    if (!sf) {
+        serial_write("[sys_write] Error: Invalid file descriptor (EBADF).\n");
+        return -EBADF;
+    }
+
+    // --- Permission Check (Uses sf->flags, no table access needed) ---
+    serial_write("[sys_write] Checking file permissions...\n");
+    int access_mode = sf->flags & O_ACCMODE;
+    serial_write("  -> Flags=0x"); serial_print_hex((uint32_t)sf->flags);
+    serial_write(" AccessMode=0x"); serial_print_hex((uint32_t)access_mode); serial_write("\n");
+
+    if (access_mode != O_WRONLY && access_mode != O_RDWR) {
+        SYSFILE_DEBUG_PRINTK(" -> Failed: fd %d not opened for writing (flags=0x%x, access_mode=0x%x, -EACCES)", fd, sf->flags, access_mode);
+        serial_write("[sys_write] Error: File not opened for writing (EACCES).\n");
+        return -EACCES;
+    }
+    if (count == 0) {
+        serial_write("[sys_write] Count is 0, returning 0.\n");
+        return 0;
+    }
+    serial_write("[sys_write] Permission check passed.\n");
+
+    // --- Call VFS (VFS handles file->lock for offset) ---
+    serial_write("[sys_write] Calling vfs_write(vfs_file=0x"); serial_print_hex((uintptr_t)sf->vfs_file);
+    serial_write(", kbuf=0x"); serial_print_hex((uintptr_t)kbuf);
+    serial_write(", count="); serial_print_hex((uint32_t)count); serial_write(")...\n");
+
+    ssize_t bytes_written = vfs_write(sf->vfs_file, kbuf, count);
+
+    serial_write("[sys_write] vfs_write returned: "); serial_print_hex((uint32_t)bytes_written); // Print as hex
+    // Or print as signed decimal
+    // serial_print_sdec(bytes_written); // Assuming such a function exists
+    serial_write("\n");
+
+    SYSFILE_DEBUG_PRINTK(" -> vfs_write returned %zd", bytes_written);
+    serial_write("[sys_write] Exit.\n");
+    return bytes_written; // Return bytes written or negative error code from VFS
+}
 
  /**
   * @brief Backend implementation for the close() system call.
