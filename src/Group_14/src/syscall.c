@@ -1,12 +1,13 @@
 /**
  * @file syscall.c
- * @brief System Call Dispatcher and Implementations (v4.9 - Enhanced Serial Logging)
- * @version 4.9
+ * @brief System Call Dispatcher and Implementations (v4.9.2 - Syntax and Return Fixes)
+ * @version 4.9.2
  *
  * Implements the system call C-level dispatcher and the backend functions
  * for various system calls like open, read, write, close, exit, etc.
  * Handles user<->kernel memory copying and validation.
- * Enhanced with detailed serial logging for debugging.
+ * CORRECTED: syscall_dispatcher now correctly returns int32_t.
+ * Ensured all static function declarations and definitions are consistent.
  */
 
 // --- Includes ---
@@ -25,6 +26,8 @@
 #include "serial.h"        // For serial_write, serial_print_hex
 #include "paging.h"        // Include for KERNEL_SPACE_VIRT_START
 #include <libc/limits.h>    // INT32_MIN, INT32_MAX (assuming int is 32-bit)
+#include <libc/stdbool.h>   // For bool type
+#include <libc/stddef.h>    // For size_t
 #include "debug.h"         // For DEBUG_PRINTK
 
 // --- Constants ---
@@ -43,33 +46,34 @@
 // --- Static Data ---
 static syscall_fn_t syscall_table[MAX_SYSCALLS];
 
-// --- Forward Declarations ---
-static int sys_exit_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
-static int sys_read_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
-static int sys_write_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
-static int sys_open_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
-static int sys_close_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
-static int sys_lseek_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
-static int sys_getpid_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
-static int sys_puts_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
-static int sys_not_implemented(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
+// --- Forward Declarations of Syscall Implementations ---
+// Ensure these match the definitions below
+static int32_t sys_exit_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
+static int32_t sys_read_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
+static int32_t sys_write_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
+static int32_t sys_open_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
+static int32_t sys_close_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
+static int32_t sys_lseek_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
+static int32_t sys_getpid_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
+static int32_t sys_puts_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
+static int32_t sys_not_implemented(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs); // Definition provided below
 static int strncpy_from_user_safe(const char *u_src, char *k_dst, size_t maxlen);
 
+
 // --- Logging Helper Functions ---
-// (Using the versions you provided, they seem fine)
 static void serial_print_sdec(int n) {
-    char buf[12];
-    char *ptr = buf + 11;
-    *ptr = '\0';
-    bool neg = false;
+    char buf[12]; // Sufficient for -2147483648
+    char *ptr = buf + sizeof(buf) - 1; // Start from the end
+    *ptr = '\0'; // Null terminate
     uint32_t un;
+    bool neg = false;
 
     if (n == 0) {
-        *--ptr = '0';
+        if (ptr > buf) *--ptr = '0';
     } else {
         if (n < 0) {
             neg = true;
-            if (n == -2147483648) { // Basic INT_MIN handling for 32-bit
+            if (n == INT32_MIN) { // Handle INT_MIN specifically
                 un = 2147483648U;
             } else {
                 un = (uint32_t)(-n);
@@ -77,11 +81,11 @@ static void serial_print_sdec(int n) {
         } else {
             un = (uint32_t)n;
         }
-        while (un > 0 && ptr > buf) {
+        while (un > 0 && ptr > buf) { // Ensure not to underflow buffer
             *--ptr = '0' + (un % 10);
             un /= 10;
         }
-        if (neg && ptr > buf) {
+        if (neg && ptr > buf) { // Ensure space for '-'
             *--ptr = '-';
         }
     }
@@ -91,7 +95,7 @@ static void serial_print_sdec(int n) {
 static inline void serial_log_entry(const char* func_name) {
     serial_write(" FNC_ENTER: "); serial_write(func_name); serial_write("\n");
 }
-static inline void serial_log_exit(const char* func_name, int ret_val) {
+static inline void serial_log_exit(const char* func_name, int32_t ret_val) {
     serial_write(" FNC_EXIT: "); serial_write(func_name);
     serial_write(" ret="); serial_print_sdec(ret_val); serial_write("\n");
 }
@@ -141,22 +145,20 @@ static int strncpy_from_user_safe(const char *u_src, char *k_dst, size_t maxlen)
 
     KERNEL_ASSERT(k_dst != NULL, "Kernel destination buffer cannot be NULL");
     if (maxlen == 0) { serial_log_exit("strncpy_from_user_safe", -EINVAL); return -EINVAL; }
-    k_dst[0] = '\0'; // Ensure null termination on error or short buffer
+    
+    k_dst[0] = '\0'; 
 
     serial_log_step("Basic u_src check");
     serial_write("   DBG: Checking u_src: "); serial_print_hex((uint32_t)u_src);
     serial_write(" against KERNEL_SPACE_VIRT_START: "); serial_print_hex(KERNEL_SPACE_VIRT_START); serial_write("\n");
-    // Note: fs_errno.h uses positive values, syscalls should return negative.
-    // Ensure EFAULT is correctly defined (e.g., as a negative value if syscalls return negative errors)
-    // Or adjust the return values here. Assuming fs_errno.h defines positive errors and we negate them.
     if (!u_src || (uintptr_t)u_src >= KERNEL_SPACE_VIRT_START) {
         serial_log_error("EFAULT (bad u_src basic check)");
-        serial_log_exit("strncpy_from_user_safe", -EFAULT); // Return negative error
+        serial_log_exit("strncpy_from_user_safe", -EFAULT); 
         return -EFAULT;
     }
 
     serial_log_step("Calling access_ok");
-    if (!access_ok(VERIFY_READ, u_src, 1)) { // Check at least one byte
+    if (!access_ok(VERIFY_READ, u_src, 1)) { 
         serial_log_error("EFAULT (access_ok failed for first byte)");
         serial_log_exit("strncpy_from_user_safe", -EFAULT);
         return -EFAULT;
@@ -164,19 +166,18 @@ static int strncpy_from_user_safe(const char *u_src, char *k_dst, size_t maxlen)
 
     serial_log_step("Entering copy loop");
     size_t len = 0;
-    while (len < maxlen) { // Ensure we don't write past k_dst's maxlen
+    while (len < maxlen) { 
         char current_char;
-        // Check accessibility for each byte before copying
         if (!access_ok(VERIFY_READ, u_src + len, 1)) {
             serial_log_error("EFAULT (access_ok failed during loop)");
-            k_dst[len] = '\0'; // Null terminate what we have
+            k_dst[len] = '\0'; 
             serial_log_exit("strncpy_from_user_safe", -EFAULT);
             return -EFAULT;
         }
         size_t not_copied = copy_from_user(&current_char, u_src + len, 1);
         if (not_copied > 0) {
             serial_log_error("EFAULT (fault during copy_from_user)");
-            k_dst[len] = '\0'; // Null terminate what we have
+            k_dst[len] = '\0'; 
             serial_log_exit("strncpy_from_user_safe", -EFAULT);
             return -EFAULT;
         }
@@ -190,37 +191,26 @@ static int strncpy_from_user_safe(const char *u_src, char *k_dst, size_t maxlen)
     }
 
     serial_log_step("Loop finished (maxlen reached without null terminator)");
-    k_dst[maxlen - 1] = '\0'; // Force null termination if maxlen hit
+    k_dst[maxlen - 1] = '\0'; 
     serial_log_error("ENAMETOOLONG (or buffer full before null)");
-    serial_log_exit("strncpy_from_user_safe", -ENAMETOOLONG);
+    serial_log_exit("strncpy_from_user_safe", -ENAMETOOLONG); 
     return -ENAMETOOLONG;
 }
-
 
 //-----------------------------------------------------------------------------
 // Syscall Implementations
 //-----------------------------------------------------------------------------
-// (sys_not_implemented, sys_exit_impl, sys_read_impl, sys_write_impl,
-//  sys_open_impl, sys_close_impl, sys_lseek_impl, sys_getpid_impl, sys_puts_impl
-//  are taken from your provided syscall.c - they look reasonable for dispatching
-//  to backend functions like sys_open(), sys_read() from sys_file.c.
-//  The error return values from fs_errno.h might need negation if positive.)
-
-// Assuming the implementations from your syscall.c are used here.
-// For brevity, I'm not re-listing them all but ensuring the structure is clear.
-// Key is that they use the logging helpers and call backend VFS/file functions.
-
-static int sys_not_implemented(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
-    (void)arg1_ebx; (void)arg2_ecx; (void)arg3_edx;
+static int32_t sys_not_implemented(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
+    (void)arg1_ebx; (void)arg2_ecx; (void)arg3_edx; // Suppress unused parameter warnings
     serial_log_entry("sys_not_implemented");
     serial_write("  Syscall Num: "); serial_print_hex(regs->eax); serial_write("\n");
     pcb_t* proc = get_current_process();
     serial_write("  PID: "); serial_print_hex(proc ? proc->pid : 0xFFFFFFFF); serial_write("\n");
     serial_log_exit("sys_not_implemented", -ENOSYS);
-    return -ENOSYS;
+    return -ENOSYS; // Return negative error code
 }
 
-static int sys_exit_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
+static int32_t sys_exit_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
     (void)arg2_ecx; (void)arg3_edx; (void)regs;
     serial_log_entry("sys_exit_impl");
     int exit_code = (int)arg1_ebx;
@@ -231,13 +221,13 @@ static int sys_exit_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx
     return 0; 
 }
 
-static int sys_read_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
+static int32_t sys_read_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
     (void)regs;
     serial_log_entry("sys_read_impl");
     int fd                = (int)arg1_ebx;
     void *user_buf        = (void*)arg2_ecx;
     size_t count          = (size_t)arg3_edx;
-    int ret_val           = 0;
+    int32_t ret_val       = 0;
     ssize_t total_read    = 0;
     char* kbuf            = NULL;
 
@@ -264,11 +254,11 @@ static int sys_read_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx
 
     serial_log_step("Entering read loop");
     while (total_read < (ssize_t)count) {
-        size_t current_chunk_size = MIN(chunk_alloc_size, count - total_read);
+        size_t current_chunk_size = MIN(chunk_alloc_size, count - (size_t)total_read);
         KERNEL_ASSERT(current_chunk_size > 0, "Zero chunk size in read loop");
 
         serial_log_debug("Loop: Calling backend sys_read...");
-        ssize_t bytes_read_this_chunk = sys_read(fd, kbuf, current_chunk_size); // Call actual file system sys_read
+        ssize_t bytes_read_this_chunk = sys_read(fd, kbuf, current_chunk_size);
         serial_write("   sys_read (backend) returned "); serial_print_sdec(bytes_read_this_chunk); serial_write("\n");
 
         if (bytes_read_this_chunk < 0) { 
@@ -279,10 +269,10 @@ static int sys_read_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx
         if (bytes_read_this_chunk == 0) { serial_log_debug("EOF reached by backend sys_read"); break; }
 
         serial_log_debug("Loop: Copying to user...");
-        size_t not_copied = copy_to_user((char*)user_buf + total_read, kbuf, bytes_read_this_chunk);
+        size_t not_copied = copy_to_user((char*)user_buf + total_read, kbuf, (size_t)bytes_read_this_chunk);
         if (not_copied > 0) {
             serial_log_error("EFAULT (copy_to_user failed)");
-            ret_val = -EFAULT; 
+            if (total_read > 0) { ret_val = total_read; } else { ret_val = -EFAULT; }
             goto read_cleanup;
         }
         total_read += bytes_read_this_chunk;
@@ -300,13 +290,13 @@ read_exit:
     return ret_val;
 }
 
-static int sys_write_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
+static int32_t sys_write_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
     (void)regs;
     serial_log_entry("sys_write_impl");
     int fd                = (int)arg1_ebx;
     const void *user_buf  = (const void*)arg2_ecx;
     size_t count          = (size_t)arg3_edx;
-    int ret_val           = 0;
+    int32_t ret_val       = 0;
     ssize_t total_written = 0;
     char* kbuf            = NULL;
 
@@ -333,7 +323,7 @@ static int sys_write_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_ed
 
     serial_log_step("Entering write loop");
     while (total_written < (ssize_t)count) {
-        size_t current_chunk_size = MIN(chunk_alloc_size, count - total_written);
+        size_t current_chunk_size = MIN(chunk_alloc_size, count - (size_t)total_written);
         KERNEL_ASSERT(current_chunk_size > 0, "Zero chunk size in write loop");
 
         serial_log_debug("Loop: Copying from user...");
@@ -344,10 +334,10 @@ static int sys_write_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_ed
             serial_log_debug("Loop: Calling backend sys_write or terminal_write...");
             ssize_t bytes_written_this_chunk;
             if (fd == STDOUT_FILENO || fd == STDERR_FILENO) {
-                terminal_write_bytes(kbuf, copied_this_chunk);
+                terminal_write_bytes(kbuf, copied_this_chunk); 
                 bytes_written_this_chunk = copied_this_chunk;
             } else {
-                bytes_written_this_chunk = sys_write(fd, kbuf, copied_this_chunk); // Call actual file system sys_write
+                bytes_written_this_chunk = sys_write(fd, kbuf, copied_this_chunk); 
             }
             serial_write("   sys_write (backend) / terminal_write returned "); serial_print_sdec(bytes_written_this_chunk); serial_write("\n");
 
@@ -357,15 +347,20 @@ static int sys_write_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_ed
                 goto write_cleanup;
             }
             total_written += bytes_written_this_chunk;
-            if ((size_t)bytes_written_this_chunk < copied_this_chunk) {
-                serial_log_debug("Short write by backend, breaking loop");
-                break;
+            if ((size_t)bytes_written_this_chunk < copied_this_chunk) { 
+                serial_log_debug("Short write by backend, breaking loop"); 
+                break; 
             }
         }
 
-        if (not_copied > 0) { // Fault during copy_from_user
+        if (not_copied > 0) { 
             serial_log_error("EFAULT (copy_from_user failed mid-loop)");
             ret_val = (total_written > 0) ? total_written : -EFAULT;
+            goto write_cleanup;
+        }
+         if (copied_this_chunk == 0 && not_copied == 0 && current_chunk_size > 0) {
+            serial_log_error("Stalled in write loop (0 bytes copied, 0 not_copied)");
+            ret_val = total_written > 0 ? total_written : -EFAULT; 
             goto write_cleanup;
         }
     }
@@ -378,56 +373,56 @@ write_exit:
     return ret_val;
 }
 
-static int sys_open_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
+static int32_t sys_open_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
     (void)regs;
-    serial_write(" FNC_ENTER: sys_open_impl\n");
+    serial_log_entry("sys_open_impl");
     const char *user_pathname = (const char*)arg1_ebx;
     int flags                 = (int)arg2_ecx;
-    int mode                  = (int)arg3_edx; // mode is for O_CREAT
-    int ret_val;
+    int mode                  = (int)arg3_edx; 
+    int32_t ret_val; 
 
-    serial_write("   Args: user_path="); serial_print_hex((uintptr_t)user_pathname);
+    serial_write("  Args: user_path="); serial_print_hex((uintptr_t)user_pathname);
     serial_write(" flags=0x"); serial_print_hex((uint32_t)flags);
     serial_write(" mode=0"); serial_print_hex((uint32_t)mode); serial_write("\n");
 
     char k_pathname[MAX_SYSCALL_STR_LEN];
 
-    serial_write("   STEP: Calling strncpy_from_user_safe...\n");
+    serial_log_step("Calling strncpy_from_user_safe...");
     int copy_err = strncpy_from_user_safe(user_pathname, k_pathname, sizeof(k_pathname));
     if (copy_err != 0) {
-        serial_write("   ERROR: Path copy failed (err="); serial_print_sdec(copy_err); serial_write(")\n");
+        serial_write("  ERROR: Path copy failed (err="); serial_print_sdec(copy_err); serial_write(")\n");
         ret_val = copy_err; goto open_exit;
     }
-    serial_write("   STEP: Path copied successfully: \""); serial_write(k_pathname); serial_write("\"\n");
+    serial_write("  STEP: Path copied successfully: \""); serial_write(k_pathname); serial_write("\"\n");
 
-    serial_write("   STEP: Calling sys_open (backend)...\n");
-    ret_val = sys_open(k_pathname, flags, mode); // Call actual VFS sys_open
+    serial_log_step("Calling sys_open (backend)...");
+    ret_val = sys_open(k_pathname, flags, mode); 
 
 open_exit:
-    serial_write(" FNC_EXIT: sys_open_impl ret="); serial_print_sdec(ret_val); serial_write("\n");
+    serial_log_exit("sys_open_impl", ret_val);
     return ret_val;
 }
 
-static int sys_close_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
+static int32_t sys_close_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
     (void)arg2_ecx; (void)arg3_edx; (void)regs;
     serial_log_entry("sys_close_impl");
     int fd = (int)arg1_ebx;
     serial_write("  Args: fd="); serial_print_sdec(fd); serial_write("\n");
 
     serial_log_step("Calling sys_close (backend)");
-    int ret_val = sys_close(fd); // Call actual VFS sys_close
+    int32_t ret_val = sys_close(fd); 
 
     serial_log_exit("sys_close_impl", ret_val);
     return ret_val;
 }
 
-static int sys_lseek_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
+static int32_t sys_lseek_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
     (void)regs;
     serial_log_entry("sys_lseek_impl");
     int fd         = (int)arg1_ebx;
     off_t offset   = (off_t)arg2_ecx; 
     int whence     = (int)arg3_edx;
-    off_t ret_val_off; // lseek returns off_t
+    off_t ret_val_off; 
 
     serial_write("  Args: fd="); serial_print_sdec(fd);
     serial_write(" offset="); serial_print_sdec((int32_t)offset); 
@@ -439,29 +434,27 @@ static int sys_lseek_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_ed
     }
 
     serial_log_step("Calling sys_lseek (backend)");
-    ret_val_off = sys_lseek(fd, offset, whence); // Call actual VFS sys_lseek
+    ret_val_off = sys_lseek(fd, offset, whence); 
 
-    // lseek returns new offset on success, -1 (cast to off_t) on error and sets errno.
-    // We are returning the value directly. If it's an error, it should be negative.
-    serial_log_exit("sys_lseek_impl", (int)ret_val_off); // Cast to int for logging consistency
-    return (int)ret_val_off; // Cast to int for syscall return type
+    serial_log_exit("sys_lseek_impl", (int32_t)ret_val_off);
+    return (int32_t)ret_val_off; 
 }
 
-static int sys_getpid_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
+static int32_t sys_getpid_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
     (void)arg1_ebx; (void)arg2_ecx; (void)arg3_edx; (void)regs;
     serial_log_entry("sys_getpid_impl");
     pcb_t* current_proc = get_current_process();
     KERNEL_ASSERT(current_proc != NULL, "sys_getpid: No process context");
-    int pid = (int)current_proc->pid;
+    int32_t pid = (int32_t)current_proc->pid; 
     serial_log_exit("sys_getpid_impl", pid);
     return pid;
 }
 
-static int sys_puts_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
+static int32_t sys_puts_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs) {
     (void)arg2_ecx; (void)arg3_edx; (void)regs;
     serial_log_entry("sys_puts_impl");
     const char *user_str_ptr = (const char *)arg1_ebx;
-    int ret_val = 0;
+    int32_t ret_val = 0; 
     serial_write("  Args: user_str="); serial_print_hex((uintptr_t)user_str_ptr); serial_write("\n");
 
     char kbuffer[MAX_PUTS_LEN]; 
@@ -473,9 +466,8 @@ static int sys_puts_impl(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx
     }
 
     serial_log_step("Calling terminal_write");
-    terminal_write(kbuffer); // sys_puts traditionally adds a newline, but this one doesn't seem to.
-                             // The user hello.c adds its own newlines.
-    ret_val = 0; // A positive value or 0 on success is common for puts.
+    terminal_write(kbuffer); 
+    ret_val = 0; 
 
 puts_exit:
     serial_log_exit("sys_puts_impl", ret_val);
@@ -486,12 +478,11 @@ puts_exit:
 //-----------------------------------------------------------------------------
 // Main Syscall Dispatcher
 //-----------------------------------------------------------------------------
-void syscall_dispatcher(isr_frame_t *regs) { // Parameter name changed to 'regs' to match usage
+int32_t syscall_dispatcher(isr_frame_t *regs) { // CORRECTED: Returns int32_t
     serial_write("SD: Enter (v4.9 Debug)\n");
     KERNEL_ASSERT(regs != NULL, "Syscall dispatcher received NULL registers!");
     serial_write("SD: regs* = "); serial_print_hex((uintptr_t)regs); serial_write("\n");
 
-    // Log all incoming registers from the frame
     serial_write("SD: Frame: EAX(syscall#)=0x"); serial_print_hex(regs->eax);
     serial_write(" EBX(arg1)=0x"); serial_print_hex(regs->ebx);
     serial_write(" ECX(arg2)=0x"); serial_print_hex(regs->ecx);
@@ -509,7 +500,7 @@ void syscall_dispatcher(isr_frame_t *regs) { // Parameter name changed to 'regs'
     serial_write(" EIP=0x"); serial_print_hex(regs->eip);
     serial_write(" CS=0x"); serial_print_hex(regs->cs);
     serial_write(" EFLAGS=0x"); serial_print_hex(regs->eflags); serial_write("\n");
-    if ((regs->cs & 3) != 0) { // Check RPL of CS
+    if ((regs->cs & 3) != 0) { 
         serial_write("SD: Frame: U_ESP=0x"); serial_print_hex(regs->useresp);
         serial_write(" U_SS=0x"); serial_print_hex(regs->ss); serial_write("\n");
     }
@@ -529,7 +520,7 @@ void syscall_dispatcher(isr_frame_t *regs) { // Parameter name changed to 'regs'
     serial_write("SD: GetProc -> PID="); serial_print_hex(pid); serial_write("\n");
     if (!current_proc) KERNEL_PANIC_HALT("Syscall executed without process context!");
 
-    int ret_val;
+    int32_t ret_val; 
     syscall_fn_t handler = NULL;
 
     if (syscall_num < MAX_SYSCALLS) {
@@ -537,12 +528,13 @@ void syscall_dispatcher(isr_frame_t *regs) { // Parameter name changed to 'regs'
         serial_write("SD: Handler Lookup: syscall_table["); serial_print_hex(syscall_num);
         serial_write("] = 0x"); serial_print_hex((uintptr_t)handler); serial_write("\n");
 
-        if (handler && handler != sys_not_implemented) {
+        if (handler) { // Removed check against sys_not_implemented to ensure it's called if assigned
             serial_write("SD: Calling Specific Handler for syscall "); serial_print_hex(syscall_num); serial_write("...\n");
-            ret_val = handler(arg1_ebx, arg2_ecx, arg3_edx, regs); // Pass full frame to handler
+            ret_val = handler(arg1_ebx, arg2_ecx, arg3_edx, regs); 
             serial_write("SD: Specific Handler RetVal = "); serial_print_sdec(ret_val); serial_write("\n");
         } else {
-            serial_write("SD: Handler is NULL or sys_not_implemented for syscall "); serial_print_hex(syscall_num); serial_write("\n");
+            // This case should ideally not be reached if table is initialized to sys_not_implemented
+            serial_write("SD: Handler is NULL for syscall "); serial_print_hex(syscall_num); serial_write("\n");
             ret_val = -ENOSYS;
         }
     } else {
@@ -552,7 +544,10 @@ void syscall_dispatcher(isr_frame_t *regs) { // Parameter name changed to 'regs'
     }
 
     serial_write("SD: SetRet: regs->eax will be set to "); serial_print_sdec(ret_val); serial_write("\n");
-    regs->eax = (uint32_t)ret_val; // Store result back into the EAX field of the stack frame
+    regs->eax = (uint32_t)ret_val; 
     serial_write("SD: Exit (Final RetVal="); serial_print_sdec(ret_val);
     serial_write(" stored in regs->eax=0x"); serial_print_hex(regs->eax); serial_write(")\n");
+    
+    return ret_val; // CRITICAL FIX: Return the value for EAX register
 }
+

@@ -509,7 +509,7 @@ uint32_t scheduler_get_ticks(void) {
         scheduler_cleanup_zombies(); // Periodically clean up zombies
 
         // ---> ADDED: Log after cleanup <---
-        serial_write("[Idle Loop] Returned from scheduler_cleanup_zombies. Executing sti; hlt\n");
+        serial_write("[Idle Loop] Returned from scheduler_cleanup_zombies (PID %lu). Executing sti; hlt\n");
         // ---> END ADD <---
 
         asm volatile ("sti; hlt"); // Atomically enable interrupts and halt

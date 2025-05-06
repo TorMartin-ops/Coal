@@ -1,52 +1,49 @@
-/**
- * @file syscall.h
- * @brief System Call Interface Definitions (Uses isr_frame.h)
- */
+#ifndef SYSCALL_H
+#define SYSCALL_H
 
- #ifndef SYSCALL_H
- #define SYSCALL_H
- 
- #include <types.h>     // Include basic types like uint32_t, int etc.
- #include <isr_frame.h> // <<< Include the canonical frame definition
- 
- // --- System Call Numbers ---
- // ... (Keep existing definitions: SYS_EXIT, SYS_READ, etc.) ...
- #define SYS_EXIT     1
- #define SYS_READ     3
- #define SYS_WRITE    4
- #define SYS_OPEN     5
- #define SYS_CLOSE    6
- #define SYS_PUTS     7
- #define SYS_LSEEK    19
- #define SYS_GETPID   20
- #define MAX_SYSCALLS 128
- 
- // --- Syscall Argument Convention ---
- // EAX: Syscall number
- // EBX: Argument 1
- // ECX: Argument 2
- // EDX: Argument 3
- 
- // --- REMOVED syscall_regs_t structure definition ---
- 
- // --- REMOVED typedef syscall_regs_t isr_frame_t; ---
- 
- /**
-  * @brief Function pointer type for system call implementation functions.
-  * Uses the canonical isr_frame_t structure.
-  */
-typedef int (*syscall_fn_t)(uint32_t a1, uint32_t a2, uint32_t a3, isr_frame_t *frame);
- 
- // --- Function Prototypes ---
+#include <libc/stdint.h> // For int32_t, uint32_t
+#include "isr_frame.h"   // For isr_frame_t
+
+// Define MAX_SYSCALLS if not already defined elsewhere (e.g., in a config file)
+// This value should be greater than the highest syscall number used.
+#ifndef MAX_SYSCALLS
+#define MAX_SYSCALLS 256 // Or a more appropriate number for your system
+#endif
+
+// Syscall numbers (ensure these match your definitions in hello.c and elsewhere)
+#define SYS_EXIT    1
+#define SYS_READ    3
+#define SYS_WRITE   4
+#define SYS_OPEN    5
+#define SYS_CLOSE   6
+#define SYS_PUTS    7
+#define SYS_LSEEK   19
+#define SYS_GETPID  20
+// Add other syscall numbers here as needed
+
+/**
+ * @brief Function pointer type for system call handlers.
+ *
+ * Each handler receives the three general-purpose arguments passed in EBX, ECX, EDX,
+ * and a pointer to the full interrupt stack frame for access to all registers.
+ * It should return an int32_t, which will be placed in EAX for the user process.
+ */
+typedef int32_t (*syscall_fn_t)(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *regs);
+
+/**
+ * @brief Initializes the system call dispatch table.
+ * Must be called once during kernel initialization.
+ */
 void syscall_init(void);
- 
- /**
-  * @brief The C entry point for system call dispatching.
-  * Called by the assembly handler (`syscall_handler_asm`).
-  * Receives a pointer to the standard interrupt stack frame.
-  *
-  * @param regs Pointer to the interrupt stack frame (isr_frame_t).
-  */
-void syscall_dispatcher(isr_frame_t *frame);
- 
- #endif // SYSCALL_H
+
+/**
+ * @brief The C-level system call dispatcher.
+ * This function is called from the assembly interrupt handler (int 0x80).
+ * It identifies the syscall number and calls the appropriate handler.
+ *
+ * @param regs Pointer to the interrupt stack frame containing all saved registers.
+ * @return The result of the system call, to be placed in the user's EAX.
+ */
+int32_t syscall_dispatcher(isr_frame_t *regs); // Corrected prototype
+
+#endif // SYSCALL_H

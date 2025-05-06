@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; syscall.asm  – INT 0x80 entry/exit stub for UiAOS (v5.4 - Corrected EAX Debug & Return)
+; syscall.asm  – INT 0x80 entry/exit stub for UiAOS (v5.5 - Final EAX Preservation)
 ; -----------------------------------------------------------------------------
 %define KERNEL_DATA_SELECTOR 0x10
 %define USER_DATA_SELECTOR   0x23
@@ -43,72 +43,74 @@ syscall_handler_asm:
     ; This is the base of our isr_frame_t.
     mov eax, esp            ; Pass &isr_frame_t (current ESP) as argument
     push eax                ; Push argument onto stack
-    call syscall_dispatcher   ; syscall_dispatcher will return its result in EAX
+    call syscall_dispatcher   ; syscall_dispatcher will return its result in EAX (e.g., 0 for FD)
     add  esp, 4             ; Clean up argument from stack
 
     ; At this point, EAX holds the true return value from syscall_dispatcher.
 
     ; --- (Optional) Trace the return value from C dispatcher ---
-    ; To safely print EAX, we must preserve it if serial_print_hex_asm modifies EAX.
-    push eax                  ; Save the true return value
+    push eax                ; Save the true return value (e.g. 0)
     
-    ; Now print the saved value. We can use EBX as a temporary for the value to print.
-    mov ebx, [esp + 0]        ; Get the pushed EAX into EBX
+    mov ebx, [esp + 0]      ; Get the pushed EAX into EBX for printing
+                            ; (stack is [true_eax_val][other_stuff_from_pusha...])
     
-    pushad                    ; Save all registers for the serial printing block
+    pushad                  ; Save all registers for the serial printing block
     mov al, '['
     call serial_putc_asm
-    mov al, 'R'               ; Tag for "Return from C"
+    mov al, 'R'             ; Tag for "Return from C"
     call serial_putc_asm
     mov al, ':'
     call serial_putc_asm
-    mov eax, ebx              ; Load value to print into EAX (for serial_print_hex_asm)
-    call serial_print_hex_asm
+    mov eax, ebx            ; Load value to print (original true_eax_val) into EAX
+    call serial_print_hex_asm ; This call uses EAX
     mov al, ']'
     call serial_putc_asm
     mov al, ' '
     call serial_putc_asm
-    popad                     ; Restore registers clobbered by this print block
+    popad                   ; Restore registers clobbered by this print block
 
-    pop eax                   ; Restore the true return value into EAX
+    pop eax                 ; Restore the true return value into EAX (e.g. 0)
 
     ; --- 6) Write the true return value (now in EAX) back into the saved EAX slot in PUSHA frame ---
     ; The PUSHA frame is on the stack. ESP points to the saved EDI.
-    ; Offset of saved EAX within PUSHA frame (when ESP points to EDI):
-    ; EDI, ESI, EBP, ESP_dummy, EBX, EDX, ECX, EAX
-    ;  0    4    8      12      16   20   24   28
-    mov [esp + 28], eax
+    ; Offset of saved EAX within PUSHA frame (when ESP points to EDI) is 28.
+    mov [esp + 28], eax     ; EAX (e.g. 0) is stored into the frame for popa
 
     ; --- 7) Restore registers and segments ---
-    popa    ; EDI, ESI, EBP, ESP_orig, EBX, EDX, ECX, EAX (EAX now has the syscall result)
+    popa    ; EDI, ESI, EBP, ESP_orig, EBX, EDX, ECX, EAX (EAX now has the syscall result, e.g. 0)
     
     ; (Optional) Log EAX after popa to confirm it's correct
-    pushad
-    mov ebx, eax ; Save EAX
+    ; EAX currently holds the correct syscall return value.
+    push eax                ; <<<< SAVE EAX (syscall result from popa)
+    pushad                  ; Save all other registers
+    ; To print the EAX saved above, it's now at [esp + 32] (28 for pushad's eax + 4 for our push eax)
+    mov ebx, [esp + 32]     ; Get the EAX we pushed before pushad into EBX
     mov al, '['
     call serial_putc_asm
-    mov al, 'L' ; Loaded EAX
+    mov al, 'L'             ; Loaded EAX
     call serial_putc_asm
     mov al, ':'
     call serial_putc_asm
-    mov eax, ebx
-    call serial_print_hex_asm
+    mov eax, ebx            ; Load value to print into EAX for serial_print_hex_asm
+    call serial_print_hex_asm ; This call uses EAX
     mov al, ']'
     call serial_putc_asm
     mov al, ' '
     call serial_putc_asm
-    popad
+    popad                   ; Restore all registers (EAX is whatever serial_print_hex_asm left it as)
+    pop eax                 ; <<<< RESTORE EAX (the correct syscall result)
 
     pop  gs
     pop  fs
     pop  es
     pop  ds
-
     add  esp, 8             ; Remove int_no, err_code from stack
 
     ; (Optional) Trace '>' for exit
+    push eax                ; <<<< SAVE EAX (syscall result) AGAIN
     mov al, '>'
     call serial_putc_asm
+    pop eax                 ; <<<< RESTORE EAX (syscall result) AGAIN
 
     ; --- 8) Return to user mode ---
-    iret
+    iret                    ; EAX now correctly holds the syscall result
