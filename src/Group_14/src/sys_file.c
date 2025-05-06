@@ -76,8 +76,8 @@
              return fd; // Return the index
          }
      }
-     serial_write("      assign_fd_locked: No free slots found (-EMFILE).\n"); // Debug log
-     return -EMFILE; // No free slots
+     serial_write("      assign_fd_locked: No free slots found (EMFILE).\n"); // Debug log
+     return EMFILE; // No free slots
  }
  
  /**
@@ -116,8 +116,8 @@
     pcb_t *current_proc = get_current_process();
     if (!current_proc) {
         serial_write("  ERROR: No current process context.\n");
-        serial_write(" FNC_EXIT: sys_open ret="); serial_print_sdec(-EFAULT); serial_write("\n");
-        return -EFAULT;
+        serial_write(" FNC_EXIT: sys_open ret="); serial_print_sdec(EFAULT); serial_write("\n");
+        return EFAULT;
     }
     KERNEL_ASSERT(pathname != NULL, "sys_open called with NULL kernel pathname");
     serial_write("   Current PID="); serial_print_hex(current_proc->pid); serial_write("\n");
@@ -138,15 +138,15 @@
         serial_write("  ERROR: kmalloc failed for sys_file_t.\n");
         serial_write("   STEP: Cleaning up vfile due to alloc failure...\n");
         vfs_close(vfile);
-        serial_write(" FNC_EXIT: sys_open ret="); serial_print_sdec(-ENOMEM); serial_write("\n");
-        return -ENOMEM;
+        serial_write(" FNC_EXIT: sys_open ret="); serial_print_sdec(ENOMEM); serial_write("\n");
+        return ENOMEM;
     }
     sf->vfs_file = vfile;
     sf->flags = flags;
     serial_write("   sys_file_t allocated and populated at "); serial_print_hex((uintptr_t)sf); serial_write("\n");
 
     serial_write("   STEP: Allocating file descriptor...\n");
-    int fd = -EMFILE;
+    int fd = EMFILE;
 
     serial_write("    Acquiring fd_table_lock...\n");
     uintptr_t irq_flags = spinlock_acquire_irqsave(&current_proc->fd_table_lock);
@@ -186,15 +186,15 @@
  
      if (kbuf == NULL && count != 0) {
          serial_write("  ERROR: NULL kernel buffer with non-zero count.\n"); // Use direct serial_write
-         serial_write(" FNC_EXIT: sys_read ret="); serial_print_sdec(-EFAULT); serial_write("\n");
-         return -EFAULT;
+         serial_write(" FNC_EXIT: sys_read ret="); serial_print_sdec(EFAULT); serial_write("\n");
+         return EFAULT;
      }
  
      pcb_t *current_proc = get_current_process();
      if (!current_proc) {
          serial_write("  ERROR: No current process context.\n"); // Use direct serial_write
-         serial_write(" FNC_EXIT: sys_read ret="); serial_print_sdec(-EFAULT); serial_write("\n");
-         return -EFAULT;
+         serial_write(" FNC_EXIT: sys_read ret="); serial_print_sdec(EFAULT); serial_write("\n");
+         return EFAULT;
      }
      serial_write("   Current PID="); serial_print_hex(current_proc->pid); serial_write("\n");
  
@@ -206,8 +206,8 @@
  
      if (!sf) {
          serial_write("  ERROR: Invalid file descriptor.\n"); // Use direct serial_write
-         serial_write(" FNC_EXIT: sys_read ret="); serial_print_sdec(-EBADF); serial_write("\n");
-         return -EBADF;
+         serial_write(" FNC_EXIT: sys_read ret="); serial_print_sdec(EBADF); serial_write("\n");
+         return EBADF;
      }
  
      serial_write("   STEP: Checking permissions...\n"); // Use direct serial_write
@@ -216,8 +216,8 @@
      serial_write(" AccessMode=0x"); serial_print_hex((uint32_t)access_mode); serial_write("\n");
      if (access_mode != O_RDONLY && access_mode != O_RDWR) {
          serial_write("  ERROR: File not opened for reading.\n"); // Use direct serial_write
-         serial_write(" FNC_EXIT: sys_read ret="); serial_print_sdec(-EACCES); serial_write("\n");
-         return -EACCES;
+         serial_write(" FNC_EXIT: sys_read ret="); serial_print_sdec(EACCES); serial_write("\n");
+         return EACCES;
      }
      if (count == 0) {
          serial_write("   STEP: Count is 0, returning 0.\n"); // Use direct serial_write
@@ -246,15 +246,15 @@
  
      if (kbuf == NULL && count != 0) {
          serial_write("  ERROR: NULL kernel buffer with non-zero count.\n"); // Use direct serial_write
-         serial_write(" FNC_EXIT: sys_write ret="); serial_print_sdec(-EFAULT); serial_write("\n");
-         return -EFAULT;
+         serial_write(" FNC_EXIT: sys_write ret="); serial_print_sdec(EFAULT); serial_write("\n");
+         return EFAULT;
      }
  
      pcb_t *current_proc = get_current_process();
      if (!current_proc) {
          serial_write("  ERROR: No current process context.\n"); // Use direct serial_write
-         serial_write(" FNC_EXIT: sys_write ret="); serial_print_sdec(-EFAULT); serial_write("\n");
-         return -EFAULT;
+         serial_write(" FNC_EXIT: sys_write ret="); serial_print_sdec(EFAULT); serial_write("\n");
+         return EFAULT;
      }
      serial_write("   Current PID="); serial_print_hex(current_proc->pid); serial_write("\n");
  
@@ -266,8 +266,8 @@
  
      if (!sf) {
          serial_write("  ERROR: Invalid file descriptor.\n"); // Use direct serial_write
-         serial_write(" FNC_EXIT: sys_write ret="); serial_print_sdec(-EBADF); serial_write("\n");
-         return -EBADF;
+         serial_write(" FNC_EXIT: sys_write ret="); serial_print_sdec(EBADF); serial_write("\n");
+         return EBADF;
      }
  
      serial_write("   STEP: Checking permissions...\n"); // Use direct serial_write
@@ -276,8 +276,8 @@
      serial_write(" AccessMode=0x"); serial_print_hex((uint32_t)access_mode); serial_write("\n");
      if (access_mode != O_WRONLY && access_mode != O_RDWR) {
          serial_write("  ERROR: File not opened for writing.\n"); // Use direct serial_write
-         serial_write(" FNC_EXIT: sys_write ret="); serial_print_sdec(-EACCES); serial_write("\n");
-         return -EACCES;
+         serial_write(" FNC_EXIT: sys_write ret="); serial_print_sdec(EACCES); serial_write("\n");
+         return EACCES;
      }
      if (count == 0) {
          serial_write("   STEP: Count is 0, returning 0.\n"); // Use direct serial_write
@@ -304,8 +304,8 @@
       pcb_t *current_proc = get_current_process();
       if (!current_proc) {
           serial_write("  ERROR: No current process context.\n"); // Use direct serial_write
-          serial_write(" FNC_EXIT: sys_close ret="); serial_print_sdec(-EFAULT); serial_write("\n");
-          return -EFAULT;
+          serial_write(" FNC_EXIT: sys_close ret="); serial_print_sdec(EFAULT); serial_write("\n");
+          return EFAULT;
       }
       serial_write("   Current PID="); serial_print_hex(current_proc->pid); serial_write("\n");
  
@@ -319,8 +319,8 @@
       if (fd < 0 || fd >= MAX_FD) {
           serial_write("  ERROR: FD out of bounds.\n"); // Use direct serial_write
           spinlock_release_irqrestore(&current_proc->fd_table_lock, irq_flags);
-          serial_write(" FNC_EXIT: sys_close ret="); serial_print_sdec(-EBADF); serial_write("\n");
-          return -EBADF;
+          serial_write(" FNC_EXIT: sys_close ret="); serial_print_sdec(EBADF); serial_write("\n");
+          return EBADF;
       }
       sf_to_close = current_proc->fd_table[fd];
       serial_write("   Value read: "); serial_print_hex((uintptr_t)sf_to_close); serial_write("\n");
@@ -328,8 +328,8 @@
       if (!sf_to_close) {
           serial_write("  ERROR: FD not open.\n"); // Use direct serial_write
           spinlock_release_irqrestore(&current_proc->fd_table_lock, irq_flags);
-          serial_write(" FNC_EXIT: sys_close ret="); serial_print_sdec(-EBADF); serial_write("\n");
-          return -EBADF;
+          serial_write(" FNC_EXIT: sys_close ret="); serial_print_sdec(EBADF); serial_write("\n");
+          return EBADF;
       }
  
       serial_write("   STEP: Clearing FD table entry...\n"); // Use direct serial_write
@@ -368,8 +368,8 @@
        pcb_t *current_proc = get_current_process();
        if (!current_proc) {
            serial_write("  ERROR: No current process context.\n"); // Use direct serial_write
-           serial_write(" FNC_EXIT: sys_lseek ret="); serial_print_sdec(-EFAULT); serial_write("\n");
-           return -EFAULT;
+           serial_write(" FNC_EXIT: sys_lseek ret="); serial_print_sdec(EFAULT); serial_write("\n");
+           return EFAULT;
        }
        serial_write("   Current PID="); serial_print_hex(current_proc->pid); serial_write("\n");
  
@@ -381,8 +381,8 @@
  
        if (!sf) {
            serial_write("  ERROR: Invalid file descriptor.\n"); // Use direct serial_write
-           serial_write(" FNC_EXIT: sys_lseek ret="); serial_print_sdec(-EBADF); serial_write("\n");
-           return -EBADF;
+           serial_write(" FNC_EXIT: sys_lseek ret="); serial_print_sdec(EBADF); serial_write("\n");
+           return EBADF;
        }
  
        serial_write("   STEP: Validating whence...\n"); // Use direct serial_write

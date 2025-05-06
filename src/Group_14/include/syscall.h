@@ -35,10 +35,10 @@
   * @brief Function pointer type for system call implementation functions.
   * Uses the canonical isr_frame_t structure.
   */
-typedef int (*syscall_fn_t)(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_edx, isr_frame_t *full_frame);
+typedef int (*syscall_fn_t)(uint32_t a1, uint32_t a2, uint32_t a3, isr_frame_t *frame);
  
  // --- Function Prototypes ---
- void syscall_init(void);
+void syscall_init(void);
  
  /**
   * @brief The C entry point for system call dispatching.
@@ -47,6 +47,6 @@ typedef int (*syscall_fn_t)(uint32_t arg1_ebx, uint32_t arg2_ecx, uint32_t arg3_
   *
   * @param regs Pointer to the interrupt stack frame (isr_frame_t).
   */
-  void syscall_dispatcher(isr_frame_t *regs);
+void syscall_dispatcher(isr_frame_t *frame);
  
  #endif // SYSCALL_H

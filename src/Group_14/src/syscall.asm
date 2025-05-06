@@ -1,96 +1,114 @@
 ; -----------------------------------------------------------------------------
-; syscall.asm  – INT 0x80 entry/exit stub for UiAOS            (v5.0 2025-05-06)
+; syscall.asm  – INT 0x80 entry/exit stub for UiAOS (v5.4 - Corrected EAX Debug & Return)
 ; -----------------------------------------------------------------------------
-;  * Builds the canonical isr_frame_t stack frame expected by syscall_dispatcher
-;  * Executes in CPL=0, then returns to CPL=3 with IRET.
-;  * Guarantees the user sees:
-;        - Correct GP registers (incl. EBX) untouched except for EAX = retval
-;        - User   DS/ES/FS/GS = USER_DATA_SELECTOR (0x23) when back in ring 3
-;  * Works for both 32-bit GAS (AT&T) or NASM (Intel) syntaxes.  Here we use
-;    NASM/Intel because the rest of your tree is NASM.
-;
-;  On entry (hardware already pushed):            On exit (toward IRET):
-;      SS  |            |  <-- only if CPL change     |  (not modified here)
-;      ESP |   (lower)  |                             |
-;      EFLAGS                                         |
-;      CS                                             |
-;      EIP  <-- ESP when we start                     |
-;  We then build:
-;      err_code  (dummy 0)
-;      int_no    (0x80)
-;      DS,ES,FS,GS  (user values)
-;      pusha        (EDI .. EAX)
-;  and hand the pointer of EDI to C.
-;
-;  Selector definitions ------------------------------------------------------
-%define KERNEL_DATA_SELECTOR 0x10     ; as in your GDT (ring 0, RW data)
-%define USER_DATA_SELECTOR   0x23     ; ring 3, RW data   (index 0x04 | RPL3)
+%define KERNEL_DATA_SELECTOR 0x10
+%define USER_DATA_SELECTOR   0x23
 
-extern  syscall_dispatcher            ; void C-function(isr_frame_t *regs)
+    extern syscall_dispatcher
+    extern serial_putc_asm
+    extern serial_print_hex_asm
 
-section .text
-global  syscall_handler_asm
+    section .text
+    global syscall_handler_asm
 
-; -----------------------------------------------------------------------------
-; INT 0x80 handler
-; -----------------------------------------------------------------------------
 syscall_handler_asm:
-    ; 1) Make room so the stack matches an exception frame with an error-code.
-    push    dword 0            ; dummy error code
+    ; --- 1) Push error code (dummy) and int_no ---
+    push dword 0            ; err_code = 0
+    push dword 0x80         ; int_no   = 0x80
 
-    ; 2) Push the interrupt/vector number so the C side can tell who called it.
-    push    dword 0x80         ; int_no
+    ; --- 2) Save user segments ---
+    push ds
+    push es
+    push fs
+    push gs
 
-    ; 3) Save user segment selectors – we **do not** reload them later because
-    ;    loading a ring-3 selector in CPL0 and returning with them still active
-    ;    triggers #GP on user access (their DPL<-->CPL rules).  Instead we’ll
-    ;    discard them and put 0x23 back right before IRET.
-    push    ds
-    push    es
-    push    fs
-    push    gs
+    ; --- 3) Push general-purpose registers ---
+    pusha   ; Pushes: EDI, ESI, EBP, ESP_orig, EBX, EDX, ECX, EAX
 
-    ; 4) Save general-purpose registers
-    pusha                       ; pushes (EDI,ESI,EBP,ESP-orig,EBX,EDX,ECX,EAX)
-    ; At this point ESP -> saved EDI (lowest address inside pusha block)
+    ; (Optional) Simple trace: print '<' to indicate entry
+    ; This call must preserve EAX if it's to be used immediately after for something else,
+    ; or ensure EAX is reloaded if necessary. Here, EAX from PUSHA is fine to be clobbered.
+    mov al, '<'
+    call serial_putc_asm
 
-    ; -------------------------------------------------------------------------
-    ; Switch to kernel data segments so C may freely touch memory below 0xC0000000
-    mov     ax, KERNEL_DATA_SELECTOR
-    mov     ds, ax
-    mov     es, ax
-    mov     fs, ax
-    mov     gs, ax
+    ; --- 4) Switch to kernel data segments ---
+    mov ax, KERNEL_DATA_SELECTOR
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
 
-    ; -------------------------------------------------------------------------
-    ; Call C dispatcher – arg0 = pointer to isr_frame_t (saved edi address)
-    mov     eax, esp            ; eax = &regs (isr_frame_t *)
-    push    eax
-    call    syscall_dispatcher  ; on return: eax = retval, regs->eax set too
-    add     esp, 4              ; pop argument
+    ; --- 5) Call C dispatcher ---
+    ; ESP currently points to the start of the PUSHA frame (saved EDI).
+    ; This is the base of our isr_frame_t.
+    mov eax, esp            ; Pass &isr_frame_t (current ESP) as argument
+    push eax                ; Push argument onto stack
+    call syscall_dispatcher   ; syscall_dispatcher will return its result in EAX
+    add  esp, 4             ; Clean up argument from stack
 
-    ; Store return value into the saved EAX slot so popa will restore it.
-    mov     [esp + 28], eax     ; 28 = offset of saved EAX inside pusha area
+    ; At this point, EAX holds the true return value from syscall_dispatcher.
 
-    ; -------------------------------------------------------------------------
-    ; Restore caller-saved GP registers
-    popa                        ; pops into EAX .. EDI (EAX gets retval)
+    ; --- (Optional) Trace the return value from C dispatcher ---
+    ; To safely print EAX, we must preserve it if serial_print_hex_asm modifies EAX.
+    push eax                  ; Save the true return value
+    
+    ; Now print the saved value. We can use EBX as a temporary for the value to print.
+    mov ebx, [esp + 0]        ; Get the pushed EAX into EBX
+    
+    pushad                    ; Save all registers for the serial printing block
+    mov al, '['
+    call serial_putc_asm
+    mov al, 'R'               ; Tag for "Return from C"
+    call serial_putc_asm
+    mov al, ':'
+    call serial_putc_asm
+    mov eax, ebx              ; Load value to print into EAX (for serial_print_hex_asm)
+    call serial_print_hex_asm
+    mov al, ']'
+    call serial_putc_asm
+    mov al, ' '
+    call serial_putc_asm
+    popad                     ; Restore registers clobbered by this print block
 
-    ; -------------------------------------------------------------------------
-    ; Discard the four user segment dwords we pushed (we will reload fresh ones)
-    add     esp, 16             ; skip GS,FS,ES,DS that we saved
+    pop eax                   ; Restore the true return value into EAX
 
-    ; Pop int_no + err_code (we do not need them anymore)
-    add     esp, 8
+    ; --- 6) Write the true return value (now in EAX) back into the saved EAX slot in PUSHA frame ---
+    ; The PUSHA frame is on the stack. ESP points to the saved EDI.
+    ; Offset of saved EAX within PUSHA frame (when ESP points to EDI):
+    ; EDI, ESI, EBP, ESP_dummy, EBX, EDX, ECX, EAX
+    ;  0    4    8      12      16   20   24   28
+    mov [esp + 28], eax
 
-    ; -------------------------------------------------------------------------
-    ; Load user-mode data selectors so that ring-3 code has valid segments.
-    mov     ax, USER_DATA_SELECTOR
-    mov     ds, ax
-    mov     es, ax
-    mov     fs, ax
-    mov     gs, ax
+    ; --- 7) Restore registers and segments ---
+    popa    ; EDI, ESI, EBP, ESP_orig, EBX, EDX, ECX, EAX (EAX now has the syscall result)
+    
+    ; (Optional) Log EAX after popa to confirm it's correct
+    pushad
+    mov ebx, eax ; Save EAX
+    mov al, '['
+    call serial_putc_asm
+    mov al, 'L' ; Loaded EAX
+    call serial_putc_asm
+    mov al, ':'
+    call serial_putc_asm
+    mov eax, ebx
+    call serial_print_hex_asm
+    mov al, ']'
+    call serial_putc_asm
+    mov al, ' '
+    call serial_putc_asm
+    popad
 
-    ; -------------------------------------------------------------------------
-    ; Return to the userspace – CPU will pop CS,EIP,EFLAGS,SS,ESP automatically.
+    pop  gs
+    pop  fs
+    pop  es
+    pop  ds
+
+    add  esp, 8             ; Remove int_no, err_code from stack
+
+    ; (Optional) Trace '>' for exit
+    mov al, '>'
+    call serial_putc_asm
+
+    ; --- 8) Return to user mode ---
     iret
