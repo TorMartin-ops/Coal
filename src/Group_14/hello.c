@@ -1,15 +1,16 @@
 /**
  * @file hello.c
- * @brief Robust User Space Test Program for UiAOS (v1.5.4 - Syscall Fix 2)
+ * @brief Robust User Space Test Program for UiAOS (v1.5.5 - Syscall Constraint Fix)
  *
  * Demonstrates robust syscall usage including error checking and
  * proper resource management (file descriptors). Addresses potential
  * compiler scope issues.
  *
- * v1.5.4 Changes:
- * - CORRECTED: Removed "ebx", "ecx", "edx" from the clobber list in the
- * inline assembly syscall wrapper, resolving the "impossible constraints"
- * build error. Input constraints are sufficient to reserve these registers.
+ * v1.5.5 Changes:
+ * - CORRECTED: Updated inline assembly constraints for the syscall wrapper
+ * to use the "0" input/output constraint for EAX and standard input
+ * constraints for EBX, ECX, EDX. Removed ebx, ecx, edx from clobbers.
+ * This resolves the runtime FD corruption issue in PIC/PIE code.
  * - Retained logic from 1.5.3 ensuring correct FD usage after open.
  */
 
@@ -92,21 +93,22 @@ typedef _Bool               bool;
 #define INT_STR_BUFFER_SIZE 12 // Sufficient for 32-bit signed int + sign + null
 
 // ==========================================================================
-// Syscall Wrapper Function - CORRECTED (v1.5.4)
+// Syscall Wrapper Function - CORRECTED (v1.5.5)
 // ==========================================================================
 static inline int syscall(int num, int arg1, int arg2, int arg3) {
     int ret;
-    // Standard syscall invocation via INT 0x80
-    // EAX = syscall number
-    // EBX, ECX, EDX = arguments 1, 2, 3
-    // Return value in EAX
+    // Use "0" constraint for EAX: signifies it's the same register for
+    // both the 0th input operand (num) and the 0th output operand (ret).
+    // Use standard input constraints for b, c, d.
+    // "memory" and "cc" clobbers are sufficient.
     asm volatile (
         "int $0x80"
-        : "=a" (ret)  // Output: EAX ('a') -> ret
-        : "a" (num), "b" (arg1), "c" (arg2), "d" (arg3) // Inputs: EAX, EBX, ECX, EDX
-        // === FIX v1.5.4: REMOVED "ebx", "ecx", "edx" FROM CLOBBER LIST ===
-        // Input constraints suffice. memory/cc are still needed.
-        : "memory", "cc"
+        : "=a" (ret)  // Output 0: EAX ('a') -> ret
+        : "0" (num),  // Input 0: num -> EAX ('a') (Use '0' to match output register)
+          "b" (arg1), // Input 1: arg1 -> EBX ('b')
+          "c" (arg2), // Input 2: arg2 -> ECX ('c')
+          "d" (arg3)  // Input 3: arg3 -> EDX ('d')
+        : "memory", "cc" // Clobbers memory and flags
     );
     return ret;
 }
@@ -123,7 +125,7 @@ size_t strlen(const char *s) {
 // Prints a null-terminated string using SYS_PUTS
 void print_string(const char *s) {
     if (!s) return;
-    syscall(SYS_PUTS, (int)s, 0, 0); // Use the kernel's string printing syscall
+    syscall(SYS_PUTS, (int)(uintptr_t)s, 0, 0); // Cast pointer via uintptr_t
 }
 
 // Simple unsigned int to ASCII (decimal), returns pointer *within* buf
@@ -212,7 +214,7 @@ int main() {
     int syscall_ret_val; // Temporary variable to hold syscall return value
 
 
-    print_string("--- User Program Started v1.5.4 (Syscall Fix 2) ---\n");
+    print_string("--- User Program Started v1.5.5 (Syscall Constraint Fix) ---\n");
 
     // --- Get Process ID ---
     syscall_ret_val = syscall(SYS_GETPID, 0, 0, 0);
@@ -229,7 +231,7 @@ int main() {
 
     // 1. Create/Truncate and Open for Writing
     print_string("Opening for writing (O_CREAT | O_WRONLY | O_TRUNC)...\n");
-    syscall_ret_val = syscall(SYS_OPEN, (int)filename, O_CREAT | O_WRONLY | O_TRUNC, DEFAULT_FILE_MODE);
+    syscall_ret_val = syscall(SYS_OPEN, (int)(uintptr_t)filename, O_CREAT | O_WRONLY | O_TRUNC, DEFAULT_FILE_MODE); // Cast via uintptr_t
     fd_write = syscall_ret_val; // Store return value
     print_string("  -> syscall(SYS_OPEN) returned: "); print_integer(fd_write); print_string("\n"); // Print stored value
     if (fd_write < 0) {
@@ -254,7 +256,7 @@ int main() {
     // 3. Write Data to File
     print_string("Writing data: \""); print_string(write_buf); print_string("\" (Length: "); print_integer((int)total_write_len); print_string(")\n");
     print_string("  -> Using fd: "); print_integer(fd_write); print_string(" for write\n"); // Correctly print fd_write
-    syscall_ret_val = syscall(SYS_WRITE, fd_write, (int)write_buf, (int)total_write_len); // Pass fd_write
+    syscall_ret_val = syscall(SYS_WRITE, fd_write, (int)(uintptr_t)write_buf, (int)total_write_len); // Pass fd_write, Cast via uintptr_t
     bytes_written = syscall_ret_val; // Store return value
     print_string("  -> syscall(SYS_WRITE) returned: "); print_integer(bytes_written); print_string("\n"); // Print stored value
     if (bytes_written < 0) {
@@ -276,7 +278,7 @@ int main() {
 
     // 5. Re-open for Reading
     print_string("Re-opening file for reading (O_RDONLY)...\n");
-    syscall_ret_val = syscall(SYS_OPEN, (int)filename, O_RDONLY, 0); // Mode not needed for RDONLY
+    syscall_ret_val = syscall(SYS_OPEN, (int)(uintptr_t)filename, O_RDONLY, 0); // Mode not needed for RDONLY, Cast via uintptr_t
     fd_read = syscall_ret_val; // Store return value
     print_string("  -> syscall(SYS_OPEN) returned: "); print_integer(fd_read); print_string("\n"); // Print stored value
     if (fd_read < 0) {
@@ -288,7 +290,7 @@ int main() {
     print_string("Reading data from file...\n");
     for(size_t i=0; i<sizeof(read_buf); ++i) { read_buf[i] = 0; } // Clear buffer
     print_string("  -> Using fd: "); print_integer(fd_read); print_string(" for read\n"); // Correctly print fd_read
-    syscall_ret_val = syscall(SYS_READ, fd_read, (int)read_buf, sizeof(read_buf) - 1); // Pass fd_read
+    syscall_ret_val = syscall(SYS_READ, fd_read, (int)(uintptr_t)read_buf, sizeof(read_buf) - 1); // Pass fd_read, Cast via uintptr_t
     bytes_read = syscall_ret_val; // Store return value
     print_string("  -> syscall(SYS_READ) returned: "); print_integer(bytes_read); print_string("\n"); // Print stored value
     if (bytes_read < 0) {
