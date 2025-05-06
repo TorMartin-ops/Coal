@@ -37,17 +37,23 @@ static inline int32_t syscall3(int32_t num,
                                int32_t arg3)
 {
     int32_t ret;
+
     __asm__ volatile (
-        "pushl %%ebx\n\t"
-        "movl  %2,  %%ebx\n\t"   /* EBX = arg1 (from *memory*) */
-        "int   $0x80\n\t"
+        "pushl %%ebx      \n\t"   /* save EBX for PIC */
+        "movl  %2, %%ebx  \n\t"   /* EBX = arg1       */
+        "int   $0x80      \n\t"
         "popl  %%ebx"
-        : "=a"(ret)
-        : "0"(num), "m"(arg1), "c"(arg2), "d"(arg3)
-        : "cc", "memory"
+        : "=a"(ret)                       /* EAX <- return value   */
+        : "0"(num),                       /* EAX = syscall number  */
+          "r"(arg1),                      /* will be moved to EBX  */
+          "c"(arg2),                      /* ECX = arg2            */
+          "d"(arg3)                       /* EDX = arg3            */
+        : "cc", "memory",
+          "ebx"                           /* only EBX is clobbered */
     );
     return ret;
 }
+
 
 /* ==== thin syscall helpers ======================================= */
 #define sys_exit(x)        syscall3(SYS_EXIT , (x), 0, 0)
