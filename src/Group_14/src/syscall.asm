@@ -1,8 +1,7 @@
 ; -----------------------------------------------------------------------------
 ; syscall.asm -- INT 0x80 Entry/Exit Stub for UiAOS
 ; Version: 6.0
-; Author: Tor Martin Kohle, Group 14
-;
+; Author: Tor Martin Kohle
 ; Purpose:
 ;   Provides the low-level assembly interface for system calls initiated via
 ;   the INT 0x80 software interrupt. It constructs the C-callable stack frame

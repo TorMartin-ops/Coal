@@ -1,7 +1,7 @@
 /**
  * @file sys_file.c
  * @brief Kernel-Level File Operation Primitives
- * @author Tor Martin Kohle, Group 14
+ * @author Tor Martin Kohle
  * @version 2.0
  *
  * Implements the kernel-side backend for file-related system calls. This layer

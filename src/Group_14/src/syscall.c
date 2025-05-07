@@ -2,7 +2,7 @@
  * @file syscall.c
  * @brief System Call Dispatcher and Implementations
  * @version 5.0
- * @author Tor Martin Kohle, Group 14
+ * @author Tor Martin Kohle
  *
  * Implements the C-level system call dispatcher and backend logic for
  * essential syscalls (open, read, write, close, exit, etc.). This layer
