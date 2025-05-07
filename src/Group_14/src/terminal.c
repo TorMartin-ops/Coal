@@ -594,81 +594,104 @@
  /* Interactive Input - Keyboard Event Handler                                */
  /* ------------------------------------------------------------------------- */
  void terminal_handle_key_event(const KeyEvent event) {
-     if (event.action != KEY_PRESS) {
-         return;
-     }
- 
-     uintptr_t line_buf_irq_flags = spinlock_acquire_irqsave(&s_line_buffer_lock);
-     uintptr_t term_out_irq_flags;
- 
-     char char_to_add = 0;
- 
-     if (event.code >= ' ' && event.code <= '~') {
-         // Use the global apply_modifiers_extended from keyboard.h (defined in keyboard.c)
-         char_to_add = apply_modifiers_extended((char)event.code, event.modifiers);
-     } else if (event.code == '\n') { // Use KeyCode definition if KEY_ENTER is used in keymap
-         char_to_add = '\n';
-     } else if (event.code == KEY_BACKSPACE) {
-         char_to_add = '\b';
-     }
- 
- 
-     if (char_to_add != 0) {
-         if (char_to_add == '\n') {
-             s_line_buffer[s_line_buffer_len] = '\0';
-             s_line_ready_for_read = true;
-         
-             serial_write("[Terminal] Line ready: '");
-             serial_write(s_line_buffer); 
-             serial_write("', len: ");
-             char len_buf[12]; 
-             itoa_simple(s_line_buffer_len, len_buf, 10); 
-             serial_write(len_buf);
-             serial_write("\n");
- 
- 
-             if (s_waiting_task) {
-                 serial_write("[Terminal] Waking up task PID ");
-                 serial_print_hex(s_waiting_task->pid); 
-                 serial_write("\n");
-                 
-                 tcb_t* task_to_unblock = (tcb_t*)s_waiting_task; 
-                 s_waiting_task = NULL; 
- 
-                 scheduler_unblock_task(task_to_unblock);
-             }
-             
-             term_out_irq_flags = spinlock_acquire_irqsave(&terminal_lock);
-             terminal_putchar_internal('\n'); 
-             update_hardware_cursor();
-             spinlock_release_irqrestore(&terminal_lock, term_out_irq_flags);
- 
-         } else if (char_to_add == '\b') {
-             if (s_line_buffer_len > 0) {
-                 s_line_buffer_len--;
-                 s_line_buffer[s_line_buffer_len] = '\0';
- 
-                 term_out_irq_flags = spinlock_acquire_irqsave(&terminal_lock);
-                 terminal_putchar_internal('\b');
-                 terminal_putchar_internal(' ');
-                 terminal_putchar_internal('\b');
-                 update_hardware_cursor();
-                 spinlock_release_irqrestore(&terminal_lock, term_out_irq_flags);
-             }
-         } else { // Printable character
-             if (s_line_buffer_len < MAX_INPUT_LENGTH - 1) {
-                 s_line_buffer[s_line_buffer_len++] = char_to_add;
-                 s_line_buffer[s_line_buffer_len] = '\0';
- 
-                 term_out_irq_flags = spinlock_acquire_irqsave(&terminal_lock);
-                 terminal_putchar_internal(char_to_add);
-                 update_hardware_cursor();
-                 spinlock_release_irqrestore(&terminal_lock, term_out_irq_flags);
-             }
-         }
-     }
-     spinlock_release_irqrestore(&s_line_buffer_lock, line_buf_irq_flags);
- }
+    if (event.action != KEY_PRESS) {
+        return;
+    }
+
+    uintptr_t line_buf_irq_flags = spinlock_acquire_irqsave(&s_line_buffer_lock);
+    uintptr_t term_out_irq_flags; // To be used when terminal_lock is acquired
+
+    char char_to_add = 0;
+
+    // Determine character based on KeyCode
+    if (event.code > 0 && event.code < 0x80) { // Printable ASCII or control char like \n, \b
+        // Use apply_modifiers_extended which should handle special keys if they are mapped to ASCII in keymap
+        char_to_add = apply_modifiers_extended((char)event.code, event.modifiers);
+    } else if (event.code == KEY_BACKSPACE) { // Explicitly handle KeyCodes for special keys
+        char_to_add = '\b'; // Map KEY_BACKSPACE to ASCII backspace
+    }
+    // Note: Newline ('\n') should directly come as event.code if mapped in keymap_*.c files from scancode 0x1C.
+    // If KEY_ENTER is used, it should be mapped to '\n' there or handled here.
+    // Assuming event.code will be '\n' for Enter key presses based on current keymaps.
+
+    if (char_to_add != 0) {
+        if (char_to_add == '\n') {
+            s_line_buffer[s_line_buffer_len] = '\0'; // Null-terminate the collected line
+            s_line_ready_for_read = true;            // Mark line as ready
+
+            // --- Enhanced Serial Logging ---
+            serial_write("[Terminal] Newline processed. Line ready. Buffer: '");
+            serial_write(s_line_buffer); // Log the content of the buffer
+            serial_write("', Length: ");
+            char len_str[12]; // Temp buffer for itoa_simple
+            itoa_simple(s_line_buffer_len, len_str, 10); // Convert length to string
+            serial_write(len_str);
+            serial_write("\n");
+            // --- End Enhanced Logging ---
+
+            if (s_waiting_task) {
+                // --- Enhanced Serial Logging ---
+                serial_write("[Terminal] Found waiting task. PID: ");
+                if (s_waiting_task->process) { // Check if process pointer is valid
+                     serial_print_hex(s_waiting_task->process->pid); // Log PID
+                } else {
+                     serial_write("UNKNOWN_PID (process ptr null)");
+                }
+                serial_write(". Attempting to unblock.\n");
+                // --- End Enhanced Logging ---
+
+                tcb_t* task_to_unblock = (tcb_t*)s_waiting_task;
+                s_waiting_task = NULL; // Clear before unblocking
+
+                scheduler_unblock_task(task_to_unblock); // Unblock the task
+                serial_write("[Terminal] scheduler_unblock_task called for the waiting task.\n");
+            } else {
+                serial_write("[Terminal] Line ready, but no task was waiting (s_waiting_task is NULL).\n");
+            }
+            
+            // Echo newline to terminal display
+            term_out_irq_flags = spinlock_acquire_irqsave(&terminal_lock);
+            terminal_putchar_internal('\n'); 
+            update_hardware_cursor();
+            spinlock_release_irqrestore(&terminal_lock, term_out_irq_flags);
+
+        } else if (char_to_add == '\b') { // Handle Backspace
+            if (s_line_buffer_len > 0) {
+                s_line_buffer_len--;
+                s_line_buffer[s_line_buffer_len] = '\0'; // Keep it null-terminated
+
+                // Echo backspace to terminal display
+                term_out_irq_flags = spinlock_acquire_irqsave(&terminal_lock);
+                terminal_putchar_internal('\b'); // Move cursor back
+                terminal_putchar_internal(' ');  // Erase char
+                terminal_putchar_internal('\b'); // Move cursor back again
+                update_hardware_cursor();
+                spinlock_release_irqrestore(&terminal_lock, term_out_irq_flags);
+                serial_write("[Terminal] Backspace processed. Buffer len: ");
+                char len_str[12]; itoa_simple(s_line_buffer_len, len_str, 10); serial_write(len_str); serial_write("\n");
+            }
+        } else { // Printable character
+            if (s_line_buffer_len < MAX_INPUT_LENGTH - 1) {
+                s_line_buffer[s_line_buffer_len++] = char_to_add;
+                s_line_buffer[s_line_buffer_len] = '\0'; // Keep it null-terminated
+
+                // Echo character to terminal display
+                term_out_irq_flags = spinlock_acquire_irqsave(&terminal_lock);
+                terminal_putchar_internal(char_to_add);
+                update_hardware_cursor();
+                spinlock_release_irqrestore(&terminal_lock, term_out_irq_flags);
+            } else {
+                 serial_write("[Terminal WARNING] Single-line input buffer full. Character discarded.\n");
+            }
+        }
+    } else {
+        // Non-printable, non-special key (e.g., F-keys, arrow keys if not mapped to chars)
+        // serial_write("[Terminal] Non-addable key event received. Code: 0x");
+        // serial_print_hex(event.code);
+        // serial_write("\n");
+    }
+    spinlock_release_irqrestore(&s_line_buffer_lock, line_buf_irq_flags);
+}
  
  
  /* ------------------------------------------------------------------------- */

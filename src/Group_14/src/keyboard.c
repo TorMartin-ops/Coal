@@ -382,26 +382,96 @@ static void default_event_callback(KeyEvent event) {
 void keyboard_init(void) {
     serial_write("[KB Init] Initializing keyboard driver...\n");
     memset(&keyboard, 0, sizeof(keyboard));
-    spinlock_init(&keyboard.buffer_lock); // Initialize the spinlock
+    spinlock_init(&keyboard.buffer_lock);
 
     memcpy(keyboard.current_keymap, DEFAULT_KEYMAP_US, sizeof(DEFAULT_KEYMAP_US));
     serial_write("[KB Init] Default US keymap loaded.\n");
 
-    serial_write("[KB Init] Attempting to enable keyboard scanning...\n");
+    // 1. Attempt to Enable Keyboard Scanning (this sends 0xF4 to data port 0x60)
+    serial_write("[KB Init] Attempting to enable keyboard scanning (0xF4 to data port 0x60)...\n");
     kbc_send_data(KBC_CMD_ENABLE_SCAN);
     if (!kbc_expect_ack("Enable Scanning (0xF4)")) {
         serial_write("[KB Init WARNING] Did not receive expected ACK for Enable Scan command.\n");
+        // Don't necessarily give up here, KBC state might be odd.
     } else {
-        serial_write("[KB Init] Keyboard scanning enabled successfully.\n");
+        serial_write("[KB Init] Keyboard scanning enabled successfully (or was already enabled).\n");
+    }
+    very_short_delay(); // Give KBC time
+
+    // 2. Check and Modify KBC Configuration Byte to ensure keyboard is enabled
+    serial_write("[KB Init] Reading KBC Configuration Byte (Cmd 0x20 to 0x64, Read from 0x60)...\n");
+    kbc_send_command(KBC_CMD_READ_CONFIG); // Send command to read config byte
+    uint8_t kbc_config = kbc_read_data();   // Read config byte from data port
+    serial_write("[KB Init] KBC Config Byte Read: 0x");
+    serial_print_hex(kbc_config);
+    serial_write("\n");
+
+    uint8_t new_kbc_config = kbc_config;
+    bool config_changed = false;
+
+    // Bit 0: Keyboard Interrupt (IRQ1) - should be enabled
+    if (!(new_kbc_config & KBC_CFG_INT_KB)) {
+        serial_write("[KB Init] KBC Config: Keyboard IRQ1 was disabled. Enabling.\n");
+        new_kbc_config |= KBC_CFG_INT_KB;
+        config_changed = true;
     }
 
-    register_int_handler(33, keyboard_irq1_handler, NULL);
+    // Bit 4: Keyboard Interface Disable (0 = enabled, 1 = disabled)
+    // This bit often corresponds to the INH (Inhibit) status bit.
+    if (new_kbc_config & KBC_CFG_DISABLE_KB) {
+        serial_write("[KB Init WARNING] KBC Config: Keyboard Interface was DISABLED (INH). Enabling.\n");
+        new_kbc_config &= ~KBC_CFG_DISABLE_KB; // Clear bit to enable
+        config_changed = true;
+    }
+
+    // Bit 6: Translation - Should usually be enabled (1) for PC/AT Set 1 scan codes.
+    // If it's 0, scancodes might be XT codes.
+    if (!(new_kbc_config & KBC_CFG_TRANSLATION)) {
+        serial_write("[KB Init] KBC Config: Scancode translation was OFF. Enabling (Set 1).\n");
+        new_kbc_config |= KBC_CFG_TRANSLATION;
+        config_changed = true;
+    }
+
+    if (config_changed) {
+        serial_write("[KB Init] Writing modified KBC Configuration Byte 0x");
+        serial_print_hex(new_kbc_config);
+        serial_write(" (Cmd 0x60 to 0x64, Data to 0x60)...\n");
+        kbc_send_command(KBC_CMD_WRITE_CONFIG); // Command to write config byte
+        kbc_send_data(new_kbc_config);          // Send the new config byte to data port
+        very_short_delay(); // Give KBC time to process the new config
+
+        // Optionally, re-read to verify (some KBCs might not allow immediate re-read or might reset)
+        kbc_send_command(KBC_CMD_READ_CONFIG);
+        uint8_t kbc_config_after_write = kbc_read_data();
+        serial_write("[KB Init] KBC Config Byte after write attempt: 0x");
+        serial_print_hex(kbc_config_after_write);
+        serial_write("\n");
+        if (kbc_config_after_write != new_kbc_config) {
+            serial_write("[KB Init WARNING] KBC Config Byte did not verify after write!\n");
+        }
+    } else {
+        serial_write("[KB Init] KBC Configuration Byte seems okay (IRQ1 enabled, KB Interface enabled, Translation on).\n");
+    }
+
+    // Final status check
+    uint8_t final_status_check = inb(KBC_STATUS_PORT);
+    serial_write("[KB Init] Final KBC Status before IRQ registration: 0x");
+    serial_print_hex(final_status_check);
+    serial_write("\n");
+    if (final_status_check & 0x10) { // Check INH bit (bit 4)
+         serial_write("[KB Init ERROR] Keyboard Inhibit (INH) bit is STILL SET after configuration attempts!\n");
+    }
+
+
+    // 3. Register IRQ Handler
+    register_int_handler(33, keyboard_irq1_handler, NULL); // IRQ 1 is vector 33
     serial_write("[KB Init] IRQ1 handler registered (Vector 33).\n");
 
+    // 4. Register Default Callback
     keyboard_register_callback(default_event_callback);
     serial_write("[KB Init] Default event callback registered.\n");
 
-    terminal_write("[Keyboard] Initialized.\n");
+    terminal_write("[Keyboard] Initialized.\n"); // Log to main terminal
 }
 
 bool keyboard_poll_event(KeyEvent* event) {
