@@ -2,54 +2,79 @@
 // A very simple, self-contained shell for UiAOS
 
 // --- BEGIN In-file Type Definitions and Constants ---
-// From a conceptual stdint.h
+// It's better to include a shared header if possible, but for a self-contained
+// user-space app without stdlib, defining them here is an option.
+// However, for types like int32_t, uintptr_t, size_t, ssize_t, pid_t, bool
+// it's crucial they match the kernel's expectations for syscall arguments.
+// Consider creating a very minimal "shared_types.h" or "uapi_types.h"
+// that both kernel and user-space can include.
+
+// For now, let's ensure these are defined.
+// If your build system provides a way to include a minimal stdint.h or similar
+// for user-space, that would be preferable.
+
+#ifndef _SHELL_TYPES_DEFINED // Guard to prevent redefinition if included elsewhere
+#define _SHELL_TYPES_DEFINED
+
 typedef signed   char      int8_t;
 typedef unsigned char      uint8_t;
 typedef signed   short     int16_t;
 typedef unsigned short     uint16_t;
 typedef signed   int       int32_t;
 typedef unsigned int       uint32_t;
-typedef unsigned long long uint64_t; // If needed, though not by current shell logic
+typedef unsigned long long uint64_t;
 typedef uint32_t           uintptr_t; // For i386 user space
 
 #ifndef INT32_MIN
 #define INT32_MIN (-2147483647 - 1)
 #endif
 
-// From a conceptual stddef.h
-#ifndef _SIZE_T_DEFINED_SHELL_C // Unique guard for this file
-#define _SIZE_T_DEFINED_SHELL_C
 typedef uint32_t           size_t;
-#endif
+typedef int32_t            ssize_t;
+typedef int32_t            pid_t;
+
+typedef char bool;
+#define true  1
+#define false 0
 
 #ifndef NULL
 #define NULL ((void*)0)
 #endif
 
-// Other common types for this shell
-typedef int32_t            ssize_t;
-typedef int32_t            pid_t;
-// bool is not standard C99; often implemented as a #define or typedef.
-// If your kernel's syscalls or logic expect a specific 'bool' type,
-// use that. Otherwise, 'int' or 'char' can work. For simplicity:
-typedef char bool; // Or use 'int'
-#define true  1
-#define false 0
+#endif // _SHELL_TYPES_DEFINED
 // --- END In-file Type Definitions and Constants ---
 
 
 // --- Syscall Numbers (MUST MATCH YOUR KERNEL'S syscall.h) ---
 #define SYS_EXIT    1
-#define SYS_READ    3
+#define SYS_READ    3 // This is the generic read (can be kept or removed if only using new one)
 #define SYS_WRITE   4
 // #define SYS_OPEN    5 // Not used by this simple shell directly
 // #define SYS_CLOSE   6 // Not used by this simple shell directly
 #define SYS_PUTS    7
+#define SYS_READ_TERMINAL_LINE 21 // Your new syscall number
 
 #define STDIN_FILENO  0
 #define STDOUT_FILENO 1
 
-// --- Syscall Wrapper ---
+// --- Syscall Wrapper Prototype ---
+// The function 'syscall' must be declared before its first use in a macro.
+static inline int32_t syscall(int32_t syscall_number,
+                              int32_t arg1_val,
+                              int32_t arg2_val,
+                              int32_t arg3_val);
+
+// --- Syscall Helpers ---
+// These macros use the 'syscall' function.
+#define sys_exit(code)      syscall(SYS_EXIT, (code), 0, 0)
+#define sys_read_generic(fd,buf,n)  syscall(SYS_READ, (fd), (int32_t)(uintptr_t)(buf), (n))
+#define sys_write(fd,buf,n) syscall(SYS_WRITE, (fd), (int32_t)(uintptr_t)(buf), (n))
+#define sys_puts(p)         syscall(SYS_PUTS, (int32_t)(uintptr_t)(p), 0, 0)
+#define sys_read_terminal_line(buf, n) syscall(SYS_READ_TERMINAL_LINE, (int32_t)(uintptr_t)(buf), (n), 0)
+
+
+// --- Syscall Wrapper Definition ---
+// This must come AFTER the type definitions it uses (int32_t).
 static inline int32_t syscall(int32_t syscall_number,
                               int32_t arg1_val,
                               int32_t arg2_val,
@@ -74,13 +99,12 @@ static inline int32_t syscall(int32_t syscall_number,
     return return_value;
 }
 
-// --- Syscall Helpers ---
-#define sys_exit(code)      syscall(SYS_EXIT, (code), 0, 0)
-#define sys_read(fd,buf,n)  syscall(SYS_READ, (fd), (int32_t)(uintptr_t)(buf), (n))
-#define sys_write(fd,buf,n) syscall(SYS_WRITE, (fd), (int32_t)(uintptr_t)(buf), (n))
-#define sys_puts(p)         syscall(SYS_PUTS, (int32_t)(uintptr_t)(p), 0, 0)
-
 // --- String Utilities ---
+// Prototypes for string utilities
+static size_t my_strlen(const char *s);
+static int my_strcmp(const char *s1, const char *s2);
+
+// Definitions for string utilities
 static size_t my_strlen(const char *s) {
     size_t i = 0;
     if (!s) return 0;
@@ -114,16 +138,13 @@ int main(void) {
     while (1) {
         sys_puts("UiAOS> ");
 
-        ssize_t bytes_read = sys_read(STDIN_FILENO, cmd_buffer, CMD_BUFFER_SIZE - 1);
+        ssize_t bytes_read = sys_read_terminal_line(cmd_buffer, CMD_BUFFER_SIZE);
 
-        if (bytes_read > 0) {
-            if (cmd_buffer[bytes_read - 1] == '\n') {
-                cmd_buffer[bytes_read - 1] = '\0';
-            } else {
-                cmd_buffer[bytes_read] = '\0';
-            }
+        if (bytes_read >= 0) {
+            // Kernel should have null-terminated at cmd_buffer[bytes_read]
+            // No further null termination needed here if kernel does its job.
 
-            if (my_strlen(cmd_buffer) == 0) {
+            if (bytes_read == 0 && cmd_buffer[0] == '\0') { // Empty line after Enter
                 continue;
             }
 
@@ -142,11 +163,9 @@ int main(void) {
                 sys_puts(cmd_buffer);
                 sys_puts("\n");
             }
-        } else if (bytes_read == 0) { // EOF
-            sys_puts("\nEOF on input. Exiting shell.\n");
-            sys_exit(0);
-        } else { // Error from sys_read
+        } else { // Error from sys_read_terminal_line
             sys_puts("Error reading input from terminal.\n");
+            // Potentially print bytes_read (the error code) if you have a print_sdec
         }
     }
     return 0;

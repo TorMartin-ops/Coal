@@ -19,6 +19,7 @@
 #define SYS_PUTS    7
 #define SYS_LSEEK   19
 #define SYS_GETPID  20
+#define SYS_READ_TERMINAL_LINE 21
 // Add other syscall numbers here as needed
 
 /**

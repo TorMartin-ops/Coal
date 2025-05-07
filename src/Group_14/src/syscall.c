@@ -57,6 +57,8 @@ static int32_t sys_getpid_impl(uint32_t arg1, uint32_t arg2, uint32_t arg3, isr_
 static int32_t sys_puts_impl(uint32_t user_str_ptr, uint32_t arg2, uint32_t arg3, isr_frame_t *regs);
 static int32_t sys_not_implemented(uint32_t arg1, uint32_t arg2, uint32_t arg3, isr_frame_t *regs);
 static int strncpy_from_user_safe(const char *u_src, char *k_dst, size_t maxlen);
+static int32_t sys_read_terminal_line_impl(uint32_t user_buf_ptr, uint32_t count, uint32_t arg3, isr_frame_t *regs);
+
 
 
 //-----------------------------------------------------------------------------
@@ -75,6 +77,7 @@ void syscall_init(void) {
     syscall_table[SYS_LSEEK]  = sys_lseek_impl;
     syscall_table[SYS_GETPID] = sys_getpid_impl;
     syscall_table[SYS_PUTS]   = sys_puts_impl;
+    syscall_table[SYS_READ_TERMINAL_LINE] = sys_read_terminal_line_impl;
 
     KERNEL_ASSERT(syscall_table[SYS_EXIT] == sys_exit_impl, "SYS_EXIT assignment sanity check failed!");
     serial_write("[Syscall] Table initialized.\n");
@@ -125,6 +128,92 @@ static int32_t sys_exit_impl(uint32_t code, uint32_t arg2, uint32_t arg3, isr_fr
     KERNEL_PANIC_HALT("sys_exit returned!"); // Should not happen
     return 0; // Unreachable
 }
+
+static int32_t sys_read_terminal_line_impl(uint32_t user_buf_ptr, uint32_t count_arg, uint32_t arg3, isr_frame_t *regs) {
+    (void)arg3;
+    (void)regs;
+
+    void *user_buf = (void*)user_buf_ptr;
+    size_t count = (size_t)count_arg;
+    ssize_t bytes_copied_to_user = 0;
+    char* k_line_buffer = NULL;
+
+    serial_write("[Syscall] sys_read_terminal_line_impl: Enter\n");
+
+    if (count == 0) {
+        serial_write("[Syscall] sys_read_terminal_line_impl: Error - Count is 0.\n");
+        return -EINVAL;
+    }
+    if (!access_ok(VERIFY_WRITE, user_buf, count)) {
+        serial_write("[Syscall] sys_read_terminal_line_impl: Error - User buffer access denied (EFAULT).\n");
+        return -EFAULT;
+    }
+
+    size_t kernel_buffer_size = MIN(count, MAX_INPUT_LENGTH);
+    k_line_buffer = kmalloc(kernel_buffer_size);
+    if (!k_line_buffer) {
+        serial_write("[Syscall] sys_read_terminal_line_impl: Error - kmalloc failed for kernel buffer (ENOMEM).\n");
+        return -ENOMEM;
+    }
+
+    serial_write("[Syscall] sys_read_terminal_line_impl: Kernel buffer allocated. Size: ");
+    serial_print_hex((uint32_t)kernel_buffer_size);
+    serial_write(" Addr: ");
+    serial_print_hex((uintptr_t)k_line_buffer);
+    serial_write(".\n");
+
+    serial_write("[Syscall] sys_read_terminal_line_impl: Calling terminal_read_line_blocking...\n");
+    ssize_t bytes_read_from_terminal = terminal_read_line_blocking(k_line_buffer, kernel_buffer_size);
+
+    serial_write("[Syscall] sys_read_terminal_line_impl: terminal_read_line_blocking returned: ");
+    if (bytes_read_from_terminal < 0) {
+        serial_write("Error "); serial_print_hex((uint32_t)bytes_read_from_terminal); // Cast error to uint32_t for hex print
+    } else {
+        serial_print_hex((uint32_t)bytes_read_from_terminal); // Print count as hex
+    }
+    serial_write(".\n");
+
+    if (bytes_read_from_terminal < 0) {
+        serial_write("[Syscall] sys_read_terminal_line_impl: terminal_read_line_blocking failed. Error: ");
+        serial_print_hex((uint32_t)bytes_read_from_terminal);
+        serial_write(".\n");
+        kfree(k_line_buffer);
+        return bytes_read_from_terminal;
+    }
+
+    size_t bytes_to_copy_to_user_max = count > 0 ? count - 1 : 0;
+    bytes_copied_to_user = MIN((size_t)bytes_read_from_terminal, bytes_to_copy_to_user_max);
+
+    serial_write("[Syscall] sys_read_terminal_line_impl: Attempting to copy to user. Count: ");
+    serial_print_hex((uint32_t)bytes_copied_to_user);
+    serial_write(" UserBuf Addr: ");
+    serial_print_hex((uintptr_t)user_buf);
+    serial_write(".\n");
+
+    if (bytes_copied_to_user > 0) {
+        if (copy_to_user(user_buf, k_line_buffer, bytes_copied_to_user) != 0) {
+            serial_write("[Syscall] sys_read_terminal_line_impl: Error - copy_to_user data failed (EFAULT).\n");
+            kfree(k_line_buffer);
+            return -EFAULT;
+        }
+    }
+
+    if (copy_to_user((char*)user_buf + bytes_copied_to_user, "\0", 1) != 0) {
+        serial_write("[Syscall] sys_read_terminal_line_impl: Error - copy_to_user null terminator failed (EFAULT).\n");
+        kfree(k_line_buffer);
+        return -EFAULT;
+    }
+
+    serial_write("[Syscall] sys_read_terminal_line_impl: Successfully copied to user. Count: ");
+    serial_print_hex((uint32_t)bytes_copied_to_user);
+    serial_write(".\n");
+
+    kfree(k_line_buffer);
+    serial_write("[Syscall] sys_read_terminal_line_impl: Kernel buffer freed. Exiting.\n");
+
+    return (int32_t)bytes_copied_to_user;
+}
+
 
 static int32_t sys_read_impl(uint32_t fd_arg, uint32_t user_buf_ptr, uint32_t count_arg, isr_frame_t *regs) {
     (void)regs;

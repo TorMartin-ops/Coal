@@ -53,18 +53,6 @@ void terminal_clear(void);
  */
 void terminal_set_color(uint8_t color);
 
-// /**
-//  * @brief Sets the foreground color component.
-//  * @param fg VGA foreground color (0-15).
-//  */
-// void terminal_set_foreground(uint8_t fg); // Example if you add these helpers
-
-// /**
-//  * @brief Sets the background color component.
-//  * @param bg VGA background color (0-7).
-//  */
-// void terminal_set_background(uint8_t bg); // Example if you add these helpers
-
 /**
  * @brief Moves the hardware cursor to the specified position. Thread-safe.
  * @param x Column (0-based).
@@ -126,29 +114,32 @@ void terminal_printf(const char* format, ...) __attribute__((format(printf, 1, 2
 
 /**
  * @brief Processes a key event for interactive input editing.
+ * This function is called by the keyboard driver's callback.
+ * It handles line buffering for the SYS_READ_TERMINAL syscall and
+ * can also manage the more complex multi-line input_state if active.
  * @param event The keyboard event.
  */
 void terminal_handle_key_event(const KeyEvent event);
 
 
 /**
- * @brief Starts an interactive multi-line input session. Thread-safe.
+ * @brief Starts an interactive multi-line input session (for advanced editing). Thread-safe.
  * @param prompt Optional prompt string to display.
  */
 void terminal_start_input(const char* prompt);
 
 /**
- * @brief Concatenates all input lines into a provided buffer.
+ * @brief Concatenates all input lines from the multi-line editor into a provided buffer.
  * Lines are separated by newline characters. Thread-safe.
  * @param buffer Destination buffer.
  * @param size Size of the destination buffer.
  * @return Number of bytes written to the buffer (excluding null terminator),
  * or -1 if buffer is too small (output might be truncated).
  */
-int terminal_get_input(char* buffer, size_t size); // <--- Updated signature
+int terminal_get_input(char* buffer, size_t size);
 
 /**
- * @brief Completes the interactive input session, moving cursor below input.
+ * @brief Completes the interactive multi-line input session, moving cursor below input.
  * Thread-safe.
  */
 void terminal_complete_input(void);
@@ -160,12 +151,30 @@ void terminal_complete_input(void);
  * Simply calls terminal_putchar.
  * @param c Character to write.
  */
-void terminal_write_char(char c); // Keep this if keyboard.c specifically uses it
+void terminal_write_char(char c);
 
-// Add this declaration in terminal.h
+/**
+ * @brief Handles a backspace operation on the terminal display.
+ */
 void terminal_backspace(void);
 
-void terminal_write_bytes(const char* data, size_t size); // <-- ADDED DECLARATION
+/**
+ * @brief Writes a sequence of bytes to the terminal. (Used by syscall_write for STDOUT/STDERR)
+ * @param data Pointer to the data.
+ * @param size Number of bytes to write.
+ */
+void terminal_write_bytes(const char* data, size_t size);
+
+/**
+ * @brief Reads a line of input from the terminal, blocking until Enter is pressed.
+ * This function is intended to be called by the SYS_READ_TERMINAL syscall handler.
+ * It interacts with the internal line buffer populated by terminal_handle_key_event.
+ * @param kbuf Kernel buffer to store the input line.
+ * @param len Maximum number of bytes to read into kbuf (including null terminator).
+ * @return The number of bytes read (excluding null terminator), or a negative error code.
+ * Returns 0 for an empty line if Enter is pressed immediately.
+ */
+ssize_t terminal_read_line_blocking(char *kbuf, size_t len);
 
 
 #endif // TERMINAL_H
