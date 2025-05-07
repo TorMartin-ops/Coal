@@ -1,12 +1,13 @@
 ; -----------------------------------------------------------------------------
-; syscall.asm -- INT 0x80 Entry/Exit Stub for UiAOS
-; Version: 6.0
-; Author: Tor Martin Kohle
+; syscall.asm -- INT 0x80 Entry/Exit Stub for UiAOS (v6.1 - Reschedule Check)
+; Version: 6.1
+; Author: Tor Martin Kohle & Gemini Refactoring
 ; Purpose:
 ;   Provides the low-level assembly interface for system calls initiated via
 ;   the INT 0x80 software interrupt. It constructs the C-callable stack frame
 ;   (isr_frame_t), switches to kernel segments, dispatches to the C handler
-;   (syscall_dispatcher), and correctly restores user-space context, ensuring
+;   (syscall_dispatcher), checks if a reschedule is needed, potentially calls
+;   the scheduler, and correctly restores user-space context, ensuring
 ;   the syscall return value (in EAX) is preserved for the user process.
 ;
 ; Stack Frame upon entry to C handler (syscall_dispatcher):
@@ -44,6 +45,8 @@
 ; %define USER_DATA_SELECTOR   0x23
 
     extern syscall_dispatcher     ; C-level syscall handler
+    extern schedule             ; <<< ADDED: External C scheduler function
+    extern g_need_reschedule    ; <<< ADDED: External C reschedule flag variable (volatile bool -> byte)
     ; extern serial_putc_asm        ; Optional: for ultra-low-level debug
     ; extern serial_print_hex_asm   ; Optional: for ultra-low-level debug
 
@@ -57,8 +60,6 @@ syscall_handler_asm:
     push dword 0x80         ; Interrupt Number (int_no for isr_frame_t)
 
     ; --- 2. Save User Segment Registers (DS, ES, FS, GS) ---
-    ; These are part of the isr_frame_t and must be saved before PUSHA
-    ; to match the expected layout.
     push ds
     push es
     push fs
@@ -67,79 +68,47 @@ syscall_handler_asm:
     ; --- 3. Save General-Purpose Registers (EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI) ---
     pusha                   ; Pushes EDI, ESI, EBP, ESP_orig, EBX, EDX, ECX, EAX
                             ; EAX here is the syscall number from the user.
-                            ; ESP_orig is the ESP value *before* PUSHA.
-
-    ; --- (Optional) Minimal Entry Trace ---
-    ; mov al, '<'
-    ; call serial_putc_asm
 
     ; --- 4. Switch to Kernel Data Segments ---
-    ; Crucial for ensuring kernel code operates with correct CPL0 segment permissions.
     mov ax, KERNEL_DATA_SELECTOR
     mov ds, ax
     mov es, ax
     mov fs, ax
-    mov gs, ax              ; GS is often used for per-CPU data or thread-local storage.
+    mov gs, ax
 
     ; --- 5. Call C-level Dispatcher ---
-    ; The current ESP points to the saved EDI (start of PUSHA block), which forms
-    ; the base of the `isr_frame_t` structure. The `isr_frame_t` definition
-    ; must match this stack layout precisely.
     mov eax, esp            ; EAX = pointer to the on-stack isr_frame_t
     push eax                ; Pass &isr_frame_t as the argument to syscall_dispatcher
-    call syscall_dispatcher   ; Returns result in EAX (e.g., FD for open, bytes for read/write)
-    add  esp, 4             ; Clean up argument from stack (pops the pushed EAX)
+    call syscall_dispatcher   ; Returns result in EAX
+    add  esp, 4             ; Clean up argument stack
 
-    ; At this point, EAX holds the syscall's return value from the C dispatcher.
-    ; This value needs to be placed into the EAX slot of the saved PUSHA frame
-    ; so that POPA will restore it correctly for the user process.
-
-    ; --- (Optional) Trace Syscall Return Value (Requires careful register preservation) ---
-    ; This block is for debugging the return value *before* it's written to the stack frame.
-    ; pushad                  ; Save all registers (including current EAX which has the syscall return)
-    ; mov ebx, [esp + 28]     ; Get the syscall return value (now at EAX slot of pushad) into EBX
-    ; mov al, 'R'
-    ; call serial_putc_asm
-    ; mov eax, ebx            ; Load value to print into EAX
-    ; call serial_print_hex_asm
-    ; popad                   ; Restore all registers (EAX now has the syscall return again)
+    ; EAX now holds the syscall's return value
 
     ; --- 6. Store Syscall Return Value into the Stack Frame ---
-    ; The PUSHA frame is still on the stack. ESP points to the saved EDI.
-    ; The EAX slot within the PUSHA frame is at ESP + 28 bytes:
-    ;   EDI, ESI, EBP, ESP_dummy, EBX, EDX, ECX (7 * 4 = 28 bytes)
-    ;   Then comes the EAX slot.
-    mov [esp + 28], eax     ; Write the syscall's return value (from C dispatcher, currently in EAX)
-                            ; into the EAX slot of the PUSHA frame on the stack.
+    mov [esp + 28], eax     ; Write return value into the EAX slot of the PUSHA frame
 
-    ; --- 7. Restore Registers and Segments ---
-    ; These are popped in the reverse order they were pushed.
-    popa                    ; Restores EDI, ESI, EBP, ESP_dummy, EBX, EDX, ECX,
-                            ; and importantly, EAX (which now contains the syscall result
-                            ; that we just wrote into the frame).
+    ; --- *** 7. CHECK RESCHEDULE FLAG (Interrupts are still OFF from int 0x80) *** ---
+check_reschedule:
+    ; Access the global C variable (byte for bool)
+    mov al, byte [g_need_reschedule]
+    test al, al                      ; Check if the flag is non-zero
+    jz .no_reschedule_needed         ; If zero, skip the schedule call
 
-    ; --- (Optional) Trace EAX *after* POPA to verify ---
-    ; pushad
-    ; mov ebx, eax            ; EAX after popa
-    ; mov al, 'L'
-    ; call serial_putc_asm
-    ; mov eax, ebx
-    ; call serial_print_hex_asm
-    ; popad
+    ; Reschedule is needed:
+    mov byte [g_need_reschedule], 0  ; Clear the flag (no lock needed, IF=0)
+    call schedule                    ; Call the C scheduler function. It handles context switch.
 
-    pop gs                  ; Restore original user GS
-    pop fs                  ; Restore original user FS
-    pop es                  ; Restore original user ES
-    pop ds                  ; Restore original user DS
+.no_reschedule_needed:
+    ; --- 8. Restore Registers and Segments ---
+    popa                    ; Restores EDI, ESI, EBP, ESP_dummy, EBX, EDX, ECX, EAX (with syscall result)
+    pop gs
+    pop fs
+    pop es
+    pop ds
 
-    add esp, 8              ; Pop int_no and err_code (dummy) from the stack.
+    ; --- 9. Clean up vector number and error code ---
+    add esp, 8              ; Pop int_no and dummy error code
 
-    ; --- (Optional) Minimal Exit Trace ---
-    ; push eax                ; Save syscall result
-    ; mov al, '>'
-    ; call serial_putc_asm
-    ; pop eax                 ; Restore syscall result
-
-    ; --- 8. Return to User Mode ---
-    iret                    ; Pops EIP_user, CS_user, EFLAGS_user, (ESP_user, SS_user if CPL change).
-                            ; EAX correctly holds the syscall return value for the user process.
+    ; --- 10. Return to User Mode ---
+    iret                    ; Pops EIP_user, CS_user, EFLAGS_user, [ESP_user], [SS_user]
+                            ; Returns control to the user process with EAX holding the result.

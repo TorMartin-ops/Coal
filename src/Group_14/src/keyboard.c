@@ -1,24 +1,22 @@
 /**
  * @file keyboard.c
  * @brief PS/2 Keyboard Driver for UiAOS
- * @version 5.3 (Refined KBC Initialization Sequence)
- *
- * @details Includes a refined, more comprehensive initialization sequence
- * to attempt to clear the KBC INH (inhibit) state.
+ * @version 5.9 - Consolidated KBC defines into keyboard_hw.h
  */
 
 //============================================================================
 // Includes
 //============================================================================
 #include "keyboard.h"
+#include "keyboard_hw.h"   // <<< Include the consolidated hardware definitions
 #include "types.h"
 #include "idt.h"
 #include <isr_frame.h>
-#include "terminal.h"
+#include "terminal.h"      // Needed for the callback registration/use
 #include "port_io.h"
-#include "pit.h"
+#include "pit.h"           // For get_pit_ticks() in event timestamping
 #include "string.h"
-#include "serial.h"
+#include "serial.h"        // For serial logging
 #include "spinlock.h"
 #include "assert.h"
 #include <libc/stdbool.h>
@@ -27,57 +25,24 @@
 //============================================================================
 // Definitions and Constants
 //============================================================================
-#define KBC_DATA_PORT    0x60
-#define KBC_STATUS_PORT  0x64
-#define KBC_CMD_PORT     0x64
-
-#define KBC_SR_OBF       0x01 // Output Buffer Full
-#define KBC_SR_IBF       0x02 // Input Buffer Full
-#define KBC_SR_SYS_FLAG  0x04 // System Flag
-#define KBC_SR_A2        0x08 // Command/Data
-#define KBC_SR_INH       0x10 // Inhibit Switch / Keyboard Interface Disabled
-
-#define KBC_CMD_READ_CONFIG         0x20 // Read KBC Configuration Byte
-#define KBC_CMD_WRITE_CONFIG        0x60 // Write KBC Configuration Byte
-#define KBC_CMD_SELF_TEST           0xAA // KBC Self-Test (Controller)
-#define KBC_CMD_KB_INTERFACE_TEST   0xAB // Keyboard Interface Test
-#define KBC_CMD_DISABLE_KB_IFACE    0xAD // Disable Keyboard Interface (KBC command)
-#define KBC_CMD_ENABLE_KB_IFACE     0xAE // Enable Keyboard Interface (KBC command)
-
-#define KBC_CFG_INT_KB              0x01 // Bit 0: Keyboard Interrupt Enable (IRQ1)
-#define KBC_CFG_DISABLE_KB          0x10 // Bit 4: Keyboard Interface Disable (0=Enabled, 1=Disabled)
-#define KBC_CFG_TRANSLATION         0x40 // Bit 6: Translation Enable (Set 1 -> Set 2)
-
-#define KB_CMD_SET_LEDS             0xED // To Keyboard Device
-#define KB_CMD_ENABLE_SCAN          0xF4 // To Keyboard Device
-#define KB_CMD_DISABLE_SCAN         0xF5 // To Keyboard Device
-#define KB_CMD_SET_TYPEMATIC        0xF3 // To Keyboard Device
-#define KB_CMD_RESET                0xFF // To Keyboard Device
-
-#define KB_RESP_ACK                 0xFA // From Keyboard Device or KBC
-#define KB_RESP_RESEND              0xFE // From Keyboard Device or KBC
-#define KB_RESP_SELF_TEST_PASS      0xAA // From Keyboard Device after 0xFF reset
-#define KBC_RESP_SELF_TEST_PASS     0x55 // From KBC after 0xAA self-test
-
-#define SCANCODE_EXTENDED_PREFIX    0xE0
-#define SCANCODE_PAUSE_PREFIX       0xE1
+// --- NO KBC/KB defines here anymore - they are in keyboard_hw.h ---
 
 #define KB_BUFFER_SIZE 256
-#define KBC_WAIT_TIMEOUT 200000 // Slightly increased timeout
+#define KBC_WAIT_TIMEOUT 300000 // Timeout for KBC waits
 
 //============================================================================
 // Module Static Data
 //============================================================================
 static struct {
-    bool        key_states[KEY_COUNT];
-    uint8_t     modifiers;
-    KeyEvent    buffer[KB_BUFFER_SIZE];
-    uint8_t     buf_head;
-    uint8_t     buf_tail;
-    spinlock_t  buffer_lock;
-    uint16_t    current_keymap[128];
-    bool        extended_code_active;
-    void        (*event_callback)(KeyEvent);
+    bool        key_states[KEY_COUNT];  // Tracks if a key is currently pressed
+    uint8_t     modifiers;              // Current modifier state (Shift, Ctrl, Alt, etc.)
+    KeyEvent    buffer[KB_BUFFER_SIZE]; // Circular buffer for key events
+    uint8_t     buf_head;               // Head index for the buffer
+    uint8_t     buf_tail;               // Tail index for the buffer
+    spinlock_t  buffer_lock;            // Lock protecting the buffer & related state
+    uint16_t    current_keymap[128];    // Current keymap array (scancode -> KeyCode/ASCII)
+    bool        extended_code_active;   // Flag for handling 0xE0 scancode prefix
+    void        (*event_callback)(KeyEvent); // Registered callback function for key events
 } keyboard_state;
 
 //============================================================================
@@ -91,326 +56,491 @@ static void kbc_send_data_port(uint8_t data);
 static void kbc_send_command_port(uint8_t cmd);
 static bool kbc_expect_ack(const char* command_name);
 static void very_short_delay(void);
-char apply_modifiers_extended(char c, uint8_t modifiers);
-extern void terminal_handle_key_event(const KeyEvent event);
-extern void terminal_backspace(void);
+char apply_modifiers_extended(char c, uint8_t modifiers); // Needs to be declared if used internally, or defined before use
+extern void terminal_handle_key_event(const KeyEvent event); // Callback function implemented in terminal.c
 
 //============================================================================
-// Keymap Data (US Default)
+// Keymap Data (Typically loaded from keymap.c or default here)
 //============================================================================
-static const uint16_t DEFAULT_KEYMAP_US[128] = {
-    [0x00] = KEY_UNKNOWN, [0x01] = KEY_ESC, [0x02] = '1', [0x03] = '2', [0x04] = '3',
-    [0x05] = '4', [0x06] = '5', [0x07] = '6', [0x08] = '7', [0x09] = '8', [0x0A] = '9',
-    [0x0B] = '0', [0x0C] = '-', [0x0D] = '=', [0x0E] = KEY_BACKSPACE, [0x0F] = KEY_TAB,
-    [0x10] = 'q', [0x11] = 'w', [0x12] = 'e', [0x13] = 'r', [0x14] = 't', [0x15] = 'y',
-    [0x16] = 'u', [0x17] = 'i', [0x18] = 'o', [0x19] = 'p', [0x1A] = '[', [0x1B] = ']',
-    [0x1C] = '\n', [0x1D] = KEY_CTRL, [0x1E] = 'a', [0x1F] = 's', [0x20] = 'd',
-    [0x21] = 'f', [0x22] = 'g', [0x23] = 'h', [0x24] = 'j', [0x25] = 'k', [0x26] = 'l',
-    [0x27] = ';', [0x28] = '\'',[0x29] = '`', [0x2A] = KEY_LEFT_SHIFT, [0x2B] = '\\',
-    [0x2C] = 'z', [0x2D] = 'x', [0x2E] = 'c', [0x2F] = 'v', [0x30] = 'b', [0x31] = 'n',
-    [0x32] = 'm', [0x33] = ',', [0x34] = '.', [0x35] = '/', [0x36] = KEY_RIGHT_SHIFT,
-    [0x37] = KEY_UNKNOWN, /* Keypad * */ [0x38] = KEY_ALT, [0x39] = ' ', [0x3A] = KEY_CAPS,
-    [0x3B] = KEY_F1, [0x3C] = KEY_F2, [0x3D] = KEY_F3, [0x3E] = KEY_F4, [0x3F] = KEY_F5,
-    [0x40] = KEY_F6, [0x41] = KEY_F7, [0x42] = KEY_F8, [0x43] = KEY_F9, [0x44] = KEY_F10,
-    [0x45] = KEY_NUM, [0x46] = KEY_SCROLL, [0x47] = KEY_HOME, [0x48] = KEY_UP,
-    [0x49] = KEY_PAGE_UP, [0x4A] = KEY_UNKNOWN, /* Keypad - */ [0x4B] = KEY_LEFT,
-    [0x4C] = KEY_UNKNOWN, /* Keypad 5 */ [0x4D] = KEY_RIGHT, [0x4E] = KEY_UNKNOWN, /* Keypad + */
-    [0x4F] = KEY_END, [0x50] = KEY_DOWN, [0x51] = KEY_PAGE_DOWN, [0x52] = KEY_INSERT,
-    [0x53] = KEY_DELETE, [0x54] = KEY_UNKNOWN, [0x57] = KEY_UNKNOWN, /* F11 */
-    [0x58] = KEY_UNKNOWN, /* F12 */ [0x59 ... 0x7F] = KEY_UNKNOWN
-};
+// Assuming keymap_us_qwerty is defined elsewhere (e.g., keymap.c and included via keymap.h)
+// For standalone compilation, you might need a default here:
+extern const uint16_t keymap_us_qwerty[128]; // Use extern if defined elsewhere
+#define DEFAULT_KEYMAP_US keymap_us_qwerty // Use the external definition
 
 //============================================================================
-// KBC Helper Functions
+// KBC Helper Functions (Implementations use defines from keyboard_hw.h)
 //============================================================================
+
+/**
+ * @brief Introduces a short busy-wait delay.
+ * @note Calibrate loop count based on target machine speed if needed.
+ */
 static void very_short_delay(void) {
-    for (volatile int i = 0; i < 30000; ++i) { // Slightly longer delay
-        asm volatile("pause");
+    // Loop count might need adjustment depending on CPU speed and optimization level
+    for (volatile int i = 0; i < 50000; ++i) {
+        asm volatile("pause"); // Hint to CPU this is a spin-wait loop
     }
 }
 
+/**
+ * @brief Waits until the KBC Input Buffer (IBF) is empty (ready to accept data/cmd).
+ * @note Includes a timeout mechanism and serial logging on timeout.
+ */
 static inline void kbc_wait_for_send_ready(void) {
     int timeout = KBC_WAIT_TIMEOUT;
-    while ((inb(KBC_STATUS_PORT) & KBC_SR_IBF) && timeout-- > 0) { asm volatile("pause"); }
+    // Wait while bit 1 (IBF) of the status register is set
+    while ((inb(KBC_STATUS_PORT) & KBC_SR_IBF) && timeout-- > 0) {
+        asm volatile("pause");
+    }
     if (timeout <= 0) {
-        serial_write("[KB WARNING] Timeout: KBC input buffer not clear. Status: 0x");
-        serial_print_hex(inb(KBC_STATUS_PORT)); serial_write("\n");
+        serial_write("[KB WaitSend TIMEOUT] Status: 0x"); serial_print_hex(inb(KBC_STATUS_PORT)); serial_write("\n");
     }
 }
 
+/**
+ * @brief Waits until the KBC Output Buffer (OBF) is full (data available to read).
+ * @note Includes a timeout mechanism and serial logging on timeout.
+ */
 static inline void kbc_wait_for_recv_ready(void) {
     int timeout = KBC_WAIT_TIMEOUT;
-    while (!(inb(KBC_STATUS_PORT) & KBC_SR_OBF) && timeout-- > 0) { asm volatile("pause"); }
+    // Wait while bit 0 (OBF) of the status register is clear
+    while (!(inb(KBC_STATUS_PORT) & KBC_SR_OBF) && timeout-- > 0) {
+        asm volatile("pause");
+    }
     if (timeout <= 0) {
-        serial_write("[KB WARNING] Timeout: KBC output buffer not full. Status: 0x");
-        serial_print_hex(inb(KBC_STATUS_PORT)); serial_write("\n");
+        serial_write("[KB WaitRecv TIMEOUT] Status: 0x"); serial_print_hex(inb(KBC_STATUS_PORT)); serial_write("\n");
     }
 }
 
+/**
+ * @brief Reads a byte from the KBC Data Port (0x60) after waiting for OBF.
+ * @return The byte read from the data port.
+ */
 static uint8_t kbc_read_data(void) {
-    kbc_wait_for_recv_ready();
-    return inb(KBC_DATA_PORT);
+    kbc_wait_for_recv_ready(); // Wait for data to be available
+    return inb(KBC_DATA_PORT); // Read from port 0x60
 }
 
+/**
+ * @brief Writes a byte to the KBC Data Port (0x60) after waiting for IBF clear.
+ * @param data The byte to write (e.g., command/data to keyboard device).
+ */
 static void kbc_send_data_port(uint8_t data) {
-    kbc_wait_for_send_ready();
-    outb(KBC_DATA_PORT, data);
+    kbc_wait_for_send_ready(); // Wait for KBC to be ready
+    outb(KBC_DATA_PORT, data);  // Write to port 0x60
 }
 
+/**
+ * @brief Writes a byte to the KBC Command Port (0x64) after waiting for IBF clear.
+ * @param cmd The command byte to send to the KBC controller.
+ */
 static void kbc_send_command_port(uint8_t cmd) {
-    kbc_wait_for_send_ready();
-    outb(KBC_CMD_PORT, cmd);
+    kbc_wait_for_send_ready(); // Wait for KBC to be ready
+    outb(KBC_CMD_PORT, cmd);   // Write to port 0x64
 }
 
+/**
+ * @brief Reads a byte from the KBC data port, expecting an ACK (0xFA).
+ * @param command_name Name of the command sent (for logging).
+ * @return true if ACK received, false otherwise (logs warning/error).
+ */
 static bool kbc_expect_ack(const char* command_name) {
-    kbc_wait_for_recv_ready(); // Ensure data is available before reading
-    uint8_t resp = inb(KBC_DATA_PORT);
+    uint8_t resp = kbc_read_data(); // Includes wait
     if (resp == KB_RESP_ACK) {
-        serial_write("[KB Init] ACK (0xFA) for "); serial_write(command_name); serial_write(".\n");
+        serial_write("[KB Debug] ACK (0xFA) for "); serial_write(command_name); serial_write(".\n");
         return true;
     } else if (resp == KB_RESP_RESEND) {
-        serial_write("[KB Init WARNING] RESEND (0xFE) for "); serial_write(command_name); serial_write(".\n");
+        serial_write("[KB Debug WARNING] RESEND (0xFE) for "); serial_write(command_name); serial_write(".\n");
     } else {
-        serial_write("[KB Init WARNING] Unexpected 0x"); serial_print_hex(resp);
+        serial_write("[KB Debug WARNING] Unexpected 0x"); serial_print_hex(resp);
         serial_write(" for "); serial_write(command_name); serial_write(" (expected ACK 0xFA).\n");
     }
     return false;
 }
 
+
 //============================================================================
 // Interrupt Handler
 //============================================================================
+/**
+ * @brief IRQ1 handler for the PS/2 Keyboard.
+ * Reads scancode, processes prefixes (0xE0, 0xE1), determines key press/release,
+ * maps scancode to KeyCode, updates modifier state, buffers the event,
+ * and calls the registered callback.
+ * @param frame Pointer to the interrupt stack frame (unused).
+ */
 static void keyboard_irq1_handler(isr_frame_t *frame) {
-    (void)frame;
+    (void)frame; // Mark unused parameter
     uint8_t status_before_read = inb(KBC_STATUS_PORT);
-    if (!(status_before_read & KBC_SR_OBF)) { return; }
+
+    // Check if Output Buffer Full bit is set in status
+    if (!(status_before_read & KBC_SR_OBF)) {
+        // serial_write("[KB IRQ] Spurious IRQ1? OBF not set.\n"); // Optional log
+        return; // Nothing to read
+    }
+
+    // Read scancode from data port
     uint8_t scancode = inb(KBC_DATA_PORT);
-    bool is_break_code;
-    if (scancode == SCANCODE_PAUSE_PREFIX) { keyboard_state.extended_code_active = false; return; }
-    if (scancode == SCANCODE_EXTENDED_PREFIX) { keyboard_state.extended_code_active = true; return; }
+    // serial_write("[KB IRQ] Scancode=0x"); serial_print_hex(scancode); serial_write("\n"); // Debug log
+
+    bool is_break_code; // Is it a key release event?
+
+    // Handle Pause/Break key sequence (prefix 0xE1) - complex, often ignored or partially handled
+    if (scancode == SCANCODE_PAUSE_PREFIX) {
+        // serial_write("[KB IRQ] Pause Prefix (0xE1) detected - Ignoring sequence.\n");
+        // TODO: Implement state machine for full Pause/Break if needed
+        keyboard_state.extended_code_active = false; // Reset extended state
+        return;
+    }
+
+    // Handle Extended Key sequence (prefix 0xE0)
+    if (scancode == SCANCODE_EXTENDED_PREFIX) {
+        // serial_write("[KB IRQ] Extended Prefix (0xE0) detected.\n");
+        keyboard_state.extended_code_active = true;
+        return; // Wait for the next scancode which identifies the actual key
+    }
+
+    // Determine if it's a break code (key release) - highest bit (0x80) is set
     is_break_code = (scancode & 0x80) != 0;
-    uint8_t base_scancode = scancode & 0x7F;
-    KeyCode kc = KEY_UNKNOWN;
+    uint8_t base_scancode = scancode & 0x7F; // Mask off the break code bit to get base scancode
+
+    KeyCode kc = KEY_UNKNOWN; // Initialize KeyCode
+
+    // Process based on whether an extended prefix (0xE0) was just received
     if (keyboard_state.extended_code_active) {
+        // Handle known extended keys
         switch (base_scancode) {
-            case 0x1D: kc = KEY_CTRL; break; case 0x38: kc = KEY_ALT; break;
-            case 0x48: kc = KEY_UP; break; case 0x50: kc = KEY_DOWN; break;
-            case 0x4B: kc = KEY_LEFT; break; case 0x4D: kc = KEY_RIGHT; break;
-            case 0x47: kc = KEY_HOME; break; case 0x4F: kc = KEY_END; break;
-            case 0x49: kc = KEY_PAGE_UP; break; case 0x51: kc = KEY_PAGE_DOWN; break;
-            case 0x52: kc = KEY_INSERT; break; case 0x53: kc = KEY_DELETE; break;
-            case 0x1C: kc = '\n'; break; case 0x35: kc = '/'; break;
-            default: kc = KEY_UNKNOWN; break;
+            // Map common extended keys (add more as needed based on keyboard_hw.h/keymap.h)
+            case 0x1D: kc = KEY_CTRL; break;   // Right Ctrl (often shares code with left)
+            case 0x38: kc = KEY_ALT; break;    // Right Alt (AltGr) (often shares code with left)
+            case 0x48: kc = KEY_UP; break;
+            case 0x50: kc = KEY_DOWN; break;
+            case 0x4B: kc = KEY_LEFT; break;
+            case 0x4D: kc = KEY_RIGHT; break;
+            case 0x47: kc = KEY_HOME; break;
+            case 0x4F: kc = KEY_END; break;
+            case 0x49: kc = KEY_PAGE_UP; break;
+            case 0x51: kc = KEY_PAGE_DOWN; break;
+            case 0x52: kc = KEY_INSERT; break;
+            case 0x53: kc = KEY_DELETE; break;
+            case 0x1C: kc = '\n'; break;      // Keypad Enter
+            case 0x35: kc = '/'; break;       // Keypad Divide (as example, map depends on keymap)
+            // Handle other E0 keys like Windows keys if desired (map to KEY_SUPER or KEY_UNKNOWN)
+            default:   kc = KEY_UNKNOWN; break;
         }
-        keyboard_state.extended_code_active = false;
+        keyboard_state.extended_code_active = false; // Reset extended state after processing
     } else {
+        // Handle normal keys using the current keymap
         kc = (base_scancode < 128) ? keyboard_state.current_keymap[base_scancode] : KEY_UNKNOWN;
     }
+
+    // If KeyCode is unknown (not mapped), ignore the scancode
     if (kc == KEY_UNKNOWN) { return; }
-    if (kc < KEY_COUNT) keyboard_state.key_states[kc] = !is_break_code;
-    switch (kc) {
-        case KEY_LEFT_SHIFT: case KEY_RIGHT_SHIFT:
-            keyboard_state.modifiers = is_break_code ? (keyboard_state.modifiers & ~MOD_SHIFT) : (keyboard_state.modifiers | MOD_SHIFT); break;
-        case KEY_CTRL:
-            keyboard_state.modifiers = is_break_code ? (keyboard_state.modifiers & ~MOD_CTRL) : (keyboard_state.modifiers | MOD_CTRL); break;
-        case KEY_ALT:
-            keyboard_state.modifiers = is_break_code ? (keyboard_state.modifiers & ~MOD_ALT) : (keyboard_state.modifiers | MOD_ALT); break;
-        case KEY_CAPS: if (!is_break_code) keyboard_state.modifiers ^= MOD_CAPS; break;
-        case KEY_NUM: if (!is_break_code) keyboard_state.modifiers ^= MOD_NUM; break;
-        case KEY_SCROLL: if (!is_break_code) keyboard_state.modifiers ^= MOD_SCROLL; break;
-        default: break;
+
+    // Update general key state array (if KeyCode is within bounds)
+    if (kc < KEY_COUNT) {
+        keyboard_state.key_states[kc] = !is_break_code; // true for press, false for release
     }
-    KeyEvent event = {kc, is_break_code ? KEY_RELEASE : KEY_PRESS, keyboard_state.modifiers, get_pit_ticks()};
+
+    // Update modifier states based on the KeyCode
+    switch (kc) {
+        case KEY_LEFT_SHIFT: // Fallthrough
+        case KEY_RIGHT_SHIFT:
+            keyboard_state.modifiers = is_break_code ? (keyboard_state.modifiers & ~MOD_SHIFT) : (keyboard_state.modifiers | MOD_SHIFT);
+            break;
+        case KEY_CTRL: // Covers both Left and Right Ctrl if mapped to the same KeyCode
+            keyboard_state.modifiers = is_break_code ? (keyboard_state.modifiers & ~MOD_CTRL) : (keyboard_state.modifiers | MOD_CTRL);
+            break;
+        case KEY_ALT: // Covers both Left and Right Alt (AltGr) if mapped to the same KeyCode
+            keyboard_state.modifiers = is_break_code ? (keyboard_state.modifiers & ~MOD_ALT) : (keyboard_state.modifiers | MOD_ALT);
+            break;
+        case KEY_CAPS:
+            if (!is_break_code) keyboard_state.modifiers ^= MOD_CAPS; // Toggle Caps Lock on press only
+            break;
+        case KEY_NUM:
+            if (!is_break_code) keyboard_state.modifiers ^= MOD_NUM; // Toggle Num Lock on press only
+            break;
+        case KEY_SCROLL:
+            if (!is_break_code) keyboard_state.modifiers ^= MOD_SCROLL; // Toggle Scroll Lock on press only
+            break;
+        default:
+            // Not a modifier key
+            break;
+    }
+
+    // Create the event structure
+    KeyEvent event = {
+        .code = kc,
+        .action = is_break_code ? KEY_RELEASE : KEY_PRESS,
+        .modifiers = keyboard_state.modifiers,
+        .timestamp = get_pit_ticks() // Get timestamp from PIT (or other time source)
+    };
+
+    // --- Add event to the circular buffer ---
     uintptr_t buffer_irq_flags = spinlock_acquire_irqsave(&keyboard_state.buffer_lock);
     uint8_t next_head = (keyboard_state.buf_head + 1) % KB_BUFFER_SIZE;
-    if (next_head == keyboard_state.buf_tail) { keyboard_state.buf_tail = (keyboard_state.buf_tail + 1) % KB_BUFFER_SIZE; }
+    if (next_head == keyboard_state.buf_tail) {
+        // Buffer full: Overwrite oldest event (simplest strategy)
+         serial_write("[KB WARNING] Keyboard buffer overflow! Discarding oldest event.\n");
+         keyboard_state.buf_tail = (keyboard_state.buf_tail + 1) % KB_BUFFER_SIZE;
+    }
     keyboard_state.buffer[keyboard_state.buf_head] = event;
     keyboard_state.buf_head = next_head;
     spinlock_release_irqrestore(&keyboard_state.buffer_lock, buffer_irq_flags);
-    if (keyboard_state.event_callback) keyboard_state.event_callback(event);
+
+    // --- Call the registered callback function (if any) ---
+    if (keyboard_state.event_callback) {
+        keyboard_state.event_callback(event); // Pass the event details
+    }
 }
+
+
+//============================================================================
+// Initialization (v5.9 - uses defines from keyboard_hw.h)
+//============================================================================
+void keyboard_init(void) {
+    serial_write("[KB Init] Initializing keyboard driver (v5.9 - Consolidated Defs)...\n");
+    memset(&keyboard_state, 0, sizeof(keyboard_state));
+    spinlock_init(&keyboard_state.buffer_lock);
+    // Load default keymap (assuming DEFAULT_KEYMAP_US is defined correctly)
+    memcpy(keyboard_state.current_keymap, DEFAULT_KEYMAP_US, sizeof(DEFAULT_KEYMAP_US));
+    serial_write("[KB Init] Default US keymap loaded.\n");
+
+    uint8_t status;
+    uint8_t dummy_read;
+
+    // --- Initial State & Cleanup ---
+    serial_write("  Initial Status Check & Flush OBF...\n");
+    status = inb(KBC_STATUS_PORT);
+    if (status & KBC_SR_OBF) {
+         serial_write("  OBF set initially, reading/discarding data...\n");
+         dummy_read = inb(KBC_DATA_PORT);
+         serial_write("  Discarded data: 0x"); serial_print_hex(dummy_read); serial_write("\n");
+    }
+    if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) {
+        serial_write("  OBF STILL set? Extra dummy read...\n");
+        dummy_read = inb(KBC_DATA_PORT);
+        serial_write("  Discarded extra data: 0x"); serial_print_hex(dummy_read); serial_write("\n");
+    }
+    status = inb(KBC_STATUS_PORT);
+    serial_write("  Status after flush/dummy reads: 0x"); serial_print_hex(status); serial_write("\n");
+
+    // --- KBC/Interface Tests ---
+    serial_write("  Sending 0xAA (Self-Test)...\n");
+    kbc_send_command_port(KBC_CMD_SELF_TEST);
+    uint8_t test_result = kbc_read_data();
+    serial_write("  KBC Test Result: 0x"); serial_print_hex(test_result); serial_write(test_result == KBC_RESP_SELF_TEST_PASS ? " (PASS)\n" : " (FAIL/WARN)\n");
+    very_short_delay();
+    status = inb(KBC_STATUS_PORT); serial_write("  Status after 0xAA: 0x"); serial_print_hex(status); serial_write("\n");
+
+    serial_write("  Sending 0xAB (Interface Test)...\n");
+    kbc_send_command_port(KBC_CMD_KB_INTERFACE_TEST);
+    uint8_t iface_test_result = kbc_read_data();
+    serial_write("  Interface Test Result: 0x"); serial_print_hex(iface_test_result); serial_write(iface_test_result == KB_RESP_INTERFACE_TEST_PASS ? " (PASS)\n" : " (FAIL/WARN)\n");
+    very_short_delay();
+    status = inb(KBC_STATUS_PORT); serial_write("  Status after 0xAB: 0x"); serial_print_hex(status); serial_write("\n");
+
+    // --- Disable Interface (Initial) ---
+    serial_write("  Sending 0xAD (Disable KB Interface - Initial)...\n");
+    kbc_send_command_port(KBC_CMD_DISABLE_KB_IFACE);
+    very_short_delay();
+    status = inb(KBC_STATUS_PORT); serial_write("  Status after Initial 0xAD: 0x"); serial_print_hex(status); serial_write("\n");
+    if (status & KBC_SR_OBF) { serial_write("  OBF set after 0xAD, flushing...\n"); (void)inb(KBC_DATA_PORT); }
+
+    // --- Config Read/Modify/Write ---
+    serial_write("  Reading Config (0x20)...\n");
+    kbc_send_command_port(KBC_CMD_READ_CONFIG);
+    uint8_t config = kbc_read_data();
+    serial_write("  Read Config: 0x"); serial_print_hex(config); serial_write("\n");
+    status = inb(KBC_STATUS_PORT); serial_write("  Status after 0x20 read: 0x"); serial_print_hex(status); serial_write("\n");
+
+    uint8_t new_config = config | KBC_CFG_INT_KB; // Set IRQ1 enable
+    new_config &= ~KBC_CFG_DISABLE_KB;           // Clear INH bit in config byte value
+    // Optional: Ensure translation is enabled? Might help compatibility.
+    // new_config |= KBC_CFG_TRANSLATION;
+
+    if (config != new_config) {
+        serial_write("  Writing Config 0x"); serial_print_hex(new_config); serial_write(" (0x60 cmd, data)...\n");
+        kbc_send_command_port(KBC_CMD_WRITE_CONFIG);
+        kbc_send_data_port(new_config);
+        very_short_delay();
+        status = inb(KBC_STATUS_PORT); serial_write("  Status after 0x60 write: 0x"); serial_print_hex(status); serial_write("\n");
+    } else {
+        serial_write("  Config byte 0x"); serial_print_hex(config); serial_write(" already optimal.\n");
+        status = inb(KBC_STATUS_PORT);
+        serial_write("  Status after skipping write: 0x"); serial_print_hex(status); serial_write("\n");
+    }
+
+    // --- AD/AE Toggle Attempt ---
+    serial_write("  Attempting AD/AE toggle...\n");
+    kbc_send_command_port(KBC_CMD_DISABLE_KB_IFACE);
+    very_short_delay();
+    status = inb(KBC_STATUS_PORT); serial_write("    Status after AD toggle: 0x"); serial_print_hex(status); serial_write("\n");
+    kbc_send_command_port(KBC_CMD_ENABLE_KB_IFACE);
+    very_short_delay();
+    status = inb(KBC_STATUS_PORT); serial_write("    Status after AE toggle: 0x"); serial_print_hex(status);
+    if (status & KBC_SR_INH) serial_write(" (INH STILL SET)\n"); else serial_write(" (INH CLEAR)\n");
+    if (status & KBC_SR_OBF) { serial_write("    OBF set after AE toggle, flushing...\n"); (void)inb(KBC_DATA_PORT); }
+
+    // --- Reset Device (0xFF) ---
+    serial_write("  Sending 0xFF (Reset Device)...\n");
+    kbc_send_data_port(KB_CMD_RESET);
+    very_short_delay();
+    (void)kbc_expect_ack("Keyboard Reset (0xFF)");
+    very_short_delay();
+    if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) {
+        uint8_t bat = kbc_read_data();
+        serial_write("  BAT code received: 0x"); serial_print_hex(bat); serial_write(bat == KB_RESP_SELF_TEST_PASS ? " (PASS)\n" : " (FAIL/WARN)\n");
+    } else { serial_write("  Timeout waiting for BAT code.\n"); }
+    status = inb(KBC_STATUS_PORT); serial_write("  Status after device reset sequence: 0x"); serial_print_hex(status); serial_write("\n");
+
+    // --- Enable Scanning (0xF4) ---
+    serial_write("  Sending 0xF4 (Enable Scanning)...\n");
+    kbc_send_data_port(KB_CMD_ENABLE_SCAN);
+    very_short_delay();
+    (void)kbc_expect_ack("Enable Scanning (0xF4)");
+    status = inb(KBC_STATUS_PORT); serial_write("  Status after 0xF4 sequence: 0x"); serial_print_hex(status); serial_write("\n");
+
+    // --- Final Status Check & Cleanup ---
+    if (status & KBC_SR_OBF) { (void)inb(KBC_DATA_PORT); status = inb(KBC_STATUS_PORT); }
+    serial_write("  Final Status before IRQ reg: 0x"); serial_print_hex(status);
+    if (status & KBC_SR_INH) serial_write(" (**INH PROBLEM PERSISTS**)\n");
+    else serial_write(" (INH clear - Should work)\n");
+
+    // --- Register IRQ Handler ---
+    // Register the actual handler function with the IDT for the keyboard vector (IRQ1 = Vector 33)
+    register_int_handler(IRQ1_VECTOR, keyboard_irq1_handler, NULL); // IRQ1_VECTOR typically defined in idt.h or similar
+    serial_write("[KB Init] IRQ1 handler registered.\n");
+
+    // Register the callback function (likely from terminal.c) to handle processed key events
+    keyboard_register_callback(terminal_handle_key_event);
+    serial_write("[KB Init] Registered terminal handler as callback.\n");
+
+    terminal_write("[Keyboard] Initialized.\n");
+}
+
 
 //============================================================================
 // Public API Functions
 //============================================================================
 
-void keyboard_init(void) {
-    serial_write("[KB Init] Initializing keyboard driver (v5.3)...\n");
-    memset(&keyboard_state, 0, sizeof(keyboard_state));
-    spinlock_init(&keyboard_state.buffer_lock);
-    memcpy(keyboard_state.current_keymap, DEFAULT_KEYMAP_US, sizeof(DEFAULT_KEYMAP_US));
-    serial_write("[KB Init] Default US keymap loaded.\n");
-
-    // Step 0: Clear any stale KBC output
-    serial_write("[KB Init] Clearing stale KBC OBF (if any)...\n");
-    if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) {
-        uint8_t stale_data = inb(KBC_DATA_PORT);
-        serial_write("[KB Init] Cleared stale KBC data: 0x"); serial_print_hex(stale_data); serial_write("\n");
-    }
-
-    // Step 1: KBC Self-Test
-    serial_write("[KB Init] KBC Self-Test (0xAA to CMD 0x64)...\n");
-    kbc_send_command_port(KBC_CMD_SELF_TEST);
-    uint8_t test_result = kbc_read_data();
-    if (test_result == KBC_RESP_SELF_TEST_PASS) serial_write("[KB Init] KBC Self-Test PASSED (0x55).\n");
-    else { serial_write("[KB Init WARNING] KBC Self-Test FAILED/unexpected: 0x"); serial_print_hex(test_result); serial_write("\n"); }
-    very_short_delay();
-
-    // Step 2: Disable Keyboard and Mouse Interfaces (to ensure a known state)
-    serial_write("[KB Init] Sending Disable Keyboard Interface (0xAD to CMD 0x64)...\n");
-    kbc_send_command_port(KBC_CMD_DISABLE_KB_IFACE); // Disable Keyboard
-    very_short_delay();
-    // serial_write("[KB Init] Sending Disable Mouse Interface (0xA7 to CMD 0x64)...\n");
-    // kbc_send_command_port(0xA7); // Disable Mouse (if present and interfering)
-    // very_short_delay();
-    // uint8_t status_after_disable = inb(KBC_STATUS_PORT);
-    // serial_write("[KB Init] Status after interface disables: 0x"); serial_print_hex(status_after_disable); serial_write("\n");
-
-    // Step 3: Flush KBC Output Buffer Again
-    if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) {
-        uint8_t post_disable_data = inb(KBC_DATA_PORT);
-        serial_write("[KB Init] Cleared KBC data after disable cmds: 0x"); serial_print_hex(post_disable_data); serial_write("\n");
-    }
-
-    // Step 4: Read KBC Configuration Byte
-    serial_write("[KB Init] Reading KBC Config Byte (0x20 to CMD 0x64)...\n");
-    kbc_send_command_port(KBC_CMD_READ_CONFIG);
-    uint8_t kbc_config = kbc_read_data();
-    serial_write("[KB Init] KBC Config Byte Read: 0x"); serial_print_hex(kbc_config); serial_write("\n");
-
-    // Step 5: Modify and Write KBC Configuration Byte
-    uint8_t new_kbc_config = kbc_config;
-    bool config_changed = false;
-    // Bit 0: Keyboard Interrupt Enable (IRQ1) -> SET to 1
-    if (!(new_kbc_config & KBC_CFG_INT_KB)) { new_kbc_config |= KBC_CFG_INT_KB; config_changed = true; serial_write("  Config: Enabling KB IRQ1.\n");}
-    // Bit 1: Mouse Interrupt Enable (IRQ12) -> CLEAR to 0 (disable mouse if not used)
-    // if (new_kbc_config & 0x02) { new_kbc_config &= ~0x02; config_changed = true; serial_write("  Config: Disabling Mouse IRQ12.\n");}
-    // Bit 4: Keyboard Interface Disable -> CLEAR to 0 (enable interface)
-    if (new_kbc_config & KBC_CFG_DISABLE_KB) { new_kbc_config &= ~KBC_CFG_DISABLE_KB; config_changed = true; serial_write("  Config: Enabling KB Interface (clearing bit 4).\n");}
-    // Bit 6: Translation -> SET to 1
-    if (!(new_kbc_config & KBC_CFG_TRANSLATION)) { new_kbc_config |= KBC_CFG_TRANSLATION; config_changed = true; serial_write("  Config: Enabling Translation.\n");}
-
-    if (config_changed) {
-        serial_write("[KB Init] Writing modified KBC Config Byte 0x"); serial_print_hex(new_kbc_config); serial_write(" (0x60 to CMD 0x64, data to 0x60)...\n");
-        kbc_send_command_port(KBC_CMD_WRITE_CONFIG);
-        kbc_send_data_port(new_kbc_config);
-        very_short_delay();
-    } else {
-        serial_write("[KB Init] KBC Configuration Byte already optimal.\n");
-    }
-    uint8_t status_after_cfg = inb(KBC_STATUS_PORT);
-    serial_write("[KB Init] Status after KBC config write: 0x"); serial_print_hex(status_after_cfg);
-    if(status_after_cfg & KBC_SR_INH) serial_write(" (INH still SET!)\n"); else serial_write(" (INH clear)\n");
-
-
-    // Step 6: Explicitly Enable Keyboard Interface (Command 0xAE) - Try again after config
-    serial_write("[KB Init] Re-sending Enable Keyboard Interface (0xAE to CMD 0x64)...\n");
-    kbc_send_command_port(KBC_CMD_ENABLE_KB_IFACE);
-    very_short_delay();
-    uint8_t status_after_ae_retry = inb(KBC_STATUS_PORT);
-    serial_write("[KB Init] Status after 0xAE retry: 0x"); serial_print_hex(status_after_ae_retry);
-    if (status_after_ae_retry & KBC_SR_INH) serial_write(" (INH still SET!)\n"); else serial_write(" (INH CLEARED!)\n");
-
-    // Step 7: Reset Keyboard Device
-    serial_write("[KB Init] Sending Reset Keyboard Device (0xFF to Data 0x60)...\n");
-    kbc_send_data_port(KB_CMD_RESET);
-    if (kbc_expect_ack("Keyboard Reset (0xFF)")) {
-        serial_write("[KB Init] Keyboard ACKed reset. Waiting for BAT (0xAA)...\n");
-        uint8_t bat_result = kbc_read_data();
-        if (bat_result == KB_RESP_SELF_TEST_PASS) serial_write("[KB Init] Keyboard Self-Test (BAT) PASSED (0xAA).\n");
-        else { serial_write("[KB Init WARNING] Keyboard BAT FAILED/unexpected: 0x"); serial_print_hex(bat_result); serial_write("\n"); }
-    } else {
-        serial_write("[KB Init WARNING] Keyboard did not ACK reset command.\n");
-    }
-    very_short_delay();
-
-    // Step 8: Enable Keyboard Scanning
-    serial_write("[KB Init] Sending Enable Scanning (0xF4 to Data 0x60)...\n");
-    kbc_send_data_port(KB_CMD_ENABLE_SCAN);
-    if (!kbc_expect_ack("Enable Scanning (0xF4)")) {
-        serial_write("[KB Init WARNING] No ACK for Enable Scan command.\n");
-    }
-    very_short_delay();
-
-    // Step 9: Final Status Check
-    uint8_t final_status = inb(KBC_STATUS_PORT);
-    serial_write("[KB Init] Final KBC Status: 0x"); serial_print_hex(final_status);
-    if (final_status & KBC_SR_INH) serial_write(" (INH IS SET! - Keyboard likely won't work)\n");
-    else serial_write(" (INH is clear - Good!)\n");
-    if (final_status & KBC_SR_OBF) {
-        uint8_t lingering_data = inb(KBC_DATA_PORT);
-        serial_write("[KB Init WARNING] Final KBC OBF is SET. Lingering data: 0x"); serial_print_hex(lingering_data); serial_write("\n");
-    }
-
-    // Step 10: Register IRQ Handler & Callback
-    register_int_handler(IRQ1_VECTOR, keyboard_irq1_handler, NULL);
-    serial_write("[KB Init] IRQ1 handler registered (Vector 33).\n");
-    keyboard_register_callback(terminal_handle_key_event);
-    serial_write("[KB Init] Registered 'terminal_handle_key_event' as callback.\n");
-
-    terminal_write("[Keyboard] Initialized.\n");
-}
-
-// Other public functions (keyboard_poll_event, etc.)
+/**
+ * @brief Polls for a keyboard event from the internal buffer.
+ * @param event Pointer to a KeyEvent struct to be filled if an event is available.
+ * @return true if an event was retrieved, false if the buffer is empty.
+ */
 bool keyboard_poll_event(KeyEvent* event) {
     KERNEL_ASSERT(event != NULL, "NULL event pointer to keyboard_poll_event");
+    bool event_found = false;
+    // Protect buffer access with lock, save/restore IRQ state
     uintptr_t irq_flags = spinlock_acquire_irqsave(&keyboard_state.buffer_lock);
-    if (keyboard_state.buf_head == keyboard_state.buf_tail) {
-        spinlock_release_irqrestore(&keyboard_state.buffer_lock, irq_flags);
-        return false;
+
+    if (keyboard_state.buf_head != keyboard_state.buf_tail) { // Check if buffer is not empty
+        *event = keyboard_state.buffer[keyboard_state.buf_tail]; // Get event from tail
+        keyboard_state.buf_tail = (keyboard_state.buf_tail + 1) % KB_BUFFER_SIZE; // Advance tail
+        event_found = true;
     }
-    *event = keyboard_state.buffer[keyboard_state.buf_tail];
-    keyboard_state.buf_tail = (keyboard_state.buf_tail + 1) % KB_BUFFER_SIZE;
+
     spinlock_release_irqrestore(&keyboard_state.buffer_lock, irq_flags);
-    return true;
+    return event_found;
 }
 
+/**
+ * @brief Checks if a specific key is currently held down.
+ * @param key The KeyCode to check.
+ * @return true if the key is down, false otherwise.
+ */
 bool keyboard_is_key_down(KeyCode key) {
-    if (key >= KEY_COUNT) return false;
+    if (key >= KEY_COUNT) return false; // Bounds check
+    // Reading a boolean array element is usually atomic enough, no lock needed here
+    // unless updates could race in a very specific way (unlikely for simple state bool).
     return keyboard_state.key_states[key];
 }
 
+/**
+ * @brief Gets the current state of modifier keys.
+ * @return A bitmask (KeyModifier enum) representing active modifiers.
+ */
 uint8_t keyboard_get_modifiers(void) {
+    // Reading uint8_t is atomic, no lock needed.
     return keyboard_state.modifiers;
 }
 
+/**
+ * @brief Sets the keyboard LEDs (Scroll Lock, Num Lock, Caps Lock).
+ * @param scroll Scroll Lock state (true=on).
+ * @param num Num Lock state (true=on).
+ * @param caps Caps Lock state (true=on).
+ */
 void keyboard_set_leds(bool scroll, bool num, bool caps) {
     uint8_t led_state = (scroll ? 1 : 0) | (num ? 2 : 0) | (caps ? 4 : 0);
-    kbc_send_data_port(KB_CMD_SET_LEDS);
+    kbc_send_data_port(KB_CMD_SET_LEDS); // Send 0xED command
     if (kbc_expect_ack("Set LEDs (0xED)")) {
-        kbc_send_data_port(led_state);
-        kbc_expect_ack("Set LEDs Data Byte");
+        kbc_send_data_port(led_state); // Send LED state byte
+        kbc_expect_ack("Set LEDs Data Byte"); // Expect ACK for data byte
     }
 }
 
+/**
+ * @brief Sets the keyboard layout map to be used for scancode translation.
+ * @param keymap Pointer to a 128-entry array mapping scancodes to KeyCodes.
+ */
 void keyboard_set_keymap(const uint16_t* keymap) {
-    KERNEL_ASSERT(keymap != NULL, "NULL keymap to keyboard_set_keymap");
+    KERNEL_ASSERT(keymap != NULL, "NULL keymap passed to keyboard_set_keymap");
     uintptr_t irq_flags = spinlock_acquire_irqsave(&keyboard_state.buffer_lock);
     memcpy(keyboard_state.current_keymap, keymap, sizeof(keyboard_state.current_keymap));
     spinlock_release_irqrestore(&keyboard_state.buffer_lock, irq_flags);
     serial_write("[KB] Keymap updated.\n");
 }
 
+/**
+ * @brief Sets the keyboard typematic rate and delay.
+ * @param delay Delay code (0=250ms, 1=500ms, 2=750ms, 3=1000ms).
+ * @param speed Speed code (0=30.0cps .. 31=2.0cps).
+ */
 void keyboard_set_repeat_rate(uint8_t delay, uint8_t speed) {
-    delay &= 0x03; speed &= 0x1F;
-    kbc_send_data_port(KB_CMD_SET_TYPEMATIC);
+    delay &= 0x03; // Ensure delay is within range 0-3
+    speed &= 0x1F; // Ensure speed is within range 0-31
+    kbc_send_data_port(KB_CMD_SET_TYPEMATIC); // Send 0xF3 command
     if (kbc_expect_ack("Set Typematic (0xF3)")) {
-        kbc_send_data_port((delay << 5) | speed);
-        kbc_expect_ack("Set Typematic Data Byte");
+        kbc_send_data_port((delay << 5) | speed); // Send combined rate/delay byte
+        kbc_expect_ack("Set Typematic Data Byte"); // Expect ACK for data byte
     }
 }
 
+/**
+ * @brief Registers a callback function to be invoked when a key event occurs.
+ * @param callback Pointer to the function (void (*func)(KeyEvent)). Set to NULL to disable.
+ */
 void keyboard_register_callback(void (*callback)(KeyEvent)) {
+    // Protect access to the callback pointer
     uintptr_t irq_flags = spinlock_acquire_irqsave(&keyboard_state.buffer_lock);
     keyboard_state.event_callback = callback;
     spinlock_release_irqrestore(&keyboard_state.buffer_lock, irq_flags);
 }
 
+/**
+ * @brief Applies shift and caps lock modifiers to a character.
+ * (Provided as a utility, potentially useful in callbacks or terminal)
+ * @param c The base character (e.g., 'a').
+ * @param modifiers The current modifier bitmask.
+ * @return The modified character (e.g., 'A' if Shift/Caps applies).
+ * @note This is a simplified US-layout oriented version.
+ */
 char apply_modifiers_extended(char c, uint8_t modifiers) {
      bool shift = (modifiers & MOD_SHIFT) != 0;
      bool caps  = (modifiers & MOD_CAPS) != 0;
-     if (c >= 'a' && c <= 'z') return (shift ^ caps) ? (c - 'a' + 'A') : c;
-     if (c >= 'A' && c <= 'Z') return (shift ^ caps) ? (c - 'A' + 'a') : c;
+
+     // Apply Shift/Caps Lock to letters
+     if (c >= 'a' && c <= 'z') {
+         return (shift ^ caps) ? (c - 'a' + 'A') : c; // XOR handles Caps Lock interaction
+     }
+     if (c >= 'A' && c <= 'Z') {
+         // If Caps Lock is on, Shift reverses it for letters
+         return (shift ^ caps) ? (c - 'A' + 'a') : c;
+     }
+
+     // Apply Shift to numbers and symbols (US QWERTY assumed)
      if (shift) {
          switch (c) {
              case '1': return '!'; case '2': return '@'; case '3': return '#';
@@ -420,7 +550,11 @@ char apply_modifiers_extended(char c, uint8_t modifiers) {
              case '[': return '{'; case ']': return '}'; case '\\': return '|';
              case ';': return ':'; case '\'': return '"'; case ',': return '<';
              case '.': return '>'; case '/': return '?'; case '`': return '~';
+             // Add other shifted symbols based on the loaded keymap if necessary
          }
      }
-     return c;
+
+     // Could add Ctrl handling here if needed (e.g., map Ctrl+C to ETX)
+
+     return c; // Return original character if no applicable modifier
 }

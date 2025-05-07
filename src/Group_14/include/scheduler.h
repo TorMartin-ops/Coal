@@ -19,7 +19,7 @@ typedef enum {
 // --- Enhanced Task Control Block (TCB) ---
 typedef struct tcb {
     // Core Task Info & Links
-    struct tcb    *next;         // Next task in the run queue OR wait queue
+    struct tcb    *next;         // Next task in the run queue OR wait queue OR all_tasks list
     pcb_t         *process;      // Pointer to parent process
     uint32_t       pid;          // Process ID
 
@@ -28,8 +28,9 @@ typedef struct tcb {
 
     // State & Scheduling Parameters
     task_state_e   state;        // Current state
+    bool           in_run_queue; // <<< ADDED: True if task is currently in a run queue
     bool           has_run;      // True if task has executed at least once
-    uint8_t        priority;       // Task priority (0=highest)
+    uint8_t        priority;     // Task priority (0=highest)
     uint32_t       time_slice_ticks; // Current time slice allocation in ticks
     uint32_t       ticks_remaining; // Ticks left in current time slice
 
@@ -41,10 +42,13 @@ typedef struct tcb {
     // Wait Queue Links (used for BLOCKED state on mutexes, semaphores, etc.)
     struct tcb    *wait_prev;    // Previous in wait list (NULL if first or not waiting)
     struct tcb    *wait_next;    // Next in wait list (NULL if last or not waiting)
-    void          *wait_reason;   // Pointer to object being waited on (optional context)
-    struct tcb *all_tasks_next;
+    void          *wait_reason;  // Pointer to object being waited on (optional context)
+
+    // All Tasks List Link
+    struct tcb    *all_tasks_next; // Next TCB in the global list of all tasks
 
 } tcb_t;
+
 
 // --- Constants ---
 #define IDLE_TASK_PID 0 // Special PID for the idle task
@@ -119,6 +123,8 @@ uint32_t scheduler_get_ticks(void);
 
 // --- External Declarations ---
 extern volatile bool g_scheduler_ready;
+
+extern volatile bool g_need_reschedule;
 
 // --- External Assembly Function Prototypes ---
 extern void jump_to_user_mode(uint32_t *kernel_stack_ptr, uint32_t *page_directory_phys);
