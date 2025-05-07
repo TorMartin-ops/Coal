@@ -2,7 +2,7 @@
 #define IDT_H
 
 // Include dependencies FIRST
-#include <isr_frame.h> // <<< ADDED: Include the definition for isr_frame_t
+#include <isr_frame.h> 
 #include <port_io.h>   // For outb, PIC defines below
 #include <types.h>     // For uintN_t types
 
@@ -21,6 +21,26 @@
 // PIC Remapping Vector Offsets
 #define PIC1_START_VECTOR 0x20 // IRQ 0-7 map to 32-39
 #define PIC2_START_VECTOR 0x28 // IRQ 8-15 map to 40-47
+
+// --- IRQ Vectors (Derived from PIC start vectors) --- MOVED HERE FROM IDT.C ---
+#define IRQ0_VECTOR  (PIC1_START_VECTOR + 0)  // PIT Timer (Vector 32)
+#define IRQ1_VECTOR  (PIC1_START_VECTOR + 1)  // Keyboard (Vector 33)
+#define IRQ2_VECTOR  (PIC1_START_VECTOR + 2)  // Cascade (Vector 34)
+#define IRQ3_VECTOR  (PIC1_START_VECTOR + 3)  // COM2 (Vector 35)
+#define IRQ4_VECTOR  (PIC1_START_VECTOR + 4)  // COM1 (Vector 36)
+#define IRQ5_VECTOR  (PIC1_START_VECTOR + 5)  // LPT2 (Vector 37)
+#define IRQ6_VECTOR  (PIC1_START_VECTOR + 6)  // Floppy Disk (Vector 38)
+#define IRQ7_VECTOR  (PIC1_START_VECTOR + 7)  // LPT1 / Spurious (Vector 39)
+#define IRQ8_VECTOR  (PIC2_START_VECTOR + 0)  // RTC (Vector 40)
+#define IRQ9_VECTOR  (PIC2_START_VECTOR + 1)  // Free / ACPI SCI (Vector 41)
+#define IRQ10_VECTOR (PIC2_START_VECTOR + 2)  // Free / SCSI / Network (Vector 42)
+#define IRQ11_VECTOR (PIC2_START_VECTOR + 3)  // Free / SCSI / Network (Vector 43)
+#define IRQ12_VECTOR (PIC2_START_VECTOR + 4)  // PS/2 Mouse (Vector 44)
+#define IRQ13_VECTOR (PIC2_START_VECTOR + 5)  // FPU / Coprocessor (Vector 45)
+#define IRQ14_VECTOR (PIC2_START_VECTOR + 6)  // Primary ATA Hard Disk (Vector 46)
+#define IRQ15_VECTOR (PIC2_START_VECTOR + 7)  // Secondary ATA Hard Disk (Vector 47)
+// --- END MOVED SECTION ---
+
 
 // Aliases for DATA ports if used elsewhere
 #define PIC1_DAT PIC1_DATA
@@ -45,7 +65,6 @@ struct idt_ptr {
 
 
 // --- Interrupt Handler Function Pointer Type ---
-// <<< FIXED: Use isr_frame_t from isr_frame.h >>>
 typedef void (*int_handler_t)(isr_frame_t* frame);
 
 // --- Structure to hold registered handler info ---
