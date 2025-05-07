@@ -84,7 +84,7 @@ static const uint32_t g_priority_time_slices_ms[SCHED_PRIORITY_LEVELS] = {
 #define SCHED_INFO(fmt, ...)  terminal_printf("[Sched INFO ] " fmt "\n", ##__VA_ARGS__)
 #define SCHED_DEBUG(fmt, ...) terminal_printf("[Sched DEBUG] " fmt "\n", ##__VA_ARGS__) // Keep for key debug points
 #define SCHED_ERROR(fmt, ...) terminal_printf("[Sched ERROR] " fmt "\n", ##__VA_ARGS__)
-// SCHED_TRACE can be enabled for very detailed flow if needed by changing terminal_printf to serial_printf or enabling a higher debug level
+#define SCHED_WARN(fmt, ...)  terminal_printf("[Sched WARN ] " fmt "\n", ##__VA_ARGS__) // <<< ADD THIS DEFINITION
 #define SCHED_TRACE(fmt, ...) ((void)0) // Disabled by default for cleaner logs
 
 //============================================================================
@@ -638,4 +638,58 @@ void scheduler_init(void) {
     g_current_task = &g_idle_task_tcb; // Set initial current task
 
     SCHED_INFO("Scheduler initialized (Idle Task PID %lu). Active tasks: %lu", IDLE_TASK_PID, g_task_count);
+}
+
+// Helper to add a task to its run queue (ensure this is robust)
+// This is essentially what enqueue_task_locked does.
+// If enqueue_task_locked is static and you cannot change it, replicate its logic here
+// or better, make enqueue_task_locked static and create a public wrapper.
+// For this fix, we'll assume a new public function or that we can call a static helper carefully.
+
+void scheduler_unblock_task(tcb_t *task) {
+    if (!task) {
+        SCHED_WARN("scheduler_unblock_task: Called with NULL task.");
+        return;
+    }
+
+    // Acquire global scheduler lock for consistent task state modification
+    uintptr_t global_irq_flags = spinlock_acquire_irqsave(&g_scheduler_global_lock);
+
+    if (task->state == TASK_BLOCKED) { // Only proceed if the task was actually blocked
+        task->state = TASK_READY;
+        SCHED_DEBUG("Task PID %lu unblocked, new state: READY.", task->pid);
+
+        // Now add it to the appropriate run queue
+        // This requires access to g_run_queues and enqueue_task_locked logic
+        if (task->priority >= SCHED_PRIORITY_LEVELS) {
+            SCHED_ERROR("Task PID %lu has invalid priority %u during unblock.", task->pid, task->priority);
+            // Potentially reset to default or handle error
+        } else {
+            run_queue_t *queue = &g_run_queues[task->priority];
+            uintptr_t queue_irq_flags = spinlock_acquire_irqsave(&queue->lock);
+            
+            // Check if already in a list to prevent double enqueuing (should not happen if logic is correct)
+            // This basic check is simplified; a more robust check might iterate the queue.
+            if (task->next != NULL || queue->tail == task) {
+                 SCHED_WARN("Task PID %lu might already be in a run queue or has invalid next pointer before unblock-enqueue.", task->pid);
+                 // Decide on behavior: proceed cautiously or assert/error.
+                 // For safety, let's ensure 'next' is NULL before enqueue.
+                 task->next = NULL;
+            }
+
+            enqueue_task_locked(task); // Assumes this function is accessible and handles queue empty case
+            
+            spinlock_release_irqrestore(&queue->lock, queue_irq_flags);
+            SCHED_DEBUG("Task PID %lu enqueued into run queue Prio %u.", task->pid, task->priority);
+        }
+    } else {
+        SCHED_WARN("scheduler_unblock_task called on task PID %lu which was not BLOCKED (state=%d).", task->pid, task->state);
+    }
+
+    spinlock_release_irqrestore(&g_scheduler_global_lock, global_irq_flags);
+
+    // Optionally, if an immediate reschedule is desired after unblocking a task:
+    // if (g_scheduler_ready) {
+    //     schedule(); // Or set a flag for the scheduler to run soon
+    // }
 }

@@ -124,5 +124,12 @@ extern volatile bool g_scheduler_ready;
 extern void jump_to_user_mode(uint32_t *kernel_stack_ptr, uint32_t *page_directory_phys);
 extern void context_switch(uint32_t **old_esp_ptr, uint32_t *new_esp, uint32_t *new_page_directory);
 
+/**
+ * @brief Makes a previously blocked task ready and enqueues it.
+ * @param task Pointer to the TCB of the task to unblock.
+ * @note This function should be called when an event a task was waiting for occurs.
+ */
+ void scheduler_unblock_task(tcb_t *task);
+
 
 #endif // SCHEDULER_H

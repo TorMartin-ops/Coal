@@ -1,7 +1,7 @@
 /**
  * @file terminal.c
  * @brief VGA text-mode driver for a 32-bit x86 OS.
- * @version 5.5
+ * @version 5.6 (Corrected itoa_simple placement, unused function attributes)
  * @author Tor Martin Kohle
  *
  * Features:
@@ -20,7 +20,7 @@
  #include "spinlock.h"
  #include "serial.h"         // For serial_write, serial_print_hex, serial_putchar
  #include "assert.h"
- #include "scheduler.h"      // For get_current_task, schedule, tcb_t, TASK_BLOCKED, TASK_READY
+ #include "scheduler.h"      // For get_current_task, schedule, tcb_t, TASK_BLOCKED, TASK_READY, scheduler_unblock_task
  #include "fs_errno.h"       // For error codes like -EINTR if interrupting sleep
  
  #include <libc/stdarg.h>
@@ -126,8 +126,55 @@
  
  static terminal_input_state_t input_state;
  
+ // --- Static Helper Function: itoa_simple ---
+ // Moved to the top of the file, before any function that calls it.
+ static int itoa_simple(size_t val, char *buf, int base) { // Changed val to size_t
+     char *p = buf;
+     char *p1, *p2;
+     uint32_t ud = val; 
+     int digits = 0;
+ 
+     if (base != 10) {
+         if (buf) {
+             buf[0] = '?'; 
+             buf[1] = '\0';
+         }
+         return 1;
+     }
+ 
+     if (val == 0) {
+         if (buf) {
+             buf[0] = '0';
+             buf[1] = '\0';
+         }
+         return 1;
+     }
+ 
+     // Calculate characters (for positive numbers, base 10)
+     do {
+         if (p - buf >= 11) break; 
+         *p++ = (ud % base) + '0';
+         digits++;
+     } while (ud /= base);
+ 
+     *p = '\0'; // Null-terminate
+ 
+     // Reverse the string
+     p1 = buf;
+     p2 = p - 1;
+     while (p1 < p2) {
+         char tmp = *p1;
+         *p1 = *p2;
+         *p2 = tmp;
+         p1++;
+         p2--;
+     }
+     return digits;
+ }
+ 
+ 
  /* ------------------------------------------------------------------------- */
- /* Forward declarations                                                      */
+ /* Forward declarations for other static functions                           */
  /* ------------------------------------------------------------------------- */
  static void update_hardware_cursor(void);
  static void enable_hardware_cursor(void);
@@ -135,10 +182,10 @@
  static void put_char_at(char c, uint8_t color, int x, int y);
  static void clear_row(int row, uint8_t color);
  static void scroll_terminal(void);
- static void redraw_input(void);
- static void update_desired_column(void);
- static void insert_character(char c);
- static void erase_character(void);
+ static void __attribute__((unused)) redraw_input(void); // Marked unused
+ static void __attribute__((unused)) update_desired_column(void); // Marked unused
+ static void __attribute__((unused)) insert_character(char c); // Marked unused
+ static void __attribute__((unused)) erase_character(void); // Marked unused
  static void process_ansi_code(char c);
  static void terminal_putchar_internal(char c);
  static void terminal_clear_internal(void);
@@ -146,8 +193,7 @@
  static int _vsnprintf(char *str, size_t size, const char *fmt, va_list args);
  static int _format_number(unsigned long num, bool is_negative, int base, bool upper,
                            int min_width, bool zero_pad, char *buf, int buf_sz);
- // apply_modifiers_extended is declared in keyboard.h and defined in keyboard.c
- // No static declaration or definition here.
+ 
  
  /* ------------------------------------------------------------------------- */
  /* Helpers                                                                   */
@@ -404,7 +450,7 @@
  
                      if (val_l < 0) {
                          is_negative = true;
-                         if (val_l == (-2147483647L - 1L)) {
+                         if (val_l == (-2147483647L - 1L)) { // INT32_MIN
                               val_ul = 2147483648UL;
                          } else {
                              val_ul = (unsigned long)(-val_l);
@@ -426,7 +472,7 @@
                      else { val_ul = (unsigned long)va_arg(args, unsigned int); }
  
                      if (alt_form && val_ul != 0 && (*fmt == 'x' || *fmt == 'X')) {
-                         if (w < size - 3) {
+                         if (w < size - 3) { // Check space for "0x" or "0X"
                              *current_str_pos++ = '0'; w++;
                              *current_str_pos++ = (*fmt == 'X' ? 'X' : 'x'); w++;
                          }
@@ -441,13 +487,18 @@
                  {
                      uintptr_t ptr_val = (uintptr_t)va_arg(args, void*);
                      val_ul = (unsigned long)ptr_val;
-                     alt_form = false;
+                     alt_form = false; // '#' for pointers is typically handled by '0x' prefix
  
-                     if (w < size - 3) {
+                     if (w < size - 3) { // Check space for "0x"
                          *current_str_pos++ = '0'; w++;
                          *current_str_pos++ = 'x'; w++;
                      }
-                     len_num_str = _format_number(val_ul, false, 16, false, sizeof(uintptr_t) * 2, true, tmp, sizeof(tmp));
+                     // Ensure enough width for a 32-bit pointer (8 hex digits)
+                     int ptr_min_width = sizeof(uintptr_t) * 2;
+                     if (min_width < ptr_min_width) min_width = ptr_min_width;
+                     zero_pad = true; // Pointers are usually zero-padded
+ 
+                     len_num_str = _format_number(val_ul, false, 16, false, min_width, zero_pad, tmp, sizeof(tmp));
                      arg_s = tmp;
                  }
                  break;
@@ -555,7 +606,7 @@
      if (event.code >= ' ' && event.code <= '~') {
          // Use the global apply_modifiers_extended from keyboard.h (defined in keyboard.c)
          char_to_add = apply_modifiers_extended((char)event.code, event.modifiers);
-     } else if (event.code == '\n') {
+     } else if (event.code == '\n') { // Use KeyCode definition if KEY_ENTER is used in keymap
          char_to_add = '\n';
      } else if (event.code == KEY_BACKSPACE) {
          char_to_add = '\b';
@@ -566,44 +617,29 @@
          if (char_to_add == '\n') {
              s_line_buffer[s_line_buffer_len] = '\0';
              s_line_ready_for_read = true;
-             
+         
              serial_write("[Terminal] Line ready: '");
-             serial_write(s_line_buffer);
+             serial_write(s_line_buffer); 
              serial_write("', len: ");
-             // Simple way to print length to serial without full printf
-             char len_buf[12]; // Max ~10 digits for size_t + null
-             size_t temp_len = s_line_buffer_len;
-             if (temp_len == 0) {
-                 len_buf[0] = '0'; len_buf[1] = '\0';
-             } else {
-                 int i = 0;
-                 while(temp_len > 0 && i < 10) {
-                     len_buf[i++] = (char)((temp_len % 10) + '0');
-                     temp_len /= 10;
-                 }
-                 len_buf[i] = '\0';
-                 // Reverse len_buf
-                 int start = 0, end = i - 1;
-                 while(start < end) {
-                     char t = len_buf[start];
-                     len_buf[start] = len_buf[end];
-                     len_buf[end] = t;
-                     start++; end--;
-                 }
-             }
+             char len_buf[12]; 
+             itoa_simple(s_line_buffer_len, len_buf, 10); 
              serial_write(len_buf);
              serial_write("\n");
  
  
              if (s_waiting_task) {
                  serial_write("[Terminal] Waking up task PID ");
-                 serial_print_hex(s_waiting_task->pid); // Assuming pid is uint32_t
+                 serial_print_hex(s_waiting_task->pid); 
                  serial_write("\n");
-                 s_waiting_task->state = TASK_READY;
-                 s_waiting_task = NULL;
+                 
+                 tcb_t* task_to_unblock = (tcb_t*)s_waiting_task; 
+                 s_waiting_task = NULL; 
+ 
+                 scheduler_unblock_task(task_to_unblock);
              }
+             
              term_out_irq_flags = spinlock_acquire_irqsave(&terminal_lock);
-             terminal_putchar_internal('\n');
+             terminal_putchar_internal('\n'); 
              update_hardware_cursor();
              spinlock_release_irqrestore(&terminal_lock, term_out_irq_flags);
  
@@ -651,7 +687,7 @@
  
          if (s_line_ready_for_read) {
              serial_write("[Terminal] terminal_read_line_blocking: Line is ready.\n");
-             size_t copy_len = MIN(s_line_buffer_len, len - 1); // Use defined MIN macro
+             size_t copy_len = MIN(s_line_buffer_len, len - 1); 
              memcpy(kbuf, s_line_buffer, copy_len);
              kbuf[copy_len] = '\0';
              bytes_copied = (ssize_t)copy_len;
@@ -663,7 +699,7 @@
              spinlock_release_irqrestore(&s_line_buffer_lock, line_buf_irq_flags);
              
              serial_write("[Terminal] terminal_read_line_blocking: Copied bytes: '");
-             serial_write(kbuf); // kbuf is null-terminated
+             serial_write(kbuf); 
              serial_write("'\n");
              return bytes_copied;
          } else {
@@ -699,10 +735,10 @@
  /* ------------------------------------------------------------------------- */
  /* Multi-line input editor (Stubs)                                           */
  /* ------------------------------------------------------------------------- */
- static void redraw_input(void) { /* Placeholder */ }
- static void update_desired_column(void) { /* Placeholder */ }
- static void insert_character(char c) { (void)c; /* Placeholder */ }
- static void erase_character(void) { /* Placeholder */ }
+ static void __attribute__((unused)) redraw_input(void) { /* Placeholder */ }
+ static void __attribute__((unused)) update_desired_column(void) { /* Placeholder */ }
+ static void __attribute__((unused)) insert_character(char c) { (void)c; /* Placeholder */ }
+ static void __attribute__((unused)) erase_character(void) { /* Placeholder */ }
  
  void terminal_start_input(const char* prompt) {
      uintptr_t flags = spinlock_acquire_irqsave(&terminal_lock);
@@ -762,4 +798,3 @@
  /* ------------------------------------------------------------------------- */
  /* End of file                                                               */
  /* ------------------------------------------------------------------------- */
- 

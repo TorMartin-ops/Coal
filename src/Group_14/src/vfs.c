@@ -1,6 +1,6 @@
 /**
  * @file vfs.c
- * @brief Virtual File System Implementation (v1.3 - File Lock Fix)
+ * @brief Virtual File System Implementation
  * @version 1.3
  *
  * Provides a unified interface over different filesystem drivers.
@@ -8,11 +8,6 @@
  * Implements core VFS operations (open, close, read, write, lseek, etc.)
  * by dispatching calls to the appropriate underlying filesystem driver.
  *
- * Changes v1.3:
- * - Introduced per-file spinlock (file->lock) initialized in vfs_open.
- * - Added locking around file offset access and driver calls in vfs_read,
- * vfs_write, and vfs_lseek to prevent race conditions.
- * - Minor logging and assertion refinements.
  *
  * Key Aspects & Considerations:
  * - Mount Point Resolution: Uses longest prefix matching.

@@ -63,7 +63,7 @@
  #define USER_EFLAGS_DEFAULT 0x202
  
  // Simple debug print macro (can be enabled/disabled)
- #define PROCESS_DEBUG 1 // Set to 0 to disable debug prints
+ #define PROCESS_DEBUG 0 // Set to 0 to disable debug prints
  #if PROCESS_DEBUG
  // Note: Ensure terminal_printf handles %p correctly (it should, as %p calls _format_number with base 16)
  #define PROC_DEBUG_PRINTF(fmt, ...) terminal_printf("[Process DEBUG %s:%d] " fmt, __func__, __LINE__, ##__VA_ARGS__)
