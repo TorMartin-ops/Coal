@@ -44,6 +44,7 @@
 #include "pit.h"
 #include "keyboard.h"
 #include "keymap.h"
+#include "keyboard_hw.h"   // Hardware definitions for keyboard
 // #include "pc_speaker.h"  // Uncomment if PC speaker features are actively used
 // #include "song.h"
 // #include "song_player.h"
@@ -340,10 +341,20 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     } else {
         terminal_write("  [CRITICAL] Filesystem initialization FAILED. User programs cannot be loaded.\n");
     }
+    terminal_write("[Kernel Debug] KBC Status after fs_init(): 0x");
+    serial_print_hex(inb(KBC_STATUS_PORT)); // Read status
+    serial_write("\n");
 
     if (fs_ready) {
         launch_program(INITIAL_TEST_PROGRAM_PATH, "Test Suite");
+        terminal_write("[Kernel Debug] KBC Status after hello.elf launch: 0x");
+        serial_print_hex(inb(KBC_STATUS_PORT));
+        serial_write("\n");
         launch_program(SYSTEM_SHELL_PATH, "System Shell");
+        terminal_write("[Kernel Debug] KBC Status before final sti: 0x");
+        serial_print_hex(inb(KBC_STATUS_PORT));
+        serial_write("\n");
+
     } else {
         terminal_write("  [Kernel] Skipping user process launch due to FS init failure.\n");
     }
@@ -353,6 +364,10 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     scheduler_start();
     terminal_printf("\n[Kernel] Initialization complete. UiAOS %s operational. Enabling interrupts.\n", KERNEL_VERSION_STRING);
     terminal_write("================================================================================\n\n");
+
+    terminal_write("[Kernel Debug] KBC Status before final sti: 0x");
+    serial_print_hex(inb(KBC_STATUS_PORT));
+    serial_write("\n");
 
     asm volatile ("sti");
 

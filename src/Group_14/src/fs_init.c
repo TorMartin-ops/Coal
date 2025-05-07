@@ -19,6 +19,9 @@
  #include "sys_file.h"       // For O_RDONLY used in test function
  #include "kmalloc.h"        // For memory allocation (used in test function)
  #include "mount_table.h"    // For list_mounts()
+ #include "keyboard_hw.h" 
+ #include "serial.h"  
+ #include "port_io.h"       // For inb() used in debugging
  
  #include <string.h>         // For strcmp, etc.
  
@@ -78,6 +81,10 @@
           vfs_shutdown();
           return FS_ERR_INVALID_PARAM;
      }
+
+     terminal_printf("[FS_INIT Debug] KBC Status before disk_init: 0x%x\n", inb(KBC_STATUS_PORT));
+     ret = disk_init(&s_root_disk, root_device_name);
+     terminal_printf("[FS_INIT Debug] KBC Status after disk_init: 0x%x\n", inb(KBC_STATUS_PORT));
  
      terminal_printf("[FS_INIT] Initializing root block device '%s'...\n", root_device_name);
      ret = disk_init(&s_root_disk, root_device_name);
@@ -88,7 +95,7 @@
          vfs_shutdown();
          return ret; // Propagate disk error
      }
- 
+
      terminal_printf("[FS_INIT] Registering root disk '%s' with buffer cache...\n", root_device_name);
      ret = buffer_register_disk(&s_root_disk);
      if (ret != FS_SUCCESS) {

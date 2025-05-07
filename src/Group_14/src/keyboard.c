@@ -1,7 +1,7 @@
 /**
  * @file keyboard.c
  * @brief PS/2 Keyboard Driver for UiAOS
- * @version 5.9 - Consolidated KBC defines into keyboard_hw.h
+ * @version 6.0 - Added command to switch keyboard to Scan Code Set 1 during init.
  */
 
 //============================================================================
@@ -21,12 +21,11 @@
 #include "assert.h"
 #include <libc/stdbool.h>
 #include <libc/stdint.h>
+#include <libc/stddef.h> // For NULL definition
 
 //============================================================================
 // Definitions and Constants
 //============================================================================
-// --- NO KBC/KB defines here anymore - they are in keyboard_hw.h ---
-
 #define KB_BUFFER_SIZE 256
 #define KBC_WAIT_TIMEOUT 300000 // Timeout for KBC waits
 
@@ -62,8 +61,6 @@ extern void terminal_handle_key_event(const KeyEvent event); // Callback functio
 //============================================================================
 // Keymap Data (Typically loaded from keymap.c or default here)
 //============================================================================
-// Assuming keymap_us_qwerty is defined elsewhere (e.g., keymap.c and included via keymap.h)
-// For standalone compilation, you might need a default here:
 extern const uint16_t keymap_us_qwerty[128]; // Use extern if defined elsewhere
 #define DEFAULT_KEYMAP_US keymap_us_qwerty // Use the external definition
 
@@ -151,6 +148,7 @@ static bool kbc_expect_ack(const char* command_name) {
         return true;
     } else if (resp == KB_RESP_RESEND) {
         serial_write("[KB Debug WARNING] RESEND (0xFE) for "); serial_write(command_name); serial_write(".\n");
+        // Optionally add retry logic here
     } else {
         serial_write("[KB Debug WARNING] Unexpected 0x"); serial_print_hex(resp);
         serial_write(" for "); serial_write(command_name); serial_write(" (expected ACK 0xFA).\n");
@@ -181,7 +179,11 @@ static void keyboard_irq1_handler(isr_frame_t *frame) {
 
     // Read scancode from data port
     uint8_t scancode = inb(KBC_DATA_PORT);
-    // serial_write("[KB IRQ] Scancode=0x"); serial_print_hex(scancode); serial_write("\n"); // Debug log
+    serial_write("[KB IRQ] Scancode=0x"); serial_print_hex(scancode); serial_write(" "); // Debug log
+
+    // --- Add debug print for raw scancode (as suggested in verification step) ---
+    // serial_print_hex(scancode); serial_write(" ");
+    // --- End debug print ---
 
     bool is_break_code; // Is it a key release event?
 
@@ -235,7 +237,11 @@ static void keyboard_irq1_handler(isr_frame_t *frame) {
     }
 
     // If KeyCode is unknown (not mapped), ignore the scancode
-    if (kc == KEY_UNKNOWN) { return; }
+    if (kc == KEY_UNKNOWN) {
+         serial_write("(KC_UNKNOWN)\n"); // Log unknown key codes
+         return;
+    }
+    serial_write("\n"); // Finish the debug log line if key was known
 
     // Update general key state array (if KeyCode is within bounds)
     if (kc < KEY_COUNT) {
@@ -296,10 +302,10 @@ static void keyboard_irq1_handler(isr_frame_t *frame) {
 
 
 //============================================================================
-// Initialization (v6.5 - Corrected Final Check based on Config Byte)
+// Initialization (v6.0 - Added Scan Code Set 1 command)
 //============================================================================
 void keyboard_init(void) {
-    serial_write("[KB Init] Initializing keyboard driver (v6.5 - Corrected Check)...\n");
+    serial_write("[KB Init] Initializing keyboard driver (v6.0 - Set Scancode Set 1)...\n"); // Updated version
     memset(&keyboard_state, 0, sizeof(keyboard_state));
     spinlock_init(&keyboard_state.buffer_lock);
     // Load default keymap
@@ -349,6 +355,8 @@ void keyboard_init(void) {
     new_config |= KBC_CFG_INT_KB;      // Bit 0 = 1 (Enable Keyboard Interrupt IRQ1)
     new_config &= ~KBC_CFG_DISABLE_KB; // Bit 4 = 0 (Ensure Keyboard Interface is ENABLED)
     new_config &= ~KBC_CFG_INT_MOUSE;  // Bit 1 = 0 (Disable Mouse Interrupt IRQ12)
+    // Optional: Explicitly disable translation if you rely ONLY on Set 1 after switching
+    // new_config &= ~KBC_CFG_TRANSLATION; // Bit 6 = 0 (Disable KBC Set2->Set1 translation)
 
     if (config != new_config) {
         serial_write("  Writing KBC Config 0x"); serial_print_hex(new_config); serial_write(" (0x60 cmd, data)...\n");
@@ -361,7 +369,6 @@ void keyboard_init(void) {
     status = inb(KBC_STATUS_PORT); serial_write("  Status after Config Write/Check: 0x"); serial_print_hex(status); serial_write("\n");
 
     // --- 6. Explicitly Enable Keyboard Interface (Command 0xAE) ---
-    // This might be redundant if config byte write works, but often included for robustness.
     serial_write("  Sending Explicit 0xAE (Enable KB Interface)...\n");
     kbc_send_command_port(KBC_CMD_ENABLE_KB_IFACE);
     very_short_delay(); // Give it time to process
@@ -372,25 +379,55 @@ void keyboard_init(void) {
     very_short_delay();
     (void)kbc_expect_ack("Enable Scanning (0xF4)"); // Read ACK
 
-    // --- 8. FINAL CHECK (Corrected) ---
-    // Check the *Configuration Byte* again to ensure the disable bit (bit 4) is actually clear.
+    // --- <<< NEW: 8. Set Scan Code Set to 1 >>> ---
+    serial_write("  Sending 0xF0 0x01 (Set Scancode Set 1)...\n");
+    kbc_send_data_port(KB_CMD_SET_SCANCODE_SET); // Send 0xF0 command
+    if (!kbc_expect_ack("Select Set (0xF0)")) { // Check ACK for 0xF0
+        serial_write("   WARNING: No ACK for Select Set command! Keyboard might not support switching or is unresponsive.\n");
+        // Consider how fatal this is. QEMU should support it. Real HW might not.
+        // For now, we continue, but input might still be Set 2.
+    } else {
+        kbc_send_data_port(0x01); // Send data byte: 0x01 for Set 1
+        if (!kbc_expect_ack("Set 1 data (0x01)")) { // Check ACK for 0x01
+            serial_write("   WARNING: No ACK for Set 1 data byte! Switch may have failed.\n");
+        } else {
+            serial_write("   Keyboard ACKed Set 1 command sequence.\n");
+        }
+    }
+
+    // Optional: Short delay and flush any potential stray bytes after Set 1 command
+    very_short_delay();
+    int set1_flush_count = 0;
+    while ((inb(KBC_STATUS_PORT) & KBC_SR_OBF) && set1_flush_count < 10) {
+         (void)inb(KBC_DATA_PORT);
+         set1_flush_count++;
+    }
+    if(set1_flush_count > 0) { serial_write("   Flushed stray bytes after Set 1 command.\n"); }
+    serial_write("  Keyboard hopefully switched to Scan Code Set 1.\n");
+    // --- <<< END NEW SECTION >>> ---
+
+    // --- 9. FINAL CHECK (Was Step 8) ---
     serial_write("  Reading KBC Config (0x20) for final verification...\n");
-    kbc_wait_for_send_ready(); // Ensure ready for command
+    kbc_wait_for_send_ready();
     kbc_send_command_port(KBC_CMD_READ_CONFIG);
-    uint8_t final_config = kbc_read_data(); // Includes wait
+    uint8_t final_config = kbc_read_data();
     serial_write("  Final KBC Config Read: 0x"); serial_print_hex(final_config); serial_write("\n");
 
-    // Check bit 4 (KBC_CFG_DISABLE_KB)
     if (final_config & KBC_CFG_DISABLE_KB) {
         serial_write(" (**FATAL: KBC Config Byte still shows Keyboard Interface DISABLED!**)\n");
         KERNEL_PANIC_HALT("Keyboard interface config bit (KBC_CFG_DISABLE_KB) could not be cleared!");
     } else {
         serial_write(" (Config Byte shows Keyboard Interface ENABLED - OK)\n");
     }
-    // Check bit 0 (KBC_CFG_INT_KB)
     if (!(final_config & KBC_CFG_INT_KB)) {
          serial_write(" (**WARN: KBC Config Byte shows Keyboard Interrupt DISABLED! Check config logic.**)\n");
     }
+    // Check translation bit (optional, depends if we cleared it above)
+    // if (final_config & KBC_CFG_TRANSLATION) {
+    //     serial_write(" (**INFO: KBC Scancode Translation (Bit 6) is ENABLED.**)\n");
+    // } else {
+    //     serial_write(" (**INFO: KBC Scancode Translation (Bit 6) is DISABLED.**)\n");
+    // }
 
     // Final flush of OBF
     if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) {
@@ -404,11 +441,11 @@ void keyboard_init(void) {
     keyboard_register_callback(terminal_handle_key_event);
     serial_write("[KB Init] Registered terminal handler as callback.\n");
 
-    terminal_write("[Keyboard] Initialized (Corrected Final Check).\n");
+    terminal_write("[Keyboard] Initialized (Attempted Set Scancode 1).\n"); // Updated final message
 }
 
 //============================================================================
-// Public API Functions
+// Public API Functions (No changes needed in these)
 //============================================================================
 
 /**
