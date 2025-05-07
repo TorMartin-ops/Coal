@@ -300,7 +300,6 @@ static void keyboard_irq1_handler(isr_frame_t *frame) {
     }
 }
 
-// Add this helper function within src/keyboard.c (or ensure it's declared if placed elsewhere)
 /**
  * @brief Polls the KBC status register until specific bits are CLEAR.
  * @param mask The bitmask of flags to wait for (wait until (status & mask) == 0).
@@ -316,18 +315,17 @@ static void keyboard_irq1_handler(isr_frame_t *frame) {
         }
         asm volatile("pause"); // Hint CPU we are spinning
     }
-    // Use %lu for uint32_t based on previous compiler warnings
     terminal_printf("[KB Poll Clear TIMEOUT] Waiting for mask 0x%x clear (%s). Last Status=0x%x\n",
-                     mask, context ? context : "N/A", inb(KBC_STATUS_PORT));
+                    mask, context ? context : "N/A", inb(KBC_STATUS_PORT));
     return -1; // Timeout
 }
 
 
 //============================================================================
-// Initialization (v6.0 - Added Scan Code Set 1 command + Polling Waits + INH Poll)
+// Initialization (v6.1 - Added KB Reset + Reordered Self-Test + INH Poll)
 //============================================================================
 void keyboard_init(void) {
-    serial_write("[KB Init] Initializing keyboard driver (v6.0 - Set Scancode Set 1)...\n");
+    serial_write("[KB Init] Initializing keyboard driver (v6.1 - Reset + Reorder)...\n");
     memset(&keyboard_state, 0, sizeof(keyboard_state));
     spinlock_init(&keyboard_state.buffer_lock);
     // Load default keymap
@@ -335,11 +333,11 @@ void keyboard_init(void) {
     serial_write("[KB Init] Default US keymap loaded.\n");
 
     uint8_t status;
-    // uint8_t dummy_read; // Unused variable removed
+    int flush_count; // Declare flush_count here for use in multiple places
 
     // --- 1. Flush Output Buffer ---
     serial_write("  Flushing KBC Output Buffer...\n");
-    int flush_count = 0;
+    flush_count = 0;
     while ((inb(KBC_STATUS_PORT) & KBC_SR_OBF) && flush_count < 100) {
         (void)inb(KBC_DATA_PORT);
         very_short_delay();
@@ -348,84 +346,104 @@ void keyboard_init(void) {
     status = inb(KBC_STATUS_PORT);
     serial_write("  Status after OBF flush: 0x"); serial_print_hex(status); serial_write("\n");
 
-    // --- 2. Disable Keyboard Interface ---
-    serial_write("  Sending 0xAD (Disable KB Interface)...\n");
-    kbc_wait_for_send_ready(); // <<< WAIT ADDED
-    kbc_send_command_port(KBC_CMD_DISABLE_KB_IFACE);
-    very_short_delay();
-    // Optional: Flush OBF after command if needed
-    if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) { (void)inb(KBC_DATA_PORT); }
+    // --- 2. Reset Keyboard Device ---
+    serial_write("  Sending 0xFF (Reset) to Keyboard Device...\n");
+    kbc_wait_for_send_ready();
+    kbc_send_data_port(KB_CMD_RESET); // 0xFF to port 0x60
+    // Wait for ACK (0xFA) or RESEND (0xFE)
+    uint8_t reset_ack = kbc_read_data(); // Includes wait
+    serial_write("  Response to 0xFF: 0x"); serial_print_hex(reset_ack); serial_write("\n");
+    if (reset_ack == KB_RESP_ACK) {
+         // After ACK, device performs self-test and sends result (usually 0xAA)
+         serial_write("  Waiting for Keyboard BAT result...\n");
+         uint8_t bat_result = kbc_read_data(); // Includes wait
+         serial_write("  Keyboard BAT Result: 0x"); serial_print_hex(bat_result);
+         if (bat_result == KB_RESP_SELF_TEST_PASS) {
+             serial_write(" (PASS)\n");
+         } else {
+             serial_write(" (FAIL/WARN)\n");
+         }
+    } else {
+       serial_write("  WARNING: Keyboard did not ACK Reset command (0xFF).\n");
+    }
+    very_short_delay(); // Delay after reset sequence
+    // Flush any potential extra bytes after reset
+    flush_count = 0;
+     while ((inb(KBC_STATUS_PORT) & KBC_SR_OBF) && flush_count < 10) {
+         (void)inb(KBC_DATA_PORT);
+         flush_count++;
+     }
+    if(flush_count > 0) { serial_write("   Flushed stray bytes after Reset sequence.\n"); }
 
-    // --- 3. Disable Mouse Interface ---
+
+    // --- 3. Disable Mouse Interface (Good practice) ---
     serial_write("  Sending 0xA7 (Disable Mouse Interface)...\n");
-    kbc_wait_for_send_ready(); // <<< WAIT ADDED
+    kbc_wait_for_send_ready();
     kbc_send_command_port(KBC_CMD_DISABLE_MOUSE_IFACE);
     very_short_delay();
     if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) { (void)inb(KBC_DATA_PORT); } // Flush potential response
 
-    // --- 4. Perform KBC Self-Test ---
-    serial_write("  Sending 0xAA (Self-Test)...\n");
-    kbc_wait_for_send_ready(); // <<< WAIT ADDED
-    kbc_send_command_port(KBC_CMD_SELF_TEST);
-    uint8_t test_result = kbc_read_data(); // Includes wait for OBF
-    serial_write("  KBC Test Result: 0x"); serial_print_hex(test_result); serial_write(test_result == KBC_RESP_SELF_TEST_PASS ? " (PASS)\n" : " (FAIL/WARN)\n");
-    very_short_delay();
-
-    // --- 5. Set KBC Configuration Byte ---
+    // --- 4. Set KBC Configuration Byte ---
     serial_write("  Reading KBC Config (0x20)...\n");
-    kbc_wait_for_send_ready(); // <<< WAIT ADDED
+    kbc_wait_for_send_ready();
     kbc_send_command_port(KBC_CMD_READ_CONFIG);
     uint8_t config = kbc_read_data(); // Includes wait for OBF
     serial_write("  Read Config: 0x"); serial_print_hex(config); serial_write("\n");
 
-    // Ensure Keyboard Interface Enabled (Bit 4=0), Keyboard Interrupt Enabled (Bit 0=1)
-    uint8_t new_config = (config | KBC_CFG_INT_KB) & ~KBC_CFG_DISABLE_KB;
-    // Optionally ensure mouse interrupt is disabled (Bit 1=0)
-    new_config &= ~KBC_CFG_INT_MOUSE;
+    // Ensure Keyboard Interface Enabled (Bit 4=0), Keyboard Interrupt Enabled (Bit 0=1), Mouse Int Disabled (Bit 1=0)
+    uint8_t new_config = (config | KBC_CFG_INT_KB) & ~(KBC_CFG_DISABLE_KB | KBC_CFG_INT_MOUSE);
+    // Optionally disable translation: new_config &= ~KBC_CFG_TRANSLATION;
 
     if (config != new_config) {
         serial_write("  Writing KBC Config 0x"); serial_print_hex(new_config); serial_write(" (0x60 cmd, data)...\n");
-        kbc_wait_for_send_ready(); // <<< WAIT ADDED
+        kbc_wait_for_send_ready();
         kbc_send_command_port(KBC_CMD_WRITE_CONFIG); // Send 0x60
-        kbc_wait_for_send_ready(); // <<< WAIT ADDED
+        kbc_wait_for_send_ready();
         kbc_send_data_port(new_config); // Send the config byte
         very_short_delay();
     } else {
-        serial_write("  KBC Config byte 0x"); serial_print_hex(config); serial_write(" already has desired settings (KB Int Enabled, KB Iface Enabled).\n");
+        serial_write("  KBC Config byte 0x"); serial_print_hex(config); serial_write(" already has desired settings.\n");
     }
     status = inb(KBC_STATUS_PORT); serial_write("  Status after Config Write/Check: 0x"); serial_print_hex(status); serial_write("\n");
 
-    // --- 6. Explicitly Enable Keyboard Interface (Command 0xAE) ---
-    serial_write("  Sending Explicit 0xAE (Enable KB Interface)...\n");
-    kbc_wait_for_send_ready(); // Wait IBF=0 BEFORE sending command
-    kbc_send_command_port(KBC_CMD_ENABLE_KB_IFACE); // Sends 0xAE to port 0x64
-    kbc_wait_for_send_ready(); // Wait IBF=0 AFTER command sent (controller accepted)
+    // --- 5. Perform KBC Self-Test AFTER setting config --- // <<< MOVED HERE
+    serial_write("  Sending 0xAA (Self-Test) AFTER config set...\n");
+    kbc_wait_for_send_ready();
+    kbc_send_command_port(KBC_CMD_SELF_TEST);
+    uint8_t test_result = kbc_read_data();
+    serial_write("  KBC Test Result: 0x"); serial_print_hex(test_result); serial_write(test_result == KBC_RESP_SELF_TEST_PASS ? " (PASS)\n" : " (FAIL/WARN)\n");
+    very_short_delay();
 
-    // <<< FIX: Add poll to wait for INH bit (0x10) to CLEAR in status >>>
+    // --- 6. Explicitly Enable Keyboard Interface (Command 0xAE) --- // <<< KEPT HERE
+    serial_write("  Sending Explicit 0xAE (Enable KB Interface)...\n");
+    kbc_wait_for_send_ready();
+    kbc_send_command_port(KBC_CMD_ENABLE_KB_IFACE); // Command 0xAE
+    kbc_wait_for_send_ready(); // Wait for acceptance
+
+    // --- 7. Poll for INH bit clear --- // <<< KEPT HERE
     terminal_write("    Polling Status Port 0x64 until INH bit (0x10) is clear...\n");
     if (kbc_poll_status_clear(KBC_SR_INH, KBC_WAIT_TIMEOUT * 2, "EnableKB_INH_Clear") != 0) {
-        terminal_printf("    [WARN] Timeout waiting for KBC Status INH bit to clear after 0xAE command! Status: 0x%x\n", inb(KBC_STATUS_PORT));
-        // Log warning but proceed - maybe keyboard will work anyway or another command clears it.
+        terminal_printf("    [WARN] Timeout waiting for KBC Status INH bit to clear after 0xAE! Status: 0x%x\n", inb(KBC_STATUS_PORT));
+        // Log warning but proceed
     } else {
         terminal_printf("    KBC Status INH bit cleared successfully after 0xAE. Status: 0x%x\n", inb(KBC_STATUS_PORT));
     }
-    very_short_delay(); // Keep existing delay
+    very_short_delay();
 
-    // --- 7. Enable Scanning (Keyboard Device Command 0xF4) ---
+    // --- 8. Enable Scanning (Keyboard Device Command 0xF4) ---
     serial_write("  Sending 0xF4 (Enable Scanning) to Keyboard Device...\n");
-    kbc_wait_for_send_ready(); // <<< WAIT ADDED
+    kbc_wait_for_send_ready();
     kbc_send_data_port(KB_CMD_ENABLE_SCAN); // Send 0xF4 to port 0x60
     (void)kbc_expect_ack("Enable Scanning (0xF4)"); // Read ACK (includes wait for OBF)
     very_short_delay();
-    // Optional: Flush OBF again after ACK
-    if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) { (void)inb(KBC_DATA_PORT); }
+    if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) { (void)inb(KBC_DATA_PORT); } // Flush potential response
 
-    // --- 8. Set Scan Code Set to 1 ---
+    // --- 9. Set Scan Code Set to 1 ---
     serial_write("  Sending 0xF0 0x01 (Set Scancode Set 1)...\n");
-    kbc_wait_for_send_ready(); // <<< WAIT ADDED
+    kbc_wait_for_send_ready();
     kbc_send_data_port(KB_CMD_SET_SCANCODE_SET); // Send 0xF0 command
     if (kbc_expect_ack("Select Set (0xF0)")) {
-        kbc_wait_for_send_ready(); // <<< WAIT ADDED
+        kbc_wait_for_send_ready();
         kbc_send_data_port(0x01); // Send data byte: 0x01 for Set 1
         if (!kbc_expect_ack("Set 1 data (0x01)")) {
             serial_write("   WARNING: No ACK for Set 1 data byte! Switch may have failed.\n");
@@ -438,20 +456,17 @@ void keyboard_init(void) {
     very_short_delay();
     // Flush OBF after Set 1 sequence
     flush_count = 0;
-    while ((inb(KBC_STATUS_PORT) & KBC_SR_OBF) && flush_count < 10) {
-         (void)inb(KBC_DATA_PORT);
-         flush_count++;
-    }
+    while ((inb(KBC_STATUS_PORT) & KBC_SR_OBF) && flush_count < 10) { (void)inb(KBC_DATA_PORT); flush_count++; }
     if(flush_count > 0) { serial_write("   Flushed stray bytes after Set 1 command.\n"); }
     serial_write("  Keyboard hopefully switched to Scan Code Set 1.\n");
 
-    // --- 9. FINAL CHECK ---
-    serial_write("  Reading KBC Config (0x20) for final verification...\n");
-    kbc_wait_for_send_ready(); // <<< WAIT ADDED
-    kbc_send_command_port(KBC_CMD_READ_CONFIG);
-    uint8_t final_config = kbc_read_data(); // Includes wait for OBF
-    serial_write("  Final KBC Config Read: 0x"); serial_print_hex(final_config); serial_write("\n");
 
+    // --- 10. FINAL CHECK ---
+    serial_write("  Reading KBC Config (0x20) for final verification...\n");
+    kbc_wait_for_send_ready();
+    kbc_send_command_port(KBC_CMD_READ_CONFIG);
+    uint8_t final_config = kbc_read_data();
+    serial_write("  Final KBC Config Read: 0x"); serial_print_hex(final_config); serial_write("\n");
     // Check critical config bits again
     if (final_config & KBC_CFG_DISABLE_KB) {
         serial_write(" (**FATAL: KBC Config Byte *still* shows Keyboard Interface DISABLED!**)\n");
@@ -475,9 +490,8 @@ void keyboard_init(void) {
     keyboard_register_callback(terminal_handle_key_event);
     serial_write("[KB Init] Registered terminal handler as callback.\n");
 
-    terminal_write("[Keyboard] Initialized (Attempted Set Scancode 1).\n"); // Updated final message
+    terminal_write("[Keyboard] Initialized (v6.1 - Attempted KB Reset & Reordered Self-Test).\n"); // Updated final message
 }
-
 
 //============================================================================
 // Public API Functions (No changes needed in these)

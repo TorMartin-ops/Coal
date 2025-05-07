@@ -13,6 +13,7 @@
  #define BUFFER_FLAG_DIRTY   0x02  // Buffer has been modified, needs writing
  #define BUFFER_FLAG_LOCKED  0x04  // Buffer is locked for I/O
  #define BUFFER_FLAG_ERROR   0x08  // Buffer has an I/O error
+ #define MAX_BUFFER_BLOCK_SIZE      8192 
  
  // Statistics structure
  typedef struct {

@@ -451,9 +451,10 @@ static int ata_identify(block_device_t *dev) {
      spinlock_release_irqrestore(dev->channel_lock, irq_flags);
      if (!dev->initialized) { terminal_printf("[BlockDev Init] Failed for '%s' during IDENTIFY (err %d).\n", device, ret); return ret; }
      // <<< FIX: Use %llu for uint64_t, %u for uint16_t, %lu for uint32_t >>>
-     terminal_printf("[BlockDev Init] OK: '%s' LBA48:%d Sectors:%llu Mult:%u SectorSize:%lu\n",
-                     device, dev->lba48_supported, dev->total_sectors,
-                     dev->multiple_sector_count, (unsigned long)dev->sector_size);
+     terminal_printf("[BlockDev Init] OK: '%s' LBA48:%d Sectors:%llu\n",
+        device, dev->lba48_supported, dev->total_sectors);
+terminal_printf("    -> Mult:%u SectorSize:%lu\n", // Use %u for uint16_t, %lu for uint32_t
+        dev->multiple_sector_count, (unsigned long)dev->sector_size);
      return BLOCK_ERR_OK;
  }
 
