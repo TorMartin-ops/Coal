@@ -68,6 +68,7 @@ file(GLOB_RECURSE KERNEL_SOURCES
 
 # Filter out user-space sources (using relative paths from CMakeLists.txt)
 list(FILTER KERNEL_SOURCES EXCLUDE REGEX ".*/hello\\.c$")
+list(FILTER KERNEL_SOURCES EXCLUDE REGEX ".*/shell\\.c$")
 list(FILTER KERNEL_SOURCES EXCLUDE REGEX ".*/entry\\.asm$")
 list(FILTER KERNEL_SOURCES EXCLUDE REGEX ".*/user\\.ld$")
 
@@ -126,10 +127,38 @@ set_target_properties(hello_elf PROPERTIES
     OUTPUT_NAME "${OS_HELLO_ELF_BINARY}"
 )
 
+
+set(OS_SHELL_ELF_BINARY "shell.elf")
+
+add_executable(shell_elf
+    shell.c     # Assuming shell.c is in the same directory as CMakeLists.txt
+    entry.asm   # Reusing the same entry.asm
+)
+
+# Link Options for shell_elf using user.ld (same as hello_elf)
+target_link_options(shell_elf PUBLIC
+    -m32
+    -nostdlib
+    -static
+    -T${OS_USER_LINKER}
+    -g
+    -lgcc
+)
+
+# Compile Options for shell_elf (same as hello_elf)
+target_compile_options(shell_elf PRIVATE
+    $<$<COMPILE_LANGUAGE:C>:-m32 -Wall -Wextra -nostdlib -fno-builtin -fno-stack-protector -g>
+)
+
+set_target_properties(shell_elf PROPERTIES
+    OUTPUT_NAME "${OS_SHELL_ELF_BINARY}"
+)
+#endregion_tag_shell_target
+
 ########################################
 # Create FAT16 Disk Image and Include in ISO
 ########################################
-set(DISK_IMAGE "${CMAKE_CURRENT_BINARY_DIR}/disk.img") # Changed extension to .img for clarity
+set(DISK_IMAGE "${CMAKE_CURRENT_BINARY_DIR}/disk.img")
 
 # Create a combined target for disk image creation and file copying
 add_custom_command(
@@ -139,8 +168,13 @@ add_custom_command(
     COMMAND mkfs.fat ${DISK_IMAGE}
     # Copy hello.elf to the FAT16 image
     COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:hello_elf> ::/hello.elf
-    DEPENDS hello_elf
-    COMMENT "Creating FAT disk image with hello.elf"
+    #region_tag_copy_shell
+    # Create /bin directory and copy shell.elf to it
+    COMMAND mmd -i ${DISK_IMAGE} ::/bin
+    COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:shell_elf> ::/bin/shell.elf
+    #endregion_tag_copy_shell
+    DEPENDS hello_elf shell_elf # Add shell_elf as a dependency
+    COMMENT "Creating FAT disk image with hello.elf and shell.elf"
     VERBATIM
 )
 

@@ -1,8 +1,8 @@
 /**
  * @file scheduler.c
  * @brief UiAOS Priority-Based Preemptive Kernel Scheduler
- * @author Tor Martin Kohle, Group 14 (UiA) & Gemini Assistance
- * @version 4.3 (Integrated idle loop diagnostics for keyboard issue, refined logging)
+ * @author Tor Martin Kohle
+ * @version 4
  *
  * @details Implements a priority-based preemptive scheduler.
  * Features multiple run queues, configurable time slices, sleep queue,
