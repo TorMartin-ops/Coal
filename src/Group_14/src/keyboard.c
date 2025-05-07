@@ -296,129 +296,116 @@ static void keyboard_irq1_handler(isr_frame_t *frame) {
 
 
 //============================================================================
-// Initialization (v5.9 - uses defines from keyboard_hw.h)
+// Initialization (v6.5 - Corrected Final Check based on Config Byte)
 //============================================================================
 void keyboard_init(void) {
-    serial_write("[KB Init] Initializing keyboard driver (v5.9 - Consolidated Defs)...\n");
+    serial_write("[KB Init] Initializing keyboard driver (v6.5 - Corrected Check)...\n");
     memset(&keyboard_state, 0, sizeof(keyboard_state));
     spinlock_init(&keyboard_state.buffer_lock);
-    // Load default keymap (assuming DEFAULT_KEYMAP_US is defined correctly)
+    // Load default keymap
     memcpy(keyboard_state.current_keymap, DEFAULT_KEYMAP_US, sizeof(DEFAULT_KEYMAP_US));
     serial_write("[KB Init] Default US keymap loaded.\n");
 
     uint8_t status;
     uint8_t dummy_read;
 
-    // --- Initial State & Cleanup ---
-    serial_write("  Initial Status Check & Flush OBF...\n");
-    status = inb(KBC_STATUS_PORT);
-    if (status & KBC_SR_OBF) {
-         serial_write("  OBF set initially, reading/discarding data...\n");
-         dummy_read = inb(KBC_DATA_PORT);
-         serial_write("  Discarded data: 0x"); serial_print_hex(dummy_read); serial_write("\n");
-    }
-    if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) {
-        serial_write("  OBF STILL set? Extra dummy read...\n");
-        dummy_read = inb(KBC_DATA_PORT);
-        serial_write("  Discarded extra data: 0x"); serial_print_hex(dummy_read); serial_write("\n");
+    // --- 1. Flush Output Buffer ---
+    serial_write("  Flushing KBC Output Buffer...\n");
+    int flush_count = 0;
+    while ((inb(KBC_STATUS_PORT) & KBC_SR_OBF) && flush_count < 100) {
+        (void)inb(KBC_DATA_PORT);
+        very_short_delay();
+        flush_count++;
     }
     status = inb(KBC_STATUS_PORT);
-    serial_write("  Status after flush/dummy reads: 0x"); serial_print_hex(status); serial_write("\n");
+    serial_write("  Status after OBF flush: 0x"); serial_print_hex(status); serial_write("\n");
 
-    // --- KBC/Interface Tests ---
-    serial_write("  Sending 0xAA (Self-Test)...\n");
-    kbc_send_command_port(KBC_CMD_SELF_TEST);
-    uint8_t test_result = kbc_read_data();
-    serial_write("  KBC Test Result: 0x"); serial_print_hex(test_result); serial_write(test_result == KBC_RESP_SELF_TEST_PASS ? " (PASS)\n" : " (FAIL/WARN)\n");
-    very_short_delay();
-    status = inb(KBC_STATUS_PORT); serial_write("  Status after 0xAA: 0x"); serial_print_hex(status); serial_write("\n");
-
-    serial_write("  Sending 0xAB (Interface Test)...\n");
-    kbc_send_command_port(KBC_CMD_KB_INTERFACE_TEST);
-    uint8_t iface_test_result = kbc_read_data();
-    serial_write("  Interface Test Result: 0x"); serial_print_hex(iface_test_result); serial_write(iface_test_result == KB_RESP_INTERFACE_TEST_PASS ? " (PASS)\n" : " (FAIL/WARN)\n");
-    very_short_delay();
-    status = inb(KBC_STATUS_PORT); serial_write("  Status after 0xAB: 0x"); serial_print_hex(status); serial_write("\n");
-
-    // --- Disable Interface (Initial) ---
-    serial_write("  Sending 0xAD (Disable KB Interface - Initial)...\n");
+    // --- 2. Disable Keyboard Interface (Ensure clean state) ---
+    serial_write("  Sending 0xAD (Disable KB Interface)...\n");
     kbc_send_command_port(KBC_CMD_DISABLE_KB_IFACE);
     very_short_delay();
-    status = inb(KBC_STATUS_PORT); serial_write("  Status after Initial 0xAD: 0x"); serial_print_hex(status); serial_write("\n");
-    if (status & KBC_SR_OBF) { serial_write("  OBF set after 0xAD, flushing...\n"); (void)inb(KBC_DATA_PORT); }
+    if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) { (void)inb(KBC_DATA_PORT); } // Flush potential ACK/response
 
-    // --- Config Read/Modify/Write ---
-    serial_write("  Reading Config (0x20)...\n");
+    // --- 3. Disable Mouse Interface (Just in case) ---
+    serial_write("  Sending 0xA7 (Disable Mouse Interface)...\n");
+    kbc_send_command_port(KBC_CMD_DISABLE_MOUSE_IFACE);
+    very_short_delay();
+
+    // --- 4. Perform KBC Self-Test (Optional diagnostics) ---
+    serial_write("  Sending 0xAA (Self-Test)...\n");
+    kbc_send_command_port(KBC_CMD_SELF_TEST);
+    uint8_t test_result = kbc_read_data(); // Includes wait
+    serial_write("  KBC Test Result: 0x"); serial_print_hex(test_result); serial_write(test_result == KBC_RESP_SELF_TEST_PASS ? " (PASS)\n" : " (FAIL/WARN)\n");
+    very_short_delay();
+
+    // --- 5. Set KBC Configuration Byte ---
+    // Configure IRQ enable and ensure interface enable bit is CLEAR.
+    serial_write("  Reading KBC Config (0x20)...\n");
     kbc_send_command_port(KBC_CMD_READ_CONFIG);
     uint8_t config = kbc_read_data();
     serial_write("  Read Config: 0x"); serial_print_hex(config); serial_write("\n");
-    status = inb(KBC_STATUS_PORT); serial_write("  Status after 0x20 read: 0x"); serial_print_hex(status); serial_write("\n");
 
-    uint8_t new_config = config | KBC_CFG_INT_KB; // Set IRQ1 enable
-    new_config &= ~KBC_CFG_DISABLE_KB;           // Clear INH bit in config byte value
-    // Optional: Ensure translation is enabled? Might help compatibility.
-    // new_config |= KBC_CFG_TRANSLATION;
+    uint8_t new_config = config;
+    new_config |= KBC_CFG_INT_KB;      // Bit 0 = 1 (Enable Keyboard Interrupt IRQ1)
+    new_config &= ~KBC_CFG_DISABLE_KB; // Bit 4 = 0 (Ensure Keyboard Interface is ENABLED)
+    new_config &= ~KBC_CFG_INT_MOUSE;  // Bit 1 = 0 (Disable Mouse Interrupt IRQ12)
 
     if (config != new_config) {
-        serial_write("  Writing Config 0x"); serial_print_hex(new_config); serial_write(" (0x60 cmd, data)...\n");
+        serial_write("  Writing KBC Config 0x"); serial_print_hex(new_config); serial_write(" (0x60 cmd, data)...\n");
         kbc_send_command_port(KBC_CMD_WRITE_CONFIG);
         kbc_send_data_port(new_config);
         very_short_delay();
-        status = inb(KBC_STATUS_PORT); serial_write("  Status after 0x60 write: 0x"); serial_print_hex(status); serial_write("\n");
     } else {
-        serial_write("  Config byte 0x"); serial_print_hex(config); serial_write(" already optimal.\n");
-        status = inb(KBC_STATUS_PORT);
-        serial_write("  Status after skipping write: 0x"); serial_print_hex(status); serial_write("\n");
+        serial_write("  KBC Config byte 0x"); serial_print_hex(config); serial_write(" already suitable.\n");
     }
+    status = inb(KBC_STATUS_PORT); serial_write("  Status after Config Write/Check: 0x"); serial_print_hex(status); serial_write("\n");
 
-    // --- AD/AE Toggle Attempt ---
-    serial_write("  Attempting AD/AE toggle...\n");
-    kbc_send_command_port(KBC_CMD_DISABLE_KB_IFACE);
-    very_short_delay();
-    status = inb(KBC_STATUS_PORT); serial_write("    Status after AD toggle: 0x"); serial_print_hex(status); serial_write("\n");
+    // --- 6. Explicitly Enable Keyboard Interface (Command 0xAE) ---
+    // This might be redundant if config byte write works, but often included for robustness.
+    serial_write("  Sending Explicit 0xAE (Enable KB Interface)...\n");
     kbc_send_command_port(KBC_CMD_ENABLE_KB_IFACE);
-    very_short_delay();
-    status = inb(KBC_STATUS_PORT); serial_write("    Status after AE toggle: 0x"); serial_print_hex(status);
-    if (status & KBC_SR_INH) serial_write(" (INH STILL SET)\n"); else serial_write(" (INH CLEAR)\n");
-    if (status & KBC_SR_OBF) { serial_write("    OBF set after AE toggle, flushing...\n"); (void)inb(KBC_DATA_PORT); }
+    very_short_delay(); // Give it time to process
 
-    // --- Reset Device (0xFF) ---
-    serial_write("  Sending 0xFF (Reset Device)...\n");
-    kbc_send_data_port(KB_CMD_RESET);
-    very_short_delay();
-    (void)kbc_expect_ack("Keyboard Reset (0xFF)");
-    very_short_delay();
-    if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) {
-        uint8_t bat = kbc_read_data();
-        serial_write("  BAT code received: 0x"); serial_print_hex(bat); serial_write(bat == KB_RESP_SELF_TEST_PASS ? " (PASS)\n" : " (FAIL/WARN)\n");
-    } else { serial_write("  Timeout waiting for BAT code.\n"); }
-    status = inb(KBC_STATUS_PORT); serial_write("  Status after device reset sequence: 0x"); serial_print_hex(status); serial_write("\n");
-
-    // --- Enable Scanning (0xF4) ---
-    serial_write("  Sending 0xF4 (Enable Scanning)...\n");
+    // --- 7. Enable Scanning (Keyboard Device Command 0xF4) ---
+    serial_write("  Sending 0xF4 (Enable Scanning) to Keyboard Device...\n");
     kbc_send_data_port(KB_CMD_ENABLE_SCAN);
     very_short_delay();
-    (void)kbc_expect_ack("Enable Scanning (0xF4)");
-    status = inb(KBC_STATUS_PORT); serial_write("  Status after 0xF4 sequence: 0x"); serial_print_hex(status); serial_write("\n");
+    (void)kbc_expect_ack("Enable Scanning (0xF4)"); // Read ACK
 
-    // --- Final Status Check & Cleanup ---
-    if (status & KBC_SR_OBF) { (void)inb(KBC_DATA_PORT); status = inb(KBC_STATUS_PORT); }
-    serial_write("  Final Status before IRQ reg: 0x"); serial_print_hex(status);
-    if (status & KBC_SR_INH) serial_write(" (**INH PROBLEM PERSISTS**)\n");
-    else serial_write(" (INH clear - Should work)\n");
+    // --- 8. FINAL CHECK (Corrected) ---
+    // Check the *Configuration Byte* again to ensure the disable bit (bit 4) is actually clear.
+    serial_write("  Reading KBC Config (0x20) for final verification...\n");
+    kbc_wait_for_send_ready(); // Ensure ready for command
+    kbc_send_command_port(KBC_CMD_READ_CONFIG);
+    uint8_t final_config = kbc_read_data(); // Includes wait
+    serial_write("  Final KBC Config Read: 0x"); serial_print_hex(final_config); serial_write("\n");
 
-    // --- Register IRQ Handler ---
-    // Register the actual handler function with the IDT for the keyboard vector (IRQ1 = Vector 33)
-    register_int_handler(IRQ1_VECTOR, keyboard_irq1_handler, NULL); // IRQ1_VECTOR typically defined in idt.h or similar
+    // Check bit 4 (KBC_CFG_DISABLE_KB)
+    if (final_config & KBC_CFG_DISABLE_KB) {
+        serial_write(" (**FATAL: KBC Config Byte still shows Keyboard Interface DISABLED!**)\n");
+        KERNEL_PANIC_HALT("Keyboard interface config bit (KBC_CFG_DISABLE_KB) could not be cleared!");
+    } else {
+        serial_write(" (Config Byte shows Keyboard Interface ENABLED - OK)\n");
+    }
+    // Check bit 0 (KBC_CFG_INT_KB)
+    if (!(final_config & KBC_CFG_INT_KB)) {
+         serial_write(" (**WARN: KBC Config Byte shows Keyboard Interrupt DISABLED! Check config logic.**)\n");
+    }
+
+    // Final flush of OBF
+    if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) {
+        serial_write("  OBF set after final checks, flushing...\n");
+        (void)inb(KBC_DATA_PORT);
+    }
+
+    // --- Register IRQ Handler & Callback ---
+    register_int_handler(IRQ1_VECTOR, keyboard_irq1_handler, NULL);
     serial_write("[KB Init] IRQ1 handler registered.\n");
-
-    // Register the callback function (likely from terminal.c) to handle processed key events
     keyboard_register_callback(terminal_handle_key_event);
     serial_write("[KB Init] Registered terminal handler as callback.\n");
 
-    terminal_write("[Keyboard] Initialized.\n");
+    terminal_write("[Keyboard] Initialized (Corrected Final Check).\n");
 }
-
 
 //============================================================================
 // Public API Functions

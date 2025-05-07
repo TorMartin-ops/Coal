@@ -2,12 +2,12 @@
  * @file scheduler.c
  * @brief UiAOS Priority-Based Preemptive Kernel Scheduler (Refactored & Fixed)
  * @author Tor Martin Kohle & Gemini Refactoring
- * @version 5.1
+ * @version 5.2
  *
  * @details Implements a priority-based preemptive scheduler.
  * Features multiple run queues, configurable time slices, sleep queue,
  * zombie task cleanup, TCB flag for run queue status, and a reschedule hint flag.
- * Assumes a timer interrupt calls scheduler_tick(). Fixes build errors from v5.0.
+ * Assumes a timer interrupt calls scheduler_tick(). Fixes build errors from v5.1.
  */
 
 //============================================================================
@@ -26,6 +26,7 @@
 #include "serial.h"
 #include "pit.h"
 #include "port_io.h"
+#include "keyboard_hw.h" // Included in previous fix
 #include <libc/stdint.h>
 #include <libc/stddef.h>
 #include <libc/stdbool.h>
@@ -67,10 +68,7 @@ static const uint32_t g_priority_time_slices_ms[SCHED_PRIORITY_LEVELS] = {
                          ((uintptr_t)(p) - KERNEL_PHYS_BASE + KERNEL_VIRT_BASE) : \
                          (uintptr_t)(p))
 
-// Logging Macros (Adjusted format specifiers based on warnings)
-// Use %lu for uint32_t / pid_t / size_t / uintptr_t (assuming they map to unsigned long)
-// Use %d for int / int32_t / ssize_t (assuming they map to signed int)
-// Use %u for generic unsigned int if needed, but %lu covers uint32_t if it's unsigned long.
+// Logging Macros (Corrected format specifiers)
 #define SCHED_INFO(fmt, ...)  terminal_printf("[Sched INFO ] " fmt "\n", ##__VA_ARGS__)
 #define SCHED_DEBUG(fmt, ...) terminal_printf("[Sched DEBUG] " fmt "\n", ##__VA_ARGS__)
 #define SCHED_ERROR(fmt, ...) terminal_printf("[Sched ERROR] %s:%d: " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
@@ -78,11 +76,9 @@ static const uint32_t g_priority_time_slices_ms[SCHED_PRIORITY_LEVELS] = {
 #define SCHED_TRACE(fmt, ...) ((void)0)
 
 
-// PIC Port
 #ifndef PIC1_DATA_PORT
 #define PIC1_DATA_PORT  0x21 // Master PIC IMR port
 #endif
-// --- End KBC/PIC Defines ---
 
 
 //============================================================================
@@ -325,7 +321,7 @@ void scheduler_tick(void) {
 }
 
 //============================================================================
-// Idle Task & Zombie Cleanup (With build fixes for diagnostics)
+// Idle Task & Zombie Cleanup (Corrected KBC constant)
 //============================================================================
 static __attribute__((noreturn)) void kernel_idle_task_loop(void) {
     SCHED_INFO("Idle task started (PID %lu). Entering HLT loop.", (unsigned long)IDLE_TASK_PID);
@@ -337,17 +333,17 @@ static __attribute__((noreturn)) void kernel_idle_task_loop(void) {
         // --- BEGIN Enhanced DIAGNOSTICS ---
         terminal_printf("[Idle Diagnostics] --- Pre-HLT Check ---\n");
         // 1. KBC Status (Reading from Port 0x64)
-        uint8_t kbc_status = inb(KBC_STATUS_PORT); // Use constant from top of file
+        uint8_t kbc_status = inb(KBC_STATUS_PORT); // Use constant from header
         terminal_printf("[Idle Diagnostics] KBC Status (Port 0x%x): 0x%x\n", KBC_STATUS_PORT, kbc_status);
-        // Breakdown of the status bits (using constants defined at top):
+        // Breakdown of the status bits (using constants from keyboard_hw.h):
         terminal_printf("  -> OBF=%d, IBF=%d, SYS=%d, A2=%d, INH=%d\n",
-                         (kbc_status & KBC_SR_OUT_BUF) ? 1 : 0,
-                         (kbc_status & KBC_SR_IBF) ? 1 : 0,      // Defined locally now
-                         (kbc_status & KBC_SR_SYS_FLAG) ? 1 : 0, // Defined locally now
-                         (kbc_status & KBC_SR_A2) ? 1 : 0,       // Defined locally now
+                         (kbc_status & KBC_SR_OBF) ? 1 : 0, // <<<--- CORRECTED Constant
+                         (kbc_status & KBC_SR_IBF) ? 1 : 0,
+                         (kbc_status & KBC_SR_SYS_FLAG) ? 1 : 0,
+                         (kbc_status & KBC_SR_A2) ? 1 : 0,
                          (kbc_status & KBC_SR_INH) ? 1 : 0);
-        if (kbc_status & KBC_SR_OUT_BUF) {
-            uint8_t kbc_data = inb(KBC_DATA_PORT); // Use constant from top of file
+        if (kbc_status & KBC_SR_OBF) { // <<<--- CORRECTED Constant
+            uint8_t kbc_data = inb(KBC_DATA_PORT); // Use constant from header
             terminal_printf("  -> OBF was set, read data (Port 0x%x): 0x%x\n", KBC_DATA_PORT, kbc_data);
         }
         if (kbc_status & KBC_SR_INH) {
@@ -356,7 +352,7 @@ static __attribute__((noreturn)) void kernel_idle_task_loop(void) {
              terminal_printf("  -> INH BIT (0x10) is CLEAR.\n");
         }
         // 2. PIC1 IMR Status (Reading from Port 0x21) & Forced Unmask for IRQ1
-        uint8_t master_imr_before = inb(PIC1_DATA_PORT); // Use constant from top of file
+        uint8_t master_imr_before = inb(PIC1_DATA_PORT);
         terminal_printf("[Idle Diagnostics] PIC1 IMR (Port 0x%x) before: 0x%x. ", PIC1_DATA_PORT, master_imr_before);
         if (master_imr_before & 0x02) { terminal_write("IRQ1 MASKED! Forcing unmask... "); }
         outb(PIC1_DATA_PORT, master_imr_before & ~0x02);
@@ -460,7 +456,7 @@ void scheduler_cleanup_zombies(void) { // (Implementation same as refactored v5.
 }
 
 //============================================================================
-// Task Selection & Context Switching (Same as refactored v5.0)
+// Task Selection & Context Switching (Corrected format specifiers)
 //============================================================================
 static tcb_t* scheduler_select_next_task(void) {
     for (int prio = 0; prio < SCHED_PRIORITY_LEVELS; ++prio) {
@@ -473,8 +469,8 @@ static tcb_t* scheduler_select_next_task(void) {
             spinlock_release_irqrestore(&queue->lock, queue_irq_flags);
             if (!dequeued) { SCHED_ERROR("Selected task PID %lu Prio %d but failed to dequeue!", task->pid, prio); continue; }
             task->ticks_remaining = MS_TO_TICKS(g_priority_time_slices_ms[task->priority]);
-            // Use %lu for uint32_t PID, %u for int priority, %u for uint32_t ticks
-            SCHED_DEBUG("Selected task PID %lu (Prio %d), Slice=%u", task->pid, prio, task->ticks_remaining);
+            // Use %lu for PID, %d for prio (int), %lu for ticks (uint32_t)
+            SCHED_DEBUG("Selected task PID %lu (Prio %d), Slice=%lu", task->pid, prio, task->ticks_remaining);
             return task;
         }
         spinlock_release_irqrestore(&queue->lock, queue_irq_flags);
@@ -545,7 +541,7 @@ void schedule(void) {
 
 
 //============================================================================
-// Public API Functions (Same as refactored v5.0, corrected format specifiers)
+// Public API Functions (Corrected format specifiers)
 //============================================================================
 int scheduler_add_task(pcb_t *pcb) {
     KERNEL_ASSERT(pcb && pcb->pid != IDLE_TASK_PID && pcb->page_directory_phys &&
@@ -579,8 +575,8 @@ int scheduler_add_task(pcb_t *pcb) {
     // g_task_count++; // Where should this live? Maybe track active count differently.
     spinlock_release_irqrestore(&queue->lock, queue_irq_flags);
 
-    // Use %lu for PIDs/counts, %u for priority/ticks
-    SCHED_INFO("Added task PID %lu (Prio %u, Slice %u ticks)",
+    // Use %lu for PID, %u for priority (uint8_t), %lu for ticks (uint32_t)
+    SCHED_INFO("Added task PID %lu (Prio %u, Slice %lu ticks)",
                  new_task->pid, new_task->priority, new_task->time_slice_ticks);
     return SCHED_OK;
 }
@@ -642,7 +638,7 @@ void scheduler_start(void) {
 }
 
 void scheduler_init(void) {
-    SCHED_INFO("Initializing scheduler (Refactored v5.1 - TSS Fix Attempt 2)...");
+    SCHED_INFO("Initializing scheduler (v5.2 - Final Format Fixes)...");
     // ... (memset queues, init locks, etc) ...
     memset(g_run_queues, 0, sizeof(g_run_queues));
     g_current_task = NULL;
@@ -668,13 +664,12 @@ void scheduler_init(void) {
     g_current_task = &g_idle_task_tcb; // Start with idle task
 
     // --- Setup TSS SP0 using the corrected high virtual address ---
-    // The address is already calculated and stored in the PCB by scheduler_init_idle_task
     uintptr_t idle_stack_top_virt = (uintptr_t)g_idle_task_pcb.kernel_stack_vaddr_top;
     SCHED_DEBUG("Setting initial TSS ESP0 to calculated high virtual top: %p", (void*)idle_stack_top_virt);
-    // Call tss_set_kernel_stack with the HIGH VIRTUAL address
     tss_set_kernel_stack((uint32_t)idle_stack_top_virt);
 
-    SCHED_INFO("Scheduler initialized (Idle Task PID %lu ready).", IDLE_TASK_PID);
+    // Use %d for IDLE_TASK_PID (int)
+    SCHED_INFO("Scheduler initialized (Idle Task PID %d ready).", IDLE_TASK_PID);
 }
 
 void scheduler_unblock_task(tcb_t *task) {
