@@ -322,10 +322,10 @@ static void keyboard_irq1_handler(isr_frame_t *frame) {
 
 
 //============================================================================
-// Initialization (v6.1 - Added KB Reset + Reordered Self-Test + INH Poll)
+// Initialization (v6.2 - Status Bit 4 polling removed, Config Byte Check Added)
 //============================================================================
 void keyboard_init(void) {
-    serial_write("[KB Init] Initializing keyboard driver (v6.1 - Reset + Reorder)...\n");
+    serial_write("[KB Init] Initializing keyboard driver (v6.2 - Status Bit 4 fix)...\n");
     memset(&keyboard_state, 0, sizeof(keyboard_state));
     spinlock_init(&keyboard_state.buffer_lock);
     // Load default keymap
@@ -391,8 +391,10 @@ void keyboard_init(void) {
     serial_write("  Read Config: 0x"); serial_print_hex(config); serial_write("\n");
 
     // Ensure Keyboard Interface Enabled (Bit 4=0), Keyboard Interrupt Enabled (Bit 0=1), Mouse Int Disabled (Bit 1=0)
+    // Note: KBC_CFG_DISABLE_KB bit (0x10) means *disable*, so we ensure it's *cleared*.
     uint8_t new_config = (config | KBC_CFG_INT_KB) & ~(KBC_CFG_DISABLE_KB | KBC_CFG_INT_MOUSE);
-    // Optionally disable translation: new_config &= ~KBC_CFG_TRANSLATION;
+    // Optionally disable translation if needed (Set 1 is default on many PCs):
+    // new_config &= ~KBC_CFG_TRANSLATION;
 
     if (config != new_config) {
         serial_write("  Writing KBC Config 0x"); serial_print_hex(new_config); serial_write(" (0x60 cmd, data)...\n");
@@ -406,7 +408,7 @@ void keyboard_init(void) {
     }
     status = inb(KBC_STATUS_PORT); serial_write("  Status after Config Write/Check: 0x"); serial_print_hex(status); serial_write("\n");
 
-    // --- 5. Perform KBC Self-Test AFTER setting config --- // <<< MOVED HERE
+    // --- 5. Perform KBC Self-Test AFTER setting config ---
     serial_write("  Sending 0xAA (Self-Test) AFTER config set...\n");
     kbc_wait_for_send_ready();
     kbc_send_command_port(KBC_CMD_SELF_TEST);
@@ -414,21 +416,31 @@ void keyboard_init(void) {
     serial_write("  KBC Test Result: 0x"); serial_print_hex(test_result); serial_write(test_result == KBC_RESP_SELF_TEST_PASS ? " (PASS)\n" : " (FAIL/WARN)\n");
     very_short_delay();
 
-    // --- 6. Explicitly Enable Keyboard Interface (Command 0xAE) --- // <<< KEPT HERE
+    // --- 6. Explicitly Enable Keyboard Interface (Command 0xAE) ---
     serial_write("  Sending Explicit 0xAE (Enable KB Interface)...\n");
     kbc_wait_for_send_ready();
     kbc_send_command_port(KBC_CMD_ENABLE_KB_IFACE); // Command 0xAE
     kbc_wait_for_send_ready(); // Wait for acceptance
 
-    // --- 7. Poll for INH bit clear --- // <<< KEPT HERE
-    terminal_write("    Polling Status Port 0x64 until INH bit (0x10) is clear...\n");
-    if (kbc_poll_status_clear(KBC_SR_INH, KBC_WAIT_TIMEOUT * 2, "EnableKB_INH_Clear") != 0) {
-        terminal_printf("    [WARN] Timeout waiting for KBC Status INH bit to clear after 0xAE! Status: 0x%x\n", inb(KBC_STATUS_PORT));
-        // Log warning but proceed
+    // --- 7. REMOVED Status Bit 4 Polling, ADDED Config Byte Check --- // <<< MODIFIED SECTION START
+    terminal_write("    Sent 0xAE (Enable KB Interface). Adding short delay...\n");
+    very_short_delay(); // Give the controller time to process 0xAE
+
+    // --- Optional Sanity Check (Recommended) ---
+    terminal_write("    Verifying KBC Config Byte after 0xAE...\n");
+    kbc_wait_for_send_ready();
+    kbc_send_command_port(KBC_CMD_READ_CONFIG); // Command 0x20
+    uint8_t verify_config = kbc_read_data();    // Includes wait for OBF
+    serial_write("    Read Config Byte for verification: 0x"); serial_print_hex(verify_config); serial_write("\n");
+
+    // Check if Bit 4 (KBC_CFG_DISABLE_KB) is STILL set. If so, enabling failed.
+    if (verify_config & KBC_CFG_DISABLE_KB) {
+        terminal_printf("[FATAL] KBC Config Byte 0x%x indicates Keyboard Interface is STILL DISABLED after 0xAE!\n", verify_config);
+        KERNEL_PANIC_HALT("Keyboard clock failed to enable via 0xAE!");
     } else {
-        terminal_printf("    KBC Status INH bit cleared successfully after 0xAE. Status: 0x%x\n", inb(KBC_STATUS_PORT));
+        terminal_printf("    Config Byte 0x%x confirms Keyboard Interface is ENABLED.\n", verify_config);
     }
-    very_short_delay();
+    // <<< MODIFIED SECTION END
 
     // --- 8. Enable Scanning (Keyboard Device Command 0xF4) ---
     serial_write("  Sending 0xF4 (Enable Scanning) to Keyboard Device...\n");
@@ -490,7 +502,7 @@ void keyboard_init(void) {
     keyboard_register_callback(terminal_handle_key_event);
     serial_write("[KB Init] Registered terminal handler as callback.\n");
 
-    terminal_write("[Keyboard] Initialized (v6.1 - Attempted KB Reset & Reordered Self-Test).\n"); // Updated final message
+    terminal_write("[Keyboard] Initialized (v6.2 - Correct Status Bit 4 Handling).\n"); // Updated final message
 }
 
 //============================================================================

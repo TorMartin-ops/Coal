@@ -328,44 +328,73 @@ static __attribute__((noreturn)) void kernel_idle_task_loop(void) {
     serial_write("[Idle Loop] Diagnostic checks will run before each HLT.\n");
 
     while (1) {
+        // Perform cleanup of terminated (zombie) processes
         scheduler_cleanup_zombies();
 
         // --- BEGIN Enhanced DIAGNOSTICS ---
+        // This section prints diagnostic information to help debug system state.
+        // It's useful to check hardware status (like KBC) and interrupt masks.
         terminal_printf("[Idle Diagnostics] --- Pre-HLT Check ---\n");
-        // 1. KBC Status (Reading from Port 0x64)
-        uint8_t kbc_status = inb(KBC_STATUS_PORT); // Use constant from header
+
+        // 1. Check KBC Status Register (Port 0x64)
+        uint8_t kbc_status = inb(KBC_STATUS_PORT); // Read KBC status
         terminal_printf("[Idle Diagnostics] KBC Status (Port 0x%x): 0x%x\n", KBC_STATUS_PORT, kbc_status);
         // Breakdown of the status bits (using constants from keyboard_hw.h):
-        terminal_printf("  -> OBF=%d, IBF=%d, SYS=%d, A2=%d, INH=%d\n",
-                         (kbc_status & KBC_SR_OBF) ? 1 : 0, // <<<--- CORRECTED Constant
+        terminal_printf("  -> OBF=%d, IBF=%d, SYS=%d, A2=%d, Bit4(Unk)=%d\n", // Updated label for Bit 4
+                         (kbc_status & KBC_SR_OBF) ? 1 : 0,
                          (kbc_status & KBC_SR_IBF) ? 1 : 0,
                          (kbc_status & KBC_SR_SYS_FLAG) ? 1 : 0,
                          (kbc_status & KBC_SR_A2) ? 1 : 0,
-                         (kbc_status & KBC_SR_INH) ? 1 : 0);
-        if (kbc_status & KBC_SR_OBF) { // <<<--- CORRECTED Constant
-            uint8_t kbc_data = inb(KBC_DATA_PORT); // Use constant from header
+                         (kbc_status & KBC_SR_BIT4_UNKNOWN) ? 1 : 0); // Use the renamed constant
+
+        // If the output buffer is full, read the data to clear it (might be leftover data)
+        if (kbc_status & KBC_SR_OBF) {
+            uint8_t kbc_data = inb(KBC_DATA_PORT);
             terminal_printf("  -> OBF was set, read data (Port 0x%x): 0x%x\n", KBC_DATA_PORT, kbc_data);
         }
-        if (kbc_status & KBC_SR_INH) {
-             terminal_printf("  -> !!! INH BIT (0x10) IS SET - KEYBOARD INHIBITED !!!\n");
-        } else {
-             terminal_printf("  -> INH BIT (0x10) is CLEAR.\n");
-        }
-        // 2. PIC1 IMR Status (Reading from Port 0x21) & Forced Unmask for IRQ1
-        uint8_t master_imr_before = inb(PIC1_DATA_PORT);
-        terminal_printf("[Idle Diagnostics] PIC1 IMR (Port 0x%x) before: 0x%x. ", PIC1_DATA_PORT, master_imr_before);
-        if (master_imr_before & 0x02) { terminal_write("IRQ1 MASKED! Forcing unmask... "); }
-        outb(PIC1_DATA_PORT, master_imr_before & ~0x02);
-        uint8_t master_imr_after = inb(PIC1_DATA_PORT);
-        terminal_printf("PIC1 IMR after: 0x%x\n", master_imr_after);
-        terminal_printf("[Idle Diagnostics] Executing sti; hlt...\n");
-        // --- END Enhanced DIAGNOSTICS ---
 
+        /* --- Removed misleading warning about Bit 4 ---
+        // Check the potentially unreliable Status Bit 4
+        if (kbc_status & KBC_SR_BIT4_UNKNOWN) {
+            // This message is informational, as the bit being set isn't necessarily an error post-init.
+            // terminal_printf("  -> Bit 4 (0x10) IS SET - Might be normal on some HW\n");
+        } else {
+            terminal_printf("  -> Bit 4 (0x10) is CLEAR.\n");
+        }
+        */ // --- End Removed Warning ---
+
+        // 2. Check PIC1 Interrupt Mask Register (IMR) Status (Port 0x21)
+        // This helps verify if expected hardware interrupts (like keyboard IRQ1) are enabled.
+        uint8_t master_imr_before = inb(PIC1_DATA_PORT); // Read Master PIC IMR
+        terminal_printf("[Idle Diagnostics] PIC1 IMR (Port 0x%x) before: 0x%x. ", PIC1_DATA_PORT, master_imr_before);
+
+        // Check if Keyboard IRQ (IRQ1, corresponds to bit 1) is masked (1 = masked, 0 = unmasked)
+        if (master_imr_before & 0x02) {
+             terminal_write("IRQ1 MASKED! Forcing unmask... ");
+             // Force unmask IRQ1 (clear bit 1) - this is often a debug measure
+             outb(PIC1_DATA_PORT, master_imr_before & ~0x02);
+             uint8_t master_imr_after = inb(PIC1_DATA_PORT); // Read back to confirm
+             terminal_printf("PIC1 IMR after: 0x%x\n", master_imr_after);
+        } else {
+            terminal_write("IRQ1 Unmasked (OK).\n");
+        }
+
+        terminal_printf("[Idle Diagnostics] Executing sti; hlt...\n");
+        // --- END Idle Diagnostics ---
+
+        // Atomically enable interrupts (sti) and halt the CPU (hlt)
+        // The CPU will wait here until the next interrupt occurs.
+        // Interrupts will be automatically disabled by the hardware upon entering
+        // the interrupt handler defined in the IDT.
         asm volatile ("sti; hlt");
 
-        serial_write("[Idle Loop] Woke up from hlt.\n");
-    }
-}
+        // Execution resumes here after an interrupt handler returns.
+        // Interrupts are typically disabled at this point (by the handler exit logic before iret).
+        serial_write("[Idle Loop] Woke up from hlt.\n"); // Log wake-up event
+
+    } // End while(1)
+} // End kernel_idle_task_loop
+
 
 static void scheduler_init_idle_task(void) {
     SCHED_DEBUG("Initializing idle task...");

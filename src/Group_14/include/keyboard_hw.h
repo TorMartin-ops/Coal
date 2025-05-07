@@ -1,4 +1,4 @@
-// include/keyboard_hw.h
+// include/keyboard_hw.h - Modified to rename unreliable KBC_SR_INH
 #ifndef KEYBOARD_HW_H
 #define KEYBOARD_HW_H
 
@@ -12,7 +12,8 @@
 #define KBC_SR_IBF       0x02 // Bit 1: Input Buffer Full (KBC busy, don't write cmd/data)
 #define KBC_SR_SYS_FLAG  0x04 // Bit 2: System Flag (POST status)
 #define KBC_SR_A2        0x08 // Bit 3: Command/Data (0=Data byte written to 0x60 was for device, 1=Cmd byte written to 0x60 was for KBC)
-#define KBC_SR_INH       0x10 // Bit 4: Inhibit Switch / Keyboard Interface Disabled (0=Enabled, 1=Disabled/Inhibited)
+// #define KBC_SR_INH       0x10 // <<< OLD DEFINITION REMOVED
+#define KBC_SR_BIT4_UNKNOWN 0x10 // <<< RENAMED: Bit 4: Formerly INH, behavior varies (often latched high, not reliable indicator of inhibit status post-boot)
 #define KBC_SR_MOUSE_OBF 0x20 // Bit 5: Mouse Output Buffer Full (PS/2 specific)
 #define KBC_SR_TIMEOUT   0x40 // Bit 6: Timeout Error
 #define KBC_SR_PARITY    0x80 // Bit 7: Parity Error
@@ -25,8 +26,8 @@
 #define KBC_CMD_TEST_MOUSE_IFACE    0xA9 // Test Mouse Interface
 #define KBC_CMD_SELF_TEST           0xAA // KBC Self-Test (Controller)
 #define KBC_CMD_KB_INTERFACE_TEST   0xAB // Keyboard Interface Test
-#define KBC_CMD_DISABLE_KB_IFACE    0xAD // Disable Keyboard Interface
-#define KBC_CMD_ENABLE_KB_IFACE     0xAE // Enable Keyboard Interface
+#define KBC_CMD_DISABLE_KB_IFACE    0xAD // Disable Keyboard Interface (Use Config Byte Bit 4 instead for reliable control)
+#define KBC_CMD_ENABLE_KB_IFACE     0xAE // Enable Keyboard Interface (Use Config Byte Bit 4 for verification)
 #define KBC_CMD_READ_INPUT_PORT     0xC0 // Read Input Port
 #define KBC_CMD_READ_OUTPUT_PORT    0xD0 // Read Output Port
 #define KBC_CMD_WRITE_OUTPUT_PORT   0xD1 // Write Output Port
@@ -39,7 +40,7 @@
 #define KBC_CFG_INT_MOUSE           0x02 // Bit 1: Mouse Interrupt Enable (IRQ12)
 #define KBC_CFG_SYS_FLAG            0x04 // Bit 2: System Flag (POST status)
 #define KBC_CFG_OVERRIDE_INH        0x08 // Bit 3: Should be zero
-#define KBC_CFG_DISABLE_KB          0x10 // Bit 4: Keyboard Interface Disable (0=Enabled, 1=Disabled) - Same as INH status bit
+#define KBC_CFG_DISABLE_KB          0x10 // Bit 4: Keyboard Clock Disable (0=Enabled, 1=Disabled) - Reliable indicator/control!
 #define KBC_CFG_DISABLE_MOUSE       0x20 // Bit 5: Mouse Interface Disable (0=Enabled, 1=Disabled)
 #define KBC_CFG_TRANSLATION         0x40 // Bit 6: Translation Enable (Set 1 -> Set 2 scancodes)
 #define KBC_CFG_RESERVED            0x80 // Bit 7: Must be zero
