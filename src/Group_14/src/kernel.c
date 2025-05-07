@@ -359,17 +359,58 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
         terminal_write("  [Kernel] Skipping user process launch due to FS init failure.\n");
     }
 
+    terminal_write("[Kernel] Re-checking and forcing KBC configuration before interrupts...\n");
+
+    // Wait for KBC input buffer to be clear (ready for command)
+    while (inb(KBC_STATUS_PORT) & KBC_SR_IBF);
+    // Send command to read the KBC configuration byte
+    outb(KBC_CMD_PORT, KBC_CMD_READ_CONFIG); // Command 0x20
+
+    // Wait for KBC output buffer to be full (data ready)
+    while (!(inb(KBC_STATUS_PORT) & KBC_SR_OBF));
+    // Read the current configuration byte
+    uint8_t current_config = inb(KBC_DATA_PORT);
+    terminal_printf("   Read KBC Config Byte (before final write): 0x%x\n", current_config);
+
+    // Modify the configuration: Ensure Keyboard Interface is ENABLED (Bit 4 = 0)
+    // Also ensure Keyboard Interrupt is ENABLED (Bit 0 = 1)
+    // Optionally disable Mouse Interrupt (Bit 1 = 0)
+    uint8_t modified_config = (current_config | KBC_CFG_INT_KB) & ~KBC_CFG_DISABLE_KB & ~KBC_CFG_INT_MOUSE;
+
+    if (current_config != modified_config) {
+        terminal_printf("   Modifying KBC Config Byte from 0x%x to 0x%x...\n", current_config, modified_config);
+        // Wait for KBC input buffer clear
+        while (inb(KBC_STATUS_PORT) & KBC_SR_IBF);
+        // Send command to write KBC configuration byte
+        outb(KBC_CMD_PORT, KBC_CMD_WRITE_CONFIG); // Command 0x60
+
+        // Wait for KBC input buffer clear
+        while (inb(KBC_STATUS_PORT) & KBC_SR_IBF);
+        // Send the modified configuration byte
+        outb(KBC_DATA_PORT, modified_config);
+        // Short delay might be good practice after config write
+        for(volatile int d=0; d<10000; ++d); // Simple busy wait delay
+    } else {
+        terminal_printf("   KBC Config Byte 0x%x already has desired settings.\n", current_config);
+    }
+
+    // Optional: Final status check after attempting config write
+    uint8_t final_kbc_status_check = inb(KBC_STATUS_PORT);
+    terminal_printf("   KBC Status register *after* explicit config write attempt: 0x%x\n", final_kbc_status_check);
+
+
     terminal_write("[Kernel] Finalizing setup and enabling interrupts...\n");
     syscall_init();
     scheduler_start();
     terminal_printf("\n[Kernel] Initialization complete. UiAOS %s operational. Enabling interrupts.\n", KERNEL_VERSION_STRING);
     terminal_write("================================================================================\n\n");
 
+
     terminal_write("[Kernel Debug] KBC Status before final sti: 0x");
-    serial_print_hex(inb(KBC_STATUS_PORT));
+    serial_print_hex(inb(KBC_STATUS_PORT)); // Log status right before sti
     serial_write("\n");
 
-    asm volatile ("sti");
+    asm volatile ("sti"); // Enable interrupts
 
     serial_write("[Kernel DEBUG] Interrupts Enabled. Entering main HLT loop.\n");
     while (1) {

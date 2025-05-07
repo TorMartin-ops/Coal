@@ -25,11 +25,13 @@ typedef struct {
     uint16_t io_base;          // e.g., 0x1F0
     uint16_t control_base;     // e.g., 0x3F6
     bool is_slave;             // Master (false) or Slave (true)
-    uint32_t sector_size;      // Usually 512
-    uint64_t total_sectors;    // Use 64-bit for LBA48 compatibility
+    // --- REORDERED FIELDS ---
+    uint64_t total_sectors;    // Moved total_sectors up
+    uint32_t sector_size;      // <<< MOVED UP: Now uint32_t before uint16_t
+    uint16_t multiple_sector_count; // Max sectors per READ/WRITE MULTIPLE cmd (0 if unsupported)
+    // --- END REORDER ---
     bool initialized;
     bool lba48_supported;
-    uint16_t multiple_sector_count; // Max sectors per READ/WRITE MULTIPLE cmd (0 if unsupported)
     spinlock_t *channel_lock;  // Pointer to the channel's lock (primary/secondary)
 } block_device_t;
 

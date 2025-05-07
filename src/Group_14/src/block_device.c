@@ -7,6 +7,7 @@
  */
 
  #include "block_device.h"
+ #include "buffer_cache.h" // <<< ADD THIS INCLUDE
  #include "port_io.h"      // For inb, outb, inw, outw
  #include "terminal.h"     // For terminal_printf/write
  #include "spinlock.h"     // For spinlock_t and functions
@@ -173,86 +174,125 @@
  }
 
  /**
-  * @brief Issues the IDENTIFY DEVICE command and parses key information using polling.
-  */
- static int ata_identify(block_device_t *dev) {
-     KERNEL_ASSERT(dev != NULL, "NULL dev in ata_identify");
+ * @brief Issues the IDENTIFY DEVICE command and parses key information using polling.
+ * Includes fix for parsing logical sector size from words 117-118.
+ */
+static int ata_identify(block_device_t *dev) {
+    KERNEL_ASSERT(dev != NULL, "NULL dev in ata_identify");
 
-     int ret = ata_select_drive(dev);
-     if (ret != BLOCK_ERR_OK) return ret;
+    int ret = ata_select_drive(dev);
+    if (ret != BLOCK_ERR_OK) return ret;
 
-     // Send IDENTIFY command
-     outb(dev->io_base + ATA_REG_SECCOUNT0, 0);
-     outb(dev->io_base + ATA_REG_LBA0, 0);
-     outb(dev->io_base + ATA_REG_LBA1, 0);
-     outb(dev->io_base + ATA_REG_LBA2, 0);
-     outb(dev->io_base + ATA_REG_COMMAND, ATA_CMD_IDENTIFY);
-     ata_delay_400ns(dev->control_base);
+    // Send IDENTIFY command
+    outb(dev->io_base + ATA_REG_SECCOUNT0, 0);
+    outb(dev->io_base + ATA_REG_LBA0, 0);
+    outb(dev->io_base + ATA_REG_LBA1, 0);
+    outb(dev->io_base + ATA_REG_LBA2, 0);
+    outb(dev->io_base + ATA_REG_COMMAND, ATA_CMD_IDENTIFY);
+    ata_delay_400ns(dev->control_base);
 
-     // Check initial status after command
-     uint8_t status = inb(dev->io_base + ATA_REG_STATUS);
-     if (status == 0 || status == 0xFF) {
-         terminal_printf("[ATA IDENTIFY %s] No device detected (Status=%#x).\n", dev->device_name, status);
-         return BLOCK_ERR_NO_DEV;
-     }
+    // Check initial status after command
+    uint8_t status = inb(dev->io_base + ATA_REG_STATUS);
+    if (status == 0 || status == 0xFF) {
+        terminal_printf("[ATA IDENTIFY %s] No device detected (Status=%#x).\n", dev->device_name, status);
+        return BLOCK_ERR_NO_DEV;
+    }
 
-     // --- Poll for completion ---
-     ret = ata_poll_status(dev->io_base, ATA_SR_BSY, 0x00, ATA_TIMEOUT_PIO, "IdentifyBSYClear");
-     if (ret < 0) return BLOCK_ERR_TIMEOUT;
-     status = (uint8_t)ret;
-     if (status & (ATA_SR_ERR | ATA_SR_DF)) {
-         terminal_printf("[ATA IDENTIFY %s] Error/Fault after command (Status=%#x).\n", dev->device_name, status);
-         return BLOCK_ERR_DEV_FAULT;
-     }
-     ret = ata_poll_status(dev->io_base, ATA_SR_DRQ | ATA_SR_ERR | ATA_SR_DF, ATA_SR_DRQ, ATA_TIMEOUT_PIO, "IdentifyDRQSet");
-     if (ret < 0) return BLOCK_ERR_TIMEOUT;
-     status = (uint8_t)ret;
-     if (status & (ATA_SR_ERR | ATA_SR_DF)) {
-         terminal_printf("[ATA IDENTIFY %s] Error/Fault waiting for data (Status=%#x).\n", dev->device_name, status);
-         return BLOCK_ERR_DEV_FAULT;
-     }
-     if (!(status & ATA_SR_DRQ)) {
-         terminal_printf("[ATA IDENTIFY %s] Polling finished but DRQ not set! (Status=%#x).\n", dev->device_name, status);
-         return BLOCK_ERR_IO;
-     }
+    // --- Poll for completion ---
+    ret = ata_poll_status(dev->io_base, ATA_SR_BSY, 0x00, ATA_TIMEOUT_PIO, "IdentifyBSYClear");
+    if (ret < 0) return BLOCK_ERR_TIMEOUT;
+    status = (uint8_t)ret;
+    if (status & (ATA_SR_ERR | ATA_SR_DF)) {
+        terminal_printf("[ATA IDENTIFY %s] Error/Fault after command (Status=%#x).\n", dev->device_name, status);
+        return BLOCK_ERR_DEV_FAULT;
+    }
+    ret = ata_poll_status(dev->io_base, ATA_SR_DRQ | ATA_SR_ERR | ATA_SR_DF, ATA_SR_DRQ, ATA_TIMEOUT_PIO, "IdentifyDRQSet");
+    if (ret < 0) return BLOCK_ERR_TIMEOUT;
+    status = (uint8_t)ret;
+    if (status & (ATA_SR_ERR | ATA_SR_DF)) {
+        terminal_printf("[ATA IDENTIFY %s] Error/Fault waiting for data (Status=%#x).\n", dev->device_name, status);
+        return BLOCK_ERR_DEV_FAULT;
+    }
+    if (!(status & ATA_SR_DRQ)) {
+        terminal_printf("[ATA IDENTIFY %s] Polling finished but DRQ not set! (Status=%#x).\n", dev->device_name, status);
+        return BLOCK_ERR_IO;
+    }
 
-     // Read IDENTIFY data
-     uint16_t identify_data[256];
-     for (int i = 0; i < 256; i++) { identify_data[i] = inw(dev->io_base + ATA_REG_DATA); }
+    // Read IDENTIFY data (512 bytes = 256 words)
+    uint16_t identify_data[256];
+    for (int i = 0; i < 256; i++) { identify_data[i] = inw(dev->io_base + ATA_REG_DATA); }
 
-     // Final status check after reading data
-     ret = ata_poll_status(dev->io_base, ATA_SR_BSY, 0x00, ATA_TIMEOUT_PIO, "IdentifyPostReadBSYClear");
-     if (ret < 0) return BLOCK_ERR_TIMEOUT;
-     status = (uint8_t)ret;
-     if (status & (ATA_SR_ERR | ATA_SR_DF)) {
-         terminal_printf("[ATA IDENTIFY %s] Error/Fault after reading data (Status=%#x).\n", dev->device_name, status);
-         return BLOCK_ERR_DEV_FAULT;
-     }
+    // Final status check after reading data
+    ret = ata_poll_status(dev->io_base, ATA_SR_BSY, 0x00, ATA_TIMEOUT_PIO, "IdentifyPostReadBSYClear");
+    if (ret < 0) return BLOCK_ERR_TIMEOUT;
+    status = (uint8_t)ret;
+    if (status & (ATA_SR_ERR | ATA_SR_DF)) {
+        terminal_printf("[ATA IDENTIFY %s] Error/Fault after reading data (Status=%#x).\n", dev->device_name, status);
+        return BLOCK_ERR_DEV_FAULT;
+    }
 
-     // Parse data
-     dev->sector_size = 512;
-     if (!(identify_data[49] & (1 << 9))) {
-         terminal_printf("[ATA IDENTIFY %s] Error: LBA addressing not supported.\n", dev->device_name);
-         return BLOCK_ERR_UNSUPPORTED;
-     }
-     dev->lba48_supported = (identify_data[83] & (1 << 10)) != 0;
-     dev->total_sectors = dev->lba48_supported ? (*(uint64_t*)&identify_data[100]) : (*(uint32_t*)&identify_data[60]);
-     if (dev->total_sectors == 0) {
-         terminal_printf("[ATA IDENTIFY %s] Error: Reported total sectors is zero.\n", dev->device_name);
-         return BLOCK_ERR_NO_DEV;
-     }
-     dev->multiple_sector_count = 0;
-     if (identify_data[88] & 0x0001) {
-         uint16_t mult_count = identify_data[47] & 0x00FF;
-         if (mult_count > 0 && mult_count <= 16) {
-             dev->multiple_sector_count = mult_count;
-             terminal_printf("[ATA IDENTIFY %s] Supports MULTIPLE mode (Preferred Count=%u)\n", dev->device_name, dev->multiple_sector_count);
-         } else if (mult_count > 0) {
-              terminal_printf("[ATA IDENTIFY %s] Supports MULTIPLE mode but count %u > 16, ignoring.\n", dev->device_name, mult_count);
-         }
-     }
-     return BLOCK_ERR_OK;
- }
+    // --- Parse data ---
+
+    // Logical Sector Size (Word 106 indicates support, Words 117-118 contain size if supported)
+    if ((identify_data[106] & 0x4000) && !(identify_data[106] & 0x8000)) { // Check bit 14 set, bit 15 clear
+        // Combine words 117 (low) and 118 (high) into a 32-bit value representing size in words
+        uint32_t logical_sector_size_words = identify_data[117] | ((uint32_t)identify_data[118] << 16);
+        uint32_t logical_sector_size_bytes = logical_sector_size_words * 2; // Convert words to bytes
+
+        // Sanity checks: must be power-of-two and within reasonable bounds
+        if (logical_sector_size_bytes >= 512 &&
+            logical_sector_size_bytes <= MAX_BUFFER_BLOCK_SIZE && // Use defined max
+            (logical_sector_size_bytes & (logical_sector_size_bytes - 1)) == 0) // Check power-of-two
+        {
+            dev->sector_size = logical_sector_size_bytes;
+            terminal_printf("[ATA IDENTIFY %s] Logical Sector Size supported: %u bytes.\n",
+                             dev->device_name, dev->sector_size);
+        } else {
+            terminal_printf("[ATA IDENTIFY %s] Warning: Reported logical sector size (%u bytes) invalid or unsupported by cache. Defaulting to 512.\n",
+                             dev->device_name, logical_sector_size_bytes);
+            dev->sector_size = 512;
+        }
+    } else {
+        // Default to 512 if feature not indicated by word 106
+        terminal_printf("[ATA IDENTIFY %s] Logical Sector Size > 512 bytes not indicated. Defaulting to 512.\n", dev->device_name);
+        dev->sector_size = 512;
+    }
+
+    // LBA Support (Word 49, bit 9)
+    if (!(identify_data[49] & (1 << 9))) {
+        terminal_printf("[ATA IDENTIFY %s] Error: LBA addressing not supported.\n", dev->device_name);
+        return BLOCK_ERR_UNSUPPORTED;
+    }
+
+    // LBA48 Support (Word 83, bit 10)
+    dev->lba48_supported = (identify_data[83] & (1 << 10)) != 0;
+
+    // Total Sectors (Words 100-103 for LBA48, Words 60-61 for LBA28)
+    // Note: Using direct cast relies on compiler handling potential unaligned access on some archs.
+    // Safer approach might be memcpy into a local uint64_t/uint32_t.
+    dev->total_sectors = dev->lba48_supported ?
+                         (*(uint64_t*)&identify_data[100]) :
+                         (*(uint32_t*)&identify_data[60]);
+    if (dev->total_sectors == 0) {
+        terminal_printf("[ATA IDENTIFY %s] Error: Reported total sectors is zero.\n", dev->device_name);
+        return BLOCK_ERR_NO_DEV; // Or BLOCK_ERR_INVALID_FORMAT
+    }
+
+    // Multiple Sector Mode (Word 47, low byte = count, Word 88 bit 0 = supported)
+    // Changed: Check Word 88 bit 0 instead of Word 47 bit 8 for support indication
+    dev->multiple_sector_count = 0;
+    if (identify_data[88] & 0x0001) { // Check if "multiple sector setting is valid" bit is set
+        uint16_t mult_count = identify_data[47] & 0x00FF; // Count is in low byte of Word 47
+        if (mult_count > 0 && mult_count <= 16) { // Standard allows up to 16
+            dev->multiple_sector_count = mult_count;
+            terminal_printf("[ATA IDENTIFY %s] Supports MULTIPLE mode (Preferred Count=%u)\n", dev->device_name, dev->multiple_sector_count);
+        } else if (mult_count > 0) {
+             terminal_printf("[ATA IDENTIFY %s] Supports MULTIPLE mode but count %u > 16, ignoring.\n", dev->device_name, mult_count);
+        }
+    }
+
+    return BLOCK_ERR_OK;
+}
 
  /**
   * @brief Attempts to set the MULTIPLE sector mode count on the device using polling.
