@@ -378,6 +378,10 @@ static __attribute__((noreturn)) void kernel_idle_task_loop(void) {
         } else {
             terminal_write("IRQ1 Unmasked (OK).\n");
         }
+        if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) {
+            uint8_t sc = inb(KBC_DATA_PORT);
+            serial_write("[IdlePoll KBC] Scancode: 0x"); serial_print_hex(sc); serial_write("\n");
+        }
 
         terminal_printf("[Idle Diagnostics] Executing sti; hlt...\n");
         // --- END Idle Diagnostics ---
@@ -386,6 +390,14 @@ static __attribute__((noreturn)) void kernel_idle_task_loop(void) {
         // The CPU will wait here until the next interrupt occurs.
         // Interrupts will be automatically disabled by the hardware upon entering
         // the interrupt handler defined in the IDT.
+
+
+        if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) { // Check if Output Buffer Full (Bit 0)
+            uint8_t sc = inb(KBC_DATA_PORT);    // Read the scancode from Data Port
+            serial_write("[IdlePoll KBC] Scancode: 0x"); // Log to serial
+            serial_print_hex(sc);
+            serial_write("\n");
+        }
         asm volatile ("sti; hlt");
 
         // Execution resumes here after an interrupt handler returns.
