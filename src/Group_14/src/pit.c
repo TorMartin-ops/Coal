@@ -3,24 +3,37 @@
 /**
  * pit.c
  * Programmable Interval Timer (PIT) driver for x86 (32-bit).
- * Updated to use isr_frame_t and aggressive workaround for 64-bit division.
+ * Updated to send EOI for IRQ0 before calling scheduler logic that might not return
+ * to the original IRQ handler instance.
  */
 
  #include "pit.h"
- #include "idt.h"       // Needed for register_int_handler
+ #include "idt.h"       // Needed for register_int_handler and PIC/EOI defines
  #include <isr_frame.h>  // Include the frame definition
  #include "terminal.h"
- #include "port_io.h"
- #include "scheduler.h" // Need scheduler_tick() or schedule() declaration
+ #include "port_io.h"   // For outb, io_wait
+ #include "scheduler.h" // Need scheduler_tick() declaration
  #include "types.h"     // Ensure bool is defined via types.h -> stdbool.h
  #include "assert.h"    // For KERNEL_ASSERT
  #include <libc/stdint.h> // For UINT32_MAX
- #include "serial.h"    // <<< ADDED INCLUDE for serial_write
+ #include "serial.h"    // For serial_write (if used in debugging)
 
  // Define TARGET_FREQUENCY if not defined elsewhere (e.g., in pit.h or build system)
  #ifndef TARGET_FREQUENCY
  #define TARGET_FREQUENCY 1000 // Default to 1000 Hz if not defined
  #endif
+
+ // PIC EOI definitions (can also be from idt.h or a dedicated pic.h)
+ #ifndef PIC_EOI
+ #define PIC_EOI      0x20      /* End-of-interrupt command code */
+ #endif
+ #ifndef PIC1_COMMAND
+ #define PIC1_COMMAND 0x20
+ #endif
+ #ifndef PIC2_COMMAND
+ #define PIC2_COMMAND 0xA0
+ #endif
+ #define IRQ_PIT 0         // Timer is IRQ line 0 on the master PIC
 
  // --- Revised Workaround Helper ---
  static inline uint32_t calculate_ticks_32bit(uint32_t ms, uint32_t freq_hz) {
@@ -70,18 +83,46 @@
      return total_ticks;
  }
 
+/**
+ * @brief Sends End-Of-Interrupt (EOI) to the PIC(s).
+ * @param irq_line The IRQ line number (0-15) that was serviced.
+ */
+static inline void pic_send_eoi_line(uint8_t irq_line)
+{
+    if (irq_line >= 8) { // IRQ 8-15 are on the slave PIC
+        outb(PIC2_COMMAND, PIC_EOI);
+    }
+    outb(PIC1_COMMAND, PIC_EOI); // Always send EOI to master PIC
+}
+
  /**
   * PIT IRQ handler:
-  * Calls the scheduler's tick function.
+  * Performs essential timekeeping (implicitly via scheduler_tick's start),
+  * ACKs the interrupt with the PIC *before* potentially rescheduling,
+  * then calls the scheduler logic which might switch tasks.
   */
  static void pit_irq_handler(isr_frame_t *frame) {
-    serial_write("[PIT] Enter pit_irq_handler\n"); // This print is fine
-     (void)frame;
+     (void)frame;    // Mark frame as unused if not directly accessed
+
+     // As per the latest advice:
+     // 1. Timekeeping / scheduler-tick bookkeeping (scheduler_tick() handles g_tick_count++)
+     // 2. ACK the interrupt **before** doing anything that may reschedule.
+     // 3. Hand control to the scheduler (scheduler_tick() may call schedule()).
+
+     // Increment tick count (this happens as the first step in scheduler_tick)
+     // If scheduler_tick() were not called, and this handler directly called schedule(),
+     // then g_tick_count++ would happen here.
+
+     pic_send_eoi_line(IRQ_PIT); // Send EOI for IRQ 0 (timer) *BEFORE* scheduler_tick
+
+     // Now, call the scheduler's tick processing.
+     // This function handles g_tick_count increment, waking sleeping tasks,
+     // managing time slices, and potentially calling schedule().
      scheduler_tick();
  }
 
  uint32_t get_pit_ticks(void) {
-     return scheduler_get_ticks();
+     return scheduler_get_ticks(); // Delegate to scheduler's tick counter
  }
 
  static void set_pit_frequency(uint32_t freq) {
@@ -89,21 +130,22 @@
       if (freq > PIT_BASE_FREQUENCY) { freq = PIT_BASE_FREQUENCY; }
 
       uint32_t divisor = PIT_BASE_FREQUENCY / freq;
-      if (divisor == 0) divisor = 0x10000;
-      if (divisor > 0xFFFF) divisor = 0xFFFF;
-      if (divisor < 1) divisor = 1;
+      if (divisor == 0) divisor = 0x10000; // Max period for 16-bit counter
+      if (divisor > 0xFFFF) divisor = 0xFFFF; // Clamp to max 16-bit value
+      if (divisor < 1) divisor = 1;       // Ensure divisor is at least 1
 
-      outb(PIT_CMD_PORT, 0x36);
-      io_wait();
+      outb(PIT_CMD_PORT, 0x36); // Channel 0, lobyte/hibyte, mode 3 (square wave)
+      io_wait(); // Short delay after command
+
       uint16_t divisor_16 = (uint16_t)divisor;
-      outb(PIT_CHANNEL0_PORT, (uint8_t)(divisor_16 & 0xFF));
-      io_wait();
-      outb(PIT_CHANNEL0_PORT, (uint8_t)((divisor_16 >> 8) & 0xFF));
-      io_wait();
+      outb(PIT_CHANNEL0_PORT, (uint8_t)(divisor_16 & 0xFF)); // Send low byte of divisor
+      io_wait(); // Short delay
+      outb(PIT_CHANNEL0_PORT, (uint8_t)((divisor_16 >> 8) & 0xFF)); // Send high byte
+      io_wait(); // Short delay
  }
 
  void init_pit(void) {
-     register_int_handler(32, pit_irq_handler, NULL);
+     register_int_handler(IRQ0_VECTOR, pit_irq_handler, NULL); // IRQ0 is vector 32
      set_pit_frequency(TARGET_FREQUENCY);
      terminal_printf("[PIT] Initialized (Target Frequency: %lu Hz)\n", (unsigned long)TARGET_FREQUENCY);
  }

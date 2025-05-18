@@ -81,7 +81,7 @@ static const uint32_t g_priority_time_slices_ms[SCHED_PRIORITY_LEVELS] = {
 #define PIC1_DATA_PORT  0x21 // Master PIC IMR port
 #endif
 
-
+extern volatile uint32_t g_keyboard_irq_fire_count;
 
 //============================================================================
 // Data Structures (Same as refactored v5.0)
@@ -327,49 +327,17 @@ void scheduler_tick(void) {
 //============================================================================
 static __attribute__((noreturn)) void kernel_idle_task_loop(void) {
     SCHED_INFO("Idle task started (PID %lu). Entering HLT loop.", (unsigned long)IDLE_TASK_PID);
-    // serial_write("[Idle Loop] Diagnostic checks will run before each HLT.\n"); // Already commented out in your log
 
     while (1) {
-        scheduler_cleanup_zombies();
+        scheduler_cleanup_zombies(); // Periodically try to reap zombie processes
 
-        // PATCH: Diagnostic block for idle loop (always on for this debugging phase,
-        // or conditionally compiled with #ifdef VERBOSE_IDLE_DIAG if preferred later)
-        // #define VERBOSE_IDLE_DIAG // Uncomment to make it conditional
-
-// #ifdef VERBOSE_IDLE_DIAG // Or just keep it always on for now
-        terminal_printf("[Idle Diagnostics] --- Pre-HLT Check ---\n");
-        uint8_t kbc_status = inb(KBC_STATUS_PORT);
-        terminal_printf("[Idle Diagnostics] KBC Status (Port 0x%x): 0x%x ", KBC_STATUS_PORT, kbc_status);
-        terminal_printf("OBF=%d A2=%d | KB IRQs: %lu\n",
-                         (kbc_status & KBC_SR_OBF) ? 1 : 0,
-                         (kbc_status & KBC_SR_A2) ? 1 : 0,
-                         (unsigned long)g_keyboard_irq_fire_count);
-
-        uint8_t master_imr_before = inb(PIC1_DATA_PORT);
-        terminal_printf("[Idle Diagnostics] PIC1 IMR (Port 0x%x) before: 0x%x. ", PIC1_DATA_PORT, master_imr_before);
-        if (master_imr_before & 0x02) {
-             terminal_write("IRQ1 MASKED!\n");
-        } else {
-            terminal_write("IRQ1 Unmasked (OK).\n");
-        }
-
-        // PIC ISR Check from review
-        outb(PIC1_COMMAND, 0x0B); // OCW3 to read ISR
-        uint8_t pic_isr = inb(PIC1_COMMAND); // Read ISR from master PIC
-        terminal_printf("[Idle Diagnostics] PIC1 ISR: 0x%x ", pic_isr);
-        if (pic_isr & 0x02) { terminal_write("(IRQ1 IN-SERVICE!)"); }
-        terminal_write("\n");
-        // Optional: Read IRR
-        // outb(PIC1_COMMAND, 0x0A); // OCW3 to read IRR
-        // uint8_t pic_irr = inb(PIC1_COMMAND);
-        // terminal_printf("[Idle Diagnostics] PIC1 IRR: 0x%x\n", pic_irr);
-
-        // terminal_printf("[Idle Diagnostics] Executing sti; hlt...\n"); // Can be a bit noisy
-// #endif
-
+        // Enable interrupts and halt the CPU until the next interrupt.
+        // This saves power and yields to other tasks if they become ready.
         asm volatile ("sti; hlt");
 
-        // serial_write("[Idle Loop] Woke up from hlt.\n"); // Can be very noisy
+        // Interrupts are automatically disabled by CPU upon IRQ.
+        // The IRQ handler (e.g., pit_irq_handler) will re-enable them if necessary
+        // or the scheduler will when switching back to a task.
     }
 }
 
