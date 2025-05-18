@@ -1,7 +1,7 @@
 /**
  * @file scheduler.c
  * @brief UiAOS Priority-Based Preemptive Kernel Scheduler (Refactored & Fixed)
- * @author Tor Martin Kohle & Gemini Refactoring
+ * @author Tor Martin Kohle
  * @version 5.2
  *
  * @details Implements a priority-based preemptive scheduler.
