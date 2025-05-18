@@ -67,6 +67,7 @@ void keyboard_register_callback(void (*callback)(KeyEvent));
 char apply_modifiers_extended(char c, uint8_t modifiers);
 void keyboard_recheck_kbc_config(void); 
 
+extern volatile uint32_t g_keyboard_irq_fire_count;
 #ifdef __cplusplus
 }
 #endif

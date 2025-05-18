@@ -1,51 +1,55 @@
 /**
  * @file keyboard.c
  * @brief PS/2 Keyboard Driver for UiAOS
- * @version 6.4.5 - Corrected serial/terminal print functions and BAT constant usage.
+ * @version 6.4.9 - Corrected g_keyboard_irq_fire_count definition.
  */
 
 //============================================================================
 // Includes
 //============================================================================
 #include "keyboard.h"
-#include "keyboard_hw.h" 
+#include "keyboard_hw.h"
 #include "types.h"
 #include "idt.h"
 #include <isr_frame.h>
-#include "terminal.h" 
+#include "terminal.h"
 #include "port_io.h"
 #include "pit.h"
 #include "string.h"
-#include "serial.h"   
+#include "serial.h"
 #include "spinlock.h"
 #include "assert.h"
 #include <libc/stdbool.h>
 #include <libc/stdint.h>
 #include <libc/stddef.h>
-#include "keymap.h"   
+#include "keymap.h"
 
 //============================================================================
 // Definitions and Constants
 //============================================================================
 #define KB_BUFFER_SIZE 256
-#define KBC_WAIT_TIMEOUT 300000
-#define KBC_MAX_FLUSH 100
+#define KBC_WAIT_TIMEOUT 300000 // Timeout for KBC operations
+#define KBC_MAX_FLUSH 100       // Max reads during a flush
 
-#define DEFAULT_KEYMAP_US keymap_us_qwerty
+#define DEFAULT_KEYMAP_US keymap_us_qwerty // Default keymap
+
+// For debug counter in IRQ handler - Definition (non-static)
+volatile uint32_t g_keyboard_irq_fire_count = 0; // FIX: Removed 'static'
+
 
 //============================================================================
 // Module Static Data
 //============================================================================
 static struct {
-    bool      key_states[KEY_COUNT];
-    uint8_t   modifiers;
-    KeyEvent  buffer[KB_BUFFER_SIZE];
-    uint8_t   buf_head;
-    uint8_t   buf_tail;
-    spinlock_t buffer_lock;
-    uint16_t  current_keymap[128];
-    bool      extended_code_active;
-    void      (*event_callback)(KeyEvent);
+    bool      key_states[KEY_COUNT];          // Array to track state of special keys
+    uint8_t   modifiers;                      // Current modifier keys state (Shift, Ctrl, Alt)
+    KeyEvent  buffer[KB_BUFFER_SIZE];         // Circular buffer for key events
+    uint8_t   buf_head;                       // Head of the key event buffer
+    uint8_t   buf_tail;                       // Tail of the key event buffer
+    spinlock_t buffer_lock;                   // Spinlock for buffer access
+    uint16_t  current_keymap[128];            // Current active keymap
+    bool      extended_code_active;           // Flag for E0 scancode prefix
+    void      (*event_callback)(KeyEvent);    // Callback function for key events
 } keyboard_state;
 
 //============================================================================
@@ -59,25 +63,31 @@ static void kbc_send_data_port(uint8_t data);
 static void kbc_send_command_port(uint8_t cmd);
 static bool kbc_expect_ack(const char* command_name);
 static void kbc_flush_output_buffer(const char* context);
-static void very_short_delay(void);
-extern void terminal_handle_key_event(KeyEvent event);
+static void very_short_delay(void); // General purpose short delay
+extern void terminal_handle_key_event(KeyEvent event); // Implemented in terminal.c
 
 //============================================================================
 // KBC Helper Functions
 //============================================================================
 static void very_short_delay(void) {
-    for (volatile int i = 0; i < 50000; ++i) { asm volatile("pause"); }
+    for (volatile int i = 0; i < 15000; ++i) {
+        asm volatile("pause");
+    }
 }
 
 static inline void kbc_wait_for_send_ready(void) {
     int timeout = KBC_WAIT_TIMEOUT;
-    while ((inb(KBC_STATUS_PORT) & KBC_SR_IBF) && timeout-- > 0) { asm volatile("pause"); }
+    while ((inb(KBC_STATUS_PORT) & KBC_SR_IBF) && timeout-- > 0) {
+        io_wait(); // Defined in idt.h as outb(0x80,0)
+    }
     if (timeout <= 0) { serial_write("[KB WaitSend TIMEOUT]\n"); }
 }
 
 static inline void kbc_wait_for_recv_ready(void) {
     int timeout = KBC_WAIT_TIMEOUT;
-    while (!(inb(KBC_STATUS_PORT) & KBC_SR_OBF) && timeout-- > 0) { asm volatile("pause"); }
+    while (!(inb(KBC_STATUS_PORT) & KBC_SR_OBF) && timeout-- > 0) {
+        io_wait();
+    }
     if (timeout <= 0) { serial_write("[KB WaitRecv TIMEOUT]\n"); }
 }
 
@@ -97,25 +107,19 @@ static void kbc_send_command_port(uint8_t cmd) {
 }
 
 static void kbc_flush_output_buffer(const char* context) {
+    (void)context;
     int flush_count = 0;
     uint8_t status_val;
-    // terminal_printf("[KB Flush ENTRY: %s]\n", context); 
     while (((status_val = inb(KBC_STATUS_PORT)) & KBC_SR_OBF) && flush_count < KBC_MAX_FLUSH) {
-        uint8_t discard = inb(KBC_DATA_PORT);
-        (void)discard; 
-        // terminal_printf("  [KB Flush Loop: %s] Discarded 0x%02x (Status was 0x%02x)\n", context, discard, status_val);
+        (void)inb(KBC_DATA_PORT);
         flush_count++;
-        very_short_delay();
+        io_wait();
     }
-    // if (flush_count > 0) { 
-    //    terminal_printf("  [KB Flush EXIT: %s] Flush loop finished. Final Status: 0x%02x\n", context, inb(KBC_STATUS_PORT));
-    // }
 }
 
 static bool kbc_expect_ack(const char* command_name) {
     uint8_t resp = kbc_read_data();
-    if (resp == KB_RESP_ACK) { 
-        terminal_printf("[KB Debug] ACK (0xFA) for %s.\n", command_name);
+    if (resp == KB_RESP_ACK) {
         return true;
     } else {
         terminal_printf("[KB Debug WARNING] Unexpected 0x%02x for %s (expected ACK 0xFA).\n", resp, command_name);
@@ -127,28 +131,28 @@ static bool kbc_expect_ack(const char* command_name) {
 // Interrupt Handler
 //============================================================================
 static void keyboard_irq1_handler(isr_frame_t *frame) {
-    // *** Use serial_putchar as suggested by compiler, ensure it's declared (e.g., in serial.h) ***
-    serial_putchar('K'); serial_putchar('B'); serial_putchar('_');
-    serial_putchar('I'); serial_putchar('R'); serial_putchar('Q');
-    serial_putchar('1'); serial_putchar('!'); serial_putchar('\n');
+    g_keyboard_irq_fire_count++;
 
     (void)frame;
 
     uint8_t status_before_read = inb(KBC_STATUS_PORT);
+
+    if (status_before_read & KBC_SR_A2) {
+        (void)inb(KBC_DATA_PORT);
+        return;
+    }
+
     if (!(status_before_read & KBC_SR_OBF)) {
-        terminal_printf("[KB IRQ1] OBF not set on entry! Status: 0x%02x\n", status_before_read);
         return;
     }
 
     uint8_t scancode = inb(KBC_DATA_PORT);
-    terminal_printf("[KB IRQ] Scancode=0x%02x\n", scancode);
 
     bool is_break_code;
     KeyCode kc = KEY_UNKNOWN;
 
     if (scancode == SCANCODE_PAUSE_PREFIX) {
-        keyboard_state.extended_code_active = false; 
-        terminal_printf("[KB IRQ] Pause Prefix (0xE1) detected.\n");
+        keyboard_state.extended_code_active = false;
         return;
     }
     if (scancode == SCANCODE_EXTENDED_PREFIX) {
@@ -162,7 +166,7 @@ static void keyboard_irq1_handler(isr_frame_t *frame) {
     if (keyboard_state.extended_code_active) {
         switch (base_scancode) {
             case 0x1D: kc = KEY_CTRL; break;
-            case 0x38: kc = KEY_ALT; break; 
+            case 0x38: kc = KEY_ALT; break;
             case 0x48: kc = KEY_UP; break;
             case 0x50: kc = KEY_DOWN; break;
             case 0x4B: kc = KEY_LEFT; break;
@@ -173,28 +177,20 @@ static void keyboard_irq1_handler(isr_frame_t *frame) {
             case 0x51: kc = KEY_PAGE_DOWN; break;
             case 0x52: kc = KEY_INSERT; break;
             case 0x53: kc = KEY_DELETE; break;
-            case 0x1C: kc = KEY_ENTER; break; 
-            case 0x35: kc = '/'; break;      
-            default:   kc = KEY_UNKNOWN;
-                       terminal_printf("[KB IRQ] Unhandled E0 scancode: 0x%02x\n", base_scancode);
-                       break;
+            case 0x1C: kc = KEY_ENTER; break;
+            case 0x35: kc = '/'; break;
+            default:   kc = KEY_UNKNOWN; break;
         }
         keyboard_state.extended_code_active = false;
     } else {
         kc = (base_scancode < 128) ? keyboard_state.current_keymap[base_scancode] : KEY_UNKNOWN;
     }
 
-    if (kc == KEY_UNKNOWN && base_scancode != 0) {
-         terminal_printf("[KB IRQ] KEY_UNKNOWN for base_scancode: 0x%02x (Ext: %d)\n", base_scancode, keyboard_state.extended_code_active);
-        return;
-    }
-     if (kc == 0 && base_scancode != 0 ) { 
-        terminal_printf("[KB IRQ] Mapped to 0 for base_scancode: 0x%02x (Ext: %d)\n", base_scancode, keyboard_state.extended_code_active);
-        return;
-    }
+    if (kc == KEY_UNKNOWN && base_scancode != 0) return;
+    if (kc == 0 && base_scancode != 0 ) return;
 
-    if (kc >= KEY_UNKNOWN && kc < KEY_COUNT) {
-        keyboard_state.key_states[kc] = !is_break_code;
+    if ((int)kc >= 0 && kc < KEY_COUNT) {
+        keyboard_state.key_states[(int)kc] = !is_break_code;
     }
 
     switch (kc) {
@@ -224,7 +220,6 @@ static void keyboard_irq1_handler(isr_frame_t *frame) {
     uintptr_t buffer_irq_flags = spinlock_acquire_irqsave(&keyboard_state.buffer_lock);
     uint8_t next_head = (keyboard_state.buf_head + 1) % KB_BUFFER_SIZE;
     if (next_head == keyboard_state.buf_tail) {
-        terminal_printf("[KB WARNING] Keyboard event buffer overflow! Oldest event dropped.\n");
         keyboard_state.buf_tail = (keyboard_state.buf_tail + 1) % KB_BUFFER_SIZE;
     }
     keyboard_state.buffer[keyboard_state.buf_head] = event;
@@ -240,6 +235,7 @@ static void keyboard_irq1_handler(isr_frame_t *frame) {
 // KBC Configuration Re-check
 //============================================================================
 void keyboard_recheck_kbc_config(void) {
+    // Using 0x61 as it was the original desired config, can be changed to 0x21 for testing
     uint8_t target_kbc_config = (KBC_CFG_INT_KB | KBC_CFG_TRANSLATION | KBC_CFG_DISABLE_MOUSE) & ~(KBC_CFG_INT_MOUSE | KBC_CFG_DISABLE_KB);
     uint8_t current_config;
 
@@ -253,6 +249,7 @@ void keyboard_recheck_kbc_config(void) {
         kbc_send_command_port(KBC_CMD_WRITE_CONFIG);
         kbc_send_data_port(target_kbc_config);
         very_short_delay();
+        kbc_flush_output_buffer("Post-Recheck-Write-Config");
 
         kbc_send_command_port(KBC_CMD_READ_CONFIG);
         current_config = kbc_read_data();
@@ -272,31 +269,32 @@ void keyboard_recheck_kbc_config(void) {
 // Initialization
 //============================================================================
 void keyboard_init(void) {
-    terminal_printf("[KB Init v%s] Initializing keyboard driver...\n", "6.4.5");
+    terminal_printf("[KB Init v%s] Initializing keyboard driver...\n", "6.4.9");
     memset(&keyboard_state, 0, sizeof(keyboard_state));
     spinlock_init(&keyboard_state.buffer_lock);
     memcpy(keyboard_state.current_keymap, DEFAULT_KEYMAP_US, sizeof(keyboard_state.current_keymap));
     terminal_write("  [KB Init] Default US keymap loaded.\n");
 
     terminal_write("  [KB Init] Flushing KBC Output Buffer (pre-init)...\n");
-    kbc_flush_output_buffer("Pre-Init");
+    kbc_flush_output_buffer("Pre-Init Flush");
 
     terminal_write("  [KB Init] Sending 0xAD (Disable KB Interface - KBC cmd)...\n");
     kbc_send_command_port(KBC_CMD_DISABLE_KB_IFACE);
     very_short_delay();
-    kbc_flush_output_buffer("After KBC 0xAD");
+    kbc_flush_output_buffer("After KBC 0xAD (Disable KB)");
 
     terminal_write("  [KB Init] Sending 0xA7 (Disable Mouse Interface - KBC cmd)...\n");
     kbc_send_command_port(KBC_CMD_DISABLE_MOUSE_IFACE);
     very_short_delay();
-    kbc_flush_output_buffer("After KBC 0xA7");
+    kbc_flush_output_buffer("After KBC 0xA7 (Disable Mouse)");
 
-    terminal_write("  [KB Init] Reading KBC Config Byte (0x20)...\n");
+    terminal_write("  [KB Init] Reading KBC Config Byte (0x20) before modification...\n");
     kbc_send_command_port(KBC_CMD_READ_CONFIG);
     uint8_t current_config_init = kbc_read_data();
     terminal_printf("  [KB Init] Read Config = 0x%02x\n", current_config_init);
 
-    uint8_t desired_kbc_config = (KBC_CFG_INT_KB | KBC_CFG_TRANSLATION | KBC_CFG_DISABLE_MOUSE) & ~(KBC_CFG_INT_MOUSE | KBC_CFG_DISABLE_KB);
+    uint8_t desired_kbc_config = (KBC_CFG_INT_KB | KBC_CFG_TRANSLATION | KBC_CFG_DISABLE_MOUSE);
+    desired_kbc_config &= ~(KBC_CFG_INT_MOUSE | KBC_CFG_DISABLE_KB);
     terminal_printf("  [KB Init] Desired KBC Config: 0x%02x\n", desired_kbc_config);
 
     if (current_config_init != desired_kbc_config) {
@@ -304,43 +302,41 @@ void keyboard_init(void) {
         kbc_send_command_port(KBC_CMD_WRITE_CONFIG);
         kbc_send_data_port(desired_kbc_config);
         very_short_delay();
-        kbc_flush_output_buffer("After KBC 0x60 write");
+        kbc_flush_output_buffer("Post-Config Write");
     } else {
         terminal_printf("  [KB Init] KBC Config Byte 0x%02x is already desired.\n", current_config_init);
     }
 
     kbc_send_command_port(KBC_CMD_READ_CONFIG);
     uint8_t readback_config = kbc_read_data();
-    terminal_printf("  [KB Init] Config Byte Readback after attempt = 0x%02x\n", readback_config);
+    terminal_printf("  [KB Init] Config Byte Readback after write = 0x%02x\n", readback_config);
     if (readback_config != desired_kbc_config) {
-        terminal_printf("  [KB ERROR] Failed to set KBC Config Byte! Expected 0x%02x, got 0x%02x\n", desired_kbc_config, readback_config);
+        terminal_printf("  [KB ERROR] Failed to set KBC Config Byte correctly! Expected 0x%02x, got 0x%02x.\n", desired_kbc_config, readback_config);
     }
 
     terminal_write("  [KB Init] Performing KBC Self-Test (0xAA)...\n");
     kbc_send_command_port(KBC_CMD_SELF_TEST);
     uint8_t test_result = kbc_read_data();
     terminal_printf("  [KB Init] KBC Test Result = 0x%02x", test_result);
-    if (test_result != KBC_RESP_SELF_TEST_PASS) { // This is 0x55 for KBC controller
-        terminal_write(" (FAIL!)\n");
-        KERNEL_PANIC_HALT("KBC Self-Test Failed!");
+    if (test_result != KBC_RESP_SELF_TEST_PASS) {
+        terminal_write(" (KBC SELF-TEST FAIL!)\n");
     } else {
         terminal_write(" (PASS)\n");
     }
-    very_short_delay();
-    kbc_flush_output_buffer("After KBC 0xAA");
+    kbc_flush_output_buffer("After KBC 0xAA (Self-Test)");
 
     terminal_write("  [KB Init] Sending 0xAE (Enable KB Interface - KBC cmd)...\n");
     kbc_send_command_port(KBC_CMD_ENABLE_KB_IFACE);
     very_short_delay();
-    kbc_flush_output_buffer("After KBC 0xAE");
+    kbc_flush_output_buffer("After KBC 0xAE (Enable KB)");
 
     kbc_send_command_port(KBC_CMD_READ_CONFIG);
-    uint8_t config_after_enable = kbc_read_data();
-    terminal_printf("  [KB Init] Config Byte after 0xAE = 0x%02x\n", config_after_enable);
-    if (config_after_enable & KBC_CFG_DISABLE_KB) {
-         KERNEL_PANIC_HALT("KBC Config still shows KB Clock Disabled after 0xAE!");
+    uint8_t config_after_kb_enable = kbc_read_data();
+    terminal_printf("  [KB Init] Config Byte after KB Enable (0xAE) = 0x%02x\n", config_after_kb_enable);
+    if (config_after_kb_enable & KBC_CFG_DISABLE_KB) {
+         terminal_printf("  [KB ERROR] KBC Config shows KB Clock still Disabled after 0xAE command!\n");
     } else {
-         terminal_write("  [KB Init] Confirmed Config Byte OK after 0xAE (KB Clock Enabled).\n");
+         terminal_write("  [KB Init] Confirmed KB Clock Enabled in Config Byte.\n");
     }
 
     terminal_write("  [KB Init] Sending 0xFF (Reset) to Keyboard Device...\n");
@@ -351,16 +347,24 @@ void keyboard_init(void) {
         terminal_write("  [KB Init] Waiting for KB BAT result after Reset...\n");
         uint8_t bat_result = kbc_read_data();
         terminal_printf("  [KB Init] Keyboard BAT Result = 0x%02x", bat_result);
-        // *** CORRECTED CONSTANT: Use KB_RESP_SELF_TEST_PASS. ***
-        // Ensure KB_RESP_SELF_TEST_PASS is defined as 0xAA in keyboard_hw.h for the keyboard device BAT.
-        if (bat_result != KB_RESP_SELF_TEST_PASS) { 
-             terminal_write(" (FAIL/WARN)\n");
+        if (bat_result != KB_RESP_SELF_TEST_PASS) {
+             terminal_write(" (KEYBOARD SELF-TEST FAIL/WARN)\n");
         } else {
              terminal_write(" (PASS)\n");
         }
     }
-    very_short_delay();
-    kbc_flush_output_buffer("After KB Device Reset");
+    kbc_flush_output_buffer("After KB Device Reset Sequence");
+
+    terminal_write("  [KB Init] Setting Scancode Set 2 (0xF0, 0x02)...\n");
+    kbc_send_data_port(KB_CMD_SET_SCANCODE_SET);
+    if (kbc_expect_ack("Set Scancode Set Cmd (0xF0)")) {
+        kbc_send_data_port(0x02);
+        kbc_flush_output_buffer("After Set Scancode Set 2 Data");
+        terminal_write("  [KB Init] Scancode Set 2 selected.\n");
+    } else {
+        terminal_write("  [KB Init] Warning: No ACK for Set Scancode Set command. Using default.\n");
+        kbc_flush_output_buffer("After Failed Set Scancode Set Cmd");
+    }
 
     terminal_write("  [KB Init] Sending 0xF4 (Enable Scanning) to Keyboard Device...\n");
     kbc_send_data_port(KB_CMD_ENABLE_SCAN);
@@ -369,8 +373,7 @@ void keyboard_init(void) {
     } else {
          terminal_write("  [KB Init] Scanning Enabled on device. ACK received.\n");
     }
-    very_short_delay();
-    kbc_flush_output_buffer("After KB 0xF4 sequence");
+    kbc_flush_output_buffer("After KB 0xF4 (Enable Scan)");
 
     terminal_write("  [KB Init] Final KBC Config Check...\n");
     kbc_send_command_port(KBC_CMD_READ_CONFIG);
@@ -380,10 +383,10 @@ void keyboard_init(void) {
          terminal_printf("  [KB WARNING] Final KBC Config (0x%02x) differs from desired (0x%02x)!\n", final_config_check, desired_kbc_config);
     }
     if (final_config_check & KBC_CFG_DISABLE_KB) {
-        KERNEL_PANIC_HALT("Keyboard Init Failed: Interface Clock Disabled in final config check!");
+        terminal_printf("  [KB ERROR] FINAL CHECK: Keyboard Interface Clock is DISABLED!\n");
     }
     if (!(final_config_check & KBC_CFG_INT_KB)) {
-         terminal_write("  [KB Init WARNING] Keyboard Interrupt Disabled in final config check!\n");
+         terminal_write("  [KB WARNING] FINAL CHECK: Keyboard Interrupt is DISABLED!\n");
     }
 
     register_int_handler(IRQ1_VECTOR, keyboard_irq1_handler, NULL);
@@ -391,7 +394,7 @@ void keyboard_init(void) {
     keyboard_register_callback(terminal_handle_key_event);
     terminal_write("  [KB Init] Registered terminal handler as callback.\n");
 
-    terminal_printf("[Keyboard] Initialized (v%s).\n", "6.4.5");
+    terminal_printf("[Keyboard] Initialized (v%s).\n", "6.4.9");
 }
 
 //============================================================================
@@ -411,8 +414,8 @@ bool keyboard_poll_event(KeyEvent* event) {
 }
 
 bool keyboard_is_key_down(KeyCode key) {
-    if (key >= KEY_UNKNOWN && key < KEY_COUNT) {
-        return keyboard_state.key_states[key];
+    if ((int)key >= 0 && key < KEY_COUNT) {
+        return keyboard_state.key_states[(int)key];
     }
     return false;
 }
@@ -426,8 +429,6 @@ void keyboard_set_leds(bool scroll, bool num, bool caps) {
     kbc_send_data_port(KB_CMD_SET_LEDS);
     if (kbc_expect_ack("Set LEDs (0xED)")) {
         kbc_send_data_port(led_state);
-        // ACK for data byte is often not sent.
-        // kbc_expect_ack("Set LEDs Data Byte"); 
     }
 }
 
@@ -445,8 +446,6 @@ void keyboard_set_repeat_rate(uint8_t delay, uint8_t speed) {
     kbc_send_data_port(KB_CMD_SET_TYPEMATIC);
     if (kbc_expect_ack("Set Typematic (0xF3)")) {
         kbc_send_data_port((delay << 5) | speed);
-        // ACK for data byte is often not sent.
-        // kbc_expect_ack("Set Typematic Data Byte");
     }
 }
 
@@ -464,7 +463,7 @@ char apply_modifiers_extended(char c, uint8_t modifiers) {
         return (shift ^ caps) ? (char)(c - 'a' + 'A') : c;
     }
     if (c >= 'A' && c <= 'Z') {
-        return (shift ^ caps) ? (char)(c - 'A' + 'a') : c;
+        return (shift && caps) ? (char)(c - 'A' + 'a') : (caps ? c : ((shift) ? c : (char)(c - 'A' + 'a')));
     }
 
     if (shift) {
