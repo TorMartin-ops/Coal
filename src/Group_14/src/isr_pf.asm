@@ -1,87 +1,93 @@
-; src/isr_pf.asm - Page Fault ISR Stub (#14)
-; MODIFIED for Exception Handling via exception table and Panic via C helper call.
-
+; ===============================
+;  PAGE‑FAULT ISR (isr_pf.asm)
+;  -------------------------------
+;  Stand‑alone stub, leaves generic exceptions to isr_stubs.asm
+; ===============================
 section .text
-bits 32                 ; Ensure assembly for 32-bit mode
+bits 32
+
+; ***** ADD THIS DEFINITION *****
+KERNEL_DS      equ 0x10         ; must match your GDT data‑segment and other stubs
+; *******************************
+
+global isr14                    ; exposed to IDT setup
 
 ; External C function references
-global isr14                   ; Export symbol for IDT registration
-extern page_fault_handler     ; C handler for user faults / potentially complex kernel faults
-extern find_exception_fixup   ; C function to search the exception table
-extern invoke_kernel_panic_from_isr ; C helper function that calls KERNEL_PANIC_HALT
-extern serial_putc_asm ; External ASM function for serial output
+extern page_fault_handler       ; void page_fault_handler(isr_frame_t *frame)
+extern find_exception_fixup     ; uint32_t find_exception_fixup(uint32_t fault_eip)
+extern invoke_kernel_panic_from_isr ; void invoke_kernel_panic_from_isr(void)
+extern serial_putc_asm          ; For debug prints
 
-; Define the Kernel Code Segment selector value from your GDT
-%define KERNEL_CODE_SELECTOR 0x08 ; Common value, adjust if yours is different
+%define KERNEL_CS 0x08          ; Kernel Code Segment Selector (adjust if different in your GDT)
 
 isr14:
-    mov al, 'F' ; 'F' for Page Fault
+    ; CPU Pushes: [SS_user], [ESP_user], EFLAGS, CS, EIP, ErrorCode (if CPL change or priv violation)
+
+    ; --- Minimal Debug Trace ---
+    push eax
+    mov  al, 'F'
     call serial_putc_asm
-    ; CPU pushes ErrorCode, EIP, CS, EFLAGS, [SS_user], [ESP_user] automatically
-    ; --- DEBUG: Print 'P' for Page Fault Entry ---
-    pusha               ; Save regs temporarily
-    mov al, 'P'
-    call serial_putc_asm
-    popa                ; Restore regs
-    ; --- End DEBUG ---
+    pop  eax
+    ; --- End Debug Trace ---
 
-    ; CPU pushes (bottom->top): [SS_user], [ESP_user], EFLAGS, CS, EIP, ErrorCode
-    ; We push manually (bottom->top): Interrupt Number (14)
+    push dword 14       ; Push interrupt number (vector 14)
 
-    push dword 14       ; Push interrupt number (vector)
-
-    ; 1. Save general purpose registers
-    pusha               ; Pushes EDI, ESI, EBP, ESP_orig, EBX, EDX, ECX, EAX (32 bytes)
-
-    ; 2. Save segment registers
-    push ds
+    pusha               ; Save general purpose registers
+    push ds             ; Save segment registers
     push es
     push fs
     push gs
 
-
-
-    ; --- Stack Layout Confirmation ... (rest of the file remains the same) ---
+    ; Load kernel data segments
+    mov ax, KERNEL_DS   ; Use the defined KERNEL_DS
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
 
     ; --- Check if fault occurred in Kernel (CPL=0) or User mode (CPL=3) ---
-    mov ax, word [esp + 52] ; Get CS from stack (offset adjusted for our push 14)
-    cmp ax, KERNEL_CODE_SELECTOR
-    jne user_fault          ; If CS != Kernel CS, handle as user fault
+    ; CS is at [ESP + 60] relative to current ESP after all pushes
+    mov ax, word [esp + 60] ; Get CS from saved stack frame
+    cmp ax, KERNEL_CS
+    jne .user_fault_pf      ; If CS != Kernel CS, handle as user fault
 
-; --- Kernel Mode Fault ---
-    mov edi, [esp + 48]     ; Get faulting EIP (offset adjusted for our push 14)
-    push edi
+; --- Kernel Mode Page Fault ---
+    ; Get faulting EIP: [ESP + 56]
+    mov edi, [esp + 56]     ; EDI = faulting EIP
+    push edi                ; Pass fault_eip as argument to find_exception_fixup
     call find_exception_fixup
-    add esp, 4
-    test eax, eax
-    jnz handle_fixup
+    add  esp, 4             ; Clean up argument
+    test eax, eax           ; Check if fixup address was returned in EAX
+    jnz  .handle_kernel_fixup ; If non-zero, a fixup exists
 
-kernel_fault_unhandled:
-    jmp kernel_panic_pf
-
-handle_fixup:
-    mov ebx, [esp + 40]     ; Get saved ECX (remaining count) into EBX
-    mov [esp + 44], ebx     ; Set saved EAX = remaining count (now in EBX)
-    mov [esp + 56], eax     ; Set saved EIP = fixup_addr (from find_exception_fixup return in EAX)
-    jmp restore_and_return
-
-user_fault:
-    mov eax, esp            ; Pass stack frame pointer
-    push eax
-    call page_fault_handler
-    add esp, 4
-    jmp restore_and_return
-
-kernel_panic_pf:
-    call invoke_kernel_panic_from_isr
+; Unhandled kernel page fault -> panic
+.kernel_fault_unhandled_pf:
+    call invoke_kernel_panic_from_isr ; This C function will call KERNEL_PANIC_HALT
+    ; Should not return from panic
     cli
-    hlt
+    hlt                     ; Halt if it somehow returns
 
-restore_and_return:
-    pop gs
+.handle_kernel_fixup:
+    ; EAX contains the fixup_addr. We need to set the EIP in the saved stack frame.
+    ; EIP is at [ESP + 56]
+    mov [esp + 56], eax     ; Set saved EIP on stack to the fixup_addr
+    jmp .restore_and_return_pf
+
+.user_fault_pf:
+    ; Pass pointer to the isr_frame_t to the C page fault handler
+    mov eax, esp            ; EAX = pointer to the stack frame
+    push eax
+    call page_fault_handler ; Call C handler: void page_fault_handler(isr_frame_t *frame)
+    add  esp, 4             ; Clean up argument
+
+.restore_and_return_pf:
+    pop gs                  ; Restore segment registers
     pop fs
     pop es
     pop ds
-    popa
-    add esp, 8              ; Pop IntNum + ErrorCode
-    iret
+    popa                    ; Restore general purpose registers
+    add esp, 8              ; Pop int_no (14) + ErrorCode (from CPU)
+    iret                    ; Return from interrupt
+; ===============================
+; END OF PAGE-FAULT ISR
+; ===============================

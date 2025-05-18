@@ -1,8 +1,11 @@
+// Patched Group_14/src/kernel.c
+
 /**
- * kernel.c - Main kernel entry point for UiAOS
+ * @file kernel.c
+ * @brief Main kernel entry point for UiAOS
  *
  * Author: Tor Martin Kohle
- * Version: 4
+ * Version: 4.3.1 - Applied idle loop diagnostic patch
  *
  * Description:
  * This file contains the main entry point (`main`) for the UiAOS kernel,
@@ -56,7 +59,7 @@
 // Other utilities like cpuid, kmalloc_internal, port_io are included by higher-level headers
 
 // === Constants ===
-#define KERNEL_VERSION_STRING "4.3"
+#define KERNEL_VERSION_STRING "4.3.1" // Updated version
 #define MULTIBOOT2_BOOTLOADER_MAGIC_EXPECTED 0x36d76289
 #define MIN_USABLE_HEAP_SIZE (1 * 1024 * 1024) // 1MB
 #define MAX_CLAMPED_INITIAL_HEAP_SIZE (256 * 1024 * 1024) // 256MB
@@ -80,7 +83,7 @@ static struct multiboot_tag *find_multiboot_tag_virt(uintptr_t mb_info_virt, uin
 static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
                                       uintptr_t *out_total_mem_span,
                                       uintptr_t *out_heap_base, size_t *out_heap_size);
-static bool initialize_memory_management(uint32_t mb_info_phys); // Corrected name
+static bool initialize_memory_management(uint32_t mb_info_phys);
 static void launch_program(const char *path_on_disk, const char *program_description);
 
 //-----------------------------------------------------------------------------
@@ -157,17 +160,12 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
     uintptr_t kernel_phys_end_addr = ALIGN_UP((uintptr_t)&_kernel_end_phys, PAGE_SIZE);
 
     terminal_printf("  Kernel Physical Range: [%#010lx - %#010lx)\n", kernel_phys_start_addr, kernel_phys_end_addr);
-    // terminal_write("  Multiboot Memory Map Entries:\n"); // Reduced verbosity
 
     while ((uintptr_t)entry < mmap_end_addr && (uintptr_t)entry + mmap_tag->entry_size <= mmap_end_addr) {
         uintptr_t region_p_start = (uintptr_t)entry->addr;
         uint64_t region_p_len64 = entry->len;
         uintptr_t region_p_end = safe_add_base_len(region_p_start, region_p_len64);
         if (region_p_end < region_p_start) region_p_end = UINTPTR_MAX;
-
-        // terminal_printf("    Entry: Addr=%#010lx, Len=%#010llx (%s)\n", // Reduced verbosity
-        //                 region_p_start, region_p_len64,
-        //                 (entry->type == MULTIBOOT_MEMORY_AVAILABLE) ? "Available" : "Reserved");
 
         if (region_p_end > total_span) total_span = region_p_end;
 
@@ -208,7 +206,7 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
     if (best_candidate_base < 0x100000 && best_candidate_base != 0) {
         terminal_printf("  Warning: Best heap candidate below 1MB (%#lx).\n", best_candidate_base);
     }
-    
+
     if (best_candidate_size64 >= MIN_USABLE_HEAP_SIZE && best_candidate_base != 0) {
         *out_heap_base = best_candidate_base;
         *out_heap_size = (best_candidate_size64 > (uint64_t)MAX_CLAMPED_INITIAL_HEAP_SIZE) ?
@@ -224,7 +222,7 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
     return false;
 }
 
-static bool initialize_memory_management(uint32_t mb_info_phys) { // Corrected name
+static bool initialize_memory_management(uint32_t mb_info_phys) {
     terminal_write("[Kernel] Initializing Memory Subsystems...\n");
 
     uintptr_t total_phys_memory_span;
@@ -327,7 +325,7 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
 
     terminal_write("[Kernel] Initializing core systems (pre-interrupts)...\n");
     gdt_init();
-    initialize_memory_management(g_multiboot_info_phys_addr_global); // Corrected function name call
+    initialize_memory_management(g_multiboot_info_phys_addr_global);
     idt_init();
     init_pit();
     keyboard_init();
@@ -342,7 +340,7 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
         terminal_write("  [CRITICAL] Filesystem initialization FAILED. User programs cannot be loaded.\n");
     }
     terminal_write("[Kernel Debug] KBC Status after fs_init(): 0x");
-    serial_print_hex(inb(KBC_STATUS_PORT)); // Read status
+    serial_print_hex(inb(KBC_STATUS_PORT));
     serial_write("\n");
 
     if (fs_ready) {
@@ -361,40 +359,26 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
 
     terminal_write("[Kernel] Re-checking and forcing KBC configuration before interrupts...\n");
 
-    // Wait for KBC input buffer to be clear (ready for command)
     while (inb(KBC_STATUS_PORT) & KBC_SR_IBF);
-    // Send command to read the KBC configuration byte
-    outb(KBC_CMD_PORT, KBC_CMD_READ_CONFIG); // Command 0x20
-
-    // Wait for KBC output buffer to be full (data ready)
+    outb(KBC_CMD_PORT, KBC_CMD_READ_CONFIG);
     while (!(inb(KBC_STATUS_PORT) & KBC_SR_OBF));
-    // Read the current configuration byte
     uint8_t current_config = inb(KBC_DATA_PORT);
     terminal_printf("   Read KBC Config Byte (before final write): 0x%x\n", current_config);
 
-    // Modify the configuration: Ensure Keyboard Interface is ENABLED (Bit 4 = 0)
-    // Also ensure Keyboard Interrupt is ENABLED (Bit 0 = 1)
-    // Optionally disable Mouse Interrupt (Bit 1 = 0)
-    uint8_t modified_config = (current_config | KBC_CFG_INT_KB) & ~KBC_CFG_DISABLE_KB & ~KBC_CFG_INT_MOUSE;
+    uint8_t desired_final_config = 0x61; // Target config: KB Int ON, Mouse Int OFF, KB Clock ON, Mouse Clock OFF, Translate ON
 
-    if (current_config != modified_config) {
-        terminal_printf("   Modifying KBC Config Byte from 0x%x to 0x%x...\n", current_config, modified_config);
-        // Wait for KBC input buffer clear
+    if (current_config != desired_final_config) {
+        terminal_printf("   Modifying KBC Config Byte from 0x%x to 0x%x...\n", current_config, desired_final_config);
         while (inb(KBC_STATUS_PORT) & KBC_SR_IBF);
-        // Send command to write KBC configuration byte
-        outb(KBC_CMD_PORT, KBC_CMD_WRITE_CONFIG); // Command 0x60
-
-        // Wait for KBC input buffer clear
+        outb(KBC_CMD_PORT, KBC_CMD_WRITE_CONFIG);
         while (inb(KBC_STATUS_PORT) & KBC_SR_IBF);
-        // Send the modified configuration byte
-        outb(KBC_DATA_PORT, modified_config);
-        // Short delay might be good practice after config write
-        for(volatile int d=0; d<10000; ++d); // Simple busy wait delay
+        outb(KBC_DATA_PORT, desired_final_config);
+        for(volatile int d=0; d<10000; ++d);
+        // It's good practice to flush after writing config too, though main issue is earlier.
+        // kbc_flush_output_buffer("Kernel Final Config Write Flush"); // If function is made available/replicated
     } else {
         terminal_printf("   KBC Config Byte 0x%x already has desired settings.\n", current_config);
     }
-
-    // Optional: Final status check after attempting config write
     uint8_t final_kbc_status_check = inb(KBC_STATUS_PORT);
     terminal_printf("   KBC Status register *after* explicit config write attempt: 0x%x\n", final_kbc_status_check);
 
@@ -407,10 +391,10 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
 
 
     terminal_write("[Kernel Debug] KBC Status before final sti: 0x");
-    serial_print_hex(inb(KBC_STATUS_PORT)); // Log status right before sti
+    serial_print_hex(inb(KBC_STATUS_PORT));
     serial_write("\n");
 
-    asm volatile ("sti"); // Enable interrupts
+    asm volatile ("sti");
 
     serial_write("[Kernel DEBUG] Interrupts Enabled. Entering main HLT loop.\n");
     while (1) {
