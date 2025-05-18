@@ -176,6 +176,10 @@ add_custom_command(
     DEPENDS hello_elf shell_elf # Add shell_elf as a dependency
     COMMENT "Creating FAT disk image with hello.elf and shell.elf"
     VERBATIM
+    OUTPUT ${CMAKE_BINARY_DIR}/asm/irq_stubs.o
+    COMMAND nasm ${ASM_FLAGS} ${CMAKE_SOURCE_DIR}/src/irq_stubs.asm -o ${CMAKE_BINARY_DIR}/asm/irq_stubs.o -felf32 -DDEBUG_IRQ_STUBS=1 -DDEBUG_IRQ1_DIRECT=1
+    DEPENDS ${CMAKE_SOURCE_DIR}/src/irq_stubs.asm
+    COMMENT "[NASM] Compiling ASM object (IRQ Stubs): irq_stubs.o"
 )
 
 ########################################

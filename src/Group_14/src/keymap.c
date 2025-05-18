@@ -38,7 +38,7 @@ const uint16_t keymap_norwegian[128] = {
     [0x19] = 'p',                 // P
     [0x1A] = 0xE5,                // å (ISO-8859-1 for liten å)
     [0x1B] = KEY_UNKNOWN,         // ¨ (død-tast, ^ med shift) - vanskelig å representere som én KeyCode
-    [0x1C] = '\n',                // Enter
+    [0x1C] = KEY_ENTER,                // Enter
     // Rad 2 (ASDFGH-rad)
     [0x1D] = KEY_CTRL,            // Left Ctrl
     [0x1E] = 'a',                 // A
@@ -128,7 +128,7 @@ const uint16_t keymap_us_qwerty[128] = {
     [0x19] = 'p',
     [0x1A] = '[',
     [0x1B] = ']',
-    [0x1C] = '\n',
+    [0x1C] = KEY_ENTER,
     [0x1D] = KEY_CTRL,
     [0x1E] = 'a',
     [0x1F] = 's',
@@ -197,7 +197,7 @@ const uint16_t keymap_uk_qwerty[128] = {
     [0x10] = 'q', [0x11] = 'w', [0x12] = 'e', [0x13] = 'r',
     [0x14] = 't', [0x15] = 'y', [0x16] = 'u', [0x17] = 'i',
     [0x18] = 'o', [0x19] = 'p', [0x1A] = '[', [0x1B] = ']',
-    [0x1C] = '\n', [0x1D] = KEY_CTRL, [0x1E] = 'a', [0x1F] = 's',
+    [0x1C] = KEY_ENTER, [0x1D] = KEY_CTRL, [0x1E] = 'a', [0x1F] = 's',
     [0x20] = 'd', [0x21] = 'f', [0x22] = 'g', [0x23] = 'h',
     [0x24] = 'j', [0x25] = 'k', [0x26] = 'l', [0x27] = ';',
     [0x28] = '\'', [0x29] = '`', // Grave, ofte £ med Shift på UK
@@ -233,7 +233,7 @@ const uint16_t keymap_dvorak[128] = {
     [0x10] = '\'', [0x11] = ',', [0x12] = '.', [0x13] = 'p',
     [0x14] = 'y', [0x15] = 'f', [0x16] = 'g', [0x17] = 'c',
     [0x18] = 'r', [0x19] = 'l', [0x1A] = '/', [0x1B] = '=', // Var [ og ]
-    [0x1C] = '\n', [0x1D] = KEY_CTRL, [0x1E] = 'a', [0x1F] = 'o',
+    [0x1C] = KEY_ENTER, [0x1D] = KEY_CTRL, [0x1E] = 'a', [0x1F] = 'o',
     [0x20] = 'e', [0x21] = 'u', [0x22] = 'i', [0x23] = 'd',
     [0x24] = 'h', [0x25] = 't', [0x26] = 'n', [0x27] = 's',
     [0x28] = '-', [0x29] = '`', // Var ; og '
@@ -266,7 +266,7 @@ const uint16_t keymap_colemak[128] = {
     [0x14] = 'g', [0x15] = 'j', [0x16] = 'l', [0x17] = 'u', // T->G, Y->J, U->L, I->U
     [0x18] = 'y', [0x19] = ';', // O->Y, P->;
     [0x1A] = '[', [0x1B] = ']',
-    [0x1C] = '\n', [0x1D] = KEY_CTRL, [0x1E] = 'a', [0x1F] = 'r', // S->R
+    [0x1C] = KEY_ENTER, [0x1D] = KEY_CTRL, [0x1E] = 'a', [0x1F] = 'r', // S->R
     [0x20] = 's', [0x21] = 't', [0x22] = 'd', // D->S, F->T, G->D
     [0x23] = 'h', [0x24] = 'n', [0x25] = 'e', // J->N, K->E
     [0x26] = 'i', [0x27] = 'o', // L->I, ; -> O
