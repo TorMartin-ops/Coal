@@ -321,91 +321,47 @@ void scheduler_tick(void) {
 }
 
 //============================================================================
-// Idle Task & Zombie Cleanup (Corrected KBC constant)
+// Idle Task & Zombie Cleanup (KBC Polling Removed)
 //============================================================================
 static __attribute__((noreturn)) void kernel_idle_task_loop(void) {
     SCHED_INFO("Idle task started (PID %lu). Entering HLT loop.", (unsigned long)IDLE_TASK_PID);
     serial_write("[Idle Loop] Diagnostic checks will run before each HLT.\n");
 
     while (1) {
-        // Perform cleanup of terminated (zombie) processes
         scheduler_cleanup_zombies();
 
         // --- BEGIN Enhanced DIAGNOSTICS ---
-        // This section prints diagnostic information to help debug system state.
-        // It's useful to check hardware status (like KBC) and interrupt masks.
         terminal_printf("[Idle Diagnostics] --- Pre-HLT Check ---\n");
-
-        // 1. Check KBC Status Register (Port 0x64)
-        uint8_t kbc_status = inb(KBC_STATUS_PORT); // Read KBC status
+        uint8_t kbc_status = inb(KBC_STATUS_PORT);
         terminal_printf("[Idle Diagnostics] KBC Status (Port 0x%x): 0x%x\n", KBC_STATUS_PORT, kbc_status);
-        // Breakdown of the status bits (using constants from keyboard_hw.h):
-        terminal_printf("  -> OBF=%d, IBF=%d, SYS=%d, A2=%d, Bit4(Unk)=%d\n", // Updated label for Bit 4
+        terminal_printf("  -> OBF=%d, IBF=%d, SYS=%d, A2=%d, Bit4(Unk)=%d\n",
                          (kbc_status & KBC_SR_OBF) ? 1 : 0,
                          (kbc_status & KBC_SR_IBF) ? 1 : 0,
                          (kbc_status & KBC_SR_SYS_FLAG) ? 1 : 0,
                          (kbc_status & KBC_SR_A2) ? 1 : 0,
-                         (kbc_status & KBC_SR_BIT4_UNKNOWN) ? 1 : 0); // Use the renamed constant
+                         (kbc_status & KBC_SR_BIT4_UNKNOWN) ? 1 : 0);
 
-        // If the output buffer is full, read the data to clear it (might be leftover data)
-        if (kbc_status & KBC_SR_OBF) {
-            uint8_t kbc_data = inb(KBC_DATA_PORT);
-            terminal_printf("  -> OBF was set, read data (Port 0x%x): 0x%x\n", KBC_DATA_PORT, kbc_data);
-        }
+        // DO NOT READ FROM KBC_DATA_PORT (0x60) HERE IN THE IDLE LOOP.
+        // Let the interrupt handler do it.
 
-        /* --- Removed misleading warning about Bit 4 ---
-        // Check the potentially unreliable Status Bit 4
-        if (kbc_status & KBC_SR_BIT4_UNKNOWN) {
-            // This message is informational, as the bit being set isn't necessarily an error post-init.
-            // terminal_printf("  -> Bit 4 (0x10) IS SET - Might be normal on some HW\n");
-        } else {
-            terminal_printf("  -> Bit 4 (0x10) is CLEAR.\n");
-        }
-        */ // --- End Removed Warning ---
-
-        // 2. Check PIC1 Interrupt Mask Register (IMR) Status (Port 0x21)
-        // This helps verify if expected hardware interrupts (like keyboard IRQ1) are enabled.
-        uint8_t master_imr_before = inb(PIC1_DATA_PORT); // Read Master PIC IMR
+        uint8_t master_imr_before = inb(PIC1_DATA_PORT);
         terminal_printf("[Idle Diagnostics] PIC1 IMR (Port 0x%x) before: 0x%x. ", PIC1_DATA_PORT, master_imr_before);
-
-        // Check if Keyboard IRQ (IRQ1, corresponds to bit 1) is masked (1 = masked, 0 = unmasked)
-        if (master_imr_before & 0x02) {
+        if (master_imr_before & 0x02) { // Bit 1 for IRQ1
              terminal_write("IRQ1 MASKED! Forcing unmask... ");
-             // Force unmask IRQ1 (clear bit 1) - this is often a debug measure
              outb(PIC1_DATA_PORT, master_imr_before & ~0x02);
-             uint8_t master_imr_after = inb(PIC1_DATA_PORT); // Read back to confirm
+             uint8_t master_imr_after = inb(PIC1_DATA_PORT);
              terminal_printf("PIC1 IMR after: 0x%x\n", master_imr_after);
         } else {
             terminal_write("IRQ1 Unmasked (OK).\n");
         }
-        if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) {
-            uint8_t sc = inb(KBC_DATA_PORT);
-            serial_write("[IdlePoll KBC] Scancode: 0x"); serial_print_hex(sc); serial_write("\n");
-        }
-
         terminal_printf("[Idle Diagnostics] Executing sti; hlt...\n");
         // --- END Idle Diagnostics ---
 
-        // Atomically enable interrupts (sti) and halt the CPU (hlt)
-        // The CPU will wait here until the next interrupt occurs.
-        // Interrupts will be automatically disabled by the hardware upon entering
-        // the interrupt handler defined in the IDT.
-
-
-        if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) { // Check if Output Buffer Full (Bit 0)
-            uint8_t sc = inb(KBC_DATA_PORT);    // Read the scancode from Data Port
-            serial_write("[IdlePoll KBC] Scancode: 0x"); // Log to serial
-            serial_print_hex(sc);
-            serial_write("\n");
-        }
         asm volatile ("sti; hlt");
 
-        // Execution resumes here after an interrupt handler returns.
-        // Interrupts are typically disabled at this point (by the handler exit logic before iret).
-        serial_write("[Idle Loop] Woke up from hlt.\n"); // Log wake-up event
-
-    } // End while(1)
-} // End kernel_idle_task_loop
+        serial_write("[Idle Loop] Woke up from hlt.\n");
+    }
+}
 
 
 static void scheduler_init_idle_task(void) {
@@ -418,23 +374,14 @@ static void scheduler_init_idle_task(void) {
 
     // --- Corrected Stack Setup ---
     static uint8_t idle_stack_buffer[PROCESS_KSTACK_SIZE] __attribute__((aligned(16)));
-
-    // Step 1: Assume &idle_stack_buffer provides the physical (or link-time) base address.
-    // This assumption might be fragile depending on linking and loading specifics.
     uintptr_t stack_buffer_phys_base = (uintptr_t)&idle_stack_buffer;
-
-    // Step 2: Calculate the physical address just PAST the end of the buffer.
     uintptr_t stack_buffer_phys_top = stack_buffer_phys_base + sizeof(idle_stack_buffer);
-
-    // Step 3: Convert this physical top address to the corresponding KERNEL VIRTUAL top address.
     uintptr_t stack_top_virt_addr = PHYS_TO_VIRT(stack_buffer_phys_top);
-    g_idle_task_pcb.kernel_stack_vaddr_top = (uint32_t*)stack_top_virt_addr; // Store HIGH VIRT addr TOP
+    g_idle_task_pcb.kernel_stack_vaddr_top = (uint32_t*)stack_top_virt_addr;
 
     SCHED_DEBUG("Idle task stack: PhysBase=0x%lx, PhysTop=0x%lx -> VirtTop=0x%lx",
                   stack_buffer_phys_base, stack_buffer_phys_top, stack_top_virt_addr);
 
-
-    // --- Initialize TCB (same as before) ---
     memset(&g_idle_task_tcb, 0, sizeof(tcb_t));
     g_idle_task_tcb.process = &g_idle_task_pcb;
     g_idle_task_tcb.pid     = IDLE_TASK_PID;
@@ -446,28 +393,25 @@ static void scheduler_init_idle_task(void) {
     g_idle_task_tcb.time_slice_ticks = MS_TO_TICKS(g_priority_time_slices_ms[g_idle_task_tcb.priority]);
     g_idle_task_tcb.ticks_remaining = g_idle_task_tcb.time_slice_ticks;
 
-    // --- Prepare initial kernel stack frame using the HIGH VIRTUAL top address ---
-    uint32_t *kstack_ptr = (uint32_t*)stack_top_virt_addr; // Start at high virtual top
-    // Push registers/context in reverse order for context_switch
-    *(--kstack_ptr) = (uint32_t)g_idle_task_pcb.entry_point; // RetAddr for context_switch's 'ret'
-    *(--kstack_ptr) = 0; // Dummy EBP for context_switch's 'pop ebp'
+    uint32_t *kstack_ptr = (uint32_t*)stack_top_virt_addr;
+    *(--kstack_ptr) = (uint32_t)g_idle_task_pcb.entry_point;
+    *(--kstack_ptr) = 0; // Dummy EBP
     *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // GS
     *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // FS
     *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // ES
     *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // DS
     *(--kstack_ptr) = 0x00000202; // EFLAGS (IF=1)
-    for (int i = 0; i < 8; i++) *(--kstack_ptr) = 0; // PUSHAD dummy regs
-    g_idle_task_tcb.esp = kstack_ptr; // Store the resulting HIGH VIRTUAL ESP
-    SCHED_DEBUG("Idle task initial TCB ESP calculated: %p", g_idle_task_tcb.esp); // Should now be high addr
+    for (int i = 0; i < 8; i++) *(--kstack_ptr) = 0; // PUSHAD dummy
+    g_idle_task_tcb.esp = kstack_ptr;
+    SCHED_DEBUG("Idle task initial TCB ESP calculated: %p", g_idle_task_tcb.esp);
 
-    // Add idle task to the global list (same as before)
     uintptr_t irq_flags = spinlock_acquire_irqsave(&g_all_tasks_lock);
     g_idle_task_tcb.all_tasks_next = g_all_tasks_head;
     g_all_tasks_head = &g_idle_task_tcb;
     spinlock_release_irqrestore(&g_all_tasks_lock, irq_flags);
 }
 
-void scheduler_cleanup_zombies(void) { // (Implementation same as refactored v5.0)
+void scheduler_cleanup_zombies(void) {
     SCHED_TRACE("Checking for ZOMBIE tasks...");
     tcb_t *zombie_to_reap = NULL;
     tcb_t *prev_all = NULL;
@@ -488,7 +432,6 @@ void scheduler_cleanup_zombies(void) { // (Implementation same as refactored v5.
     spinlock_release_irqrestore(&g_all_tasks_lock, all_tasks_irq_flags);
 
     if (zombie_to_reap) {
-        // Use %lu for uint32_t PID and exit code
         SCHED_INFO("Cleanup: Reaping ZOMBIE task PID %lu (Exit Code: %lu).", zombie_to_reap->pid, zombie_to_reap->exit_code);
         if (zombie_to_reap->process) destroy_process(zombie_to_reap->process);
         else SCHED_WARN("Zombie task PID %lu has NULL process pointer!", zombie_to_reap->pid);
@@ -510,7 +453,6 @@ static tcb_t* scheduler_select_next_task(void) {
             spinlock_release_irqrestore(&queue->lock, queue_irq_flags);
             if (!dequeued) { SCHED_ERROR("Selected task PID %lu Prio %d but failed to dequeue!", task->pid, prio); continue; }
             task->ticks_remaining = MS_TO_TICKS(g_priority_time_slices_ms[task->priority]);
-            // Use %lu for PID, %d for prio (int), %lu for ticks (uint32_t)
             SCHED_DEBUG("Selected task PID %lu (Prio %d), Slice=%lu", task->pid, prio, task->ticks_remaining);
             return task;
         }
@@ -530,14 +472,12 @@ static void perform_context_switch(tcb_t *old_task, tcb_t *new_task) {
 
     if (!new_task->has_run && new_task->pid != IDLE_TASK_PID) {
         new_task->has_run = true;
-        // Use %lu for uint32_t PID, %p for pointers
         SCHED_DEBUG("First run for PID %lu. Jumping to user mode (ESP=%p, PD=%p)",
                       new_task->pid, new_task->esp, new_task->process->page_directory_phys);
         jump_to_user_mode(new_task->esp, new_task->process->page_directory_phys);
         KERNEL_PANIC_HALT("jump_to_user_mode returned!");
     } else {
         if (!new_task->has_run && new_task->pid == IDLE_TASK_PID) new_task->has_run = true;
-        // Use %lu for uint32_t PIDs, %p for ESP pointers
         SCHED_DEBUG("Context switch: PID %lu (ESP=%p) -> PID %lu (ESP=%p) (PD Switch: %s)",
                       old_task ? old_task->pid : (uint32_t)-1, old_task ? old_task->esp : NULL,
                       new_task->pid, new_task->esp,
@@ -558,7 +498,7 @@ void schedule(void) {
 
     if (new_task == old_task) {
         if (old_task && old_task->state == TASK_READY) old_task->state = TASK_RUNNING;
-        if (eflags & 0x200) asm volatile("sti"); // Restore IF if needed and no switch
+        if (eflags & 0x200) asm volatile("sti");
         return;
     }
 
@@ -577,7 +517,6 @@ void schedule(void) {
     g_current_task = new_task;
     new_task->state = TASK_RUNNING;
     perform_context_switch(old_task, new_task);
-    // IF flag restored by context_switch's iret/ret
 }
 
 
@@ -613,10 +552,8 @@ int scheduler_add_task(pcb_t *pcb) {
     if (!enqueue_task_locked(new_task)) {
         SCHED_ERROR("Failed to enqueue newly created task PID %lu!", new_task->pid);
     }
-    // g_task_count++; // Where should this live? Maybe track active count differently.
     spinlock_release_irqrestore(&queue->lock, queue_irq_flags);
 
-    // Use %lu for PID, %u for priority (uint8_t), %lu for ticks (uint32_t)
     SCHED_INFO("Added task PID %lu (Prio %u, Slice %lu ticks)",
                  new_task->pid, new_task->priority, new_task->time_slice_ticks);
     return SCHED_OK;
@@ -639,20 +576,19 @@ void sleep_ms(uint32_t ms) {
     if (ticks_to_wait > (UINT32_MAX - current_ticks)) { wakeup_target = UINT32_MAX; SCHED_WARN("Sleep duration %lu ms results in tick overflow.", ms); }
     else { wakeup_target = current_ticks + ticks_to_wait; }
 
-    asm volatile("cli"); // Disable interrupts
+    asm volatile("cli");
     tcb_t *current = (tcb_t*)g_current_task;
     KERNEL_ASSERT(current && current->pid != IDLE_TASK_PID && (current->state == TASK_RUNNING || current->state == TASK_READY), "Invalid task state for sleep_ms");
 
     current->wakeup_time = wakeup_target;
     current->state = TASK_SLEEPING;
     current->in_run_queue = false;
-    // Use %lu for PIDs/times/durations
     SCHED_DEBUG("Task PID %lu sleeping for %lu ms until tick %lu", current->pid, ms, current->wakeup_time);
 
     uintptr_t sleep_irq_flags = spinlock_acquire_irqsave(&g_sleep_queue.lock);
     add_to_sleep_queue_locked(current);
     spinlock_release_irqrestore(&g_sleep_queue.lock, sleep_irq_flags);
-    schedule(); // Switch away
+    schedule();
 }
 
 void remove_current_task_with_code(uint32_t code) {
@@ -660,7 +596,6 @@ void remove_current_task_with_code(uint32_t code) {
     tcb_t *task_to_terminate = (tcb_t *)g_current_task;
     KERNEL_ASSERT(task_to_terminate && task_to_terminate->pid != IDLE_TASK_PID, "Cannot terminate idle/null task");
 
-    // Use %lu for PID and code
     SCHED_INFO("Task PID %lu exiting with code %lu. Marking as ZOMBIE.", task_to_terminate->pid, code);
     task_to_terminate->state = TASK_ZOMBIE;
     task_to_terminate->exit_code = code;
@@ -680,7 +615,6 @@ void scheduler_start(void) {
 
 void scheduler_init(void) {
     SCHED_INFO("Initializing scheduler (v5.2 - Final Format Fixes)...");
-    // ... (memset queues, init locks, etc) ...
     memset(g_run_queues, 0, sizeof(g_run_queues));
     g_current_task = NULL;
     g_tick_count = 0;
@@ -690,11 +624,9 @@ void scheduler_init(void) {
     spinlock_init(&g_all_tasks_lock);
     for (int i = 0; i < SCHED_PRIORITY_LEVELS; i++) init_run_queue(&g_run_queues[i]);
     init_sleep_queue();
-    // ...
 
-    scheduler_init_idle_task(); // Initializes idle PCB/TCB, calculates HIGH VIRT stack top/esp
+    scheduler_init_idle_task();
 
-    // Enqueue idle task
     run_queue_t *idle_queue = &g_run_queues[g_idle_task_tcb.priority];
     uintptr_t queue_irq_flags = spinlock_acquire_irqsave(&idle_queue->lock);
     if (!enqueue_task_locked(&g_idle_task_tcb)) {
@@ -702,14 +634,12 @@ void scheduler_init(void) {
     }
     spinlock_release_irqrestore(&idle_queue->lock, queue_irq_flags);
 
-    g_current_task = &g_idle_task_tcb; // Start with idle task
+    g_current_task = &g_idle_task_tcb;
 
-    // --- Setup TSS SP0 using the corrected high virtual address ---
     uintptr_t idle_stack_top_virt = (uintptr_t)g_idle_task_pcb.kernel_stack_vaddr_top;
     SCHED_DEBUG("Setting initial TSS ESP0 to calculated high virtual top: %p", (void*)idle_stack_top_virt);
     tss_set_kernel_stack((uint32_t)idle_stack_top_virt);
 
-    // Use %d for IDLE_TASK_PID (int)
     SCHED_INFO("Scheduler initialized (Idle Task PID %d ready).", IDLE_TASK_PID);
 }
 
@@ -722,17 +652,14 @@ void scheduler_unblock_task(tcb_t *task) {
 
     if (task->state == TASK_BLOCKED) {
         task->state = TASK_READY;
-        // Use %lu for PID
         SCHED_DEBUG("Task PID %lu unblocked, new state: READY.", task->pid);
         if (!enqueue_task_locked(task)) {
              SCHED_ERROR("Failed to enqueue unblocked task PID %lu (already enqueued?)", task->pid);
         } else {
-             g_need_reschedule = true; // Set hint *after* successfully enqueuing
-             // Use %lu for PID, %u for priority
+             g_need_reschedule = true;
              SCHED_DEBUG("Task PID %lu enqueued into run queue Prio %u.", task->pid, task->priority);
         }
     } else {
-        // Use %lu for PID, %d for state enum
         SCHED_WARN("Called on task PID %lu which was not BLOCKED (state=%d).", task->pid, task->state);
     }
 
