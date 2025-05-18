@@ -139,6 +139,8 @@ int main(void) {
         sys_puts("UiAOS> ");
 
         ssize_t bytes_read = sys_read_terminal_line(cmd_buffer, CMD_BUFFER_SIZE);
+        
+        
 
         if (bytes_read >= 0) {
             // Kernel should have null-terminated at cmd_buffer[bytes_read]
