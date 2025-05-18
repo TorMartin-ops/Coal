@@ -56,16 +56,16 @@ typedef struct {
     uint32_t    timestamp; 
 } KeyEvent;
 
-void keyboard_init(void);
-bool keyboard_poll_event(KeyEvent* event);
-bool keyboard_is_key_down(KeyCode key);
-uint8_t keyboard_get_modifiers(void);
-void keyboard_set_leds(bool scroll, bool num, bool caps);
-void keyboard_set_keymap(const uint16_t* keymap);
-void keyboard_set_repeat_rate(uint8_t delay, uint8_t speed);
-void keyboard_register_callback(void (*callback)(KeyEvent));
-char apply_modifiers_extended(char c, uint8_t modifiers);
-void keyboard_recheck_kbc_config(void); 
+void      keyboard_init(void);
+bool      keyboard_poll_event(KeyEvent *ev);
+bool      keyboard_is_key_down(KeyCode key);
+uint8_t   keyboard_get_modifiers(void);
+void      keyboard_set_leds(bool scroll, bool num, bool caps);
+void      keyboard_set_keymap(const uint16_t *km);
+void      keyboard_set_repeat_rate(uint8_t delay, uint8_t speed);
+void      keyboard_register_callback(void (*cb)(KeyEvent));
+char      apply_modifiers_extended(char c, uint8_t mods);
+void      keyboard_recheck_kbc_config(void);
 
 extern volatile uint32_t g_keyboard_irq_fire_count;
 #ifdef __cplusplus

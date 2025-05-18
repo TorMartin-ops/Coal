@@ -5,7 +5,7 @@
  * @brief Main kernel entry point for UiAOS
  *
  * Author: Tor Martin Kohle
- * Version: 4.3.1 - Applied idle loop diagnostic patch
+ * Version: 4.3.4 - Corrected KBC_MAX_FLUSH build error.
  *
  * Description:
  * This file contains the main entry point (`main`) for the UiAOS kernel,
@@ -33,7 +33,7 @@
 #include "frame.h"
 #include "buddy.h"
 #include "slab.h"
-#include "percpu_alloc.h" // Conditional on USE_PERCPU_ALLOC in kmalloc
+#include "percpu_alloc.h" 
 #include "kmalloc.h"
 #include "process.h"
 #include "scheduler.h"
@@ -45,33 +45,34 @@
 
 // === Drivers ===
 #include "pit.h"
-#include "keyboard.h"
-#include "keymap.h"
-#include "keyboard_hw.h"   // Hardware definitions for keyboard
-// #include "pc_speaker.h"  // Uncomment if PC speaker features are actively used
-// #include "song.h"
-// #include "song_player.h"
-// #include "my_songs.h"
+#include "keyboard.h"      // For keyboard_init()
+#include "keymap.h"        // For keymap_load()
+#include "keyboard_hw.h"   // For KBC_CMD_*, KBC_SR_* (KBC hardware definitions)
+#include "port_io.h"       // For inb/outb used in KBC re-check
 
 // === Utilities ===
 #include "serial.h"         // Essential for early/debug logging
 #include "assert.h"         // KERNEL_ASSERT, KERNEL_PANIC_HALT
-// Other utilities like cpuid, kmalloc_internal, port_io are included by higher-level headers
 
 // === Constants ===
-#define KERNEL_VERSION_STRING "4.3.1" // Updated version
+#define KERNEL_VERSION_STRING "4.3.4" // Updated version
 #define MULTIBOOT2_BOOTLOADER_MAGIC_EXPECTED 0x36d76289
 #define MIN_USABLE_HEAP_SIZE (1 * 1024 * 1024) // 1MB
 #define MAX_CLAMPED_INITIAL_HEAP_SIZE (256 * 1024 * 1024) // 256MB
 
-// Path for the initial test program and the system shell
 #define INITIAL_TEST_PROGRAM_PATH "/hello.elf"
 #define SYSTEM_SHELL_PATH         "/bin/shell.elf"
+
+// Define KBC_MAX_FLUSH locally if not accessible via included headers for kernel.c
+// Ideally, this would be in a shared KBC header or keyboard_hw.h
+#ifndef KBC_MAX_FLUSH
+#define KBC_MAX_FLUSH 100       // Max reads during a flush
+#endif
+
 
 // === Linker Symbols (Physical Addresses) ===
 extern uint8_t _kernel_start_phys;
 extern uint8_t _kernel_end_phys;
-// Add other section symbols if specifically needed for calculations beyond kernel_end_phys
 
 // === Global Variables ===
 uint32_t  g_multiboot_info_phys_addr_global = 0;
@@ -86,6 +87,7 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
 static bool initialize_memory_management(uint32_t mb_info_phys);
 static void launch_program(const char *path_on_disk, const char *program_description);
 
+
 //-----------------------------------------------------------------------------
 // Multiboot Information Parsing (Physical & Virtual)
 //-----------------------------------------------------------------------------
@@ -93,7 +95,7 @@ static struct multiboot_tag *find_multiboot_tag_phys(uint32_t mb_info_phys, uint
     if (mb_info_phys == 0 || mb_info_phys >= 0x100000) return NULL;
     volatile uint32_t* header = (volatile uint32_t*)((uintptr_t)mb_info_phys);
     uint32_t total_size = header[0];
-    if (total_size < 8 || total_size > 0x100000) return NULL;
+    if (total_size < 8 || total_size > 0x100000) return NULL; 
 
     volatile struct multiboot_tag *tag = (volatile struct multiboot_tag *)(mb_info_phys + 8);
     uintptr_t info_end = mb_info_phys + total_size;
@@ -101,9 +103,9 @@ static struct multiboot_tag *find_multiboot_tag_phys(uint32_t mb_info_phys, uint
     while (tag->type != MULTIBOOT_TAG_TYPE_END) {
         uintptr_t current_tag_addr = (uintptr_t)tag;
         if (current_tag_addr + sizeof(struct multiboot_tag) > info_end || tag->size < 8 || (current_tag_addr + tag->size) > info_end) return NULL;
-        if (tag->type == type) return (struct multiboot_tag *)tag;
-        uintptr_t next_tag_addr = current_tag_addr + ((tag->size + 7) & ~7);
-        if (next_tag_addr <= current_tag_addr || next_tag_addr >= info_end) break;
+        if (tag->type == type) return (struct multiboot_tag *)tag; 
+        uintptr_t next_tag_addr = current_tag_addr + ((tag->size + 7) & ~7); 
+        if (next_tag_addr <= current_tag_addr || next_tag_addr >= info_end) break; 
         tag = (volatile struct multiboot_tag *)next_tag_addr;
     }
     return NULL;
@@ -157,7 +159,7 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
     multiboot_memory_map_t *entry = mmap_tag->entries;
     uintptr_t mmap_end_addr = (uintptr_t)mmap_tag + mmap_tag->size;
     uintptr_t kernel_phys_start_addr = (uintptr_t)&_kernel_start_phys;
-    uintptr_t kernel_phys_end_addr = ALIGN_UP((uintptr_t)&_kernel_end_phys, PAGE_SIZE);
+    uintptr_t kernel_phys_end_addr = ALIGN_UP((uintptr_t)&_kernel_end_phys, PAGE_SIZE); 
 
     terminal_printf("  Kernel Physical Range: [%#010lx - %#010lx)\n", kernel_phys_start_addr, kernel_phys_end_addr);
 
@@ -165,7 +167,7 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
         uintptr_t region_p_start = (uintptr_t)entry->addr;
         uint64_t region_p_len64 = entry->len;
         uintptr_t region_p_end = safe_add_base_len(region_p_start, region_p_len64);
-        if (region_p_end < region_p_start) region_p_end = UINTPTR_MAX;
+        if (region_p_end < region_p_start) region_p_end = UINTPTR_MAX; 
 
         if (region_p_end > total_span) total_span = region_p_end;
 
@@ -174,34 +176,25 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
             uint64_t current_candidate_len64 = region_p_len64;
 
             if (current_candidate_start < kernel_phys_end_addr && region_p_end > kernel_phys_start_addr) {
-                if (current_candidate_start < kernel_phys_start_addr && kernel_phys_end_addr < region_p_end) {
-                    uint64_t size_before = kernel_phys_start_addr - current_candidate_start;
-                    uint64_t size_after = region_p_end - kernel_phys_end_addr;
-                    if (size_after > size_before && size_after > best_candidate_size64) {
-                        best_candidate_base = kernel_phys_end_addr;
-                        best_candidate_size64 = size_after;
-                    } else if (size_before > best_candidate_size64) {
-                        best_candidate_base = current_candidate_start;
-                        best_candidate_size64 = size_before;
-                    }
-                } else if (region_p_end > kernel_phys_end_addr) {
+                if (region_p_end > kernel_phys_end_addr) { 
                     current_candidate_start = kernel_phys_end_addr;
                     current_candidate_len64 = region_p_end - current_candidate_start;
-                    if (current_candidate_len64 > best_candidate_size64) {
-                        best_candidate_base = current_candidate_start;
-                        best_candidate_size64 = current_candidate_len64;
-                    }
+                } else { 
+                    current_candidate_len64 = 0;
                 }
-            } else if (current_candidate_len64 > best_candidate_size64) {
-                best_candidate_base = current_candidate_start;
-                best_candidate_size64 = current_candidate_len64;
+            }
+            if (current_candidate_len64 >= MIN_USABLE_HEAP_SIZE) {
+                if (current_candidate_len64 > best_candidate_size64) {
+                    best_candidate_base = current_candidate_start;
+                    best_candidate_size64 = current_candidate_len64;
+                }
             }
         }
         entry = (multiboot_memory_map_t*)((uintptr_t)entry + mmap_tag->entry_size);
     }
 
     *out_total_mem_span = ALIGN_UP(total_span, PAGE_SIZE);
-    if (*out_total_mem_span < total_span) *out_total_mem_span = UINTPTR_MAX;
+    if (*out_total_mem_span < total_span) *out_total_mem_span = UINTPTR_MAX; 
 
     if (best_candidate_base < 0x100000 && best_candidate_base != 0) {
         terminal_printf("  Warning: Best heap candidate below 1MB (%#lx).\n", best_candidate_base);
@@ -221,6 +214,7 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
     terminal_printf("  [FATAL] No suitable heap region found (>= %u bytes).\n", MIN_USABLE_HEAP_SIZE);
     return false;
 }
+
 
 static bool initialize_memory_management(uint32_t mb_info_phys) {
     terminal_write("[Kernel] Initializing Memory Subsystems...\n");
@@ -246,7 +240,7 @@ static bool initialize_memory_management(uint32_t mb_info_phys) {
     }
 
     terminal_write("  Stage 3: Initializing Buddy Allocator...\n");
-    buddy_init((void *)initial_heap_phys_base, initial_heap_size);
+    buddy_init((void *)initial_heap_phys_base, initial_heap_size); 
     terminal_printf("    Buddy Allocator: Initial Free Space: %zu KB\n", buddy_free_space() / 1024);
 
     terminal_write("  Stage 4: Finalizing and Activating Paging...\n");
@@ -254,17 +248,18 @@ static bool initialize_memory_management(uint32_t mb_info_phys) {
 
     terminal_write("  Stage 4.5: Mapping Multiboot Info to Kernel VAS...\n");
     uintptr_t mb_info_phys_page = PAGE_ALIGN_DOWN(g_multiboot_info_phys_addr_global);
-    uintptr_t mb_info_virt_page = KERNEL_SPACE_VIRT_START + mb_info_phys_page;
-    size_t mb_total_struct_size = *(volatile uint32_t*)g_multiboot_info_phys_addr_global;
+    uintptr_t mb_info_virt_page = KERNEL_SPACE_VIRT_START + mb_info_phys_page; 
+    size_t mb_total_struct_size = *(volatile uint32_t*)g_multiboot_info_phys_addr_global; 
     size_t mb_pages_to_map = ALIGN_UP(mb_total_struct_size, PAGE_SIZE) / PAGE_SIZE;
     if (mb_pages_to_map == 0 && mb_total_struct_size > 0) mb_pages_to_map = 1;
 
     if (paging_map_range((uint32_t*)g_kernel_page_directory_phys, mb_info_virt_page, mb_info_phys_page,
-                         mb_pages_to_map * PAGE_SIZE, PTE_KERNEL_READONLY_FLAGS) != 0) {
+                         mb_pages_to_map * PAGE_SIZE, PTE_KERNEL_READONLY_FLAGS) != 0) { 
         KERNEL_PANIC_HALT("Failed to map Multiboot info structure!");
     }
     g_multiboot_info_virt_addr_global = mb_info_virt_page + (g_multiboot_info_phys_addr_global % PAGE_SIZE);
     terminal_printf("    Multiboot info at VIRT: %#lx (Size: %u bytes)\n", g_multiboot_info_virt_addr_global, (unsigned)mb_total_struct_size);
+
 
     terminal_write("  Stage 6: Initializing Frame Allocator...\n");
     struct multiboot_tag_mmap *mmap_tag_virt = (struct multiboot_tag_mmap *)find_multiboot_tag_virt(g_multiboot_info_virt_addr_global, MULTIBOOT_TAG_TYPE_MMAP);
@@ -274,14 +269,16 @@ static bool initialize_memory_management(uint32_t mb_info_phys) {
     }
 
     terminal_write("  Stage 7: Initializing Kmalloc...\n");
-    kmalloc_init();
+    kmalloc_init(); 
 
     terminal_write("  Stage 8: Initializing Temporary VA Mapper...\n");
     if (paging_temp_map_init() != 0) KERNEL_PANIC_HALT("Failed to initialize temporary VA mapper!");
 
+
     terminal_write("[OK] Memory Subsystems Initialized Successfully.\n");
     return true;
 }
+
 
 //-----------------------------------------------------------------------------
 // Initial Process Launch Helper
@@ -295,21 +292,22 @@ static void launch_program(const char *path_on_disk, const char *program_descrip
             terminal_printf("  [OK] %s (PID %lu) scheduled successfully.\n", program_description, (unsigned long)proc_pcb->pid);
         } else {
             terminal_printf("  [ERROR] Failed to add %s (PID %lu) to scheduler!\n", program_description, (unsigned long)proc_pcb->pid);
-            destroy_process(proc_pcb);
+            destroy_process(proc_pcb); 
         }
     } else {
         terminal_printf("  [ERROR] Failed to create process for %s from '%s'.\n", program_description, path_on_disk);
     }
 }
 
+
 //-----------------------------------------------------------------------------
 // Kernel Main Entry Point
 //-----------------------------------------------------------------------------
 void main(uint32_t magic, uint32_t mb_info_phys_addr) {
-    g_multiboot_info_phys_addr_global = mb_info_phys_addr;
+    g_multiboot_info_phys_addr_global = mb_info_phys_addr; 
 
-    serial_init();
-    terminal_init();
+    serial_init();    
+    terminal_init();  
 
     terminal_printf("\n=== UiAOS Kernel Booting (Version: %s) ===\n", KERNEL_VERSION_STRING);
     terminal_printf("[Boot] Author: Tor Martin Kohle\n");
@@ -318,85 +316,97 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
     if (magic != MULTIBOOT2_BOOTLOADER_MAGIC_EXPECTED) {
         KERNEL_PANIC_HALT("Invalid Multiboot Magic number.");
     }
-    if (mb_info_phys_addr == 0 || mb_info_phys_addr >= 0x100000) {
+    if (mb_info_phys_addr == 0 || mb_info_phys_addr >= 0x100000) { 
         KERNEL_PANIC_HALT("Invalid Multiboot info physical address.");
     }
     terminal_printf("  Multiboot magic OK (Info at phys %#lx).\n", (unsigned long)mb_info_phys_addr);
 
     terminal_write("[Kernel] Initializing core systems (pre-interrupts)...\n");
-    gdt_init();
-    initialize_memory_management(g_multiboot_info_phys_addr_global);
-    idt_init();
-    init_pit();
-    keyboard_init();
-    keymap_load(KEYMAP_NORWEGIAN);
+    gdt_init(); 
+    initialize_memory_management(g_multiboot_info_phys_addr_global); 
+    idt_init();    
+    init_pit();    
+    keyboard_init(); 
+    keymap_load(KEYMAP_NORWEGIAN); 
     scheduler_init();
 
     terminal_write("[Kernel] Initializing Filesystem Layer...\n");
-    bool fs_ready = (fs_init() == FS_SUCCESS);
+    bool fs_ready = (fs_init() == FS_SUCCESS); 
     if (fs_ready) {
         terminal_write("  [OK] Filesystem initialized and root mounted.\n");
     } else {
         terminal_write("  [CRITICAL] Filesystem initialization FAILED. User programs cannot be loaded.\n");
     }
-    terminal_write("[Kernel Debug] KBC Status after fs_init(): 0x");
-    serial_print_hex(inb(KBC_STATUS_PORT));
-    serial_write("\n");
+    terminal_printf("[Kernel Debug] KBC Status after fs_init(): 0x%08x\n", inb(KBC_STATUS_PORT));
+
 
     if (fs_ready) {
         launch_program(INITIAL_TEST_PROGRAM_PATH, "Test Suite");
-        terminal_write("[Kernel Debug] KBC Status after hello.elf launch: 0x");
-        serial_print_hex(inb(KBC_STATUS_PORT));
-        serial_write("\n");
-        launch_program(SYSTEM_SHELL_PATH, "System Shell");
-        terminal_write("[Kernel Debug] KBC Status before final sti: 0x");
-        serial_print_hex(inb(KBC_STATUS_PORT));
-        serial_write("\n");
+        terminal_printf("[Kernel Debug] KBC Status after hello.elf launch: 0x%08x\n", inb(KBC_STATUS_PORT));
 
+        launch_program(SYSTEM_SHELL_PATH, "System Shell");
     } else {
         terminal_write("  [Kernel] Skipping user process launch due to FS init failure.\n");
     }
 
+    // --- Re-check and Force KBC Configuration (with OBF clear) ---
     terminal_write("[Kernel] Re-checking and forcing KBC configuration before interrupts...\n");
-
-    while (inb(KBC_STATUS_PORT) & KBC_SR_IBF);
-    outb(KBC_CMD_PORT, KBC_CMD_READ_CONFIG);
-    while (!(inb(KBC_STATUS_PORT) & KBC_SR_OBF));
-    uint8_t current_config = inb(KBC_DATA_PORT);
-    terminal_printf("   Read KBC Config Byte (before final write): 0x%x\n", current_config);
-
-    uint8_t desired_final_config = 0x61; // Target config: KB Int ON, Mouse Int OFF, KB Clock ON, Mouse Clock OFF, Translate ON
-
-    if (current_config != desired_final_config) {
-        terminal_printf("   Modifying KBC Config Byte from 0x%x to 0x%x...\n", current_config, desired_final_config);
-        while (inb(KBC_STATUS_PORT) & KBC_SR_IBF);
-        outb(KBC_CMD_PORT, KBC_CMD_WRITE_CONFIG);
-        while (inb(KBC_STATUS_PORT) & KBC_SR_IBF);
-        outb(KBC_DATA_PORT, desired_final_config);
-        for(volatile int d=0; d<10000; ++d);
-        // It's good practice to flush after writing config too, though main issue is earlier.
-        // kbc_flush_output_buffer("Kernel Final Config Write Flush"); // If function is made available/replicated
-    } else {
-        terminal_printf("   KBC Config Byte 0x%x already has desired settings.\n", current_config);
+    
+    uint8_t current_kbc_config_val_before_force = 0;
+    outb(KBC_CMD_PORT, KBC_CMD_READ_CONFIG); 
+    for(volatile int d_wait1=0; d_wait1 < 15000; ++d_wait1) { asm volatile("pause"); } 
+    if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) { 
+      current_kbc_config_val_before_force = inb(KBC_DATA_PORT); 
     }
-    uint8_t final_kbc_status_check = inb(KBC_STATUS_PORT);
-    terminal_printf("   KBC Status register *after* explicit config write attempt: 0x%x\n", final_kbc_status_check);
+    terminal_printf("   Read KBC Config Byte (before final write): 0x%x\n", current_kbc_config_val_before_force);
 
+    uint8_t desired_final_kbc_config = 0x41; 
+    
+    terminal_printf("   Forcing KBC Config Byte to 0x%x (Command 0x60)...\n", desired_final_kbc_config);
+    for(volatile int t_cmd=0; (inb(KBC_STATUS_PORT) & KBC_SR_IBF) && t_cmd<100000; ++t_cmd) { asm volatile("pause"); }
+    outb(KBC_CMD_PORT, KBC_CMD_WRITE_CONFIG); 
+
+    for(volatile int t_data=0; (inb(KBC_STATUS_PORT) & KBC_SR_IBF) && t_data<100000; ++t_data) { asm volatile("pause"); }
+    outb(KBC_DATA_PORT, desired_final_kbc_config); 
+    
+    for(volatile int d_kbc=0; d_kbc < 25000; ++d_kbc) { asm volatile("pause");} 
+
+    // *** MODIFIED/ENHANCED FIX: Loop to clear ALL bytes from KBC output buffer after final config write ***
+    int obf_clear_count = 0;
+    uint8_t kbc_status_check_flush;
+    terminal_printf("   [KERNEL FIX] Attempting to clear KBC output buffer...\n");
+    while ((kbc_status_check_flush = inb(KBC_STATUS_PORT)) & KBC_SR_OBF) { 
+        uint8_t discarded_byte = inb(KBC_DATA_PORT); 
+        obf_clear_count++;
+        terminal_printf("     Cleared byte %d from KBC OBF: 0x%x (status was 0x%x)\n", obf_clear_count, discarded_byte, kbc_status_check_flush);
+        if (obf_clear_count >= KBC_MAX_FLUSH) { 
+            terminal_printf("   [KERNEL WARNING] KBC OBF clear loop maxed out at %d reads!\n", KBC_MAX_FLUSH);
+            break;
+        }
+        for(volatile int d_obf_loop=0; d_obf_loop < 5000; ++d_obf_loop) { asm volatile("pause");} 
+    }
+    if (obf_clear_count > 0) {
+        terminal_printf("   [KERNEL FIX] Total %d bytes cleared from KBC output buffer.\n", obf_clear_count);
+    } else {
+        terminal_printf("   [KERNEL INFO] KBC output buffer was already clear or became clear quickly.\n");
+    }
+    
+    uint8_t final_kbc_status_check = inb(KBC_STATUS_PORT); 
+    terminal_printf("   KBC Status register *after* explicit config write AND ROBUST OBF CLEAR: 0x%x\n", final_kbc_status_check);
+    // --- End KBC Re-check ---
 
     terminal_write("[Kernel] Finalizing setup and enabling interrupts...\n");
-    syscall_init();
-    scheduler_start();
+    syscall_init();    
+    scheduler_start(); 
+
     terminal_printf("\n[Kernel] Initialization complete. UiAOS %s operational. Enabling interrupts.\n", KERNEL_VERSION_STRING);
     terminal_write("================================================================================\n\n");
 
+    terminal_printf("[Kernel Debug] KBC Status before final sti: 0x%08x\n", inb(KBC_STATUS_PORT));
 
-    terminal_write("[Kernel Debug] KBC Status before final sti: 0x");
-    serial_print_hex(inb(KBC_STATUS_PORT));
-    serial_write("\n");
+    asm volatile ("sti"); 
 
-    asm volatile ("sti");
-
-    serial_write("[Kernel DEBUG] Interrupts Enabled. Entering main HLT loop.\n");
+    serial_write("[Kernel DEBUG] Interrupts Enabled. Entering main HLT loop (kernel_idle_task will run).\n");
     while (1) {
         asm volatile ("hlt");
     }
