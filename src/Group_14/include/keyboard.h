@@ -14,7 +14,7 @@ extern "C" {
  * starting above the standard ASCII range.
  */
 typedef enum {
-    KEY_UNKNOWN = 0x80,
+    KEY_UNKNOWN = 0x80, // Start special keys above ASCII
     KEY_ESC,
     KEY_F1,
     KEY_F2,
@@ -27,7 +27,7 @@ typedef enum {
     KEY_F9,
     KEY_F10,
     KEY_TILDE,
-    KEY_BACKSPACE,
+    KEY_BACKSPACE, // Already defined
     KEY_TAB,
     KEY_CTRL,
     KEY_LEFT_SHIFT,
@@ -46,7 +46,8 @@ typedef enum {
     KEY_PAGE_DOWN,
     KEY_INSERT,
     KEY_DELETE,
-    KEY_COUNT
+    KEY_ENTER,         
+    KEY_COUNT          // Keep this last to count special keys
 } KeyCode;
 
 /**
@@ -94,6 +95,7 @@ void keyboard_set_repeat_rate(uint8_t delay, uint8_t speed);
 void keyboard_register_callback(void (*callback)(KeyEvent));
 char apply_modifiers(char c, uint8_t modifiers);
 char apply_modifiers_extended(char c, uint8_t modifiers);
+void keyboard_recheck_kbc_config(void)
 
 #ifdef __cplusplus
 }
