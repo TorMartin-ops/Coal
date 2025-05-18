@@ -1,7 +1,7 @@
 /**
  * @file idt.c
  * @brief Interrupt Descriptor Table (IDT) and PIC Management for UiAOS
- * @version 4.3.3 (Corrected diagnostic printf functions to terminal_printf)
+ * @version 4.3.5 (EOI handling refined in common stub and default handler)
  */
 
 //============================================================================
@@ -14,23 +14,20 @@
 #include <serial.h>
 #include <assert.h>
 #include <terminal.h>
-#include <block_device.h>
+#include <block_device.h> // For ata_primary_irq_handler prototype
 
 //============================================================================
 // Definitions and Constants
 //============================================================================
-#define IRQ0_VECTOR  (PIC1_START_VECTOR + 0)
-#define IRQ1_VECTOR  (PIC1_START_VECTOR + 1)
-#define IRQ2_VECTOR  (PIC1_START_VECTOR + 2)
-#define IRQ14_VECTOR (PIC2_START_VECTOR + 6)
+// IRQ_VECTOR definitions (IRQ0_VECTOR, etc.) are in idt.h
 #define SYSCALL_VECTOR 0x80
-#define IDT_FLAG_INTERRUPT_GATE 0x8E
-#define IDT_FLAG_TRAP_GATE      0x8F
-#define IDT_FLAG_SYSCALL_GATE   0xEE
+#define IDT_FLAG_INTERRUPT_GATE 0x8E // Ring 0, Present, 32-bit Interrupt Gate
+#define IDT_FLAG_TRAP_GATE      0x8F // Ring 0, Present, 32-bit Trap Gate
+#define IDT_FLAG_SYSCALL_GATE   0xEE // Ring 3, Present, 32-bit Interrupt Gate (DPL=3)
 #define KERNEL_CS_SELECTOR 0x08
-#define ICW1_INIT        0x10
-#define ICW1_ICW4        0x01
-#define ICW4_8086        0x01
+#define ICW1_INIT        0x10      // Initialization command
+#define ICW1_ICW4        0x01      // ICW4 (not) needed
+#define ICW4_8086        0x01      // 8086/88 (MCS-80/85) mode
 
 //============================================================================
 // Module Static Data
@@ -40,59 +37,91 @@ static struct idt_ptr idtp;
 static interrupt_handler_info_t interrupt_c_handlers[IDT_ENTRIES];
 
 //============================================================================
-// External Assembly Routines
+// External Assembly Routines (from isr_stubs.asm, irq_stubs.asm, syscall.asm)
 //============================================================================
+// Exception ISRs (0-19, excluding 14 which is handled by isr_pf.asm)
 extern void isr0();  extern void isr1();  extern void isr2();  extern void isr3();
 extern void isr4();  extern void isr5();  extern void isr6();  extern void isr7();
 extern void isr8();  /* ISR 9 reserved */ extern void isr10(); extern void isr11();
-extern void isr12(); extern void isr13(); extern void isr14(); /* ISR 15 reserved */
+extern void isr12(); extern void isr13(); /* ISR 14 in isr_pf.asm */ /* ISR 15 reserved */
 extern void isr16(); extern void isr17(); extern void isr18(); extern void isr19();
+extern void isr14(); // Page Fault Handler (from isr_pf.asm)
 
+// Hardware IRQ Stubs (IRQ 0-15 -> Vectors 32-47)
 extern void irq0();  extern void irq1();  extern void irq2();  extern void irq3();
 extern void irq4();  extern void irq5();  extern void irq6();  extern void irq7();
 extern void irq8();  extern void irq9();  extern void irq10(); extern void irq11();
 extern void irq12(); extern void irq13(); extern void irq14(); extern void irq15();
 
+// Syscall Handler Stub
 extern void syscall_handler_asm();
+
+// IDT Load Routine
 extern void idt_flush(uintptr_t idt_ptr_addr);
 
 //============================================================================
 // PIC (8259 Programmable Interrupt Controller) Management
 //============================================================================
 static void pic_remap(void) {
-    uint8_t mask1 = inb(PIC1_DATA);
-    uint8_t mask2 = inb(PIC2_DATA);
+    uint8_t mask1_orig = inb(PIC1_DATA);
+    uint8_t mask2_orig = inb(PIC2_DATA);
+
     outb(PIC1_COMMAND, ICW1_INIT | ICW1_ICW4); io_wait();
     outb(PIC2_COMMAND, ICW1_INIT | ICW1_ICW4); io_wait();
     outb(PIC1_DATA, PIC1_START_VECTOR); io_wait();
     outb(PIC2_DATA, PIC2_START_VECTOR); io_wait();
-    outb(PIC1_DATA, 0x04); io_wait();
-    outb(PIC2_DATA, 0x02); io_wait();
+    outb(PIC1_DATA, 0x04); io_wait(); // Master has slave at IRQ2
+    outb(PIC2_DATA, 0x02); io_wait(); // Slave is cascade identity 2
     outb(PIC1_DATA, ICW4_8086); io_wait();
     outb(PIC2_DATA, ICW4_8086); io_wait();
-    outb(PIC1_DATA, mask1);
-    outb(PIC2_DATA, mask2);
+    outb(PIC1_DATA, mask1_orig);
+    outb(PIC2_DATA, mask2_orig);
     terminal_write("[IDT] PIC remapped.\n");
 }
 
-static void pic_send_eoi(uint32_t vector) {
-    if (vector >= PIC2_START_VECTOR && vector < PIC2_START_VECTOR + 8) {
-        outb(PIC2_COMMAND, PIC_EOI);
+/**
+ * @brief Sends End-Of-Interrupt (EOI) to the PIC(s) based on IRQ *vector*.
+ * This should primarily be called by default_isr_handler for unhandled IRQs.
+ * Specific IRQ handlers should call an EOI function that takes IRQ line number.
+ */
+static void pic_send_eoi_vector(uint32_t vector) {
+    // Convert vector to IRQ line for slave check; this logic is slightly off
+    // if vector is not directly IRQ line + base.
+    // A better way for a generic EOI from vector:
+    // uint8_t irq_line;
+    // if (vector >= PIC2_START_VECTOR && vector < PIC2_START_VECTOR + 8) {
+    //     irq_line = vector - PIC2_START_VECTOR + 8; // IRQ line 8-15
+    // } else if (vector >= PIC1_START_VECTOR && vector < PIC1_START_VECTOR + 8) {
+    //     irq_line = vector - PIC1_START_VECTOR; // IRQ line 0-7
+    // } else {
+    //     return; // Not a PIC IRQ vector
+    // }
+    // Now use the irq_line with the standard EOI logic:
+    // if (irq_line >= 8) outb(PIC2_COMMAND, PIC_EOI);
+    // outb(PIC1_COMMAND, PIC_EOI);
+    // For simplicity here, retaining the original logic which is mostly correct for typical IRQ ranges:
+
+    if (vector >= PIC2_START_VECTOR && vector < (PIC2_START_VECTOR + 8)) { // Is it from Slave PIC (IRQ 8-15, Vectors 40-47)?
+        outb(PIC2_COMMAND, PIC_EOI); // Send EOI to Slave PIC
     }
-    outb(PIC1_COMMAND, PIC_EOI);
+    outb(PIC1_COMMAND, PIC_EOI); // Always send EOI to Master PIC for any IRQ 0-15
 }
+
 
 static void pic_unmask_required_irqs(void) {
     terminal_write("[PIC] Unmasking required IRQs (IRQ0-Timer, IRQ1-Keyboard, IRQ2-Cascade, IRQ14-ATA)...\n");
-    uint8_t mask1 = inb(PIC1_DATA);
-    uint8_t mask2 = inb(PIC2_DATA);
-    terminal_printf("  [PIC] Current masks before unmask: Master=0x%02x, Slave=0x%02x\n", mask1, mask2);
+    uint8_t mask1_current = inb(PIC1_DATA);
+    uint8_t mask2_current = inb(PIC2_DATA);
+    terminal_printf("  [PIC] Current masks before unmask: Master=0x%02x, Slave=0x%02x\n", mask1_current, mask2_current);
 
-    uint8_t new_mask1 = mask1 & ~((1 << 0) | (1 << 1) | (1 << 2));
-    uint8_t new_mask2 = mask2 & ~(1 << (14 - 8));
+    uint8_t master_irqs_to_unmask = (1 << 0) | (1 << 1) | (1 << 2); // IRQ0, IRQ1, IRQ2
+    uint8_t slave_irqs_to_unmask = (1 << (14 - 8)); // IRQ14 (which is line 6 on slave)
 
-    terminal_printf("  [PIC DEBUG] Calculated new_mask1 to be written: 0x%02x (from initial 0x%02x)\n", new_mask1, mask1);
-    terminal_printf("  [PIC DEBUG] Calculated new_mask2 to be written: 0x%02x (from initial 0x%02x)\n", new_mask2, mask2);
+    uint8_t new_mask1 = mask1_current & ~master_irqs_to_unmask;
+    uint8_t new_mask2 = mask2_current & ~slave_irqs_to_unmask;
+
+    terminal_printf("  [PIC DEBUG] Calculated new_mask1 to be written: 0x%02x (from initial 0x%02x)\n", new_mask1, mask1_current);
+    terminal_printf("  [PIC DEBUG] Calculated new_mask2 to be written: 0x%02x (from initial 0x%02x)\n", new_mask2, mask2_current);
     terminal_printf("  [PIC] Writing new masks: Master=0x%02x, Slave=0x%02x\n", new_mask1, new_mask2);
 
     outb(PIC1_DATA, new_mask1); io_wait();
@@ -139,19 +168,26 @@ void register_int_handler(int vector, int_handler_t handler, void* data) {
     interrupt_c_handlers[vector].data    = data;
 }
 
+/**
+ * @brief Default C handler for unhandled interrupts/exceptions.
+ * Prints diagnostic information and halts the system.
+ * Sends EOI if the unhandled interrupt was a hardware IRQ.
+ */
 void default_isr_handler(isr_frame_t* frame) {
     serial_write("\n*** Unhandled Interrupt/Exception ***\n");
     serial_write(" -> Check terminal output for details.\n");
+
     terminal_printf("\n*** KERNEL PANIC: Unhandled Interrupt/Exception ***\n");
     KERNEL_ASSERT(frame != NULL, "default_isr_handler received NULL frame!");
+
     terminal_printf(" Vector:  %lu (0x%lx)\n", (unsigned long)frame->int_no, (unsigned long)frame->int_no);
     terminal_printf(" ErrCode: 0x%lx\n", (unsigned long)frame->err_code);
     terminal_printf(" EIP:     0x%08lx CS:      0x%lx EFLAGS:  0x%lx\n",
                   (unsigned long)frame->eip, (unsigned long)frame->cs, (unsigned long)frame->eflags);
-    if ((frame->cs & 0x3) != 0) {
+    if ((frame->cs & 0x3) != 0) { // Check if it was from user mode
         terminal_printf(" UserESP: 0x%p UserSS:  0x%lx\n", (void*)frame->useresp, (unsigned long)frame->ss);
     }
-    if (frame->int_no == 14) {
+    if (frame->int_no == 14) { // Page Fault specific
         uintptr_t cr2;
         asm volatile("mov %%cr2, %0" : "=r"(cr2));
         terminal_printf(" Fault Address (CR2): 0x%p\n", (void*)cr2);
@@ -165,38 +201,60 @@ void default_isr_handler(isr_frame_t* frame) {
                    (unsigned long)frame->ecx, (unsigned long)frame->edx);
     terminal_printf(" ESI=0x%lx EDI=0x%lx EBP=0x%p\n",
                    (unsigned long)frame->esi, (unsigned long)frame->edi, (void*)frame->ebp);
+
+    // *** MODIFIED: Send EOI here if it's an unhandled hardware IRQ ***
+    if (frame->int_no >= IRQ0_VECTOR && frame->int_no < (IRQ0_VECTOR + 16)) {
+        terminal_write(" [Default ISR] Unhandled IRQ, sending EOI before panic.\n");
+        pic_send_eoi_vector(frame->int_no); // Use the vector-based EOI sender
+    }
+
     terminal_write(" System Halted.\n");
     while (1) { asm volatile ("cli; hlt"); }
 }
 
+
+/**
+ * @brief Common C-level interrupt handler called by assembly stubs.
+ * Dispatches to specific registered C handlers or the default handler.
+ * Specific C handlers are now responsible for sending their own EOI.
+ */
 void isr_common_handler(isr_frame_t* frame) {
     if (!frame) { KERNEL_PANIC_HALT("isr_common_handler received NULL frame!"); }
+
     uint32_t vector = frame->int_no;
+
     if (vector >= IDT_ENTRIES) {
         terminal_printf("[IDT ERROR] Invalid vector 0x%x in C dispatcher!\n", vector);
-        default_isr_handler(frame);
-        KERNEL_PANIC_HALT("Invalid vector number processed by default handler!");
+        default_isr_handler(frame); // This will EOI if IRQ and panic
+        return; // Should not be reached
     }
+
     interrupt_handler_info_t* entry = &interrupt_c_handlers[vector];
+
     if (entry->handler != NULL) {
-        entry->handler(frame);
+        entry->handler(frame); // The specific handler (e.g., pit_irq_handler) is responsible for EOI
     } else {
+        // No specific handler registered, call the default.
+        // The default_isr_handler will send EOI if 'vector' is an IRQ before panicking.
         default_isr_handler(frame);
     }
-    if (vector >= PIC1_START_VECTOR && vector < PIC2_START_VECTOR + 8) {
-       pic_send_eoi(vector);
-    }
+    // EOI is no longer sent here from the common stub if a specific C handler was called.
+    // It's the responsibility of the specific handler (e.g., pit_irq_handler, keyboard_irq1_handler)
+    // or default_isr_handler (for unhandled IRQs).
 }
+
 
 //============================================================================
 // Public Initialization Function
 //============================================================================
 void idt_init(void) {
     terminal_write("[IDT] Initializing IDT and PIC...\n");
+
     memset(idt_entries, 0, sizeof(idt_entries));
     memset(interrupt_c_handlers, 0, sizeof(interrupt_c_handlers));
     idtp.limit = sizeof(idt_entries) - 1;
     idtp.base  = (uintptr_t)&idt_entries[0];
+
     pic_remap();
 
     terminal_write("[IDT] Registering Exception handlers (ISRs 0-19)...\n");
@@ -236,7 +294,7 @@ void idt_init(void) {
     KERNEL_ASSERT(ata_primary_irq_handler != NULL, "ata_primary_irq_handler is NULL");
     register_int_handler(IRQ14_VECTOR, ata_primary_irq_handler, NULL);
 
-    terminal_printf("[IDT] Loading IDTR: Limit=0x%hX Base=%#010lx (Virt Addr)\n",
+    terminal_printf("[IDT] Loading IDTR: Limit=0x%hx Base=%#010lx (Virt Addr)\n",
                     idtp.limit, (unsigned long)idtp.base);
     idt_flush((uintptr_t)&idtp);
 
