@@ -165,49 +165,41 @@ static int32_t sys_read_terminal_line_impl(uint32_t user_buf_ptr, uint32_t count
     ssize_t bytes_read_for_user = 0; // Actual number of chars (excl NUL) for user
     char* k_line_buffer = NULL;
 
-    // Removed most serial logs for brevity, assuming they are not needed once working.
-    // Add them back if further debugging is required.
-
-    if (count == 0) return -EINVAL; // Cannot even store NUL
+    if (count == 0) return -EINVAL; 
     if (!access_ok(VERIFY_WRITE, user_buf, count)) return -EFAULT;
 
-    // Kernel buffer should be at most MAX_INPUT_LENGTH, or smaller if user's buffer (count) is smaller.
-    // MAX_INPUT_LENGTH is the physical limit of the underlying terminal input mechanism.
     size_t kernel_buffer_size = MIN(count > 0 ? count : MAX_INPUT_LENGTH, MAX_INPUT_LENGTH);
-    if (kernel_buffer_size == 0) kernel_buffer_size = 1; // Ensure at least 1 for NUL if count was 0 but somehow passed
+    if (kernel_buffer_size == 0) kernel_buffer_size = 1;
 
     k_line_buffer = kmalloc(kernel_buffer_size);
     if (!k_line_buffer) return -ENOMEM;
 
-    // terminal_read_line_blocking fills k_line_buffer and returns actual characters read.
-    // It should NUL-terminate within k_line_buffer up to kernel_buffer_size.
     ssize_t bytes_from_terminal_device = terminal_read_line_blocking(k_line_buffer, kernel_buffer_size);
 
-    if (bytes_from_terminal_device < 0) { // Error from terminal_read_line_blocking
+    if (bytes_from_terminal_device < 0) { 
         kfree(k_line_buffer);
         return bytes_from_terminal_device;
     }
 
-    // Determine actual number of payload characters to copy to user_buf.
-    // Max is count-1 to leave space for NUL in user_buf.
     bytes_read_for_user = MIN((size_t)bytes_from_terminal_device, count - 1);
 
-    // Copy payload to user.
-    // Signature: copy_to_user(userptr_t u_dst, const_kernelptr_t k_src, size_t n)
     if (copy_to_user(user_buf, (const_kernelptr_t)k_line_buffer, bytes_read_for_user) != 0) {
         kfree(k_line_buffer);
-        return -EFAULT; // Failed to copy payload
+        return -EFAULT; 
     }
 
-    // NUL-terminate the string in user space.
     if (copy_to_user((userptr_t)((char*)user_buf + bytes_read_for_user), (const_kernelptr_t)"\0", 1) != 0) {
-        // This is more serious, as user might get un-terminated string.
         kfree(k_line_buffer);
-        return -EFAULT; // Failed to copy NUL
+        return -EFAULT; 
     }
 
-    kfree(k_line_buffer);
-    return (int32_t)bytes_read_for_user; // Return number of actual characters (excluding NUL)
+    // Corrected: Move kfree after the serial_write calls that use k_line_buffer
+    serial_write("[Terminal] terminal_read_line_blocking: Copied bytes: '"); 
+    serial_write(k_line_buffer);  
+    serial_write("'\n");           
+    kfree(k_line_buffer); 
+
+    return (int32_t)bytes_read_for_user; 
 }
 
 
