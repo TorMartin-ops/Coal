@@ -397,17 +397,27 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
 
     terminal_write("[Kernel] Finalizing setup and enabling interrupts...\n");
     syscall_init();    
-    scheduler_start(); 
 
     terminal_printf("\n[Kernel] Initialization complete. UiAOS %s operational. Enabling interrupts.\n", KERNEL_VERSION_STRING);
     terminal_write("================================================================================\n\n");
 
     serial_printf("[Kernel Debug] KBC Status before final sti: 0x%08x\n", inb(KBC_STATUS_PORT));
 
+    // Ensure segment registers are set properly before first context switch
+    asm volatile (
+        "mov $0x10, %%ax\n"
+        "mov %%ax, %%ds\n"
+        "mov %%ax, %%es\n"
+        "mov %%ax, %%fs\n"
+        "mov %%ax, %%gs\n"
+        : : : "ax"
+    );
+
     asm volatile ("sti"); 
 
-    serial_write("[Kernel DEBUG] Interrupts Enabled. Entering main HLT loop (kernel_idle_task will run).\n");
-    while (1) {
-        asm volatile ("hlt");
-    }
+    // scheduler_start() will select the first task to run and perform the initial context switch.
+    // It should not return. If it does, something went wrong.
+    scheduler_start();
+    
+    KERNEL_PANIC_HALT("scheduler_start() returned unexpectedly!");
 }

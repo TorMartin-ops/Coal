@@ -131,6 +131,7 @@ static void perform_context_switch(tcb_t *old_task, tcb_t *new_task);
 static void kernel_idle_task_loop(void) __attribute__((noreturn));
 static void scheduler_init_idle_task(void);
 void scheduler_cleanup_zombies(void);
+void check_idle_task_stack_integrity(const char *checkpoint);
 
 //============================================================================
 // Queue Management (Refined v5.0 implementations)
@@ -418,6 +419,11 @@ static void scheduler_init_idle_task(void) {
     uintptr_t idle_stack_base = ((uintptr_t)idle_stack_mem + 15) & ~15;
     uintptr_t idle_stack_top = idle_stack_base + PROCESS_KSTACK_SIZE;
     
+    // Explicitly zero the stack region
+    serial_printf("[Sched DEBUG] Zeroing idle task stack region: V=[%p - %p)\n",
+                  (void*)idle_stack_base, (void*)idle_stack_top);
+    memset((void*)idle_stack_base, 0, PROCESS_KSTACK_SIZE); // Zero the usable stack size
+    
     uintptr_t stack_top_virt_addr = idle_stack_top;
     g_idle_task_pcb.kernel_stack_vaddr_top = (uint32_t*)stack_top_virt_addr;
 
@@ -454,13 +460,14 @@ static void scheduler_init_idle_task(void) {
     // What we store LAST will be at the LOWEST address (ESP points here, popped FIRST).
     
     // Store in reverse order of how they'll be popped:
-    *(--kstack_ptr) = (uint32_t)kernel_idle_task_loop; // 8. Return address for RET
-    *(--kstack_ptr) = 0; // 7. Saved EBP for epilogue  
-    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // 6. DS (popped last)
-    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // 5. ES
-    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // 4. FS
-    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // 3. GS (popped first)
-    *(--kstack_ptr) = 0x00000202; // 2. EFLAGS with interrupts enabled
+    *(--kstack_ptr) = (uint32_t)kernel_idle_task_loop; // Return address for RET
+    *(--kstack_ptr) = 0; // Saved EBP for epilogue  
+    // Segment registers - same order as they appear after context save
+    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // DS (first to be popped)
+    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // ES
+    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // FS
+    *(--kstack_ptr) = KERNEL_DATA_SELECTOR; // GS (last to be popped)
+    *(--kstack_ptr) = 0x00000202; // EFLAGS with interrupts enabled
     
     // 1. POPAD expects 8 dwords on stack in this order (from low addr to high):
     // EDI at [ESP+0], ESI at [ESP+4], EBP at [ESP+8], ESP at [ESP+12] (skipped),
@@ -491,10 +498,10 @@ static void scheduler_init_idle_task(void) {
     SCHED_DEBUG("  [ESP+28] EAX = 0x%08lx", (unsigned long)debug_ptr[7]);
     SCHED_DEBUG("  [ESP+32] EFLAGS = 0x%08lx (IF=%s)", (unsigned long)debug_ptr[8], 
                 (debug_ptr[8] & 0x200) ? "1" : "0");
-    SCHED_DEBUG("  [ESP+36] GS = 0x%08lx (expect 0x10)", (unsigned long)debug_ptr[9]);
-    SCHED_DEBUG("  [ESP+40] FS = 0x%08lx (expect 0x10)", (unsigned long)debug_ptr[10]);
-    SCHED_DEBUG("  [ESP+44] ES = 0x%08lx (expect 0x10)", (unsigned long)debug_ptr[11]);
-    SCHED_DEBUG("  [ESP+48] DS = 0x%08lx (expect 0x10)", (unsigned long)debug_ptr[12]);
+    SCHED_DEBUG("  [ESP+36] DS = 0x%08lx (expect 0x10)", (unsigned long)debug_ptr[9]);
+    SCHED_DEBUG("  [ESP+40] ES = 0x%08lx (expect 0x10)", (unsigned long)debug_ptr[10]);
+    SCHED_DEBUG("  [ESP+44] FS = 0x%08lx (expect 0x10)", (unsigned long)debug_ptr[11]);
+    SCHED_DEBUG("  [ESP+48] GS = 0x%08lx (expect 0x10)", (unsigned long)debug_ptr[12]);
     SCHED_DEBUG("  [ESP+52] saved EBP = 0x%08lx", (unsigned long)debug_ptr[13]);
     SCHED_DEBUG("  [ESP+56] return addr = 0x%08lx (kernel_idle_task_loop)", (unsigned long)debug_ptr[14]);
 
@@ -612,108 +619,14 @@ static void perform_context_switch(tcb_t *old_task, tcb_t *new_task) {
                               stack_ptr[i] == 0x10 ? "<-- KERNEL_DATA_SEL" : "");
             }
             
-            serial_printf("  [ESP+36] GS value = 0x%08x (expect 0x10)\n", stack_ptr[9]);
-            serial_printf("  [ESP+40] FS value = 0x%08x (expect 0x10)\n", stack_ptr[10]);
-            serial_printf("  [ESP+44] ES value = 0x%08x (expect 0x10)\n", stack_ptr[11]);
-            serial_printf("  [ESP+48] DS value = 0x%08x (expect 0x10)\n", stack_ptr[12]);
-            
-            // Check for stack corruption pattern
-            if (stack_ptr[9] != KERNEL_DATA_SELECTOR || stack_ptr[10] != KERNEL_DATA_SELECTOR ||
-                stack_ptr[11] != KERNEL_DATA_SELECTOR || stack_ptr[12] != KERNEL_DATA_SELECTOR) {
-                serial_printf("[Sched ERROR] Idle task stack corruption detected!\n");
-                
-                // Dump the entire stack frame
-                serial_printf("[Sched DEBUG] Full idle stack dump:\n");
-                for (int i = 0; i < 20; i++) {
-                    serial_printf("  [ESP+%d] = 0x%08x\n", i*4, stack_ptr[i]);
-                }
-                
-                // Try to fix the corruption by restoring correct values
-                serial_printf("[Sched WARN] Attempting to fix corrupted segment registers...\n");
-                
-                // Look for a pattern - maybe the stack is offset
-                bool found_pattern = false;
-                // First check if the values are just shifted by one position (common case)
-                if (stack_ptr[8] == KERNEL_DATA_SELECTOR && 
-                    stack_ptr[9] == KERNEL_DATA_SELECTOR &&
-                    stack_ptr[10] == KERNEL_DATA_SELECTOR && 
-                    stack_ptr[11] == KERNEL_DATA_SELECTOR) {
-                    serial_printf("[Sched INFO] Found pattern shifted by -1 position (stack[8-11] instead of [9-12])\n");
-                    serial_printf("[Sched INFO] This means ESP is pointing 4 bytes too high\n");
-                    serial_printf("[Sched INFO] Current ESP=%p, adjusting to ESP=%p\n", stack_ptr, (uint32_t*)((char*)stack_ptr - 4));
-                    // The segment registers are one position earlier, adjust ESP down by 4 bytes
-                    new_task->esp = (uint32_t*)((char*)stack_ptr - 4);
-                    found_pattern = true;
-                } else {
-                    // Try broader search
-                    for (int offset = -4; offset <= 4; offset++) {
-                        if (offset == 0) continue; // Already checked above
-                        uint32_t *test_ptr = (uint32_t*)((char*)stack_ptr + (offset * 4));
-                        if (test_ptr >= (uint32_t*)g_idle_task_pcb.kernel_stack_vaddr_top - 100 &&
-                            test_ptr[9] == KERNEL_DATA_SELECTOR && 
-                            test_ptr[10] == KERNEL_DATA_SELECTOR &&
-                            test_ptr[11] == KERNEL_DATA_SELECTOR && 
-                            test_ptr[12] == KERNEL_DATA_SELECTOR) {
-                            serial_printf("[Sched INFO] Found correct pattern at offset %d words\n", offset);
-                            new_task->esp = test_ptr;
-                            found_pattern = true;
-                            break;
-                        }
-                    }
-                    
-                    // New approach: If corruption detected but pattern not found, force correct values
-                    if (!found_pattern && (stack_ptr[11] != KERNEL_DATA_SELECTOR || stack_ptr[12] != KERNEL_DATA_SELECTOR)) {
-                        serial_printf("[Sched WARN] Stack corruption detected, forcing correct segment values\n");
-                        // Check if these look like keyboard data
-                        if (stack_ptr[11] > 0x100) {
-                            serial_printf("[Sched INFO] ES value 0x%x looks like data, not a segment\n", stack_ptr[11]);
-                        }
-                        if (stack_ptr[12] == 0) {
-                            serial_printf("[Sched INFO] DS is 0, needs fixing\n");
-                        }
-                        
-                        // Force correct values
-                        stack_ptr[9] = KERNEL_DATA_SELECTOR;  // GS
-                        stack_ptr[10] = KERNEL_DATA_SELECTOR; // FS
-                        stack_ptr[11] = KERNEL_DATA_SELECTOR; // ES
-                        stack_ptr[12] = KERNEL_DATA_SELECTOR; // DS
-                        serial_printf("[Sched INFO] Forced correct segment values at ESP=%p\n", stack_ptr);
-                    }
-                }
-                
-                if (!found_pattern) {
-                    // Force correct values as last resort
-                    serial_printf("[Sched WARN] Could not find correct stack pattern. Stack may be corrupted.\n");
-                    // Don't try to continue with corrupted stack
-                    serial_printf("[Sched WARN] Pattern not found, forcing correct segment values\n");
-                    stack_ptr[9] = KERNEL_DATA_SELECTOR;  // GS
-                    stack_ptr[10] = KERNEL_DATA_SELECTOR; // FS
-                    stack_ptr[11] = KERNEL_DATA_SELECTOR; // ES
-                    stack_ptr[12] = KERNEL_DATA_SELECTOR; // DS
-                }
-            }
+            serial_printf("  [ESP+36] DS value = 0x%08x (expect 0x10)\n", stack_ptr[9]);
+            serial_printf("  [ESP+40] ES value = 0x%08x (expect 0x10)\n", stack_ptr[10]);
+            serial_printf("  [ESP+44] FS value = 0x%08x (expect 0x10)\n", stack_ptr[11]);
+            serial_printf("  [ESP+48] GS value = 0x%08x (expect 0x10)\n", stack_ptr[12]);
         }
         
-        // Special handling for idle task to ensure stack integrity
-        if (old_task && old_task->pid == IDLE_TASK_PID) {
-            // Validate that we're saving to the correct location
-            uint32_t **save_ptr = &(old_task->esp);
-            if ((uintptr_t)save_ptr < (uintptr_t)&g_idle_task_tcb || 
-                (uintptr_t)save_ptr >= (uintptr_t)(&g_idle_task_tcb + 1)) {
-                serial_printf("[Sched CRITICAL] Invalid save pointer for idle task ESP! ptr=%p\n", save_ptr);
-                save_ptr = &(g_idle_task_tcb.esp); // Force correct location
-            }
-            context_switch(save_ptr, new_task->esp,
-                           pd_needs_switch ? new_task->process->page_directory_phys : NULL);
-        } else {
-            context_switch(old_task ? &(old_task->esp) : NULL, new_task->esp,
-                           pd_needs_switch ? new_task->process->page_directory_phys : NULL);
-        }
-        
-        // Debug: Log ESP after switch  
-        if (old_task && old_task->pid == IDLE_TASK_PID) {
-            serial_printf("[Sched DEBUG] After switch FROM idle, saved ESP is now: %p\n", old_task->esp);
-        }
+        context_switch(old_task ? &(old_task->esp) : NULL, new_task->esp,
+                       pd_needs_switch ? new_task->process->page_directory_phys : NULL);
     }
 }
 
@@ -858,22 +771,22 @@ void check_idle_task_stack_integrity(const char *checkpoint) {
     // Check segment registers at expected positions
     bool corrupted = false;
     if (stack_ptr[9] != KERNEL_DATA_SELECTOR) {
-        serial_printf("[Stack Check] %s: Idle GS corrupted: 0x%x (expect 0x10)\n", 
+        serial_printf("[Stack Check] %s: Idle DS corrupted: 0x%x (expect 0x10)\n", 
                       checkpoint, stack_ptr[9]);
         corrupted = true;
     }
     if (stack_ptr[10] != KERNEL_DATA_SELECTOR) {
-        serial_printf("[Stack Check] %s: Idle FS corrupted: 0x%x (expect 0x10)\n", 
+        serial_printf("[Stack Check] %s: Idle ES corrupted: 0x%x (expect 0x10)\n", 
                       checkpoint, stack_ptr[10]);
         corrupted = true;
     }
     if (stack_ptr[11] != KERNEL_DATA_SELECTOR) {
-        serial_printf("[Stack Check] %s: Idle ES corrupted: 0x%x (expect 0x10)\n", 
+        serial_printf("[Stack Check] %s: Idle FS corrupted: 0x%x (expect 0x10)\n", 
                       checkpoint, stack_ptr[11]);
         corrupted = true;
     }
     if (stack_ptr[12] != KERNEL_DATA_SELECTOR) {
-        serial_printf("[Stack Check] %s: Idle DS corrupted: 0x%x (expect 0x10)\n", 
+        serial_printf("[Stack Check] %s: Idle GS corrupted: 0x%x (expect 0x10)\n", 
                       checkpoint, stack_ptr[12]);
         corrupted = true;
     }
@@ -887,9 +800,41 @@ void check_idle_task_stack_integrity(const char *checkpoint) {
 }
 
 void scheduler_start(void) {
-    terminal_printf("Scheduler started\n");
+    terminal_printf("Scheduler starting...\n");
     g_scheduler_ready = true;
-    g_need_reschedule = true;
+    g_need_reschedule = false; // Clear any pending reschedule from init
+
+    tcb_t *first_task = scheduler_select_next_task();
+    KERNEL_ASSERT(first_task != NULL, "scheduler_start: No task to run!");
+
+    g_current_task = first_task;
+    g_current_task->state = TASK_RUNNING;
+    g_current_task->has_run = true; // Mark as having run
+
+    terminal_printf("  [Scheduler Start] First task selected: PID %lu (ESP=%p)\n",
+                     (unsigned long)g_current_task->pid, g_current_task->esp);
+
+    // Set TSS ESP0 for the first task.
+    // Note: For the idle task, kernel_stack_vaddr_top is set in scheduler_init_idle_task.
+    // For user tasks, it's set in allocate_kernel_stack.
+    KERNEL_ASSERT(g_current_task->process && g_current_task->process->kernel_stack_vaddr_top,
+                  "First task's PCB or kernel_stack_vaddr_top is NULL");
+    tss_set_kernel_stack((uint32_t)g_current_task->process->kernel_stack_vaddr_top);
+
+    if (g_current_task->pid != IDLE_TASK_PID) {
+        // First task is a user process
+        terminal_printf("  [Scheduler Start] Jumping to user mode for PID %lu.\n", (unsigned long)g_current_task->pid);
+        jump_to_user_mode(g_current_task->esp, g_current_task->process->page_directory_phys);
+    } else {
+        // First task is the Idle Task. Its ESP points to a kernel stack frame.
+        // We effectively switch from the current "bootstrap" kernel context to the idle task's context.
+        // The context_switch function needs to handle `old_esp_ptr == NULL`.
+        terminal_printf("  [Scheduler Start] Context switching to Idle Task (PID %lu).\n", (unsigned long)g_current_task->pid);
+        context_switch(NULL, g_current_task->esp, g_current_task->process->page_directory_phys);
+    }
+
+    // These lines should not be reached if the switch/jump is successful.
+    KERNEL_PANIC_HALT("scheduler_start: Initial task switch/jump failed to transfer control!");
 }
 
 void scheduler_init(void) {
@@ -913,11 +858,8 @@ void scheduler_init(void) {
     }
     spinlock_release_irqrestore(&idle_queue->lock, queue_irq_flags);
 
-    g_current_task = &g_idle_task_tcb;
-
-    uintptr_t idle_stack_top_virt = (uintptr_t)g_idle_task_pcb.kernel_stack_vaddr_top;
-    SCHED_DEBUG("Setting initial TSS ESP0 to calculated high virtual top: %p", (void*)idle_stack_top_virt);
-    tss_set_kernel_stack((uint32_t)idle_stack_top_virt);
+    // Do NOT set g_current_task = &g_idle_task_tcb here.
+    // It will be set properly in scheduler_start() when we do the first context switch.
 
     terminal_printf("Scheduler initialized\n");
 }

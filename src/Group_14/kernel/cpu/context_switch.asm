@@ -36,12 +36,12 @@ context_switch:
 .ds_valid_save:
     pop eax
     
-    push ds               ; Segment Registers
-    push es
-    push fs
-    push gs
-    pushfd                ; EFLAGS
     pushad                ; General Purpose Registers (EDI, ESI, EBP_orig, ESP_orig, EBX, EDX, ECX, EAX)
+    pushfd                ; EFLAGS
+    push gs               ; Segment Registers (in reverse order for correct pop)
+    push fs
+    push es
+    push ds
     
     ; DEBUG: Log what we just saved
     push eax
@@ -55,20 +55,21 @@ context_switch:
     add esp, 8
     
     ; Print segment registers we just saved
-    mov eax, [esp + 12 + 36]  ; DS
+    ; Stack after 3 debug pushes: [esp+0]=ecx, [esp+4]=edx, [esp+8]=eax, [esp+12]=DS, [esp+16]=ES, [esp+20]=FS, [esp+24]=GS
+    mov eax, [esp + 12]  ; DS
     push eax
-    mov eax, [esp + 16 + 40] ; ES  
+    mov eax, [esp + 16 + 4]  ; ES (adjust for DS push)
     push eax
-    mov eax, [esp + 20 + 44] ; FS
+    mov eax, [esp + 20 + 8]  ; FS (adjust for DS+ES pushes)
     push eax
-    mov eax, [esp + 24 + 48] ; GS
+    mov eax, [esp + 24 + 12]  ; GS (adjust for DS+ES+FS pushes)
     push eax
     push debug_segs_msg
     call serial_printf
     add esp, 20
     
     ; Check if DS is valid
-    mov eax, [esp + 12 + 36]  ; DS
+    mov eax, [esp + 12]  ; DS
     test eax, eax
     jnz .ds_ok
     push eax
@@ -83,8 +84,8 @@ context_switch:
 
     ; --- Save Old Task's Stack Pointer ---
     mov eax, [ebp + 8]    ; EAX = old_esp_ptr
-    test eax, eax
-    jz .skip_esp_save
+    test eax, eax         ; Check if old_esp_ptr is NULL
+    jz .skip_esp_save     ; If NULL (first switch from scheduler_start), skip saving ESP
     cmp eax, 0xC0000000   ; Basic check if pointer is in kernel space
     jb .skip_esp_save
     mov [eax], esp        ; Save current ESP (pointing to saved context)
@@ -125,33 +126,33 @@ context_switch:
     ; [ESP+0] = ECX (we pushed)
     ; [ESP+4] = EDX (we pushed)
     ; [ESP+8] = EAX (we pushed)
-    ; [ESP+12] = EDI (from context)
-    ; [ESP+16] = ESI
-    ; [ESP+20] = EBP
-    ; [ESP+24] = ESP (dummy)
-    ; [ESP+28] = EBX
-    ; [ESP+32] = EDX
+    ; [ESP+12] = DS (from context)
+    ; [ESP+16] = ES
+    ; [ESP+20] = FS
+    ; [ESP+24] = GS
+    ; [ESP+28] = EFLAGS
+    ; [ESP+32] = EAX (from pushad)
     ; [ESP+36] = ECX
-    ; [ESP+40] = EAX
-    ; [ESP+44] = EFLAGS
-    ; [ESP+48] = GS
-    ; [ESP+52] = FS
-    ; [ESP+56] = ES
-    ; [ESP+60] = DS
-    mov eax, [esp + 60]  ; DS
+    ; [ESP+40] = EDX
+    ; [ESP+44] = EBX
+    ; [ESP+48] = ESP (dummy)
+    ; [ESP+52] = EBP
+    ; [ESP+56] = ESI
+    ; [ESP+60] = EDI
+    mov eax, [esp + 24]  ; GS
     push eax
-    mov eax, [esp + 56 + 4]  ; ES (adjust for push)  
+    mov eax, [esp + 20]  ; FS
     push eax
-    mov eax, [esp + 52 + 8]  ; FS (adjust for 2 pushes)
+    mov eax, [esp + 16]  ; ES
     push eax
-    mov eax, [esp + 48 + 12] ; GS (adjust for 3 pushes)
+    mov eax, [esp + 12]  ; DS
     push eax
     push debug_segs_msg
     call serial_printf
     add esp, 20
     
     ; Check if DS is valid before restore
-    mov eax, [esp + 60]  ; DS
+    mov eax, [esp + 12]  ; DS
     test eax, eax
     jnz .ds_restore_ok
     push eax
@@ -159,11 +160,11 @@ context_switch:
     call serial_printf
     add esp, 8
     ; Force DS to kernel data segment
-    mov word [esp + 60], KERNEL_DATA_SEG
+    mov word [esp + 12], KERNEL_DATA_SEG
 .ds_restore_ok:
     
     ; Additional check - if ES looks wrong, fix it too
-    mov eax, [esp + 56]  ; ES
+    mov eax, [esp + 16]  ; ES
     cmp eax, 0x100
     jbe .es_restore_ok
     push eax
@@ -171,7 +172,7 @@ context_switch:
     call serial_printf
     add esp, 8
     ; Force ES to kernel data segment
-    mov word [esp + 56], KERNEL_DATA_SEG
+    mov word [esp + 16], KERNEL_DATA_SEG
 .es_restore_ok:
     
     pop ecx
