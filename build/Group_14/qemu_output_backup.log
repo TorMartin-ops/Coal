@@ -1,0 +1,1952 @@
+[Serial] COM1 Initialized (basic).
+[Serial] COM1 output working.
+[Terminal] Initialized (VGA + Serial + Single-line input buffer)
+
+=== UiAOS Kernel Booting (Version: 4.3.4) ===
+[Boot] Author: Tor Martin Kohle
+[Boot] Verifying Multiboot environment...
+  Multiboot magic OK (Info at phys 0x10000).
+[Kernel] Initializing core systems (pre-interrupts)...
+[TSS] Initial ESP0 set to 0 (will be updated before use)
+TSS initialized.
+GDT and TSS initialized.
+[Kernel] Initializing Memory Subsystems...
+  Stage 0: Parsing Multiboot memory map...
+  Kernel Physical Range: [0x    100000 - 0x    15c000)
+  Best Heap Found: PhysBase=0x15c000, Size=%zu (may be clamped)
+  Stage 1+2: Initializing Page Directory & Early Maps...
+[Paging Stage 1] Initializing Page Directory...
+  Allocated initial PD at Phys: 0x15c000
+[Paging] CPU supports PSE (4MB Pages).
+[Paging] CR4.PSE bit enabled.
+[Paging] CPU does not support NX bit.
+[Paging Stage 1] Directory allocated, features checked/enabled.
+[Paging Stage 2] Setting up early memory maps...
+  Mapping Identity [0x0 - 0x%zx)
+  Mapping Phys [0 - 0x400000) -> Identity (Size: 4096 KB) with flags 0x203
+  Mapped 1024 pages for region.
+  Mapping Kernel Phys [0x100000 - 0x15c000) to Higher Half [0xc0100000 - 0xc015c000)
+  Mapping Phys [0x100000 - 0x15c000) -> HigherHalf (Size: 368 KB) with flags 0x203
+  Mapped 92 pages for region.
+  Mapping Kernel Heap Phys [0x15c000 - 0x1015c000) to Higher Half [0xc015c000 - 0xd015c000)
+  Mapping Phys [0x15c000 - 0x1015c000) -> HigherHalf (Size: 262144 KB) with flags 0x203
+  Mapped 65536 pages for region.
+  Mapping VGA Buffer Phys 0xb8000 to Virt 0xc00b8000
+  Mapping Phys [0xb8000 - 0xb9000) -> HigherHalf (Size: 4 KB) with flags 0x203
+  Mapped 1 pages for region.
+  Pre-allocating Page Tables for Kernel Stack Range [0xe0000000 - 0xfe000000)...
+   Kernel Stack PTs pre-allocation check complete.
+  Pre-allocating Page Table for Temporary Mapping Area (PDE 1016)...
+   Mapped PDE[1016] to PT Phys 0x217000
+[Paging Stage 2] Early memory maps configured.
+  Stage 3: Initializing Buddy Allocator...
+[Buddy] Initializing...
+ Input Region Phys Start: 0x15c000, Size: 268435456 bytes
+  Aligned Phys Start: 0x800000, Corresponding Virt Start: 0xc0800000
+  Available Size after alignment: 261472256 bytes
+[Buddy] Init done. Managed VIRT Range: [0xc0800000 - 0xd015c000)
+  Total Managed: 261472256 bytes, Initially Free: 261472256 bytes
+    Buddy Allocator: Initial Free Space: %zu KB
+  Stage 4: Finalizing and Activating Paging...
+[Paging Stage 3] Finalizing and activating paging...
+  Set recursive PDE[1023] to point to PD Phys=0x0x15c000 (Value=0x15c203)
+  PD Entries Before Activation (Accessed via Phys Addr: 0x0x15c000):
+--- Debug PD Entries ---
+ PDE[   0] (V~       0): 0x  15d003 (P=1 RW=1 US=0 PS=0 PT=0x0x15d000)
+------------------------
+--- Debug PD Entries ---
+ PDE[ 768] (V~0xc0000000): 0x  15e003 (P=1 RW=1 US=0 PS=0 PT=0x0x15e000)
+ PDE[ 769] (V~0xc0400000): 0x  15f003 (P=1 RW=1 US=0 PS=0 PT=0x0x15f000)
+ PDE[ 770] (V~0xc0800000): 0x  160003 (P=1 RW=1 US=0 PS=0 PT=0x0x160000)
+ PDE[ 771] (V~0xc0c00000): 0x  161003 (P=1 RW=1 US=0 PS=0 PT=0x0x161000)
+------------------------
+--- Debug PD Entries ---
+ PDE[1023] (V~0xffc00000): 0x  15c203 (P=1 RW=1 US=0 PS=0 PT=0x0x15c000)
+------------------------
+  Activating Paging (Loading CR3, Setting CR0.PG)...
+  Paging HW Activated.
+  Setting global pointers: PD Virt=0xfffff000, PD Phys=0x0x15c000
+  Verifying recursive mapping via virtual access...
+  Recursive PDE[1023] read via *Virt* Addr 0xfffffffc gives value: 0x15c223
+  Recursive mapping verified successfully.
+  PD Entries After Activation (Accessed via Virt Addr: 0xfffff000):
+--- Debug PD Entries ---
+ PDE[   0] (V~       0): 0x  15d023 (P=1 RW=1 US=0 PS=0 PT=0x0x15d000)
+------------------------
+--- Debug PD Entries ---
+ PDE[ 768] (V~0xc0000000): 0x  15e023 (P=1 RW=1 US=0 PS=0 PT=0x0x15e000)
+ PDE[ 769] (V~0xc0400000): 0x  15f003 (P=1 RW=1 US=0 PS=0 PT=0x0x15f000)
+ PDE[ 770] (V~0xc0800000): 0x  160003 (P=1 RW=1 US=0 PS=0 PT=0x0x160000)
+ PDE[ 771] (V~0xc0c00000): 0x  161003 (P=1 RW=1 US=0 PS=0 PT=0x0x161000)
+------------------------
+--- Debug PD Entries ---
+ PDE[1023] (V~0xffc00000): 0x  15c223 (P=1 RW=1 US=0 PS=0 PT=0x0x15c000)
+------------------------
+[Paging Stage 3] Paging enabled and active. Higher half operational.
+  Stage 4.5: Mapping Multiboot Info to Kernel VAS...
+[Map Range] Mapping V=[0x0xc0010000-0x0xc0011000) to P=[0x0x10000...) Flags=0x201 (Masked=0x201)
+[Map Range] Completed. Mapped 1 pages/blocks for V=[0x0xc0010000 - 0x0xc0011000).
+    Multiboot info at VIRT: 0xc0010000 (Size: 1104 bytes)
+  Stage 6: Initializing Frame Allocator...
+[Frame] Initializing physical frame manager...
+   Detected highest physical address (aligned up): 0xffffffff (1048575 total frames potentially addressable)
+   Attempting buddy_alloc_raw(order=22) for 4194300 bytes refcount array (fits in block size 4194304)...
+   Refcount array allocated: VIRT=0xcf800000 -> PHYS=0xf800000 (Buddy Block Size=4194304)
+   Using VIRT address 0xcf800000 for refcount array access.
+   Initializing reference counts (zeroing, then marking reserved regions)...
+        Zeroing refcount array (4194300 actual bytes) @ VIRT=0xcf800000...
+        Refcount array zeroed.
+        Marking known reserved physical memory regions...
+      Reserving %-12s: PFNs [1284771 -      0) Addr [0x       100 -          0)
+      Reserving %-12s: PFNs [1284779 -    256) Addr [0x       15c - 0x    100000)
+      Reserving %-12s: PFNs [1284792 -    348) Addr [0x       15d - 0x    15c000)
+      Reserving %-12s: PFNs [1284803 -  63488) Addr [0x      fc00 - 0x   f800000)
+   Sanity Check: Found 260739 frames marked available (refcount=0).
+                 Of those, 64511 frames fall within the physical buddy heap range [0x15c000 - 0x1015c000).
+[Frame] Frame manager initialization complete.
+  Stage 7: Initializing Kmalloc...
+[kmalloc] Initializing Kmalloc...
+  - Header Size    : 16 bytes
+  - Min Alignment  : 4 bytes
+  - Slab Max User Size: 2048 bytes
+[kmalloc] Initializing Per-CPU strategy...
+[percpu] Initializing per-CPU slab caches...
+[Slab] Created cache 'cpu0_slab_48' (user=48, slot=52, align=4, color=0)
+[Slab] Created cache 'cpu0_slab_80' (user=80, slot=84, align=4, color=0)
+[Slab] Created cache 'cpu0_slab_144' (user=144, slot=148, align=4, color=0)
+[Slab] Created cache 'cpu0_slab_272' (user=272, slot=276, align=4, color=0)
+[Slab] Created cache 'cpu0_slab_528' (user=528, slot=532, align=4, color=0)
+[Slab] Created cache 'cpu0_slab_1040' (user=1040, slot=1044, align=4, color=0)
+[Slab] Created cache 'cpu0_slab_2064' (user=2064, slot=2068, align=4, color=0)
+[Slab] Created cache 'cpu1_slab_48' (user=48, slot=52, align=4, color=0)
+[Slab] Created cache 'cpu1_slab_80' (user=80, slot=84, align=4, color=0)
+[Slab] Created cache 'cpu1_slab_144' (user=144, slot=148, align=4, color=0)
+[Slab] Created cache 'cpu1_slab_272' (user=272, slot=276, align=4, color=0)
+[Slab] Created cache 'cpu1_slab_528' (user=528, slot=532, align=4, color=0)
+[Slab] Created cache 'cpu1_slab_1040' (user=1040, slot=1044, align=4, color=0)
+[Slab] Created cache 'cpu1_slab_2064' (user=2064, slot=2068, align=4, color=0)
+[Slab] Created cache 'cpu2_slab_48' (user=48, slot=52, align=4, color=0)
+[Slab] Created cache 'cpu2_slab_80' (user=80, slot=84, align=4, color=0)
+[Slab] Created cache 'cpu2_slab_144' (user=144, slot=148, align=4, color=0)
+[Slab] Created cache 'cpu2_slab_272' (user=272, slot=276, align=4, color=0)
+[Slab] Created cache 'cpu2_slab_528' (user=528, slot=532, align=4, color=0)
+[Slab] Created cache 'cpu2_slab_1040' (user=1040, slot=1044, align=4, color=0)
+[Slab] Created cache 'cpu2_slab_2064' (user=2064, slot=2068, align=4, color=0)
+[Slab] Created cache 'cpu3_slab_48' (user=48, slot=52, align=4, color=0)
+[Slab] Created cache 'cpu3_slab_80' (user=80, slot=84, align=4, color=0)
+[Slab] Created cache 'cpu3_slab_144' (user=144, slot=148, align=4, color=0)
+[Slab] Created cache 'cpu3_slab_272' (user=272, slot=276, align=4, color=0)
+[Slab] Created cache 'cpu3_slab_528' (user=528, slot=532, align=4, color=0)
+[Slab] Created cache 'cpu3_slab_1040' (user=1040, slot=1044, align=4, color=0)
+[Slab] Created cache 'cpu3_slab_2064' (user=2064, slot=2068, align=4, color=0)
+[percpu] Per-CPU slab caches initialized.
+[kmalloc] Per-CPU caches initialized.
+  Stage 8: Initializing Temporary VA Mapper...
+[Paging TempVA] Initializing dynamic temporary mapping allocator...
+  Temp VA Range: [0xfe000000 - 0xff000000), Slots: 4096
+[OK] Memory Subsystems Initialized Successfully.
+[IDT] Initializing IDT and PIC...
+[IDT] PIC remapped.
+[IDT] Registering Exception handlers (ISRs 0-19)...
+[IDT] Registering Hardware Interrupt handlers (IRQs -> Vectors 32-47)...
+[IDT] Registering System Call handler...
+[IDT] Registered syscall handler at vector 0x80
+[IDT] Registering ATA Primary IRQ handler (Vector 46).
+[IDT] Loading IDTR: Limit=0x%hx Base=0x       7ff (Virt Addr)
+B1A2[IDT] IDT initialized and loaded.
+[PIC] Unmasking required IRQs (IRQ0-Timer, IRQ1-Keyboard, IRQ2-Cascade, IRQ14-ATA)...
+  [PIC] Current masks before unmask: Master=0xb8, Slave=0x8e
+  [PIC DEBUG] Calculated new_mask1 to be written: 0xb8 (from initial 0xb8)
+  [PIC DEBUG] Calculated new_mask2 to be written: 0x8e (from initial 0x8e)
+  [PIC] Writing new masks: Master=0xb8, Slave=0x8e
+  [PIC] Read back masks: Master=0xb8, Slave=0x8e
+  [PIC INFO] IRQ1 (Keyboard) is successfully UNMASKED. final_mask1 = 0xb8
+  [PIC INFO] IRQ0 (PIT) is UNMASKED. final_mask1 = 0xb8
+[IDT] Setup complete.
+[PIT] Initialized (Target Frequency: 1000 Hz)
+[KB Init v6.5.2] Initializing keyboard driver...
+  [KB Init] Default US keymap (Set 1 style) loaded. Device will use Set 2. KBC Translation will be ON (config 0x41).
+  [KB Init] Flushing KBC Output Buffer (pre-init)...
+  [KB Init] Sending 0xAD (Disable KB Interface - KBC cmd)...
+  [KB Init] Sending 0xA7 (Disable Mouse Interface - KBC cmd)...
+  [KB Init] Reading KBC Config Byte (0x20) before modification...
+  [KB Init] Read Config = 0x71
+  [KB Init] Desired KBC Config: 0x41
+  [KB Init] Writing KBC Config Byte 0x41 (Command 0x60)...
+  [KB Init] Config Byte Readback after write = 0x41
+  [KB Init] Performing KBC Self-Test (0xAA)...
+  [KB Init] KBC Test Result = 0x55 (PASS)
+  [KB Init] Sending 0xAE (Enable KB Interface - KBC cmd)...
+  [KB Init] Config Byte after KB Enable cmd (0xAE) = 0x41
+  [KB Init] Confirmed KB Clock Enabled in Config Byte.
+  [KB Init] Sending 0xFF (Reset) to Keyboard Device...
+  [KB Init] Waiting for KB BAT result after Reset...
+  [KB Init] Keyboard BAT Result = 0xaa (PASS)
+  [KB Init] Setting Scancode Set 2 (0xF0, 0x02)...
+  [KB Init] Scancode-Set #2 selected (commands sent).
+  [KB Init] Sending 0xF4 (Enable Scanning) to Keyboard Device...
+  [KB Init] Scanning Enabled on device. ACK received.
+  [KB Init] Final KBC Config Check...
+  [KB Init] Final Config Readback = 0x41
+  [KB Init] IRQ1 handler registered.
+  [KB Init] Registered terminal handler as callback.
+[Keyboard] Initialized (v6.5.2).
+[KB] Keymap updated.
+Initializing scheduler...
+[Sched DEBUG] Initializing idle task...
+[Sched DEBUG] Idle stack allocated at virt 0xd0140020-0xd0144020
+[Sched DEBUG] Idle task initial TCB ESP set to: 0xd0143fe4
+[Sched DEBUG] Idle task stack contents (ESP=0xd0143fe4):
+[Sched DEBUG] Context restore order: POPAD (8 regs), POPFD, POP GS/FS/ES/DS, POP EBP, RET
+[Sched DEBUG]   [ESP+0]  EDI = 0x00000000
+[Sched DEBUG]   [ESP+4]  ESI = 0x00000000
+[Sched DEBUG]   [ESP+8]  EBP = 0x00000000
+[Sched DEBUG]   [ESP+12] ESP = 0x00000000 (skipped by POPAD)
+[Sched DEBUG]   [ESP+16] EBX = 0x00000000
+[Sched DEBUG]   [ESP+20] EDX = 0x00000000
+[Sched DEBUG]   [ESP+24] ECX = 0x00000000
+[Sched DEBUG]   [ESP+28] EAX = 0x00000000
+[Sched DEBUG]   [ESP+32] EFLAGS = 0x00000202 (IF=1)
+[Sched DEBUG]   [ESP+36] GS = 0x00000010 (expect 0x10)
+[Sched DEBUG]   [ESP+40] FS = 0x00000010 (expect 0x10)
+[Sched DEBUG]   [ESP+44] ES = 0x00000010 (expect 0x10)
+[Sched DEBUG]   [ESP+48] DS = 0x00000010 (expect 0x10)
+[Sched DEBUG]   [ESP+52] saved EBP = 0x00000000
+[Sched DEBUG]   [ESP+56] return addr = 0x00126855 (kernel_idle_task_loop)
+[Sched DEBUG] Setting initial TSS ESP0 to calculated high virtual top: 0xd0144020
+Scheduler initialized
+[Kernel] Initializing Filesystem Layer...
+[FS_INIT] Starting file system initialization...
+[FS_INIT] Initializing VFS layer...
+[MountTable] Initialized.
+[VFS INFO] Virtual File System initialized
+[FS_INIT] Registering FAT filesystem driver...
+[FAT Core] Registering FAT filesystem driver with VFS...
+[VFS INFO] Registered filesystem driver: FAT
+[FAT Core] FAT driver registered successfully.
+[FS_INIT] FAT driver registered successfully.
+[FS_INIT Debug] KBC Status before disk_init: 0x1c
+[Disk] Initializing block device 'hdb'...
+[Disk Debug] KBC Status before block_device_init: 0x1c
+[BlockDev Init] Probing 'hdb' (IO:0x1f0, Ctrl:0x3f6, Slave:1)...
+[BlockDev Debug] KBC Status before ata_identify: 0x1c
+[ATA IDENTIFY hdb] Warning: Reported logical sector size (0 bytes) invalid or unsupported by cache. Defaulting to 512.
+[ATA IDENTIFY hdb] Supports MULTIPLE mode (Preferred Count=16)
+[BlockDev Debug] KBC Status after ata_identify: 0x1c
+[BlockDev Debug] KBC Status before ata_set_multiple_mode: 0x1c
+[ATA hdb] MULTIPLE mode SET to 16 sectors.
+[BlockDev Debug] KBC Status after ata_set_multiple_mode: 0x1c
+Warning: %ll specifier used, may truncate or cause issues without libgcc 64bit support.
+[BlockDev Init] OK: 'hdb' LBA48:1 Sectors:65536
+    -> Mult:16 SectorSize:512
+[Disk Debug] KBC Status after block_device_init: 0x1c
+Warning: %ll specifier used, may truncate or cause issues without libgcc 64bit support.
+[Disk] Block device 'hdb' initialized. Total Sectors: 65536
+[Disk MBR] Reading MBR sector (LBA 0) from 'hdb'...
+[Disk MBR] Valid MBR signature found. Parsing partitions...
+[Disk] disk_init: Successfully parsed MBR on 'hdb'.
+[Disk] Logical disk 'hdb' initialization complete.
+[FS_INIT Debug] KBC Status after disk_init: 0x1c
+[FS_INIT] Registering root disk 'hdb' with buffer cache...
+[BufferCache] Registered disk 'hdb'.
+[FS_INIT] Root disk 'hdb' registered successfully.
+[FS_INIT] Attempting to mount root FS (FAT) on device 'hdb' at '/'
+[VFS INFO] vfs_mount_root: Request to mount 'hdb' (FAT) on '/'
+[VFS INFO] VFS internal mount request: mp='/', fs='FAT', dev='hdb'
+[VFS INFO] Calling driver 'FAT' mount function for device 'hdb'
+[FAT Mount] Attempting mount for device 'hdb'...
+[FAT Mount] Detected FAT16.
+[FAT Load FAT] Loading FAT table...
+[FAT Load FAT] Calculated FAT table size: 32768 bytes (64 sectors).
+[FAT Load FAT] Reading 64 FAT sectors starting from LBA 4...
+[FAT Load FAT] FAT table loaded successfully.
+[FAT Mount] Mount successful for device 'hdb'. Type: FAT16
+[VFS INFO] Driver mount successful, context=0xd0158e18
+[MountTable] Added mount: '/' -> FAT
+[VFS INFO] Mount point '/' (FAT) added to table (context: 0xd0158e18)
+[VFS INFO] Mounted 'hdb' on '/' type 'FAT' successfully
+[FS_INIT] File system initialization complete.
+[FS_INIT] Current mount points:
+[MountTable] Current Mount Entries:
+  1: Mount Point: '/'
+     FS Name:     FAT
+     FS Context:  0x0xd0158e18
+  [OK] Filesystem initialized and root mounted.
+[Kernel Debug] KBC Status after fs_init(): 0x0000001c
+[Kernel] Attempting to launch Test Suite from '/hello.elf'...
+[Process] Creating user process from '/hello.elf'.
+  Allocated PD Phys: 0x10002000 for PID 1
+[CopyPDEs] Kernel PDE memcpy complete.
+  Verification: Proc PD[768]=0x  15e063, Global PD[768]=0x  15e063 (Kernel Base PDE)
+  Allocating 4 pages + 1 guard page (20480 bytes total) for kernel stack...
+  Successfully allocated 5 physical frames (incl. guard) for kernel stack.
+  Allocated kernel stack VIRTUAL range (incl. guard): [0xe0000000 - 0xe0005000)
+  Writing test value to stack bottom: 0xe0000000
+  Writing test value to stack top word: 0xe0003ffc
+  Kernel stack mapped (incl. guard): PhysBase=0x10003000, VirtBase=0xe0000000, Usable VirtTop=0xe0004000
+  Updating TSS esp0 = 0xe0004000
+[read_file:DEBUG] Enter: path='/hello.elf', file_size_ptr=0x00153e40
+[read_file:DEBUG] Attempting to open '/hello.elf' with O_RDONLY
+[vfs_open] Enter. Path='/hello.elf', Flags=0x00000000
+[vfs_open] Using mount='/', driver='FAT', rel_path='hello.elf'
+[vfs_open] >>> Calling driver->open...
+[fat_dir:DEBUG] (fat_open_internal) Enter: path='hello.elf', flags=0x0
+[fat_dir:DEBUG] (fat_open_internal) Lock acquired.
+[fat_dir:DEBUG] (fat_open_internal) Step 1: Looking up path 'hello.elf'...
+[fat_dir:DEBUG] (fat_lookup_path) Received path from VFS: 'hello.elf'
+[fat_dir:DEBUG] (fat_find_in_dir) Enter: Searching for 'hello.elf' in dir_cluster 0
+[fat_dir:DEBUG] (fat_find_in_dir) Allocated sector buffer at 0xd000a018
+[fat_dir:DEBUG] (fat_find_in_dir) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Reading sector: chain_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Sector read success. Processing 16 entries...
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Exit: Freeing buffer 0xd000a018, returning status 0 (Success)
+[fat_dir:DEBUG] (fat_lookup_path) Exit: Path='hello.elf', returning status 0 (Success)
+[fat_dir:DEBUG] (fat_open_internal) Lookup finished. find_res = 0 (Success)
+[fat_dir:DEBUG] (fat_open_internal) Step 2: Handling lookup result (0)...
+[fat_dir:DEBUG] (fat_open_internal) Branch: File/Directory Exists.
+[fat_dir:DEBUG] (fat_open_internal) Existing entry found: Attr=0x20, Size=59368, Cluster=2, DirClu=0, DirOff=0
+[fat_dir:DEBUG] (fat_open_internal) Step 3: Allocating vnode and file context structure...
+[fat_dir:DEBUG] (fat_open_internal) Allocation successful: vnode=0xd013fa98, file_ctx=0xd013fb98
+[fat_dir:DEBUG] (fat_open_internal) Step 4: Populating file context...
+[fat_dir:DEBUG] (fat_open_internal) Context populated: first_cluster=2, size=59368, is_dir=0, dirty=0
+[fat_dir:DEBUG] (fat_open_internal) Step 5: Linking context 0xd013fb98 to vnode 0xd013fa98...
+[fat_dir:DEBUG] (fat_open_internal) Step 6: Success Path.
+[fat_dir:DEBUG] (fat_open_internal) Lock released.
+[fat_dir:INFO]  (fat_open_internal) Open successful: path='hello.elf', vnode=0xd013fa98, size=59368
+[vfs_open] <<< driver->open returned node=D013FA98
+[vfs_open] Success. file=D013FAD8
+[read_file:DEBUG] vfs_open succeeded for '/hello.elf'. file=0xd013fad8
+[read_file:DEBUG] Seeking to end of file '/hello.elf' (file=0xd013fad8)
+[read_file:INFO] Determined size for '/hello.elf' is 59368 bytes.
+[read_file:DEBUG] Seeking to beginning of file '/hello.elf' (file=0xd013fad8)
+[read_file:DEBUG] Seek to beginning successful for '/hello.elf'.
+[read_file:DEBUG] Allocating 59368 bytes for '/hello.elf'.
+[read_file:DEBUG] Allocation successful for '/hello.elf', buffer=0xd0020018.
+[read_file:DEBUG] Reading 59368 bytes from '/hello.elf' into buffer 0xd0020018.
+[read_file:DEBUG] vfs_read returned 59368.
+[read_file:DEBUG] Successfully read 59368 bytes from '/hello.elf'.
+[read_file:DEBUG] Closing file '/hello.elf' (file=0xd013fad8).
+[read_file:INFO] Successfully prepared buffer for '/hello.elf'. size=59368, buffer=0xd0020018
+[read_file:DEBUG] Exit: Returning buffer 0xd0020018
+  ELF Entry Point: 0x804f560
+  Segment 0: VAddr=0x8048000, MemSz=32768, FileSz=32579, Offset=0x1000, Flags=RWX  -> VMA [0x8048000 - 0x8050000), VMA Flags=0xa7, PageProt=0x7  -> Mapping and populating pages...  ELF load complete. initial_brk=0x8050000
+  Initial Heap VMA placeholder added: [0x8050000 - 0x8050000)
+  User Stack VMA added: [0xbfffc000 - 0xc0000000)
+  Initial user stack page allocated (P=0x10071000) and mapped (V=0xbffff000). User ESP set to 0xc0000000.
+  Kernel stack prepared for IRET. Final K_ESP = 0xe0003fec
+[Process] Successfully created PCB PID 1 structure for '/hello.elf'.
+[Sched INFO ] Added task PID 1 (Prio 1, Slice 100 ticks)
+  [OK] Test Suite (PID 1) scheduled successfully.
+[Kernel Debug] KBC Status after hello.elf launch: 0x0000001c
+[Kernel] Attempting to launch System Shell from '/bin/shell.elf'...
+[Process] Creating user process from '/bin/shell.elf'.
+  Allocated PD Phys: 0x10074000 for PID 2
+[CopyPDEs] Kernel PDE memcpy complete.
+  Verification: Proc PD[768]=0x  15e063, Global PD[768]=0x  15e063 (Kernel Base PDE)
+  Allocating 4 pages + 1 guard page (20480 bytes total) for kernel stack...
+  Successfully allocated 5 physical frames (incl. guard) for kernel stack.
+  Allocated kernel stack VIRTUAL range (incl. guard): [0xe0005000 - 0xe000a000)
+  Writing test value to stack bottom: 0xe0005000
+  Writing test value to stack top word: 0xe0008ffc
+  Kernel stack mapped (incl. guard): PhysBase=0x10075000, VirtBase=0xe0005000, Usable VirtTop=0xe0009000
+  Updating TSS esp0 = 0xe0009000
+[read_file:DEBUG] Enter: path='/bin/shell.elf', file_size_ptr=0x00153e40
+[read_file:DEBUG] Attempting to open '/bin/shell.elf' with O_RDONLY
+[vfs_open] Enter. Path='/bin/shell.elf', Flags=0x00000000
+[vfs_open] Using mount='/', driver='FAT', rel_path='bin/shell.elf'
+[vfs_open] >>> Calling driver->open...
+[fat_dir:DEBUG] (fat_open_internal) Enter: path='bin/shell.elf', flags=0x0
+[fat_dir:DEBUG] (fat_open_internal) Lock acquired.
+[fat_dir:DEBUG] (fat_open_internal) Step 1: Looking up path 'bin/shell.elf'...
+[fat_dir:DEBUG] (fat_lookup_path) Received path from VFS: 'bin/shell.elf'
+[fat_dir:DEBUG] (fat_find_in_dir) Enter: Searching for 'bin' in dir_cluster 0
+[fat_dir:DEBUG] (fat_find_in_dir) Allocated sector buffer at 0xd0073818
+[fat_dir:DEBUG] (fat_find_in_dir) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Reading sector: chain_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Sector read success. Processing 16 entries...
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (fat_find_in_dir) Exit: Freeing buffer 0xd0073818, returning status 0 (Success)
+[fat_dir:DEBUG] (fat_find_in_dir) Enter: Searching for 'shell.elf' in dir_cluster 31
+[fat_dir:DEBUG] (fat_find_in_dir) Allocated sector buffer at 0xd0073818
+[fat_dir:DEBUG] (fat_find_in_dir) Loop: current_cluster=31, current_byte_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Reading sector: chain_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Sector read success. Processing 16 entries...
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 0 (abs_offset 0): Name[0]=0x2e, Attr=0x10
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 1 (abs_offset 32): Name[0]=0x2e, Attr=0x10
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 2 (abs_offset 64): Name[0]=0x53, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Exit: Freeing buffer 0xd0073818, returning status 0 (Success)
+[fat_dir:DEBUG] (fat_lookup_path) Exit: Path='bin/shell.elf', returning status 0 (Success)
+[fat_dir:DEBUG] (fat_open_internal) Lookup finished. find_res = 0 (Success)
+[fat_dir:DEBUG] (fat_open_internal) Step 2: Handling lookup result (0)...
+[fat_dir:DEBUG] (fat_open_internal) Branch: File/Directory Exists.
+[fat_dir:DEBUG] (fat_open_internal) Existing entry found: Attr=0x20, Size=8036, Cluster=32, DirClu=31, DirOff=64
+[fat_dir:DEBUG] (fat_open_internal) Step 3: Allocating vnode and file context structure...
+[fat_dir:DEBUG] (fat_open_internal) Allocation successful: vnode=0xd0073218, file_ctx=0xd0073318
+[fat_dir:DEBUG] (fat_open_internal) Step 4: Populating file context...
+[fat_dir:DEBUG] (fat_open_internal) Context populated: first_cluster=32, size=8036, is_dir=0, dirty=0
+[fat_dir:DEBUG] (fat_open_internal) Step 5: Linking context 0xd0073318 to vnode 0xd0073218...
+[fat_dir:DEBUG] (fat_open_internal) Step 6: Success Path.
+[fat_dir:DEBUG] (fat_open_internal) Lock released.
+[fat_dir:INFO]  (fat_open_internal) Open successful: path='bin/shell.elf', vnode=0xd0073218, size=8036
+[vfs_open] <<< driver->open returned node=D0073218
+[vfs_open] Success. file=D0073258
+[read_file:DEBUG] vfs_open succeeded for '/bin/shell.elf'. file=0xd0073258
+[read_file:DEBUG] Seeking to end of file '/bin/shell.elf' (file=0xd0073258)
+[read_file:INFO] Determined size for '/bin/shell.elf' is 8036 bytes.
+[read_file:DEBUG] Seeking to beginning of file '/bin/shell.elf' (file=0xd0073258)
+[read_file:DEBUG] Seek to beginning successful for '/bin/shell.elf'.
+[read_file:DEBUG] Allocating 8036 bytes for '/bin/shell.elf'.
+[read_file:DEBUG] Allocation successful for '/bin/shell.elf', buffer=0xd007c018.
+[read_file:DEBUG] Reading 8036 bytes from '/bin/shell.elf' into buffer 0xd007c018.
+[read_file:DEBUG] vfs_read returned 8036.
+[read_file:DEBUG] Successfully read 8036 bytes from '/bin/shell.elf'.
+[read_file:DEBUG] Closing file '/bin/shell.elf' (file=0xd0073258).
+[read_file:INFO] Successfully prepared buffer for '/bin/shell.elf'. size=8036, buffer=0xd007c018
+[read_file:DEBUG] Exit: Returning buffer 0xd007c018
+  ELF Entry Point: 0x8048260
+  Segment 0: VAddr=0x8048000, MemSz=1216, FileSz=956, Offset=0x1000, Flags=RWX  -> VMA [0x8048000 - 0x8049000), VMA Flags=0xa7, PageProt=0x7  -> Mapping and populating pages...  ELF load complete. initial_brk=0x8049000
+  Initial Heap VMA placeholder added: [0x8049000 - 0x8049000)
+  User Stack VMA added: [0xbfffc000 - 0xc0000000)
+  Initial user stack page allocated (P=0x10029000) and mapped (V=0xbffff000). User ESP set to 0xc0000000.
+  Kernel stack prepared for IRET. Final K_ESP = 0xe0008fec
+[Process] Successfully created PCB PID 2 structure for '/bin/shell.elf'.
+[Sched INFO ] Added task PID 2 (Prio 1, Slice 100 ticks)
+  [OK] System Shell (PID 2) scheduled successfully.
+[Kernel] Re-checking and forcing KBC configuration before interrupts...
+   Read KBC Config Byte (before final write): 0x41
+   Forcing KBC Config Byte to 0x41 (Command 0x60)...
+   [KERNEL FIX] Attempting to clear KBC output buffer...
+   [KERNEL INFO] KBC output buffer was already clear or became clear quickly.
+   KBC Status register *after* explicit config write AND ROBUST OBF CLEAR: 0x1c
+[Kernel] Finalizing setup and enabling interrupts...
+[Syscall] Initializing table...
+[Syscall] Table initialized.
+Scheduler started
+
+[Kernel] Initialization complete. UiAOS 4.3.4 operational. Enabling interrupts.
+================================================================================
+
+[Kernel Debug] KBC Status before final sti: 0x0000001c
+[Sched DEBUG] Selected task PID 1 (Prio 1), Slice=100
+[Sched DEBUG] Switching FROM idle task, current ESP will be saved to: 0x0015be6c
+[Sched DEBUG] First run for PID 1. Jumping to user mode (ESP=0xe0003fec, PD=0x10002000)
+=== UiAOS Kernel Test Suite v3.9.1 (POSIX Errors) ===
+
+--- PID Tests ---
+Test: sys_getpid returns a non-negative PID ... [PASS]
+ (Note: PID is 1)
+
+--- Core File I/O Tests ---
+Test: Create, Write, Close ...[vfs_open] Enter. Path='/testfile1.txt', Flags=0x00000241
+[vfs_open] Using mount='/', driver='FAT', rel_path='testfile1.txt'
+[vfs_open] >>> Calling driver->open...
+[fat_dir:DEBUG] (fat_open_internal) Enter: path='testfile1.txt', flags=0x241
+[fat_dir:DEBUG] (fat_open_internal) Lock acquired.
+[fat_dir:DEBUG] (fat_open_internal) Step 1: Looking up path 'testfile1.txt'...
+[fat_dir:DEBUG] (fat_lookup_path) Received path from VFS: 'testfile1.txt'
+[fat_dir:DEBUG] (fat_find_in_dir) Enter: Searching for 'testfile1.txt' in dir_cluster 0
+[fat_dir:DEBUG] (fat_find_in_dir) Allocated sector buffer at 0xd0026818
+[fat_dir:DEBUG] (fat_find_in_dir) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Reading sector: chain_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Sector read success. Processing 16 entries...
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 2 (abs_offset 64): Name[0]=0x00, Attr=0x00
+[fat_dir:DEBUG] (fat_find_in_dir) Found UNUSED entry marker (0x00). End of directory.
+[fat_dir:DEBUG] (fat_find_in_dir) Exit: Freeing buffer 0xd0026818, returning status -5 (Not found)
+[fat_dir:DEBUG] (fat_lookup_path) Exit: Path='testfile1.txt', returning status -5 (Not found)
+[fat_dir:DEBUG] (fat_open_internal) Lookup finished. find_res = -5 (Not found)
+[fat_dir:DEBUG] (fat_open_internal) Step 2: Handling lookup result (-5)...
+[fat_dir:DEBUG] (fat_open_internal) Branch: File/Directory Not Found.
+[fat_dir:DEBUG] (fat_open_internal) Checking O_CREAT flag: Present=64
+[fat_dir:INFO]  (fat_open_internal) O_CREAT flag set. Attempting file creation for path 'testfile1.txt'...
+[fat_alloc:DBG] fat_create_file: Path='testfile1.txt', Attr=0x20
+[fat_alloc:DBG] fat_create_file: Parent='.', Filename='testfile1.txt'
+[fat_alloc:DBG] fat_create_file: Parent dir cluster: 0
+[fat_alloc:DBG] fat_create_file: 1 LFN entries (total %zu slots). Checksum: 0x02
+[fat_dir:DEBUG] (find_free_directory_slot) Enter: Searching for 2 slots in dir_cluster 0
+[fat_dir:DEBUG] (find_free_directory_slot) Allocated sector buffer at 0xd0026818 (512 bytes).
+[fat_dir:DEBUG] (find_free_directory_slot) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (find_free_directory_slot) Sector read success (cluster 0, sector_idx 0). Processing 16 entries...
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 2 (abs_offset 64): Name[0]=0x00, Attr=0x00
+[fat_dir:DEBUG] (find_free_directory_slot)   Found start of free run at offset 64
+[fat_dir:DEBUG] (find_free_directory_slot)   Incremented free run to 1 (needed 2)
+[fat_dir:DEBUG] (find_free_directory_slot)   Condition met: (free_run 1 >= needed 2) OR (tag==UNUSED 1)
+[fat_dir:INFO]  (find_free_directory_slot) Found suitable slot(s): Cluster=0, Offset=64 (needed 2, found run 1)
+[fat_dir:DEBUG] (find_free_directory_slot) Exit: Freeing buffer 0xd0026818, returning status 0 (Success)
+[fat_alloc:DBG] fat_create_file: Found %zu free slots at DirCluster=2, StartOffset=0
+[fat_alloc:DBG] fat_create_file: Writing 1 LFN entries...
+[fat_alloc:DBG] fat_create_file: Writing SFN entry at offset 96...
+[fat_alloc:INFO] fat_create_file: Created entry for 'testfile1.txt' at DirCluster=0, SFN_Offset=96
+[fat_dir:DEBUG] (fat_open_internal) fat_create_file returned 0
+[fat_dir:DEBUG] (fat_open_internal) O_CREAT successful, new entry info: Size=0, Cluster=0, DirClu=0, DirOff=96
+[fat_dir:DEBUG] (fat_open_internal) Step 3: Allocating vnode and file context structure...
+[fat_dir:DEBUG] (fat_open_internal) Allocation successful: vnode=0xd0022d18, file_ctx=0xd0022d98
+[fat_dir:DEBUG] (fat_open_internal) Step 4: Populating file context...
+[fat_dir:DEBUG] (fat_open_internal) Context populated: first_cluster=0, size=0, is_dir=0, dirty=1
+[fat_dir:DEBUG] (fat_open_internal) Step 5: Linking context 0xd0022d98 to vnode 0xd0022d18...
+[fat_dir:DEBUG] (fat_open_internal) Step 6: Success Path.
+[fat_dir:DEBUG] (fat_open_internal) Lock released.
+[fat_dir:INFO]  (fat_open_internal) Open successful: path='testfile1.txt', vnode=0xd0022d18, size=0
+[vfs_open] <<< driver->open returned node=D0022D18
+[vfs_open] Success. file=D0022D58
+ [PASS]
+[fat_alloc:DBG] find_free_cluster: Found free cluster: 36
+[fat_alloc:DBG] fat_allocate_cluster: Found free cluster 36 to allocate.
+[fat_alloc:DBG] fat_allocate_cluster: Marked cluster 36 as EOC.
+[fat_alloc:DBG] fat_allocate_cluster: No valid previous cluster (0), allocating as a new chain start.
+[fat_alloc:INFO] fat_allocate_cluster: Successfully allocated cluster 36.
+[FAT_IO_Update] DirEntry: Set FirstCluster=36 (at DirClu=0, DirOff=96)
+[FAT_IO_Update] DirEntry: Set FileSize=16 (at DirClu=0, DirOff=96)
+ [PASS]
+ [PASS]
+Test: Re-open, Read, Verify ...[vfs_open] Enter. Path='/testfile1.txt', Flags=0x00000000
+[vfs_open] Using mount='/', driver='FAT', rel_path='testfile1.txt'
+[vfs_open] >>> Calling driver->open...
+[fat_dir:DEBUG] (fat_open_internal) Enter: path='testfile1.txt', flags=0x0
+[fat_dir:DEBUG] (fat_open_internal) Lock acquired.
+[fat_dir:DEBUG] (fat_open_internal) Step 1: Looking up path 'testfile1.txt'...
+[fat_dir:DEBUG] (fat_lookup_path) Received path from VFS: 'testfile1.txt'
+[fat_dir:DEBUG] (fat_find_in_dir) Enter: Searching for 'testfile1.txt' in dir_cluster 0
+[fat_dir:DEBUG] (fat_find_in_dir) Allocated sector buffer at 0xd002b018
+[fat_dir:DEBUG] (fat_find_in_dir) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Reading sector: chain_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Sector read success. Processing 16 entries...
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 2 (abs_offset 64): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 3 (abs_offset 96): Name[0]=0x54, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Exit: Freeing buffer 0xd002b018, returning status 0 (Success)
+[fat_dir:DEBUG] (fat_lookup_path) Exit: Path='testfile1.txt', returning status 0 (Success)
+[fat_dir:DEBUG] (fat_open_internal) Lookup finished. find_res = 0 (Success)
+[fat_dir:DEBUG] (fat_open_internal) Step 2: Handling lookup result (0)...
+[fat_dir:DEBUG] (fat_open_internal) Branch: File/Directory Exists.
+[fat_dir:DEBUG] (fat_open_internal) Existing entry found: Attr=0x20, Size=16, Cluster=36, DirClu=0, DirOff=96
+[fat_dir:DEBUG] (fat_open_internal) Step 3: Allocating vnode and file context structure...
+[fat_dir:DEBUG] (fat_open_internal) Allocation successful: vnode=0xd0022e18, file_ctx=0xd0022d18
+[fat_dir:DEBUG] (fat_open_internal) Step 4: Populating file context...
+[fat_dir:DEBUG] (fat_open_internal) Context populated: first_cluster=36, size=16, is_dir=0, dirty=0
+[fat_dir:DEBUG] (fat_open_internal) Step 5: Linking context 0xd0022d18 to vnode 0xd0022e18...
+[fat_dir:DEBUG] (fat_open_internal) Step 6: Success Path.
+[fat_dir:DEBUG] (fat_open_internal) Lock released.
+[fat_dir:INFO]  (fat_open_internal) Open successful: path='testfile1.txt', vnode=0xd0022e18, size=16
+[vfs_open] <<< driver->open returned node=D0022E18
+[vfs_open] Success. file=D0022E58
+ [PASS]
+ [PASS]
+ [PASS]
+ [PASS]
+ [PASS]
+Test: Append Mode (O_APPEND) ...[vfs_open] Enter. Path='/testfile1.txt', Flags=0x00000401
+[vfs_open] Using mount='/', driver='FAT', rel_path='testfile1.txt'
+[vfs_open] >>> Calling driver->open...
+[fat_dir:DEBUG] (fat_open_internal) Enter: path='testfile1.txt', flags=0x401
+[fat_dir:DEBUG] (fat_open_internal) Lock acquired.
+[fat_dir:DEBUG] (fat_open_internal) Step 1: Looking up path 'testfile1.txt'...
+[fat_dir:DEBUG] (fat_lookup_path) Received path from VFS: 'testfile1.txt'
+[fat_dir:DEBUG] (fat_find_in_dir) Enter: Searching for 'testfile1.txt' in dir_cluster 0
+[fat_dir:DEBUG] (fat_find_in_dir) Allocated sector buffer at 0xd002b018
+[fat_dir:DEBUG] (fat_find_in_dir) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Reading sector: chain_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Sector read success. Processing 16 entries...
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 2 (abs_offset 64): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 3 (abs_offset 96): Name[0]=0x54, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Exit: Freeing buffer 0xd002b018, returning status 0 (Success)
+[fat_dir:DEBUG] (fat_lookup_path) Exit: Path='testfile1.txt', returning status 0 (Success)
+[fat_dir:DEBUG] (fat_open_internal) Lookup finished. find_res = 0 (Success)
+[fat_dir:DEBUG] (fat_open_internal) Step 2: Handling lookup result (0)...
+[fat_dir:DEBUG] (fat_open_internal) Branch: File/Directory Exists.
+[fat_dir:DEBUG] (fat_open_internal) Existing entry found: Attr=0x20, Size=16, Cluster=36, DirClu=0, DirOff=96
+[fat_dir:DEBUG] (fat_open_internal) Step 3: Allocating vnode and file context structure...
+[fat_dir:DEBUG] (fat_open_internal) Allocation successful: vnode=0xd0022e18, file_ctx=0xd0022d18
+[fat_dir:DEBUG] (fat_open_internal) Step 4: Populating file context...
+[fat_dir:DEBUG] (fat_open_internal) Context populated: first_cluster=36, size=16, is_dir=0, dirty=0
+[fat_dir:DEBUG] (fat_open_internal) Step 5: Linking context 0xd0022d18 to vnode 0xd0022e18...
+[fat_dir:DEBUG] (fat_open_internal) Step 6: Success Path.
+[fat_dir:DEBUG] (fat_open_internal) Lock released.
+[fat_dir:INFO]  (fat_open_internal) Open successful: path='testfile1.txt', vnode=0xd0022e18, size=16
+[vfs_open] <<< driver->open returned node=D0022E18
+[vfs_open] Success. file=D0022E58
+ [PASS]
+[FAT_IO_Update] DirEntry: Set FileSize=31 (at DirClu=0, DirOff=96)
+ [PASS]
+ [PASS]
+Test: Verify Appended Content ...[vfs_open] Enter. Path='/testfile1.txt', Flags=0x00000000
+[vfs_open] Using mount='/', driver='FAT', rel_path='testfile1.txt'
+[vfs_open] >>> Calling driver->open...
+[fat_dir:DEBUG] (fat_open_internal) Enter: path='testfile1.txt', flags=0x0
+[fat_dir:DEBUG] (fat_open_internal) Lock acquired.
+[fat_dir:DEBUG] (fat_open_internal) Step 1: Looking up path 'testfile1.txt'...
+[fat_dir:DEBUG] (fat_lookup_path) Received path from VFS: 'testfile1.txt'
+[fat_dir:DEBUG] (fat_find_in_dir) Enter: Searching for 'testfile1.txt' in dir_cluster 0
+[fat_dir:DEBUG] (fat_find_in_dir) Allocated sector buffer at 0xd002b018
+[fat_dir:DEBUG] (fat_find_in_dir) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Reading sector: chain_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Sector read success. Processing 16 entries...
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 2 (abs_offset 64): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 3 (abs_offset 96): Name[0]=0x54, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Exit: Freeing buffer 0xd002b018, returning status 0 (Success)
+[fat_dir:DEBUG] (fat_lookup_path) Exit: Path='testfile1.txt', returning status 0 (Success)
+[fat_dir:DEBUG] (fat_open_internal) Lookup finished. find_res = 0 (Success)
+[fat_dir:DEBUG] (fat_open_internal) Step 2: Handling lookup result (0)...
+[fat_dir:DEBUG] (fat_open_internal) Branch: File/Directory Exists.
+[fat_dir:DEBUG] (fat_open_internal) Existing entry found: Attr=0x20, Size=31, Cluster=36, DirClu=0, DirOff=96
+[fat_dir:DEBUG] (fat_open_internal) Step 3: Allocating vnode and file context structure...
+[fat_dir:DEBUG] (fat_open_internal) Allocation successful: vnode=0xd0022e18, file_ctx=0xd0022d18
+[fat_dir:DEBUG] (fat_open_internal) Step 4: Populating file context...
+[fat_dir:DEBUG] (fat_open_internal) Context populated: first_cluster=36, size=31, is_dir=0, dirty=0
+[fat_dir:DEBUG] (fat_open_internal) Step 5: Linking context 0xd0022d18 to vnode 0xd0022e18...
+[fat_dir:DEBUG] (fat_open_internal) Step 6: Success Path.
+[fat_dir:DEBUG] (fat_open_internal) Lock released.
+[fat_dir:INFO]  (fat_open_internal) Open successful: path='testfile1.txt', vnode=0xd0022e18, size=31
+[vfs_open] <<< driver->open returned node=D0022E18
+[vfs_open] Success. file=D0022E58
+ [PASS]
+ [PASS]
+ [PASS]
+ [PASS]
+
+--- Lseek Tests ---
+[vfs_open] Enter. Path='/lseektest.txt', Flags=0x00000242
+[vfs_open] Using mount='/', driver='FAT', rel_path='lseektest.txt'
+[vfs_open] >>> Calling driver->open...
+[fat_dir:DEBUG] (fat_open_internal) Enter: path='lseektest.txt', flags=0x242
+[fat_dir:DEBUG] (fat_open_internal) Lock acquired.
+[fat_dir:DEBUG] (fat_open_internal) Step 1: Looking up path 'lseektest.txt'...
+[fat_dir:DEBUG] (fat_lookup_path) Received path from VFS: 'lseektest.txt'
+[fat_dir:DEBUG] (fat_find_in_dir) Enter: Searching for 'lseektest.txt' in dir_cluster 0
+[fat_dir:DEBUG] (fat_find_in_dir) Allocated sector buffer at 0xd002b018
+[fat_dir:DEBUG] (fat_find_in_dir) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Reading sector: chain_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Sector read success. Processing 16 entries...
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 2 (abs_offset 64): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 3 (abs_offset 96): Name[0]=0x54, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 4 (abs_offset 128): Name[0]=0x00, Attr=0x00
+[fat_dir:DEBUG] (fat_find_in_dir) Found UNUSED entry marker (0x00). End of directory.
+[fat_dir:DEBUG] (fat_find_in_dir) Exit: Freeing buffer 0xd002b018, returning status -5 (Not found)
+[fat_dir:DEBUG] (fat_lookup_path) Exit: Path='lseektest.txt', returning status -5 (Not found)
+[fat_dir:DEBUG] (fat_open_internal) Lookup finished. find_res = -5 (Not found)
+[fat_dir:DEBUG] (fat_open_internal) Step 2: Handling lookup result (-5)...
+[fat_dir:DEBUG] (fat_open_internal) Branch: File/Directory Not Found.
+[fat_dir:DEBUG] (fat_open_internal) Checking O_CREAT flag: Present=64
+[fat_dir:INFO]  (fat_open_internal) O_CREAT flag set. Attempting file creation for path 'lseektest.txt'...
+[fat_alloc:DBG] fat_create_file: Path='lseektest.txt', Attr=0x20
+[fat_alloc:DBG] fat_create_file: Parent='.', Filename='lseektest.txt'
+[fat_alloc:DBG] fat_create_file: Parent dir cluster: 0
+[fat_alloc:DBG] fat_create_file: 1 LFN entries (total %zu slots). Checksum: 0x02
+[fat_dir:DEBUG] (find_free_directory_slot) Enter: Searching for 2 slots in dir_cluster 0
+[fat_dir:DEBUG] (find_free_directory_slot) Allocated sector buffer at 0xd002b018 (512 bytes).
+[fat_dir:DEBUG] (find_free_directory_slot) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (find_free_directory_slot) Sector read success (cluster 0, sector_idx 0). Processing 16 entries...
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 2 (abs_offset 64): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 3 (abs_offset 96): Name[0]=0x54, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 4 (abs_offset 128): Name[0]=0x00, Attr=0x00
+[fat_dir:DEBUG] (find_free_directory_slot)   Found start of free run at offset 128
+[fat_dir:DEBUG] (find_free_directory_slot)   Incremented free run to 1 (needed 2)
+[fat_dir:DEBUG] (find_free_directory_slot)   Condition met: (free_run 1 >= needed 2) OR (tag==UNUSED 1)
+[fat_dir:INFO]  (find_free_directory_slot) Found suitable slot(s): Cluster=0, Offset=128 (needed 2, found run 1)
+[fat_dir:DEBUG] (find_free_directory_slot) Exit: Freeing buffer 0xd002b018, returning status 0 (Success)
+[fat_alloc:DBG] fat_create_file: Found %zu free slots at DirCluster=2, StartOffset=0
+[fat_alloc:DBG] fat_create_file: Writing 1 LFN entries...
+[fat_alloc:DBG] fat_create_file: Writing SFN entry at offset 160...
+[fat_alloc:INFO] fat_create_file: Created entry for 'lseektest.txt' at DirCluster=0, SFN_Offset=160
+[fat_dir:DEBUG] (fat_open_internal) fat_create_file returned 0
+[fat_dir:DEBUG] (fat_open_internal) O_CREAT successful, new entry info: Size=0, Cluster=0, DirClu=0, DirOff=160
+[fat_dir:DEBUG] (fat_open_internal) Step 3: Allocating vnode and file context structure...
+[fat_dir:DEBUG] (fat_open_internal) Allocation successful: vnode=0xd0022e18, file_ctx=0xd0022d18
+[fat_dir:DEBUG] (fat_open_internal) Step 4: Populating file context...
+[fat_dir:DEBUG] (fat_open_internal) Context populated: first_cluster=0, size=0, is_dir=0, dirty=1
+[fat_dir:DEBUG] (fat_open_internal) Step 5: Linking context 0xd0022d18 to vnode 0xd0022e18...
+[fat_dir:DEBUG] (fat_open_internal) Step 6: Success Path.
+[fat_dir:DEBUG] (fat_open_internal) Lock released.
+[fat_dir:INFO]  (fat_open_internal) Open successful: path='lseektest.txt', vnode=0xd0022e18, size=0
+[vfs_open] <<< driver->open returned node=D0022E18
+[vfs_open] Success. file=D0022E58
+ [PASS]
+[fat_alloc:DBG] find_free_cluster: Found free cluster: 37
+[fat_alloc:DBG] fat_allocate_cluster: Found free cluster 37 to allocate.
+[fat_alloc:DBG] fat_allocate_cluster: Marked cluster 37 as EOC.
+[fat_alloc:DBG] fat_allocate_cluster: No valid previous cluster (0), allocating as a new chain start.
+[fat_alloc:INFO] fat_allocate_cluster: Successfully allocated cluster 37.
+[FAT_IO_Update] DirEntry: Set FirstCluster=37 (at DirClu=0, DirOff=160)
+[FAT_IO_Update] DirEntry: Set FileSize=10 (at DirClu=0, DirOff=160)
+ [PASS]
+Test: lseek with SEEK_SET ... [PASS]
+ [PASS]
+ [PASS]
+Test: lseek with SEEK_CUR ... [PASS]
+ [PASS]
+ [PASS]
+Test: lseek with SEEK_END ... [PASS]
+ [PASS]
+Test: lseek write after SEEK_END ... [PASS]
+[FAT_IO_Update] DirEntry: Set FileSize=13 (at DirClu=0, DirOff=160)
+ [PASS]
+ [PASS]
+ [PASS]
+ [PASS]
+ [PASS]
+ [PASS]
+
+--- Error Condition Tests ---
+Test: Open non-existent file (no O_CREAT) ...[vfs_open] Enter. Path='/no_such_file.txt', Flags=0x00000000
+[vfs_open] Using mount='/', driver='FAT', rel_path='no_such_file.txt'
+[vfs_open] >>> Calling driver->open...
+[fat_dir:DEBUG] (fat_open_internal) Enter: path='no_such_file.txt', flags=0x0
+[fat_dir:DEBUG] (fat_open_internal) Lock acquired.
+[fat_dir:DEBUG] (fat_open_internal) Step 1: Looking up path 'no_such_file.txt'...
+[fat_dir:DEBUG] (fat_lookup_path) Received path from VFS: 'no_such_file.txt'
+[fat_dir:DEBUG] (fat_find_in_dir) Enter: Searching for 'no_such_file.txt' in dir_cluster 0
+[fat_dir:DEBUG] (fat_find_in_dir) Allocated sector buffer at 0xd002b818
+[fat_dir:DEBUG] (fat_find_in_dir) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Reading sector: chain_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Sector read success. Processing 16 entries...
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 2 (abs_offset 64): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 3 (abs_offset 96): Name[0]=0x54, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 4 (abs_offset 128): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 5 (abs_offset 160): Name[0]=0x4c, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 6 (abs_offset 192): Name[0]=0x00, Attr=0x00
+[fat_dir:DEBUG] (fat_find_in_dir) Found UNUSED entry marker (0x00). End of directory.
+[fat_dir:DEBUG] (fat_find_in_dir) Exit: Freeing buffer 0xd002b818, returning status -5 (Not found)
+[fat_dir:DEBUG] (fat_lookup_path) Exit: Path='no_such_file.txt', returning status -5 (Not found)
+[fat_dir:DEBUG] (fat_open_internal) Lookup finished. find_res = -5 (Not found)
+[fat_dir:DEBUG] (fat_open_internal) Step 2: Handling lookup result (-5)...
+[fat_dir:DEBUG] (fat_open_internal) Branch: File/Directory Not Found.
+[fat_dir:DEBUG] (fat_open_internal) Checking O_CREAT flag: Present=0
+[fat_dir:DEBUG] (fat_open_internal) O_CREAT not specified. File not found error (-5) persists.
+[fat_dir:DEBUG] (fat_open_internal) Step F: Failure Path Entered (ret_err=-5).
+[fat_dir:ERROR] (fat_open_internal:255) Open failed: path='no_such_file.txt', error=-5 (Not found)
+[fat_dir:DEBUG] (fat_open_internal) Lock released.
+[vfs_open] <<< driver->open returned node=00000000
+ [PASS]
+Test: Open existing file with O_CREAT | O_EXCL ...[vfs_open] Enter. Path='/exist_test.txt', Flags=0x00000241
+[vfs_open] Using mount='/', driver='FAT', rel_path='exist_test.txt'
+[vfs_open] >>> Calling driver->open...
+[fat_dir:DEBUG] (fat_open_internal) Enter: path='exist_test.txt', flags=0x241
+[fat_dir:DEBUG] (fat_open_internal) Lock acquired.
+[fat_dir:DEBUG] (fat_open_internal) Step 1: Looking up path 'exist_test.txt'...
+[fat_dir:DEBUG] (fat_lookup_path) Received path from VFS: 'exist_test.txt'
+[fat_dir:DEBUG] (fat_find_in_dir) Enter: Searching for 'exist_test.txt' in dir_cluster 0
+[fat_dir:DEBUG] (fat_find_in_dir) Allocated sector buffer at 0xd002b818
+[fat_dir:DEBUG] (fat_find_in_dir) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Reading sector: chain_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Sector read success. Processing 16 entries...
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 2 (abs_offset 64): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 3 (abs_offset 96): Name[0]=0x54, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 4 (abs_offset 128): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 5 (abs_offset 160): Name[0]=0x4c, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 6 (abs_offset 192): Name[0]=0x00, Attr=0x00
+[fat_dir:DEBUG] (fat_find_in_dir) Found UNUSED entry marker (0x00). End of directory.
+[fat_dir:DEBUG] (fat_find_in_dir) Exit: Freeing buffer 0xd002b818, returning status -5 (Not found)
+[fat_dir:DEBUG] (fat_lookup_path) Exit: Path='exist_test.txt', returning status -5 (Not found)
+[fat_dir:DEBUG] (fat_open_internal) Lookup finished. find_res = -5 (Not found)
+[fat_dir:DEBUG] (fat_open_internal) Step 2: Handling lookup result (-5)...
+[fat_dir:DEBUG] (fat_open_internal) Branch: File/Directory Not Found.
+[fat_dir:DEBUG] (fat_open_internal) Checking O_CREAT flag: Present=64
+[fat_dir:INFO]  (fat_open_internal) O_CREAT flag set. Attempting file creation for path 'exist_test.txt'...
+[fat_alloc:DBG] fat_create_file: Path='exist_test.txt', Attr=0x20
+[fat_alloc:DBG] fat_create_file: Parent='.', Filename='exist_test.txt'
+[fat_alloc:DBG] fat_create_file: Parent dir cluster: 0
+[fat_alloc:DBG] fat_create_file: 2 LFN entries (total %zu slots). Checksum: 0x03
+[fat_dir:DEBUG] (find_free_directory_slot) Enter: Searching for 3 slots in dir_cluster 0
+[fat_dir:DEBUG] (find_free_directory_slot) Allocated sector buffer at 0xd002b818 (512 bytes).
+[fat_dir:DEBUG] (find_free_directory_slot) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (find_free_directory_slot) Sector read success (cluster 0, sector_idx 0). Processing 16 entries...
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 2 (abs_offset 64): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 3 (abs_offset 96): Name[0]=0x54, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 4 (abs_offset 128): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 5 (abs_offset 160): Name[0]=0x4c, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 6 (abs_offset 192): Name[0]=0x00, Attr=0x00
+[fat_dir:DEBUG] (find_free_directory_slot)   Found start of free run at offset 192
+[fat_dir:DEBUG] (find_free_directory_slot)   Incremented free run to 1 (needed 3)
+[fat_dir:DEBUG] (find_free_directory_slot)   Condition met: (free_run 1 >= needed 3) OR (tag==UNUSED 1)
+[fat_dir:INFO]  (find_free_directory_slot) Found suitable slot(s): Cluster=0, Offset=192 (needed 3, found run 1)
+[fat_dir:DEBUG] (find_free_directory_slot) Exit: Freeing buffer 0xd002b818, returning status 0 (Success)
+[fat_alloc:DBG] fat_create_file: Found %zu free slots at DirCluster=3, StartOffset=0
+[fat_alloc:DBG] fat_create_file: Writing 2 LFN entries...
+[fat_alloc:DBG] fat_create_file: Writing SFN entry at offset 256...
+[fat_alloc:INFO] fat_create_file: Created entry for 'exist_test.txt' at DirCluster=0, SFN_Offset=256
+[fat_dir:DEBUG] (fat_open_internal) fat_create_file returned 0
+[fat_dir:DEBUG] (fat_open_internal) O_CREAT successful, new entry info: Size=0, Cluster=0, DirClu=0, DirOff=256
+[fat_dir:DEBUG] (fat_open_internal) Step 3: Allocating vnode and file context structure...
+[fat_dir:DEBUG] (fat_open_internal) Allocation successful: vnode=0xd0022e18, file_ctx=0xd0022f98
+[fat_dir:DEBUG] (fat_open_internal) Step 4: Populating file context...
+[fat_dir:DEBUG] (fat_open_internal) Context populated: first_cluster=0, size=0, is_dir=0, dirty=1
+[fat_dir:DEBUG] (fat_open_internal) Step 5: Linking context 0xd0022f98 to vnode 0xd0022e18...
+[fat_dir:DEBUG] (fat_open_internal) Step 6: Success Path.
+[fat_dir:DEBUG] (fat_open_internal) Lock released.
+[fat_dir:INFO]  (fat_open_internal) Open successful: path='exist_test.txt', vnode=0xd0022e18, size=0
+[vfs_open] <<< driver->open returned node=D0022E18
+[vfs_open] Success. file=D0022E58
+ [PASS]
+[vfs_open] Enter. Path='/exist_test.txt', Flags=0x000000C0
+[vfs_open] Using mount='/', driver='FAT', rel_path='exist_test.txt'
+[vfs_open] >>> Calling driver->open...
+[fat_dir:DEBUG] (fat_open_internal) Enter: path='exist_test.txt', flags=0xc0
+[fat_dir:DEBUG] (fat_open_internal) Lock acquired.
+[fat_dir:DEBUG] (fat_open_internal) Step 1: Looking up path 'exist_test.txt'...
+[fat_dir:DEBUG] (fat_lookup_path) Received path from VFS: 'exist_test.txt'
+[fat_dir:DEBUG] (fat_find_in_dir) Enter: Searching for 'exist_test.txt' in dir_cluster 0
+[fat_dir:DEBUG] (fat_find_in_dir) Allocated sector buffer at 0xd002b818
+[fat_dir:DEBUG] (fat_find_in_dir) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Reading sector: chain_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Sector read success. Processing 16 entries...
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 2 (abs_offset 64): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 3 (abs_offset 96): Name[0]=0x54, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 4 (abs_offset 128): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 5 (abs_offset 160): Name[0]=0x4c, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 6 (abs_offset 192): Name[0]=0x42, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 7 (abs_offset 224): Name[0]=0x01, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 8 (abs_offset 256): Name[0]=0x45, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Exit: Freeing buffer 0xd002b818, returning status 0 (Success)
+[fat_dir:DEBUG] (fat_lookup_path) Exit: Path='exist_test.txt', returning status 0 (Success)
+[fat_dir:DEBUG] (fat_open_internal) Lookup finished. find_res = 0 (Success)
+[fat_dir:DEBUG] (fat_open_internal) Step 2: Handling lookup result (0)...
+[fat_dir:DEBUG] (fat_open_internal) Branch: File/Directory Exists.
+[fat_dir:DEBUG] (fat_open_internal) Existing entry found: Attr=0x20, Size=0, Cluster=0, DirClu=0, DirOff=256
+[fat_dir:ERROR] (fat_open_internal:130) File 'exist_test.txt' exists and O_CREAT|O_EXCL flags were specified.
+[fat_dir:DEBUG] (fat_open_internal) Step F: Failure Path Entered (ret_err=7).
+[fat_dir:ERROR] (fat_open_internal:255) Open failed: path='exist_test.txt', error=7 (Unrecognized error)
+[fat_dir:DEBUG] (fat_open_internal) Lock released.
+[vfs_open] <<< driver->open returned node=00000000
+ [PASS]
+Test: Write to invalid FD (-1) ... [PASS]
+Test: Read from invalid FD (999) ... [PASS]
+Test: Close invalid FD (-5) ... [PASS]
+Test: Lseek on invalid FD (123) ... [PASS]
+Test: Write to RDONLY file descriptor ...[vfs_open] Enter. Path='/rdonly_test.txt', Flags=0x00000242
+[vfs_open] Using mount='/', driver='FAT', rel_path='rdonly_test.txt'
+[vfs_open] >>> Calling driver->open...
+[fat_dir:DEBUG] (fat_open_internal) Enter: path='rdonly_test.txt', flags=0x242
+[fat_dir:DEBUG] (fat_open_internal) Lock acquired.
+[fat_dir:DEBUG] (fat_open_internal) Step 1: Looking up path 'rdonly_test.txt'...
+[fat_dir:DEBUG] (fat_lookup_path) Received path from VFS: 'rdonly_test.txt'
+[fat_dir:DEBUG] (fat_find_in_dir) Enter: Searching for 'rdonly_test.txt' in dir_cluster 0
+[fat_dir:DEBUG] (fat_find_in_dir) Allocated sector buffer at 0xd002b818
+[fat_dir:DEBUG] (fat_find_in_dir) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Reading sector: chain_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Sector read success. Processing 16 entries...
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 2 (abs_offset 64): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 3 (abs_offset 96): Name[0]=0x54, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 4 (abs_offset 128): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 5 (abs_offset 160): Name[0]=0x4c, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 6 (abs_offset 192): Name[0]=0x42, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 7 (abs_offset 224): Name[0]=0x01, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 8 (abs_offset 256): Name[0]=0x45, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 9 (abs_offset 288): Name[0]=0x00, Attr=0x00
+[fat_dir:DEBUG] (fat_find_in_dir) Found UNUSED entry marker (0x00). End of directory.
+[fat_dir:DEBUG] (fat_find_in_dir) Exit: Freeing buffer 0xd002b818, returning status -5 (Not found)
+[fat_dir:DEBUG] (fat_lookup_path) Exit: Path='rdonly_test.txt', returning status -5 (Not found)
+[fat_dir:DEBUG] (fat_open_internal) Lookup finished. find_res = -5 (Not found)
+[fat_dir:DEBUG] (fat_open_internal) Step 2: Handling lookup result (-5)...
+[fat_dir:DEBUG] (fat_open_internal) Branch: File/Directory Not Found.
+[fat_dir:DEBUG] (fat_open_internal) Checking O_CREAT flag: Present=64
+[fat_dir:INFO]  (fat_open_internal) O_CREAT flag set. Attempting file creation for path 'rdonly_test.txt'...
+[fat_alloc:DBG] fat_create_file: Path='rdonly_test.txt', Attr=0x20
+[fat_alloc:DBG] fat_create_file: Parent='.', Filename='rdonly_test.txt'
+[fat_alloc:DBG] fat_create_file: Parent dir cluster: 0
+[fat_alloc:DBG] fat_create_file: 2 LFN entries (total %zu slots). Checksum: 0x03
+[fat_dir:DEBUG] (find_free_directory_slot) Enter: Searching for 3 slots in dir_cluster 0
+[fat_dir:DEBUG] (find_free_directory_slot) Allocated sector buffer at 0xd002b818 (512 bytes).
+[fat_dir:DEBUG] (find_free_directory_slot) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (find_free_directory_slot) Sector read success (cluster 0, sector_idx 0). Processing 16 entries...
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 2 (abs_offset 64): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 3 (abs_offset 96): Name[0]=0x54, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 4 (abs_offset 128): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 5 (abs_offset 160): Name[0]=0x4c, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 6 (abs_offset 192): Name[0]=0x42, Attr=0x0f
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 7 (abs_offset 224): Name[0]=0x01, Attr=0x0f
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 8 (abs_offset 256): Name[0]=0x45, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 9 (abs_offset 288): Name[0]=0x00, Attr=0x00
+[fat_dir:DEBUG] (find_free_directory_slot)   Found start of free run at offset 288
+[fat_dir:DEBUG] (find_free_directory_slot)   Incremented free run to 1 (needed 3)
+[fat_dir:DEBUG] (find_free_directory_slot)   Condition met: (free_run 1 >= needed 3) OR (tag==UNUSED 1)
+[fat_dir:INFO]  (find_free_directory_slot) Found suitable slot(s): Cluster=0, Offset=288 (needed 3, found run 1)
+[fat_dir:DEBUG] (find_free_directory_slot) Exit: Freeing buffer 0xd002b818, returning status 0 (Success)
+[fat_alloc:DBG] fat_create_file: Found %zu free slots at DirCluster=3, StartOffset=0
+[fat_alloc:DBG] fat_create_file: Writing 2 LFN entries...
+[fat_alloc:DBG] fat_create_file: Writing SFN entry at offset 352...
+[fat_alloc:INFO] fat_create_file: Created entry for 'rdonly_test.txt' at DirCluster=0, SFN_Offset=352
+[fat_dir:DEBUG] (fat_open_internal) fat_create_file returned 0
+[fat_dir:DEBUG] (fat_open_internal) O_CREAT successful, new entry info: Size=0, Cluster=0, DirClu=0, DirOff=352
+[fat_dir:DEBUG] (fat_open_internal) Step 3: Allocating vnode and file context structure...
+[fat_dir:DEBUG] (fat_open_internal) Allocation successful: vnode=0xd0022e18, file_ctx=0xd0022f98
+[fat_dir:DEBUG] (fat_open_internal) Step 4: Populating file context...
+[fat_dir:DEBUG] (fat_open_internal) Context populated: first_cluster=0, size=0, is_dir=0, dirty=1
+[fat_dir:DEBUG] (fat_open_internal) Step 5: Linking context 0xd0022f98 to vnode 0xd0022e18...
+[fat_dir:DEBUG] (fat_open_internal) Step 6: Success Path.
+[fat_dir:DEBUG] (fat_open_internal) Lock released.
+[fat_dir:INFO]  (fat_open_internal) Open successful: path='rdonly_test.txt', vnode=0xd0022e18, size=0
+[vfs_open] <<< driver->open returned node=D0022E18
+[vfs_open] Success. file=D0022E58
+ [PASS]
+[fat_alloc:DBG] find_free_cluster: Found free cluster: 38
+[fat_alloc:DBG] fat_allocate_cluster: Found free cluster 38 to allocate.
+[fat_alloc:DBG] fat_allocate_cluster: Marked cluster 38 as EOC.
+[fat_alloc:DBG] fat_allocate_cluster: No valid previous cluster (0), allocating as a new chain start.
+[fat_alloc:INFO] fat_allocate_cluster: Successfully allocated cluster 38.
+[FAT_IO_Update] DirEntry: Set FirstCluster=38 (at DirClu=0, DirOff=352)
+[FAT_IO_Update] DirEntry: Set FileSize=3 (at DirClu=0, DirOff=352)
+[vfs_open] Enter. Path='/rdonly_test.txt', Flags=0x00000000
+[vfs_open] Using mount='/', driver='FAT', rel_path='rdonly_test.txt'
+[vfs_open] >>> Calling driver->open...
+[fat_dir:DEBUG] (fat_open_internal) Enter: path='rdonly_test.txt', flags=0x0
+[fat_dir:DEBUG] (fat_open_internal) Lock acquired.
+[fat_dir:DEBUG] (fat_open_internal) Step 1: Looking up path 'rdonly_test.txt'...
+[fat_dir:DEBUG] (fat_lookup_path) Received path from VFS: 'rdonly_test.txt'
+[fat_dir:DEBUG] (fat_find_in_dir) Enter: Searching for 'rdonly_test.txt' in dir_cluster 0
+[fat_dir:DEBUG] (fat_find_in_dir) Allocated sector buffer at 0xd007c018
+[fat_dir:DEBUG] (fat_find_in_dir) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Reading sector: chain_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Sector read success. Processing 16 entries...
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 2 (abs_offset 64): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 3 (abs_offset 96): Name[0]=0x54, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 4 (abs_offset 128): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 5 (abs_offset 160): Name[0]=0x4c, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 6 (abs_offset 192): Name[0]=0x42, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 7 (abs_offset 224): Name[0]=0x01, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 8 (abs_offset 256): Name[0]=0x45, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 9 (abs_offset 288): Name[0]=0x42, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 10 (abs_offset 320): Name[0]=0x01, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 11 (abs_offset 352): Name[0]=0x52, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Exit: Freeing buffer 0xd007c018, returning status 0 (Success)
+[fat_dir:DEBUG] (fat_lookup_path) Exit: Path='rdonly_test.txt', returning status 0 (Success)
+[fat_dir:DEBUG] (fat_open_internal) Lookup finished. find_res = 0 (Success)
+[fat_dir:DEBUG] (fat_open_internal) Step 2: Handling lookup result (0)...
+[fat_dir:DEBUG] (fat_open_internal) Branch: File/Directory Exists.
+[fat_dir:DEBUG] (fat_open_internal) Existing entry found: Attr=0x20, Size=3, Cluster=38, DirClu=0, DirOff=352
+[fat_dir:DEBUG] (fat_open_internal) Step 3: Allocating vnode and file context structure...
+[fat_dir:DEBUG] (fat_open_internal) Allocation successful: vnode=0xd0022d18, file_ctx=0xd0022e18
+[fat_dir:DEBUG] (fat_open_internal) Step 4: Populating file context...
+[fat_dir:DEBUG] (fat_open_internal) Context populated: first_cluster=38, size=3, is_dir=0, dirty=0
+[fat_dir:DEBUG] (fat_open_internal) Step 5: Linking context 0xd0022e18 to vnode 0xd0022d18...
+[fat_dir:DEBUG] (fat_open_internal) Step 6: Success Path.
+[fat_dir:DEBUG] (fat_open_internal) Lock released.
+[fat_dir:INFO]  (fat_open_internal) Open successful: path='rdonly_test.txt', vnode=0xd0022d18, size=3
+[vfs_open] <<< driver->open returned node=D0022D18
+[vfs_open] Success. file=D0022D58
+ [PASS]
+ [PASS]
+Test: Read from WRONLY file descriptor ...[vfs_open] Enter. Path='/wronly_test.txt', Flags=0x00000241
+[vfs_open] Using mount='/', driver='FAT', rel_path='wronly_test.txt'
+[vfs_open] >>> Calling driver->open...
+[fat_dir:DEBUG] (fat_open_internal) Enter: path='wronly_test.txt', flags=0x241
+[fat_dir:DEBUG] (fat_open_internal) Lock acquired.
+[fat_dir:DEBUG] (fat_open_internal) Step 1: Looking up path 'wronly_test.txt'...
+[fat_dir:DEBUG] (fat_lookup_path) Received path from VFS: 'wronly_test.txt'
+[fat_dir:DEBUG] (fat_find_in_dir) Enter: Searching for 'wronly_test.txt' in dir_cluster 0
+[fat_dir:DEBUG] (fat_find_in_dir) Allocated sector buffer at 0xd007c018
+[fat_dir:DEBUG] (fat_find_in_dir) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Reading sector: chain_offset=0
+[fat_dir:DEBUG] (fat_find_in_dir) Sector read success. Processing 16 entries...
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 2 (abs_offset 64): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 3 (abs_offset 96): Name[0]=0x54, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 4 (abs_offset 128): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 5 (abs_offset 160): Name[0]=0x4c, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 6 (abs_offset 192): Name[0]=0x42, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 7 (abs_offset 224): Name[0]=0x01, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 8 (abs_offset 256): Name[0]=0x45, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 9 (abs_offset 288): Name[0]=0x42, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 10 (abs_offset 320): Name[0]=0x01, Attr=0x0f
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 11 (abs_offset 352): Name[0]=0x52, Attr=0x20
+[fat_dir:DEBUG] (fat_find_in_dir) Entry 12 (abs_offset 384): Name[0]=0x00, Attr=0x00
+[fat_dir:DEBUG] (fat_find_in_dir) Found UNUSED entry marker (0x00). End of directory.
+[fat_dir:DEBUG] (fat_find_in_dir) Exit: Freeing buffer 0xd007c018, returning status -5 (Not found)
+[fat_dir:DEBUG] (fat_lookup_path) Exit: Path='wronly_test.txt', returning status -5 (Not found)
+[fat_dir:DEBUG] (fat_open_internal) Lookup finished. find_res = -5 (Not found)
+[fat_dir:DEBUG] (fat_open_internal) Step 2: Handling lookup result (-5)...
+[fat_dir:DEBUG] (fat_open_internal) Branch: File/Directory Not Found.
+[fat_dir:DEBUG] (fat_open_internal) Checking O_CREAT flag: Present=64
+[fat_dir:INFO]  (fat_open_internal) O_CREAT flag set. Attempting file creation for path 'wronly_test.txt'...
+[fat_alloc:DBG] fat_create_file: Path='wronly_test.txt', Attr=0x20
+[fat_alloc:DBG] fat_create_file: Parent='.', Filename='wronly_test.txt'
+[fat_alloc:DBG] fat_create_file: Parent dir cluster: 0
+[fat_alloc:DBG] fat_create_file: 2 LFN entries (total %zu slots). Checksum: 0x03
+[fat_dir:DEBUG] (find_free_directory_slot) Enter: Searching for 3 slots in dir_cluster 0
+[fat_dir:DEBUG] (find_free_directory_slot) Allocated sector buffer at 0xd007c018 (512 bytes).
+[fat_dir:DEBUG] (find_free_directory_slot) Loop: current_cluster=0, current_byte_offset=0
+[fat_dir:DEBUG] (find_free_directory_slot) Sector read success (cluster 0, sector_idx 0). Processing 16 entries...
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 0 (abs_offset 0): Name[0]=0x48, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 1 (abs_offset 32): Name[0]=0x42, Attr=0x10
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 2 (abs_offset 64): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 3 (abs_offset 96): Name[0]=0x54, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 4 (abs_offset 128): Name[0]=0x41, Attr=0x0f
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 5 (abs_offset 160): Name[0]=0x4c, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 6 (abs_offset 192): Name[0]=0x42, Attr=0x0f
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 7 (abs_offset 224): Name[0]=0x01, Attr=0x0f
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 8 (abs_offset 256): Name[0]=0x45, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 9 (abs_offset 288): Name[0]=0x42, Attr=0x0f
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 10 (abs_offset 320): Name[0]=0x01, Attr=0x0f
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 11 (abs_offset 352): Name[0]=0x52, Attr=0x20
+[fat_dir:DEBUG] (find_free_directory_slot)   Entry 12 (abs_offset 384): Name[0]=0x00, Attr=0x00
+[fat_dir:DEBUG] (find_free_directory_slot)   Found start of free run at offset 384
+[fat_dir:DEBUG] (find_free_directory_slot)   Incremented free run to 1 (needed 3)
+[fat_dir:DEBUG] (find_free_directory_slot)   Condition met: (free_run 1 >= needed 3) OR (tag==UNUSED 1)
+[fat_dir:INFO]  (find_free_directory_slot) Found suitable slot(s): Cluster=0, Offset=384 (needed 3, found run 1)
+[fat_dir:DEBUG] (find_free_directory_slot) Exit: Freeing buffer 0xd007c018, returning status 0 (Success)
+[fat_alloc:DBG] fat_create_file: Found %zu free slots at DirCluster=3, StartOffset=0
+[fat_alloc:DBG] fat_create_file: Writing 2 LFN entries...
+[fat_alloc:DBG] fat_create_file: Writing SFN entry at offset 448...
+[fat_alloc:INFO] fat_create_file: Created entry for 'wronly_test.txt' at DirCluster=0, SFN_Offset=448
+[fat_dir:DEBUG] (fat_open_internal) fat_create_file returned 0
+[fat_dir:DEBUG] (fat_open_internal) O_CREAT successful, new entry info: Size=0, Cluster=0, DirClu=0, DirOff=448
+[fat_dir:DEBUG] (fat_open_internal) Step 3: Allocating vnode and file context structure...
+[fat_dir:DEBUG] (fat_open_internal) Allocation successful: vnode=0xd0022f98, file_ctx=0xd0022d18
+[fat_dir:DEBUG] (fat_open_internal) Step 4: Populating file context...
+[fat_dir:DEBUG] (fat_open_internal) Context populated: first_cluster=0, size=0, is_dir=0, dirty=1
+[fat_dir:DEBUG] (fat_open_internal) Step 5: Linking context 0xd0022d18 to vnode 0xd0022f98...
+[fat_dir:DEBUG] (fat_open_internal) Step 6: Success Path.
+[fat_dir:DEBUG] (fat_open_internal) Lock released.
+[fat_dir:INFO]  (fat_open_internal) Open successful: path='wronly_test.txt', vnode=0xd0022f98, size=0
+[vfs_open] <<< driver->open returned node=D0022F98
+[vfs_open] Success. file=D0022FD8
+ [PASS]
+[fat_alloc:DBG] find_free_cluster: Found free cluster: 39
+[fat_alloc:DBG] fat_allocate_cluster: Found free cluster 39 to allocate.
+[fat_alloc:DBG] fat_allocate_cluster: Marked cluster 39 as EOC.
+[fat_alloc:DBG] fat_allocate_cluster: No valid previous cluster (0), allocating as a new chain start.
+[fat_alloc:INFO] fat_allocate_cluster: Successfully allocated cluster 39.
+[FAT_IO_Update] DirEntry: Set FirstCluster=39 (at DirClu=0, DirOff=448)
+[FAT_IO_Update] DirEntry: Set FileSize=3 (at DirClu=0, DirOff=448)
+ [PASS]
+
+--- Test Summary ---
+Total Tests: 17
+Passed: 17
+Failed: 0
+>>> ALL TESTS PASSED! <<<
+[Sched INFO ] Task PID 1 exiting with code 0. Marking as ZOMBIE.
+[Sched DEBUG] Selected task PID 2 (Prio 1), Slice=100
+[Sched DEBUG] First run for PID 2. Jumping to user mode (ESP=0xe0008fec, PD=0x10074000)
+UiAOS Shell v0.1 (Self-Contained) Initialized.
+UiAOS> [Terminal] terminal_read_line_blocking: Enter
+[Terminal] terminal_read_line_blocking: Line not ready, blocking task.
+[Terminal] terminal_read_line_blocking: Calling schedule().
+[Sched DEBUG] Selected task PID 0 (Prio 3), Slice=25
+[Sched DEBUG] Switching TO idle task, saved ESP is: 0xd0143fe4
+[Sched DEBUG] Context switch: PID 2 (ESP=0xe0008fec) -> PID 0 (ESP=0xd0143fe4) (PD Switch: YES)
+[Sched DEBUG] Pre-switch idle stack check (ESP=0xd0143fe4):
+[Sched DEBUG] Stack dump (looking for 0x10 pattern):
+  [ESP+0] = 0x00000000 
+  [ESP+4] = 0x00000000 
+  [ESP+8] = 0x00000000 
+  [ESP+12] = 0x00000000 
+  [ESP+16] = 0x00000000 
+  [ESP+20] = 0x00000000 
+  [ESP+24] = 0x00000000 
+  [ESP+28] = 0x00000000 
+  [ESP+32] = 0x00000202 
+  [ESP+36] = 0x00000010 <-- KERNEL_DATA_SEL
+  [ESP+40] = 0x00000010 <-- KERNEL_DATA_SEL
+  [ESP+44] = 0x00000010 <-- KERNEL_DATA_SEL
+  [ESP+48] = 0x00000010 <-- KERNEL_DATA_SEL
+  [ESP+52] = 0x00000000 
+  [ESP+56] = 0x00126855 
+  [ESP+60] = 0x00000000 
+  [ESP+64] = 0x00000000 
+  [ESP+68] = 0x00000000 
+  [ESP+72] = 0x00000000 
+  [ESP+76] = 0x00000000 
+  [ESP+36] GS value = 0x00000010 (expect 0x10)
+  [ESP+40] FS value = 0x00000010 (expect 0x10)
+  [ESP+44] ES value = 0x00000010 (expect 0x10)
+  [ESP+48] DS value = 0x00000010 (expect 0x10)
+[CTX ASM] Saving context at ESP=0xe0008e34
+[CTX ASM] Segments: GS=10 FS=10 ES=10 DS=10
+[CTX ASM] Restoring from ESP=0xd0143fd8
+[CTX ASM] Segments: GS=10 FS=10 ES=10 DS=10
+[Sched INFO ] Idle task started (PID 0). Entering HLT loop.
+[Idle DEBUG] Initial segment registers: GS=0x10 FS=0x10 ES=0x10 DS=0x10
+[Idle DEBUG] Current ESP after function prologue: 0xd0143ff4
+[Idle DEBUG] TCB saved ESP was: 0xd0143fe4
+[Sched INFO ] Cleanup: Reaping ZOMBIE task PID 1 (Exit Code: 0).
+[Stack Check] Before destroy_process: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] Before destroy_process: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] Before destroy_process: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[destroy_process] Enter for PID 1
+[destroy_process] Enter for PID 1
+[Process] Destroying process PID 1.
+[destroy_process] Step 1: Closing FDs...
+[Stack Check] destroy_process: Before close_fds: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: Before close_fds: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: Before close_fds: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[Proc 1] Closing all file descriptors...
+[Proc 1] All FDs processed for closing.
+[Stack Check] destroy_process: After close_fds: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: After close_fds: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: After close_fds: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[destroy_process] Step 1: FDs closed.
+[destroy_process] Step 2: Destroying MM (user space memory)...
+[Stack Check] destroy_process: Before destroy_mm: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: Before destroy_mm: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: Before destroy_mm: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[destroy_mm] Enter.
+[Stack Check] destroy_mm: Enter: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_mm: Enter: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_mm: Enter: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[destroy_mm] Root node = 0xd013fbb0, map_count = 3
+[destroy_mm] Traversing VMA tree...
+[Stack Check] destroy_mm: Before VMA traversal: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_mm: Before VMA traversal: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_mm: Before VMA traversal: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[destroy_vma_cb] Processing VMA [0x08048000-0x08050000)
+  Calling paging_unmap_range...
+[Stack Check] destroy_vma_cb: Before paging_unmap_range: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before paging_unmap_range: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before paging_unmap_range: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[Paging DEBUG paging_unmap_range:2003] Enter: V=[0x0x8048000 - 0x0x8050000) in PD Phys 0x10002000[Paging DEBUG paging_unmap_range:2122] Processing PT (Phys 0x10069000, Virt 0xfe001000) for V=[0x08048000 - 0x08050000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x08048000 (PTE[72]=0x10068027 -> P=0x10068000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x08049000 (PTE[73]=0x1006a027 -> P=0x1006a000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804a000 (PTE[74]=0x1006b027 -> P=0x1006b000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804b000 (PTE[75]=0x1006c027 -> P=0x1006c000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804c000 (PTE[76]=0x1006d027 -> P=0x1006d000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804d000 (PTE[77]=0x1006e027 -> P=0x1006e000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804e000 (PTE[78]=0x1006f027 -> P=0x1006f000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804f000 (PTE[79]=0x10070067 -> P=0x10070000)[Paging DEBUG paging_unmap_range:2154] PT at Phys 0x0x10069000 (PDE[32]) became empty. Freeing PT.[Paging DEBUG paging_unmap_range:2178] Finished. Unmapped approx 8 pages.[Stack Check] destroy_vma_cb: After paging_unmap_range: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: After paging_unmap_range: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: After paging_unmap_range: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+  Returned from paging_unmap_range.
+  Calling free_vma_resources (kfree)...
+[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before free_vma_resources: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[Stack Check] destroy_vma_cb: After free_vma_resources: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: After free_vma_resources: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: After free_vma_resources: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+  Returned from free_vma_resources.
+[destroy_vma_cb] Processing VMA [0xbfffc000-0xc0000000)
+  Calling paging_unmap_range...
+[Stack Check] destroy_vma_cb: Before paging_unmap_range: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before paging_unmap_range: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before paging_unmap_range: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[Paging DEBUG paging_unmap_range:2003] Enter: V=[0x0xbfffc000 - 0x0xc0000000) in PD Phys 0x10002000[Paging DEBUG paging_unmap_range:2122] Processing PT (Phys 0x10072000, Virt 0xfe001000) for V=[0xbfffc000 - 0xc0000000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0xbffff000 (PTE[1023]=0x10071067 -> P=0x10071000)[Put Frame WARN] About to free important PFN 65649 (Phys=0x10071000, Virt=0xd0071000)
+[Stack Check] put_frame: Before buddy_free (important frame): Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] put_frame: Before buddy_free (important frame): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] put_frame: Before buddy_free (important frame): CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[Stack Check] put_frame: After buddy_free (important frame): Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] put_frame: After buddy_free (important frame): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] put_frame: After buddy_free (important frame): CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[Paging DEBUG paging_unmap_range:2154] PT at Phys 0x0x10072000 (PDE[767]) became empty. Freeing PT.[Paging DEBUG paging_unmap_range:2178] Finished. Unmapped approx 1 pages.[Stack Check] destroy_vma_cb: After paging_unmap_range: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: After paging_unmap_range: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: After paging_unmap_range: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+  Returned from paging_unmap_range.
+  Calling free_vma_resources (kfree)...
+[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before free_vma_resources: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[Stack Check] destroy_vma_cb: After free_vma_resources: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: After free_vma_resources: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: After free_vma_resources: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+  Returned from free_vma_resources.
+[destroy_vma_cb] Processing VMA [0x08050000-0x08050000)
+  Calling paging_unmap_range...
+  Skipping paging_unmap_range for zero-sized VMA.
+  Returned from paging_unmap_range.
+  Calling free_vma_resources (kfree)...
+[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before free_vma_resources: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[Stack Check] destroy_vma_cb: After free_vma_resources: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: After free_vma_resources: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: After free_vma_resources: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+  Returned from free_vma_resources.
+[Stack Check] destroy_mm: After VMA traversal: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_mm: After VMA traversal: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_mm: After VMA traversal: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[destroy_mm] VMA traversal complete.
+[destroy_mm] Calling kfree(mm)...
+[Stack Check] destroy_mm: Before kfree(mm): Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_mm: Before kfree(mm): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_mm: Before kfree(mm): CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[Stack Check] destroy_mm: After kfree(mm): Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_mm: After kfree(mm): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_mm: After kfree(mm): CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[destroy_mm] Returned from kfree(mm). Exit.
+[Stack Check] destroy_process: After destroy_mm: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: After destroy_mm: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: After destroy_mm: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[destroy_process] Step 2: MM destroyed.
+[destroy_process] Step 3: Freeing Kernel Stack (incl. guard)...
+[Stack Check] destroy_process: Before kernel stack free: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: Before kernel stack free: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: Before kernel stack free: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+  Freeing kernel stack (incl. guard): V=[0xe0000000-0xe0005000)
+  Freeing kernel stack frames (incl. guard)...
+  Kernel stack frames (incl. guard) freed.
+  Kernel stack physical frames freed (virtual mappings remain in kernel PD).
+[Stack Check] destroy_process: After kernel stack free: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: After kernel stack free: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: After kernel stack free: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[destroy_process] Step 3: Kernel Stack freed.
+[destroy_process] Step 4: Freeing Page Directory Frame...
+[Stack Check] destroy_process: Before PD frame free: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: Before PD frame free: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: Before PD frame free: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+  Freeing process PD frame: P=0x10002000
+[Put Frame WARN] About to free important PFN 65538 (Phys=0x10002000, Virt=0xd0002000)
+[Stack Check] put_frame: Before buddy_free (important frame): Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] put_frame: Before buddy_free (important frame): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] put_frame: Before buddy_free (important frame): CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[Stack Check] put_frame: After buddy_free (important frame): Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] put_frame: After buddy_free (important frame): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] put_frame: After buddy_free (important frame): CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[Stack Check] destroy_process: After PD frame free: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: After PD frame free: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: After PD frame free: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[destroy_process] Step 4: Page Directory Frame freed.
+[destroy_process] Step 5: Freeing PCB structure...
+[Stack Check] destroy_process: Before kfree(pcb): Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: Before kfree(pcb): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: Before kfree(pcb): CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[Stack Check] destroy_process: After kfree(pcb): Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: After kfree(pcb): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: After kfree(pcb): CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[destroy_process] Step 5: PCB structure freed.
+[Process] PCB PID 1 resources freed.
+[destroy_process] Exit for PID 1
+[destroy_process] Exit for PID 1
+[Stack Check] After destroy_process: Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] After destroy_process: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] After destroy_process: CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[Stack Check] After kfree(tcb): Idle ES corrupted: 0x1 (expect 0x10)
+[Stack Check] After kfree(tcb): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] After kfree(tcb): CORRUPTION DETECTED! Dumping stack:
+  [ESP+0] = 0x00126926
+  [ESP+4] = 0x00000008
+  [ESP+8] = 0xd014401c
+  [ESP+12] = 0x0012692c
+  [ESP+16] = 0x00000020
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x00000001
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+help[Sched DEBUG] Task PID 2 unblocked, new state: READY.
+[Sched DEBUG] Task PID 2 enqueued into run queue Prio 1.
+
+[Sched DEBUG] Selected task PID 2 (Prio 1), Slice=100
+[Sched DEBUG] Switching FROM idle task, current ESP will be saved to: 0x0015be6c
+[Sched DEBUG] Context switch: PID 0 (ESP=0xd0143fe4) -> PID 2 (ESP=0xe0008e34) (PD Switch: YES)
+[CTX ASM] Saving context at ESP=0xd0143e80
+[CTX ASM] Segments: GS=10 FS=10 ES=10 DS=10
+[CTX ASM] Restoring from ESP=0xe0008e28
+[CTX ASM] Segments: GS=10 FS=10 ES=10 DS=10
+[Terminal] terminal_read_line_blocking: Woke up from schedule(). Re-checking line.
+[Terminal] terminal_read_line_blocking: Line is ready.
+[Terminal] terminal_read_line_blocking: Copied bytes: 'help'
+[Terminal] terminal_read_line_blocking: Copied bytes: 'help'
+Available commands:
+  exit  - Exit the shell.
+  help  - Display this help message.
+  hello - (Conceptual) Run hello program.
+UiAOS> [Terminal] terminal_read_line_blocking: Enter
+[Terminal] terminal_read_line_blocking: Line not ready, blocking task.
+[Terminal] terminal_read_line_blocking: Calling schedule().
+[Sched DEBUG] Selected task PID 0 (Prio 3), Slice=25
+[Sched DEBUG] Switching TO idle task, saved ESP is: 0xd0143fe4
+[Sched DEBUG] Context switch: PID 2 (ESP=0xe0008e34) -> PID 0 (ESP=0xd0143fe4) (PD Switch: YES)
+[Sched DEBUG] Pre-switch idle stack check (ESP=0xd0143fe4):
+[Sched DEBUG] Stack dump (looking for 0x10 pattern):
+  [ESP+0] = 0x00000000 
+  [ESP+4] = 0x0012695b 
+  [ESP+8] = 0x00000008 
+  [ESP+12] = 0x00000246 
+  [ESP+16] = 0x00000010 <-- KERNEL_DATA_SEL
+  [ESP+20] = 0x00000010 <-- KERNEL_DATA_SEL
+  [ESP+24] = 0xd0143ff4 
+  [ESP+28] = 0x00000010 <-- KERNEL_DATA_SEL
+  [ESP+32] = 0x00000010 <-- KERNEL_DATA_SEL
+  [ESP+36] = 0x00000010 <-- KERNEL_DATA_SEL
+  [ESP+40] = 0x00000010 <-- KERNEL_DATA_SEL
+  [ESP+44] = 0x0000062c 
+  [ESP+48] = 0x00000000 
+  [ESP+52] = 0x00000000 
+  [ESP+56] = 0x00000000 
+  [ESP+60] = 0x00000000 
+  [ESP+64] = 0x00000000 
+  [ESP+68] = 0x00000000 
+  [ESP+72] = 0x00000000 
+  [ESP+76] = 0x00000000 
+  [ESP+36] GS value = 0x00000010 (expect 0x10)
+  [ESP+40] FS value = 0x00000010 (expect 0x10)
+  [ESP+44] ES value = 0x0000062c (expect 0x10)
+  [ESP+48] DS value = 0x00000000 (expect 0x10)
+[Sched ERROR] Idle task stack corruption detected!
+[Sched DEBUG] Full idle stack dump:
+  [ESP+0] = 0x00000000
+  [ESP+4] = 0x0012695b
+  [ESP+8] = 0x00000008
+  [ESP+12] = 0x00000246
+  [ESP+16] = 0x00000010
+  [ESP+20] = 0x00000010
+  [ESP+24] = 0xd0143ff4
+  [ESP+28] = 0x00000010
+  [ESP+32] = 0x00000010
+  [ESP+36] = 0x00000010
+  [ESP+40] = 0x00000010
+  [ESP+44] = 0x0000062c
+  [ESP+48] = 0x00000000
+  [ESP+52] = 0x00000000
+  [ESP+56] = 0x00000000
+  [ESP+60] = 0x00000000
+  [ESP+64] = 0x00000000
+  [ESP+68] = 0x00000000
+  [ESP+72] = 0x00000000
+  [ESP+76] = 0x00000000
+[Sched WARN] Attempting to fix corrupted segment registers...
+[Sched INFO] Found correct pattern at offset -2 words
+[CTX ASM] Saving context at ESP=0xe0008e34
+[CTX ASM] Segments: GS=10 FS=10 ES=10 DS=10
+[CTX ASM] Restoring from ESP=0xd0143fd0
+[CTX ASM] Segments: GS=10 FS=10 ES=10 DS=10
+F

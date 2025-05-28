@@ -1,0 +1,275 @@
+[Serial] COM1 Initialized (basic).
+[Serial] COM1 output working.
+[Terminal] Initialized (VGA + Serial + Single-line input buffer)
+
+=== UiAOS Kernel Booting (Version: 4.3.4) ===
+[Boot] Author: Tor Martin Kohle
+[Boot] Verifying Multiboot environment...
+  Multiboot magic OK (Info at phys 0x10000).
+[Kernel] Initializing core systems (pre-interrupts)...
+[TSS] Initial ESP0 set to 0 (will be updated before use)
+TSS initialized.
+GDT and TSS initialized.
+[Kernel] Initializing Memory Subsystems...
+  Stage 0: Parsing Multiboot memory map...
+  Kernel Physical Range: [0x    100000 - 0x    15c000)
+  Best Heap Found: PhysBase=0x15c000, Size=%zu (may be clamped)
+  Stage 1+2: Initializing Page Directory & Early Maps...
+[Paging Stage 1] Initializing Page Directory...
+  Allocated initial PD at Phys: 0x15c000
+[Paging] CPU supports PSE (4MB Pages).
+[Paging] CR4.PSE bit enabled.
+[Paging] CPU does not support NX bit.
+[Paging Stage 1] Directory allocated, features checked/enabled.
+[Paging Stage 2] Setting up early memory maps...
+  Mapping Identity [0x0 - 0x%zx)
+  Mapping Phys [0 - 0x400000) -> Identity (Size: 4096 KB) with flags 0x203
+  Mapped 1024 pages for region.
+  Mapping Kernel Phys [0x100000 - 0x15c000) to Higher Half [0xc0100000 - 0xc015c000)
+  Mapping Phys [0x100000 - 0x15c000) -> HigherHalf (Size: 368 KB) with flags 0x203
+  Mapped 92 pages for region.
+  Mapping Kernel Heap Phys [0x15c000 - 0x1fe0000) to Higher Half [0xc015c000 - 0xc1fe0000)
+  Mapping Phys [0x15c000 - 0x1fe0000) -> HigherHalf (Size: 31248 KB) with flags 0x203
+  Mapped 7812 pages for region.
+  Mapping VGA Buffer Phys 0xb8000 to Virt 0xc00b8000
+  Mapping Phys [0xb8000 - 0xb9000) -> HigherHalf (Size: 4 KB) with flags 0x203
+  Mapped 1 pages for region.
+  Pre-allocating Page Tables for Kernel Stack Range [0xe0000000 - 0xfe000000)...
+   Kernel Stack PTs pre-allocation check complete.
+  Pre-allocating Page Table for Temporary Mapping Area (PDE 1016)...
+   Mapped PDE[1016] to PT Phys 0x1de000
+[Paging Stage 2] Early memory maps configured.
+  Stage 3: Initializing Buddy Allocator...
+[Buddy] Initializing...
+ Input Region Phys Start: 0x15c000, Size: 31997952 bytes
+  Aligned Phys Start: 0x800000, Corresponding Virt Start: 0xc0800000
+  Available Size after alignment: 25034752 bytes
+[Buddy] Init done. Managed VIRT Range: [0xc0800000 - 0xc1fe0000)
+  Total Managed: 25034752 bytes, Initially Free: 25034752 bytes
+    Buddy Allocator: Initial Free Space: %zu KB
+  Stage 4: Finalizing and Activating Paging...
+[Paging Stage 3] Finalizing and activating paging...
+  Set recursive PDE[1023] to point to PD Phys=0x0x15c000 (Value=0x15c203)
+  PD Entries Before Activation (Accessed via Phys Addr: 0x0x15c000):
+--- Debug PD Entries ---
+ PDE[   0] (V~       0): 0x  15d003 (P=1 RW=1 US=0 PS=0 PT=0x0x15d000)
+------------------------
+--- Debug PD Entries ---
+ PDE[ 768] (V~0xc0000000): 0x  15e003 (P=1 RW=1 US=0 PS=0 PT=0x0x15e000)
+ PDE[ 769] (V~0xc0400000): 0x  15f003 (P=1 RW=1 US=0 PS=0 PT=0x0x15f000)
+ PDE[ 770] (V~0xc0800000): 0x  160003 (P=1 RW=1 US=0 PS=0 PT=0x0x160000)
+ PDE[ 771] (V~0xc0c00000): 0x  161003 (P=1 RW=1 US=0 PS=0 PT=0x0x161000)
+------------------------
+--- Debug PD Entries ---
+ PDE[1023] (V~0xffc00000): 0x  15c203 (P=1 RW=1 US=0 PS=0 PT=0x0x15c000)
+------------------------
+  Activating Paging (Loading CR3, Setting CR0.PG)...
+  Paging HW Activated.
+  Setting global pointers: PD Virt=0xfffff000, PD Phys=0x0x15c000
+  Verifying recursive mapping via virtual access...
+  Recursive PDE[1023] read via *Virt* Addr 0xfffffffc gives value: 0x15c223
+  Recursive mapping verified successfully.
+  PD Entries After Activation (Accessed via Virt Addr: 0xfffff000):
+--- Debug PD Entries ---
+ PDE[   0] (V~       0): 0x  15d023 (P=1 RW=1 US=0 PS=0 PT=0x0x15d000)
+------------------------
+--- Debug PD Entries ---
+ PDE[ 768] (V~0xc0000000): 0x  15e023 (P=1 RW=1 US=0 PS=0 PT=0x0x15e000)
+ PDE[ 769] (V~0xc0400000): 0x  15f003 (P=1 RW=1 US=0 PS=0 PT=0x0x15f000)
+ PDE[ 770] (V~0xc0800000): 0x  160003 (P=1 RW=1 US=0 PS=0 PT=0x0x160000)
+ PDE[ 771] (V~0xc0c00000): 0x  161003 (P=1 RW=1 US=0 PS=0 PT=0x0x161000)
+------------------------
+--- Debug PD Entries ---
+ PDE[1023] (V~0xffc00000): 0x  15c223 (P=1 RW=1 US=0 PS=0 PT=0x0x15c000)
+------------------------
+[Paging Stage 3] Paging enabled and active. Higher half operational.
+  Stage 4.5: Mapping Multiboot Info to Kernel VAS...
+[Map Range] Mapping V=[0x0xc0010000-0x0xc0011000) to P=[0x0x10000...) Flags=0x201 (Masked=0x201)
+[Map Range] Completed. Mapped 1 pages/blocks for V=[0x0xc0010000 - 0x0xc0011000).
+    Multiboot info at VIRT: 0xc0010000 (Size: 1184 bytes)
+  Stage 6: Initializing Frame Allocator...
+[Frame] Initializing physical frame manager...
+   Detected highest physical address (aligned up): 0xffffffff (1048575 total frames potentially addressable)
+   Attempting buddy_alloc_raw(order=22) for 4194300 bytes refcount array (fits in block size 4194304)...
+   Refcount array allocated: VIRT=0xc1800000 -> PHYS=0x1800000 (Buddy Block Size=4194304)
+   Using VIRT address 0xc1800000 for refcount array access.
+   Initializing reference counts (zeroing, then marking reserved regions)...
+        Zeroing refcount array (4194300 actual bytes) @ VIRT=0xc1800000...
+        Refcount array zeroed.
+        Marking known reserved physical memory regions...
+      Reserving %-12s: PFNs [1284739 -      0) Addr [0x       100 -          0)
+      Reserving %-12s: PFNs [1284747 -    256) Addr [0x       15c - 0x    100000)
+      Reserving %-12s: PFNs [1284760 -    348) Addr [0x       15d - 0x    15c000)
+      Reserving %-12s: PFNs [1284771 -   6144) Addr [0x      1c00 - 0x   1800000)
+   Sanity Check: Found 6787 frames marked available (refcount=0).
+                 Of those, 6787 frames fall within the physical buddy heap range [0x15c000 - 0x1fe0000).
+[Frame] Frame manager initialization complete.
+  Stage 7: Initializing Kmalloc...
+[kmalloc] Initializing Kmalloc...
+  - Header Size    : 16 bytes
+  - Min Alignment  : 4 bytes
+  - Slab Max User Size: 2048 bytes
+[kmalloc] Initializing Per-CPU strategy...
+[percpu] Initializing per-CPU slab caches...
+[Slab] Created cache 'cpu0_slab_48' (user=48, slot=52, align=4, color=0)
+[Slab] Created cache 'cpu0_slab_80' (user=80, slot=84, align=4, color=0)
+[Slab] Created cache 'cpu0_slab_144' (user=144, slot=148, align=4, color=0)
+[Slab] Created cache 'cpu0_slab_272' (user=272, slot=276, align=4, color=0)
+[Slab] Created cache 'cpu0_slab_528' (user=528, slot=532, align=4, color=0)
+[Slab] Created cache 'cpu0_slab_1040' (user=1040, slot=1044, align=4, color=0)
+[Slab] Created cache 'cpu0_slab_2064' (user=2064, slot=2068, align=4, color=0)
+[Slab] Created cache 'cpu1_slab_48' (user=48, slot=52, align=4, color=0)
+[Slab] Created cache 'cpu1_slab_80' (user=80, slot=84, align=4, color=0)
+[Slab] Created cache 'cpu1_slab_144' (user=144, slot=148, align=4, color=0)
+[Slab] Created cache 'cpu1_slab_272' (user=272, slot=276, align=4, color=0)
+[Slab] Created cache 'cpu1_slab_528' (user=528, slot=532, align=4, color=0)
+[Slab] Created cache 'cpu1_slab_1040' (user=1040, slot=1044, align=4, color=0)
+[Slab] Created cache 'cpu1_slab_2064' (user=2064, slot=2068, align=4, color=0)
+[Slab] Created cache 'cpu2_slab_48' (user=48, slot=52, align=4, color=0)
+[Slab] Created cache 'cpu2_slab_80' (user=80, slot=84, align=4, color=0)
+[Slab] Created cache 'cpu2_slab_144' (user=144, slot=148, align=4, color=0)
+[Slab] Created cache 'cpu2_slab_272' (user=272, slot=276, align=4, color=0)
+[Slab] Created cache 'cpu2_slab_528' (user=528, slot=532, align=4, color=0)
+[Slab] Created cache 'cpu2_slab_1040' (user=1040, slot=1044, align=4, color=0)
+[Slab] Created cache 'cpu2_slab_2064' (user=2064, slot=2068, align=4, color=0)
+[Slab] Created cache 'cpu3_slab_48' (user=48, slot=52, align=4, color=0)
+[Slab] Created cache 'cpu3_slab_80' (user=80, slot=84, align=4, color=0)
+[Slab] Created cache 'cpu3_slab_144' (user=144, slot=148, align=4, color=0)
+[Slab] Created cache 'cpu3_slab_272' (user=272, slot=276, align=4, color=0)
+[Slab] Created cache 'cpu3_slab_528' (user=528, slot=532, align=4, color=0)
+[Slab] Created cache 'cpu3_slab_1040' (user=1040, slot=1044, align=4, color=0)
+[Slab] Created cache 'cpu3_slab_2064' (user=2064, slot=2068, align=4, color=0)
+[percpu] Per-CPU slab caches initialized.
+[kmalloc] Per-CPU caches initialized.
+  Stage 8: Initializing Temporary VA Mapper...
+[Paging TempVA] Initializing dynamic temporary mapping allocator...
+  Temp VA Range: [0xfe000000 - 0xff000000), Slots: 4096
+[OK] Memory Subsystems Initialized Successfully.
+[IDT] Initializing IDT and PIC...
+[IDT] PIC remapped.
+[IDT] Registering Exception handlers (ISRs 0-19)...
+[IDT] Registering Hardware Interrupt handlers (IRQs -> Vectors 32-47)...
+[IDT] Registering System Call handler...
+[IDT] Registered syscall handler at vector 0x80
+[IDT] Registering ATA Primary IRQ handler (Vector 46).
+[IDT] Loading IDTR: Limit=0x%hx Base=0x       7ff (Virt Addr)
+B1A2[IDT] IDT initialized and loaded.
+[PIC] Unmasking required IRQs (IRQ0-Timer, IRQ1-Keyboard, IRQ2-Cascade, IRQ14-ATA)...
+  [PIC] Current masks before unmask: Master=0xb8, Slave=0x8e
+  [PIC DEBUG] Calculated new_mask1 to be written: 0xb8 (from initial 0xb8)
+  [PIC DEBUG] Calculated new_mask2 to be written: 0x8e (from initial 0x8e)
+  [PIC] Writing new masks: Master=0xb8, Slave=0x8e
+  [PIC] Read back masks: Master=0xb8, Slave=0x8e
+  [PIC INFO] IRQ1 (Keyboard) is successfully UNMASKED. final_mask1 = 0xb8
+  [PIC INFO] IRQ0 (PIT) is UNMASKED. final_mask1 = 0xb8
+[IDT] Setup complete.
+[PIT] Initialized (Target Frequency: 1000 Hz)
+[KB Init v6.5.2] Initializing keyboard driver...
+  [KB Init] Default US keymap (Set 1 style) loaded. Device will use Set 2. KBC Translation will be ON (config 0x41).
+  [KB Init] Flushing KBC Output Buffer (pre-init)...
+  [KB Init] Sending 0xAD (Disable KB Interface - KBC cmd)...
+  [KB Init] Sending 0xA7 (Disable Mouse Interface - KBC cmd)...
+  [KB Init] Reading KBC Config Byte (0x20) before modification...
+  [KB Init] Read Config = 0x71
+  [KB Init] Desired KBC Config: 0x41
+  [KB Init] Writing KBC Config Byte 0x41 (Command 0x60)...
+  [KB Init] Config Byte Readback after write = 0x41
+  [KB Init] Performing KBC Self-Test (0xAA)...
+  [KB Init] KBC Test Result = 0x55 (PASS)
+  [KB Init] Sending 0xAE (Enable KB Interface - KBC cmd)...
+  [KB Init] Config Byte after KB Enable cmd (0xAE) = 0x41
+  [KB Init] Confirmed KB Clock Enabled in Config Byte.
+  [KB Init] Sending 0xFF (Reset) to Keyboard Device...
+  [KB Init] Waiting for KB BAT result after Reset...
+  [KB Init] Keyboard BAT Result = 0xaa (PASS)
+  [KB Init] Setting Scancode Set 2 (0xF0, 0x02)...
+  [KB Init] Scancode-Set #2 selected (commands sent).
+  [KB Init] Sending 0xF4 (Enable Scanning) to Keyboard Device...
+  [KB Init] Scanning Enabled on device. ACK received.
+  [KB Init] Final KBC Config Check...
+  [KB Init] Final Config Readback = 0x41
+  [KB Init] IRQ1 handler registered.
+  [KB Init] Registered terminal handler as callback.
+[Keyboard] Initialized (v6.5.2).
+[KB] Keymap updated.
+Initializing scheduler...
+[Sched DEBUG] Initializing idle task...
+[Sched DEBUG] Zeroing idle task stack region: V=[0xc1fd0020 - 0xc1fd4020)
+[Sched DEBUG] Idle stack allocated at virt 0xc1fd0020-0xc1fd4020
+[Sched DEBUG] Idle task initial TCB ESP set to: 0xc1fd3fe4
+[Sched DEBUG] Idle task stack contents (ESP=0xc1fd3fe4):
+[Sched DEBUG] Context restore order: POPAD (8 regs), POPFD, POP GS/FS/ES/DS, POP EBP, RET
+[Sched DEBUG]   [ESP+0]  EDI = 0x00000000
+[Sched DEBUG]   [ESP+4]  ESI = 0x00000000
+[Sched DEBUG]   [ESP+8]  EBP = 0x00000000
+[Sched DEBUG]   [ESP+12] ESP = 0x00000000 (skipped by POPAD)
+[Sched DEBUG]   [ESP+16] EBX = 0x00000000
+[Sched DEBUG]   [ESP+20] EDX = 0x00000000
+[Sched DEBUG]   [ESP+24] ECX = 0x00000000
+[Sched DEBUG]   [ESP+28] EAX = 0x00000000
+[Sched DEBUG]   [ESP+32] EFLAGS = 0x00000202 (IF=1)
+[Sched DEBUG]   [ESP+36] DS = 0x00000010 (expect 0x10)
+[Sched DEBUG]   [ESP+40] ES = 0x00000010 (expect 0x10)
+[Sched DEBUG]   [ESP+44] FS = 0x00000010 (expect 0x10)
+[Sched DEBUG]   [ESP+48] GS = 0x00000010 (expect 0x10)
+[Sched DEBUG]   [ESP+52] saved EBP = 0x00000000
+[Sched DEBUG]   [ESP+56] return addr = 0x00126894 (kernel_idle_task_loop)
+Scheduler initialized
+[Kernel] Initializing Filesystem Layer...
+[FS_INIT] Starting file system initialization...
+[FS_INIT] Initializing VFS layer...
+[MountTable] Initialized.
+[VFS INFO] Virtual File System initialized
+[FS_INIT] Registering FAT filesystem driver...
+[FAT Core] Registering FAT filesystem driver with VFS...
+[VFS INFO] Registered filesystem driver: FAT
+[FAT Core] FAT driver registered successfully.
+[FS_INIT] FAT driver registered successfully.
+[FS_INIT Debug] KBC Status before disk_init: 0x1c
+[Disk] Initializing block device 'hdb'...
+[Disk Debug] KBC Status before block_device_init: 0x1c
+[BlockDev Init] Probing 'hdb' (IO:0x1f0, Ctrl:0x3f6, Slave:1)...
+[BlockDev Debug] KBC Status before ata_identify: 0x1c
+[ATA Select hdb] Drive not ready after select (Status=0, DRDY=0).
+[BlockDev Debug] KBC Status after ata_identify: 0x1c
+[BlockDev Init] Failed for 'hdb' during IDENTIFY (err -5).
+[Disk Debug] KBC Status after block_device_init: 0x1c
+[Disk] disk_init: Error - Underlying block device init failed for 'hdb' (code -5).
+[FS_INIT Debug] KBC Status after disk_init: 0x1c
+[FS_INIT] Error: Failed to initialize root disk device 'hdb' (code -5).
+[FAT Core] Unregistering FAT filesystem driver from VFS...
+[VFS INFO] Unregistered driver: FAT
+[FAT Core] FAT driver unregistered.
+[VFS INFO] Shutting down VFS layer...
+[VFS INFO] VFS shutdown complete
+  [CRITICAL] Filesystem initialization FAILED. User programs cannot be loaded.
+[Kernel Debug] KBC Status after fs_init(): 0x0000001c
+  [Kernel] Skipping user process launch due to FS init failure.
+[Kernel] Re-checking and forcing KBC configuration before interrupts...
+   Read KBC Config Byte (before final write): 0x41
+   Forcing KBC Config Byte to 0x41 (Command 0x60)...
+   [KERNEL FIX] Attempting to clear KBC output buffer...
+   [KERNEL INFO] KBC output buffer was already clear or became clear quickly.
+   KBC Status register *after* explicit config write AND ROBUST OBF CLEAR: 0x1c
+[Kernel] Finalizing setup and enabling interrupts...
+[Syscall] Initializing table...
+[Syscall] Table initialized.
+
+[Kernel] Initialization complete. UiAOS 4.3.4 operational. Enabling interrupts.
+================================================================================
+
+[Kernel Debug] KBC Status before final sti: 0x0000001c
+Scheduler starting...
+[Sched DEBUG] Selected task PID 0 (Prio 3), Slice=25
+  [Scheduler Start] First task selected: PID 0 (ESP=0xc1fd3fe4)
+  [Scheduler Start] Context switching to Idle Task (PID 0).
+[CTX ASM] Saving context at ESP=0x00153f44
+[CTX ASM] Segments: GS=10 FS=10 ES=10 DS=10
+[CTX ASM] Restoring from ESP=0xc1fd3fd8
+[CTX ASM] Segments: GS=0 FS=0 ES=0 DS=0
+[CTX ASM] WARNING: DS is 0 during restore! Forcing to KERNEL_DATA_SEG
+[Sched INFO ] Idle task started (PID 0). Entering HLT loop.
+[Idle DEBUG] Initial segment registers: GS=0x10 FS=0x10 ES=0x10 DS=0x10
+[Idle DEBUG] Current ESP after function prologue: 0xc1fd3ff4
+[Idle DEBUG] TCB saved ESP was: 0xc1fd3fe4
+

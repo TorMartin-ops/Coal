@@ -1,0 +1,6 @@
+DEBUG: Script directory             : /workspaces/2025-ikt218-osdev/src/Group_14/scripts
+DEBUG: Input ISO Path Arg           : kernel.iso
+DEBUG: Calculated Absolute ISO Path  : /workspaces/2025-ikt218-osdev/src/Group_14/scripts/kernel.iso
+DEBUG: Inferred Input Disk Path    : ./disk.img
+DEBUG: Calculated Absolute Disk Path: /workspaces/2025-ikt218-osdev/src/Group_14/scripts/disk.img
+Error: ISO file not found at calculated absolute path: /workspaces/2025-ikt218-osdev/src/Group_14/scripts/kernel.iso

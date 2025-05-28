@@ -97,10 +97,10 @@
         Zeroing refcount array (4194300 actual bytes) @ VIRT=0xcf800000...
         Refcount array zeroed.
         Marking known reserved physical memory regions...
-      Reserving %-12s: PFNs [1284771 -      0) Addr [0x       100 -          0)
-      Reserving %-12s: PFNs [1284779 -    256) Addr [0x       15c - 0x    100000)
-      Reserving %-12s: PFNs [1284792 -    348) Addr [0x       15d - 0x    15c000)
-      Reserving %-12s: PFNs [1284803 -  63488) Addr [0x      fc00 - 0x   f800000)
+      Reserving %-12s: PFNs [1284739 -      0) Addr [0x       100 -          0)
+      Reserving %-12s: PFNs [1284747 -    256) Addr [0x       15c - 0x    100000)
+      Reserving %-12s: PFNs [1284760 -    348) Addr [0x       15d - 0x    15c000)
+      Reserving %-12s: PFNs [1284771 -  63488) Addr [0x      fc00 - 0x   f800000)
    Sanity Check: Found 260739 frames marked available (refcount=0).
                  Of those, 64511 frames fall within the physical buddy heap range [0x15c000 - 0x1015c000).
 [Frame] Frame manager initialization complete.
@@ -194,6 +194,7 @@
 [KB] Keymap updated.
 Initializing scheduler...
 [Sched DEBUG] Initializing idle task...
+[Sched DEBUG] Zeroing idle task stack region: V=[0xd0140020 - 0xd0144020)
 [Sched DEBUG] Idle stack allocated at virt 0xd0140020-0xd0144020
 [Sched DEBUG] Idle task initial TCB ESP set to: 0xd0143fe4
 [Sched DEBUG] Idle task stack contents (ESP=0xd0143fe4):
@@ -207,13 +208,12 @@
 [Sched DEBUG]   [ESP+24] ECX = 0x00000000
 [Sched DEBUG]   [ESP+28] EAX = 0x00000000
 [Sched DEBUG]   [ESP+32] EFLAGS = 0x00000202 (IF=1)
-[Sched DEBUG]   [ESP+36] GS = 0x00000010 (expect 0x10)
-[Sched DEBUG]   [ESP+40] FS = 0x00000010 (expect 0x10)
-[Sched DEBUG]   [ESP+44] ES = 0x00000010 (expect 0x10)
-[Sched DEBUG]   [ESP+48] DS = 0x00000010 (expect 0x10)
+[Sched DEBUG]   [ESP+36] DS = 0x00000010 (expect 0x10)
+[Sched DEBUG]   [ESP+40] ES = 0x00000010 (expect 0x10)
+[Sched DEBUG]   [ESP+44] FS = 0x00000010 (expect 0x10)
+[Sched DEBUG]   [ESP+48] GS = 0x00000010 (expect 0x10)
 [Sched DEBUG]   [ESP+52] saved EBP = 0x00000000
-[Sched DEBUG]   [ESP+56] return addr = 0x00126855 (kernel_idle_task_loop)
-[Sched DEBUG] Setting initial TSS ESP0 to calculated high virtual top: 0xd0144020
+[Sched DEBUG]   [ESP+56] return addr = 0x00126895 (kernel_idle_task_loop)
 Scheduler initialized
 [Kernel] Initializing Filesystem Layer...
 [FS_INIT] Starting file system initialization...
@@ -423,15 +423,15 @@
 [Kernel] Finalizing setup and enabling interrupts...
 [Syscall] Initializing table...
 [Syscall] Table initialized.
-Scheduler started
 
 [Kernel] Initialization complete. UiAOS 4.3.4 operational. Enabling interrupts.
 ================================================================================
 
 [Kernel Debug] KBC Status before final sti: 0x0000001c
+Scheduler starting...
 [Sched DEBUG] Selected task PID 1 (Prio 1), Slice=100
-[Sched DEBUG] Switching FROM idle task, current ESP will be saved to: 0x0015be6c
-[Sched DEBUG] First run for PID 1. Jumping to user mode (ESP=0xe0003fec, PD=0x10002000)
+  [Scheduler Start] First task selected: PID 1 (ESP=0xe0003fec)
+  [Scheduler Start] Jumping to user mode for PID 1.
 === UiAOS Kernel Test Suite v3.9.1 (POSIX Errors) ===
 
 --- PID Tests ---
@@ -1069,32 +1069,33 @@
   [ESP+44] = 0x00000010 <-- KERNEL_DATA_SEL
   [ESP+48] = 0x00000010 <-- KERNEL_DATA_SEL
   [ESP+52] = 0x00000000 
-  [ESP+56] = 0x00126855 
+  [ESP+56] = 0x00126895 
   [ESP+60] = 0x00000000 
   [ESP+64] = 0x00000000 
   [ESP+68] = 0x00000000 
   [ESP+72] = 0x00000000 
   [ESP+76] = 0x00000000 
-  [ESP+36] GS value = 0x00000010 (expect 0x10)
-  [ESP+40] FS value = 0x00000010 (expect 0x10)
-  [ESP+44] ES value = 0x00000010 (expect 0x10)
-  [ESP+48] DS value = 0x00000010 (expect 0x10)
-[CTX ASM] Saving context at ESP=0xe0008e34
+  [ESP+36] DS value = 0x00000010 (expect 0x10)
+  [ESP+40] ES value = 0x00000010 (expect 0x10)
+  [ESP+44] FS value = 0x00000010 (expect 0x10)
+  [ESP+48] GS value = 0x00000010 (expect 0x10)
+[CTX ASM] Saving context at ESP=0xe0008e54
 [CTX ASM] Segments: GS=10 FS=10 ES=10 DS=10
 [CTX ASM] Restoring from ESP=0xd0143fd8
-[CTX ASM] Segments: GS=10 FS=10 ES=10 DS=10
+[CTX ASM] Segments: GS=10074000 FS=15c000 ES=0 DS=0
+[CTX ASM] WARNING: DS is 0 during restore! Forcing to KERNEL_DATA_SEG
 [Sched INFO ] Idle task started (PID 0). Entering HLT loop.
 [Idle DEBUG] Initial segment registers: GS=0x10 FS=0x10 ES=0x10 DS=0x10
 [Idle DEBUG] Current ESP after function prologue: 0xd0143ff4
 [Idle DEBUG] TCB saved ESP was: 0xd0143fe4
 [Sched INFO ] Cleanup: Reaping ZOMBIE task PID 1 (Exit Code: 0).
-[Stack Check] Before destroy_process: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] Before destroy_process: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] Before destroy_process: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] Before destroy_process: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] Before destroy_process: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1115,13 +1116,13 @@
 [destroy_process] Enter for PID 1
 [Process] Destroying process PID 1.
 [destroy_process] Step 1: Closing FDs...
-[Stack Check] destroy_process: Before close_fds: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_process: Before close_fds: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: Before close_fds: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: Before close_fds: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_process: Before close_fds: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1140,13 +1141,13 @@
   [ESP+76] = 0x00000000
 [Proc 1] Closing all file descriptors...
 [Proc 1] All FDs processed for closing.
-[Stack Check] destroy_process: After close_fds: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_process: After close_fds: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: After close_fds: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: After close_fds: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_process: After close_fds: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1165,13 +1166,13 @@
   [ESP+76] = 0x00000000
 [destroy_process] Step 1: FDs closed.
 [destroy_process] Step 2: Destroying MM (user space memory)...
-[Stack Check] destroy_process: Before destroy_mm: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_process: Before destroy_mm: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: Before destroy_mm: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: Before destroy_mm: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_process: Before destroy_mm: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1189,13 +1190,13 @@
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
 [destroy_mm] Enter.
-[Stack Check] destroy_mm: Enter: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_mm: Enter: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_mm: Enter: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_mm: Enter: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_mm: Enter: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1214,13 +1215,13 @@
   [ESP+76] = 0x00000000
 [destroy_mm] Root node = 0xd013fbb0, map_count = 3
 [destroy_mm] Traversing VMA tree...
-[Stack Check] destroy_mm: Before VMA traversal: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_mm: Before VMA traversal: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_mm: Before VMA traversal: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_mm: Before VMA traversal: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_mm: Before VMA traversal: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1239,13 +1240,13 @@
   [ESP+76] = 0x00000000
 [destroy_vma_cb] Processing VMA [0x08048000-0x08050000)
   Calling paging_unmap_range...
-[Stack Check] destroy_vma_cb: Before paging_unmap_range: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_vma_cb: Before paging_unmap_range: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before paging_unmap_range: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before paging_unmap_range: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_vma_cb: Before paging_unmap_range: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1262,13 +1263,13 @@
   [ESP+68] = 0x00000000
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
-[Paging DEBUG paging_unmap_range:2003] Enter: V=[0x0x8048000 - 0x0x8050000) in PD Phys 0x10002000[Paging DEBUG paging_unmap_range:2122] Processing PT (Phys 0x10069000, Virt 0xfe001000) for V=[0x08048000 - 0x08050000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x08048000 (PTE[72]=0x10068027 -> P=0x10068000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x08049000 (PTE[73]=0x1006a027 -> P=0x1006a000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804a000 (PTE[74]=0x1006b027 -> P=0x1006b000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804b000 (PTE[75]=0x1006c027 -> P=0x1006c000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804c000 (PTE[76]=0x1006d027 -> P=0x1006d000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804d000 (PTE[77]=0x1006e027 -> P=0x1006e000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804e000 (PTE[78]=0x1006f027 -> P=0x1006f000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804f000 (PTE[79]=0x10070067 -> P=0x10070000)[Paging DEBUG paging_unmap_range:2154] PT at Phys 0x0x10069000 (PDE[32]) became empty. Freeing PT.[Paging DEBUG paging_unmap_range:2178] Finished. Unmapped approx 8 pages.[Stack Check] destroy_vma_cb: After paging_unmap_range: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_vma_cb: After paging_unmap_range: Idle DS corrupted: 0x0 (expect 0x10)
+[Paging DEBUG paging_unmap_range:2003] Enter: V=[0x0x8048000 - 0x0x8050000) in PD Phys 0x10002000[Paging DEBUG paging_unmap_range:2122] Processing PT (Phys 0x10069000, Virt 0xfe001000) for V=[0x08048000 - 0x08050000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x08048000 (PTE[72]=0x10068027 -> P=0x10068000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x08049000 (PTE[73]=0x1006a027 -> P=0x1006a000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804a000 (PTE[74]=0x1006b027 -> P=0x1006b000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804b000 (PTE[75]=0x1006c027 -> P=0x1006c000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804c000 (PTE[76]=0x1006d027 -> P=0x1006d000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804d000 (PTE[77]=0x1006e027 -> P=0x1006e000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804e000 (PTE[78]=0x1006f027 -> P=0x1006f000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0x0804f000 (PTE[79]=0x10070067 -> P=0x10070000)[Paging DEBUG paging_unmap_range:2154] PT at Phys 0x0x10069000 (PDE[32]) became empty. Freeing PT.[Paging DEBUG paging_unmap_range:2178] Finished. Unmapped approx 8 pages.[Stack Check] destroy_vma_cb: After paging_unmap_range: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: After paging_unmap_range: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_vma_cb: After paging_unmap_range: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1287,13 +1288,13 @@
   [ESP+76] = 0x00000000
   Returned from paging_unmap_range.
   Calling free_vma_resources (kfree)...
-[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_vma_cb: Before free_vma_resources: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1310,13 +1311,13 @@
   [ESP+68] = 0x00000000
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
-[Stack Check] destroy_vma_cb: After free_vma_resources: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_vma_cb: After free_vma_resources: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: After free_vma_resources: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: After free_vma_resources: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_vma_cb: After free_vma_resources: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1336,13 +1337,13 @@
   Returned from free_vma_resources.
 [destroy_vma_cb] Processing VMA [0xbfffc000-0xc0000000)
   Calling paging_unmap_range...
-[Stack Check] destroy_vma_cb: Before paging_unmap_range: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_vma_cb: Before paging_unmap_range: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before paging_unmap_range: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before paging_unmap_range: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_vma_cb: Before paging_unmap_range: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1360,13 +1361,13 @@
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
 [Paging DEBUG paging_unmap_range:2003] Enter: V=[0x0xbfffc000 - 0x0xc0000000) in PD Phys 0x10002000[Paging DEBUG paging_unmap_range:2122] Processing PT (Phys 0x10072000, Virt 0xfe001000) for V=[0xbfffc000 - 0xc0000000)[Paging DEBUG paging_unmap_range:2132]   Unmapping V=0xbffff000 (PTE[1023]=0x10071067 -> P=0x10071000)[Put Frame WARN] About to free important PFN 65649 (Phys=0x10071000, Virt=0xd0071000)
-[Stack Check] put_frame: Before buddy_free (important frame): Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] put_frame: Before buddy_free (important frame): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] put_frame: Before buddy_free (important frame): Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] put_frame: Before buddy_free (important frame): Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] put_frame: Before buddy_free (important frame): CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1383,13 +1384,13 @@
   [ESP+68] = 0x00000000
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
-[Stack Check] put_frame: After buddy_free (important frame): Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] put_frame: After buddy_free (important frame): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] put_frame: After buddy_free (important frame): Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] put_frame: After buddy_free (important frame): Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] put_frame: After buddy_free (important frame): CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1406,13 +1407,13 @@
   [ESP+68] = 0x00000000
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
-[Paging DEBUG paging_unmap_range:2154] PT at Phys 0x0x10072000 (PDE[767]) became empty. Freeing PT.[Paging DEBUG paging_unmap_range:2178] Finished. Unmapped approx 1 pages.[Stack Check] destroy_vma_cb: After paging_unmap_range: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_vma_cb: After paging_unmap_range: Idle DS corrupted: 0x0 (expect 0x10)
+[Paging DEBUG paging_unmap_range:2154] PT at Phys 0x0x10072000 (PDE[767]) became empty. Freeing PT.[Paging DEBUG paging_unmap_range:2178] Finished. Unmapped approx 1 pages.[Stack Check] destroy_vma_cb: After paging_unmap_range: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: After paging_unmap_range: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_vma_cb: After paging_unmap_range: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1431,13 +1432,13 @@
   [ESP+76] = 0x00000000
   Returned from paging_unmap_range.
   Calling free_vma_resources (kfree)...
-[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_vma_cb: Before free_vma_resources: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1454,13 +1455,13 @@
   [ESP+68] = 0x00000000
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
-[Stack Check] destroy_vma_cb: After free_vma_resources: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_vma_cb: After free_vma_resources: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: After free_vma_resources: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: After free_vma_resources: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_vma_cb: After free_vma_resources: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1483,13 +1484,13 @@
   Skipping paging_unmap_range for zero-sized VMA.
   Returned from paging_unmap_range.
   Calling free_vma_resources (kfree)...
-[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: Before free_vma_resources: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_vma_cb: Before free_vma_resources: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1506,13 +1507,13 @@
   [ESP+68] = 0x00000000
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
-[Stack Check] destroy_vma_cb: After free_vma_resources: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_vma_cb: After free_vma_resources: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_vma_cb: After free_vma_resources: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_vma_cb: After free_vma_resources: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_vma_cb: After free_vma_resources: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1530,13 +1531,13 @@
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
   Returned from free_vma_resources.
-[Stack Check] destroy_mm: After VMA traversal: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_mm: After VMA traversal: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_mm: After VMA traversal: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_mm: After VMA traversal: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_mm: After VMA traversal: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1555,13 +1556,13 @@
   [ESP+76] = 0x00000000
 [destroy_mm] VMA traversal complete.
 [destroy_mm] Calling kfree(mm)...
-[Stack Check] destroy_mm: Before kfree(mm): Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_mm: Before kfree(mm): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_mm: Before kfree(mm): Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_mm: Before kfree(mm): Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_mm: Before kfree(mm): CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1578,13 +1579,13 @@
   [ESP+68] = 0x00000000
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
-[Stack Check] destroy_mm: After kfree(mm): Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_mm: After kfree(mm): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_mm: After kfree(mm): Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_mm: After kfree(mm): Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_mm: After kfree(mm): CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1602,13 +1603,13 @@
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
 [destroy_mm] Returned from kfree(mm). Exit.
-[Stack Check] destroy_process: After destroy_mm: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_process: After destroy_mm: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: After destroy_mm: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: After destroy_mm: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_process: After destroy_mm: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1627,13 +1628,13 @@
   [ESP+76] = 0x00000000
 [destroy_process] Step 2: MM destroyed.
 [destroy_process] Step 3: Freeing Kernel Stack (incl. guard)...
-[Stack Check] destroy_process: Before kernel stack free: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_process: Before kernel stack free: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: Before kernel stack free: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: Before kernel stack free: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_process: Before kernel stack free: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1654,13 +1655,13 @@
   Freeing kernel stack frames (incl. guard)...
   Kernel stack frames (incl. guard) freed.
   Kernel stack physical frames freed (virtual mappings remain in kernel PD).
-[Stack Check] destroy_process: After kernel stack free: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_process: After kernel stack free: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: After kernel stack free: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: After kernel stack free: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_process: After kernel stack free: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1679,13 +1680,13 @@
   [ESP+76] = 0x00000000
 [destroy_process] Step 3: Kernel Stack freed.
 [destroy_process] Step 4: Freeing Page Directory Frame...
-[Stack Check] destroy_process: Before PD frame free: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_process: Before PD frame free: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: Before PD frame free: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: Before PD frame free: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_process: Before PD frame free: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1704,13 +1705,13 @@
   [ESP+76] = 0x00000000
   Freeing process PD frame: P=0x10002000
 [Put Frame WARN] About to free important PFN 65538 (Phys=0x10002000, Virt=0xd0002000)
-[Stack Check] put_frame: Before buddy_free (important frame): Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] put_frame: Before buddy_free (important frame): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] put_frame: Before buddy_free (important frame): Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] put_frame: Before buddy_free (important frame): Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] put_frame: Before buddy_free (important frame): CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1727,13 +1728,13 @@
   [ESP+68] = 0x00000000
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
-[Stack Check] put_frame: After buddy_free (important frame): Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] put_frame: After buddy_free (important frame): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] put_frame: After buddy_free (important frame): Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] put_frame: After buddy_free (important frame): Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] put_frame: After buddy_free (important frame): CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1750,13 +1751,13 @@
   [ESP+68] = 0x00000000
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
-[Stack Check] destroy_process: After PD frame free: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_process: After PD frame free: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: After PD frame free: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: After PD frame free: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_process: After PD frame free: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1775,13 +1776,13 @@
   [ESP+76] = 0x00000000
 [destroy_process] Step 4: Page Directory Frame freed.
 [destroy_process] Step 5: Freeing PCB structure...
-[Stack Check] destroy_process: Before kfree(pcb): Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_process: Before kfree(pcb): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: Before kfree(pcb): Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: Before kfree(pcb): Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_process: Before kfree(pcb): CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1798,13 +1799,13 @@
   [ESP+68] = 0x00000000
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
-[Stack Check] destroy_process: After kfree(pcb): Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] destroy_process: After kfree(pcb): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] destroy_process: After kfree(pcb): Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] destroy_process: After kfree(pcb): Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] destroy_process: After kfree(pcb): CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1825,13 +1826,13 @@
 [Process] PCB PID 1 resources freed.
 [destroy_process] Exit for PID 1
 [destroy_process] Exit for PID 1
-[Stack Check] After destroy_process: Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] After destroy_process: Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] After destroy_process: Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] After destroy_process: Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] After destroy_process: CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1848,13 +1849,13 @@
   [ESP+68] = 0x00000000
   [ESP+72] = 0x00000000
   [ESP+76] = 0x00000000
-[Stack Check] After kfree(tcb): Idle ES corrupted: 0x1 (expect 0x10)
-[Stack Check] After kfree(tcb): Idle DS corrupted: 0x0 (expect 0x10)
+[Stack Check] After kfree(tcb): Idle FS corrupted: 0x1 (expect 0x10)
+[Stack Check] After kfree(tcb): Idle GS corrupted: 0x0 (expect 0x10)
 [Stack Check] After kfree(tcb): CORRUPTION DETECTED! Dumping stack:
-  [ESP+0] = 0x00126926
-  [ESP+4] = 0x00000008
+  [ESP+0] = 0x00141324
+  [ESP+4] = 0xd0143fe4
   [ESP+8] = 0xd014401c
-  [ESP+12] = 0x0012692c
+  [ESP+12] = 0x0012696c
   [ESP+16] = 0x00000020
   [ESP+20] = 0x00000010
   [ESP+24] = 0xd0143ff4
@@ -1876,77 +1877,9 @@
 
 [Sched DEBUG] Selected task PID 2 (Prio 1), Slice=100
 [Sched DEBUG] Switching FROM idle task, current ESP will be saved to: 0x0015be6c
-[Sched DEBUG] Context switch: PID 0 (ESP=0xd0143fe4) -> PID 2 (ESP=0xe0008e34) (PD Switch: YES)
-[CTX ASM] Saving context at ESP=0xd0143e80
+[Sched DEBUG] Context switch: PID 0 (ESP=0xd0143fe4) -> PID 2 (ESP=0xe0008e54) (PD Switch: YES)
+[CTX ASM] Saving context at ESP=0xd0143ea0
 [CTX ASM] Segments: GS=10 FS=10 ES=10 DS=10
-[CTX ASM] Restoring from ESP=0xe0008e28
-[CTX ASM] Segments: GS=10 FS=10 ES=10 DS=10
-[Terminal] terminal_read_line_blocking: Woke up from schedule(). Re-checking line.
-[Terminal] terminal_read_line_blocking: Line is ready.
-[Terminal] terminal_read_line_blocking: Copied bytes: 'help'
-[Terminal] terminal_read_line_blocking: Copied bytes: 'help'
-Available commands:
-  exit  - Exit the shell.
-  help  - Display this help message.
-  hello - (Conceptual) Run hello program.
-UiAOS> [Terminal] terminal_read_line_blocking: Enter
-[Terminal] terminal_read_line_blocking: Line not ready, blocking task.
-[Terminal] terminal_read_line_blocking: Calling schedule().
-[Sched DEBUG] Selected task PID 0 (Prio 3), Slice=25
-[Sched DEBUG] Switching TO idle task, saved ESP is: 0xd0143fe4
-[Sched DEBUG] Context switch: PID 2 (ESP=0xe0008e34) -> PID 0 (ESP=0xd0143fe4) (PD Switch: YES)
-[Sched DEBUG] Pre-switch idle stack check (ESP=0xd0143fe4):
-[Sched DEBUG] Stack dump (looking for 0x10 pattern):
-  [ESP+0] = 0x00000000 
-  [ESP+4] = 0x0012695b 
-  [ESP+8] = 0x00000008 
-  [ESP+12] = 0x00000246 
-  [ESP+16] = 0x00000010 <-- KERNEL_DATA_SEL
-  [ESP+20] = 0x00000010 <-- KERNEL_DATA_SEL
-  [ESP+24] = 0xd0143ff4 
-  [ESP+28] = 0x00000010 <-- KERNEL_DATA_SEL
-  [ESP+32] = 0x00000010 <-- KERNEL_DATA_SEL
-  [ESP+36] = 0x00000010 <-- KERNEL_DATA_SEL
-  [ESP+40] = 0x00000010 <-- KERNEL_DATA_SEL
-  [ESP+44] = 0x0000062c 
-  [ESP+48] = 0x00000000 
-  [ESP+52] = 0x00000000 
-  [ESP+56] = 0x00000000 
-  [ESP+60] = 0x00000000 
-  [ESP+64] = 0x00000000 
-  [ESP+68] = 0x00000000 
-  [ESP+72] = 0x00000000 
-  [ESP+76] = 0x00000000 
-  [ESP+36] GS value = 0x00000010 (expect 0x10)
-  [ESP+40] FS value = 0x00000010 (expect 0x10)
-  [ESP+44] ES value = 0x0000062c (expect 0x10)
-  [ESP+48] DS value = 0x00000000 (expect 0x10)
-[Sched ERROR] Idle task stack corruption detected!
-[Sched DEBUG] Full idle stack dump:
-  [ESP+0] = 0x00000000
-  [ESP+4] = 0x0012695b
-  [ESP+8] = 0x00000008
-  [ESP+12] = 0x00000246
-  [ESP+16] = 0x00000010
-  [ESP+20] = 0x00000010
-  [ESP+24] = 0xd0143ff4
-  [ESP+28] = 0x00000010
-  [ESP+32] = 0x00000010
-  [ESP+36] = 0x00000010
-  [ESP+40] = 0x00000010
-  [ESP+44] = 0x0000062c
-  [ESP+48] = 0x00000000
-  [ESP+52] = 0x00000000
-  [ESP+56] = 0x00000000
-  [ESP+60] = 0x00000000
-  [ESP+64] = 0x00000000
-  [ESP+68] = 0x00000000
-  [ESP+72] = 0x00000000
-  [ESP+76] = 0x00000000
-[Sched WARN] Attempting to fix corrupted segment registers...
-[Sched INFO] Found correct pattern at offset -2 words
-[CTX ASM] Saving context at ESP=0xe0008e34
-[CTX ASM] Segments: GS=10 FS=10 ES=10 DS=10
-[CTX ASM] Restoring from ESP=0xd0143fd0
-[CTX ASM] Segments: GS=10 FS=10 ES=10 DS=10
+[CTX ASM] Restoring from ESP=0xe0008e48
+[CTX ASM] Segments: GS=15c000 FS=10074000 ES=10 DS=10
 F
