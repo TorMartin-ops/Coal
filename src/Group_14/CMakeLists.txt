@@ -59,18 +59,36 @@ set(CMAKE_ASM_NASM_COMPILE_OBJECT
 ########################################
 set(OS_KERNEL_LINKER "${CMAKE_CURRENT_SOURCE_DIR}/src/arch/${OS_ARCH_TARGET}/linker.ld") # Make sure this linker script exists and is correct
 
-# Use GLOB_RECURSE to find all source files in src directory relative to CMakeLists.txt
+# Gather kernel source files from organized directories
 file(GLOB_RECURSE KERNEL_SOURCES
-    "src/*.c"
-    "src/*.cpp"
-    "src/*.asm"
+    "boot/*.asm"
+    "kernel/core/*.c"
+    "kernel/core/*.asm"
+    "kernel/cpu/*.c"
+    "kernel/cpu/*.asm"
+    "kernel/memory/*.c"
+    "kernel/memory/*.asm"
+    "kernel/process/*.c"
+    "kernel/process/*.asm"
+    "kernel/sync/*.c"
+    "kernel/sync/*.asm"
+    "kernel/fs/vfs/*.c"
+    "kernel/fs/vfs/*.asm"
+    "kernel/fs/fat/*.c"
+    "kernel/fs/fat/*.asm"
+    "kernel/drivers/storage/*.c"
+    "kernel/drivers/storage/*.asm"
+    "kernel/drivers/input/*.c"
+    "kernel/drivers/input/*.asm"
+    "kernel/drivers/display/*.c"
+    "kernel/drivers/display/*.asm"
+    "kernel/drivers/timer/*.c"
+    "kernel/drivers/timer/*.asm"
+    "kernel/drivers/audio/*.c"
+    "kernel/drivers/audio/*.asm"
+    "kernel/lib/*.c"
+    "kernel/lib/*.asm"
 )
-
-# Filter out user-space sources (using relative paths from CMakeLists.txt)
-list(FILTER KERNEL_SOURCES EXCLUDE REGEX ".*/hello\\.c$")
-list(FILTER KERNEL_SOURCES EXCLUDE REGEX ".*/shell\\.c$")
-list(FILTER KERNEL_SOURCES EXCLUDE REGEX ".*/entry\\.asm$")
-list(FILTER KERNEL_SOURCES EXCLUDE REGEX ".*/user\\.ld$")
 
 # Add the executable using the gathered source files
 add_executable(uiaos-kernel ${KERNEL_SOURCES})
@@ -78,18 +96,19 @@ add_executable(uiaos-kernel ${KERNEL_SOURCES})
 # Include directories for the kernel target
 target_include_directories(uiaos-kernel PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include" # Relative path from CMakeLists.txt
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernel"  # For internal kernel headers
 )
 
 # Specify compile options for C and C++ (Kernel)
 target_compile_options(uiaos-kernel PRIVATE
-    $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -nostdinc -nostdlib -fno-builtin -fno-stack-protector -fno-stack-check -fno-lto -fPIE -m32 -march=i386 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -Wno-main -g -D KLOG_LEVEL_DEBUG> # <-- Added here
-    $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -nostdinc -nostdlib -fno-builtin -fno-stack-protector -fno-stack-check -fno-lto -fPIE -m32 -march=i386 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -g -D KLOG_LEVEL_DEBUG> # <-- Added here
+    $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -nostdinc -nostdlib -fno-builtin -fno-stack-protector -fno-stack-check -fno-lto -fno-pie -fno-pic -m32 -march=i386 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -Wno-main -g -D KLOG_LEVEL_DEBUG> # <-- Added here
+    $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -nostdinc -nostdlib -fno-builtin -fno-stack-protector -fno-stack-check -fno-lto -fno-pie -fno-pic -m32 -march=i386 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -g -D KLOG_LEVEL_DEBUG> # <-- Added here
     $<$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>:-m32 -march=i386 -Wno-unused-variable -Wno-unused-parameter -g>
 )
 
 # Specify link options for C and C++ (Kernel) - Simplified, removed redundancy
 target_link_options(uiaos-kernel PUBLIC
-    -ffreestanding -nostdlib -fno-builtin -static -pie -O0 -T${OS_KERNEL_LINKER} -g -lgcc # Added -lgcc
+    -m32 -ffreestanding -nostdlib -fno-builtin -static -no-pie -O0 -T${OS_KERNEL_LINKER} -g -L/usr/local/lib/gcc/i686-elf/13.2.0 -lgcc # Added -lgcc
 )
 
 # Set properties for the kernel target
@@ -102,8 +121,8 @@ set_target_properties(uiaos-kernel PROPERTIES
 ########################################
 # Use correct relative paths from CMakeLists.txt
 add_executable(hello_elf
-    hello.c     # Assuming hello.c is in the same directory as CMakeLists.txt
-    entry.asm   # Assuming entry.asm is in the same directory as CMakeLists.txt
+    userspace/hello/hello.c
+    userspace/entry.asm
 )
 
 set(OS_USER_LINKER "${CMAKE_CURRENT_SOURCE_DIR}/src/arch/${OS_ARCH_TARGET}/user.ld") # Path relative to CMakeLists.txt
@@ -115,7 +134,13 @@ target_link_options(hello_elf PUBLIC
     -static
     -T${OS_USER_LINKER} # <-- Use the user linker script!
     -g
+    -L/usr/local/lib/gcc/i686-elf/13.2.0
     -lgcc
+)
+
+# Include directories for hello_elf
+target_include_directories(hello_elf PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
 # Compile Options for hello_elf
@@ -131,8 +156,8 @@ set_target_properties(hello_elf PROPERTIES
 set(OS_SHELL_ELF_BINARY "shell.elf")
 
 add_executable(shell_elf
-    shell.c     # Assuming shell.c is in the same directory as CMakeLists.txt
-    entry.asm   # Reusing the same entry.asm
+    userspace/shell/shell.c
+    userspace/entry.asm
 )
 
 # Link Options for shell_elf using user.ld (same as hello_elf)
@@ -142,7 +167,13 @@ target_link_options(shell_elf PUBLIC
     -static
     -T${OS_USER_LINKER}
     -g
+    -L/usr/local/lib/gcc/i686-elf/13.2.0
     -lgcc
+)
+
+# Include directories for shell_elf
+target_include_directories(shell_elf PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
 # Compile Options for shell_elf (same as hello_elf)
@@ -176,11 +207,9 @@ add_custom_command(
     DEPENDS hello_elf shell_elf # Add shell_elf as a dependency
     COMMENT "Creating FAT disk image with hello.elf and shell.elf"
     VERBATIM
-    OUTPUT ${CMAKE_BINARY_DIR}/asm/irq_stubs.o
-    COMMAND nasm ${ASM_FLAGS} ${CMAKE_SOURCE_DIR}/src/irq_stubs.asm -o ${CMAKE_BINARY_DIR}/asm/irq_stubs.o -felf32 -DDEBUG_IRQ_STUBS=1 -DDEBUG_IRQ1_DIRECT=1
-    DEPENDS ${CMAKE_SOURCE_DIR}/src/irq_stubs.asm
-    COMMENT "[NASM] Compiling ASM object (IRQ Stubs): irq_stubs.o"
 )
+
+# NOTE: irq_stubs.asm is now handled by CMake's native NASM support in KERNEL_SOURCES
 
 ########################################
 # OS-Image Target
