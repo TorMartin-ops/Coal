@@ -73,15 +73,18 @@ fi
 echo "DEBUG: Disk file check passed using absolute path."
 
 
+# Create log file path in the same directory as the ISO
+LOG_FILE="$ISO_DIR/qemu_output.log"
+
 # Start QEMU using the ISO with -cdrom AND the disk image with -hdb
-echo "Starting QEMU with ISO (-cdrom=$ABS_ISO_PATH) and Disk (-hdb=$ABS_DISK_PATH), serial output to qemu_output.log"
+echo "Starting QEMU with ISO (-cdrom=$ABS_ISO_PATH) and Disk (-hdb=$ABS_DISK_PATH), serial output to $LOG_FILE"
 qemu-system-i386 -S -gdb tcp::1234 \
                  -boot d \
                  -cdrom "$ABS_ISO_PATH" \
                  -hdb "$ABS_DISK_PATH" \
                  -m 1024 \
                  -audiodev sdl,id=sdl1,out.buffer-length=40000 -machine pcspk-audiodev=sdl1 \
-                 -serial file:qemu_output.log &
+                 -serial file:"$LOG_FILE" &
 
 QEMU_PID=$!
 
@@ -110,13 +113,13 @@ cleanup() {
         kill -9 $QEMU_PID 2>/dev/null
     fi
     echo "QEMU stopped."
-    # Log file is created relative to where QEMU was launched from
-    if [ -f "./qemu_output.log" ]; then
-        echo "--- QEMU Output Log (./qemu_output.log) ---"
-        cat "./qemu_output.log"
+    # Check if log file exists and display it
+    if [ -f "$LOG_FILE" ]; then
+        echo "--- QEMU Output Log ($LOG_FILE) ---"
+        cat "$LOG_FILE"
         echo "-----------------------------------------"
     else
-        echo "DEBUG: Log file ./qemu_output.log not found."
+        echo "DEBUG: Log file $LOG_FILE not found."
     fi
     exit 0
 }
@@ -139,6 +142,8 @@ echo "GDB process detected."
 
 # Monitor the GDB connection / QEMU process
 echo "Monitoring GDB/QEMU..."
+echo "TIP: To see live QEMU output, run in another terminal:"
+echo "  tail -f $LOG_FILE"
 while kill -0 $QEMU_PID 2>/dev/null; do
     if ! is_gdb_running; then
         echo "GDB process appears to have disconnected/exited."
