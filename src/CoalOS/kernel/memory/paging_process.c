@@ -32,6 +32,14 @@ void copy_kernel_pde_entries(uint32_t* new_pd_virt) {
         return;
     }
     
+    // CRITICAL: Also copy the identity mapping for the first 4MB (PDE index 0)
+    // This is needed because kernel code might be executing from the identity-mapped region
+    // during the page directory switch
+    if (g_kernel_page_directory_virt[0] & PAGE_PRESENT) {
+        new_pd_virt[0] = g_kernel_page_directory_virt[0];
+        LOGGER_DEBUG(LOG_MODULE, "Copied identity mapping PDE[0] = %#x", new_pd_virt[0]);
+    }
+    
     // Copy kernel PDEs (everything at or above KERNEL_SPACE_VIRT_START)
     // This typically starts at PDE index 768 (0xC0000000 / 4MB)
     uint32_t kernel_pde_start = PDE_INDEX(KERNEL_SPACE_VIRT_START);

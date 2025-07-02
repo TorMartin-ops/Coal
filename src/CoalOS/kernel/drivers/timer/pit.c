@@ -104,6 +104,8 @@ static inline void pic_send_eoi_line(uint8_t irq_line)
  static void pit_irq_handler(isr_frame_t *frame) {
      (void)frame;    // Mark frame as unused if not directly accessed
 
+     // Debug counter removed - interrupts verified working
+
      // As per the latest advice:
      // 1. Timekeeping / scheduler-tick bookkeeping (scheduler_tick() handles g_tick_count++)
      // 2. ACK the interrupt **before** doing anything that may reschedule.

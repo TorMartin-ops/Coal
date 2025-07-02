@@ -81,9 +81,10 @@ echo "Starting QEMU with ISO (-cdrom=$ABS_ISO_PATH) and Disk (-hdb=$ABS_DISK_PAT
 qemu-system-i386 -S -gdb tcp::1234 \
                  -boot d \
                  -cdrom "$ABS_ISO_PATH" \
-                 -hdb "$ABS_DISK_PATH" \
+                 -drive file="$ABS_DISK_PATH",format=raw,index=1,media=disk \
                  -m 1024 \
-                 -audiodev sdl,id=sdl1,out.buffer-length=40000 -machine pcspk-audiodev=sdl1 \
+                 -nographic \
+                 -audiodev none,id=none1 -machine pcspk-audiodev=none1 \
                  -serial file:"$LOG_FILE" &
 
 QEMU_PID=$!

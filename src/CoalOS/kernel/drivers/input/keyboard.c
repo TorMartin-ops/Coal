@@ -140,35 +140,18 @@ static void keyboard_irq1_handler(isr_frame_t *frame) {
     g_keyboard_irq_fire_count++;
     (void)frame;
     
-    // Debug: Log that we got a keyboard interrupt
-    static uint32_t kb_irq_counter = 0;
-    kb_irq_counter++;
-    if (kb_irq_counter <= 10 || (kb_irq_counter % 100) == 0) {
-        serial_printf("[KB IRQ] Keyboard interrupt #%u fired\n", kb_irq_counter);
-    }
-    
-    // Debug: Check PIC mask state
-    uint8_t pic1_mask = inb(0x21);
-    if (kb_irq_counter <= 5) {
-        serial_printf("[KB IRQ] PIC1 mask: 0x%02x (bit 1 is %s)\n", 
-                      pic1_mask, (pic1_mask & 0x02) ? "SET (KB masked!)" : "clear (KB enabled)");
-    }
+    // Debug logging removed - keyboard interrupts verified working
     
     uint8_t status_from_kbc = inb(KBC_STATUS_PORT);
 
     if (!(status_from_kbc & KBC_SR_OBF)) {
-        if (kb_irq_counter <= 5) {
-            serial_printf("[KB IRQ] No data in buffer (status=0x%02x), sending EOI\n", status_from_kbc);
-        }
+        // No data in buffer - send EOI and return
         pic_send_eoi(1); 
         return; 
     }
     uint8_t scancode = inb(KBC_DATA_PORT);
     
-    // Debug: Log scancode
-    if (kb_irq_counter <= 10) {
-        serial_printf("[KB IRQ] Status=0x%02x, Scancode=0x%02x\n", status_from_kbc, scancode);
-    }
+    // Process scancode
 
     bool is_break_code;
     KeyCode kc = KEY_UNKNOWN;

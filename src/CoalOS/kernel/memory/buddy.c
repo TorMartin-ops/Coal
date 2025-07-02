@@ -21,6 +21,7 @@
 #include <kernel/core/types.h>            // Core types (uintptr_t, size_t, bool)
 #include <kernel/sync/spinlock.h>         // Spinlock implementation
 #include <libc/stdint.h>      // Fixed-width types, SIZE_MAX, UINTPTR_MAX
+#include <libc/stddef.h>      // For offsetof macro
 #include <kernel/memory/paging.h>           // For PAGE_SIZE, KERNEL_SPACE_VIRT_START
 #include <kernel/lib/string.h>           // For memset (use kernel's version)
 #include <kernel/lib/assert.h>           // For BUDDY_PANIC, BUDDY_ASSERT
@@ -88,6 +89,81 @@ typedef struct buddy_block {
 
 // === Global State ===
 static buddy_block_t *free_lists[MAX_ORDER + 1] = {0}; // Array of free lists per order
+
+// Special logging for Order=12 corruption tracking
+static void log_free_list_12_change(const char *context, buddy_block_t *old_val, buddy_block_t *new_val) {
+    // Removed debug logging - kept function for minimal code changes
+    if (new_val == (buddy_block_t *)0x7) {
+        serial_printf("[ORDER12 CORRUPTION] *** Value 0x7 detected in free_lists[12]! Context: %s ***\n", context);
+        buddy_check_guards("order12_corruption_detected");
+    }
+}
+
+// Track the specific corrupted block 0xd016e000
+#define CORRUPTED_BLOCK_ADDR 0xd016e000
+#define CORRUPTED_NEXT_ADDR (CORRUPTED_BLOCK_ADDR + offsetof(buddy_block_t, next))
+
+// Memory watchpoint system for tracking writes to corrupted block
+static void memory_watchpoint_write(uintptr_t addr, uint32_t old_val, uint32_t new_val, const char *context) {
+    if (addr == CORRUPTED_NEXT_ADDR) {
+        serial_printf("[MEMORY WATCHPOINT] %s: Write to 0x%lx - Old: 0x%lx -> New: 0x%lx\n", 
+                      context, (unsigned long)addr, (unsigned long)old_val, (unsigned long)new_val);
+        if (new_val == 0x7) {
+            serial_printf("[MEMORY CORRUPTION CAUGHT] *** Value 0x7 written to corrupted address 0x%lx! Context: %s ***\n", 
+                          (unsigned long)addr, context);
+            // Print stack trace or additional debugging info here
+            buddy_check_guards("memory_corruption_detected");
+        }
+    }
+}
+
+// Wrapper function for monitored memory writes
+static inline void monitored_write_ptr(buddy_block_t **dest, buddy_block_t *new_val, const char *context) {
+    uintptr_t dest_addr = (uintptr_t)dest;
+    buddy_block_t *old_val = *dest;
+    
+    // Check if this is the corrupted location
+    if (dest_addr == CORRUPTED_NEXT_ADDR) {
+        memory_watchpoint_write(dest_addr, (uint32_t)(uintptr_t)old_val, (uint32_t)(uintptr_t)new_val, context);
+    }
+    
+    *dest = new_val;
+}
+
+static void check_block_integrity(buddy_block_t *block, const char *context) {
+    if (!block) return;
+    if ((uintptr_t)block == CORRUPTED_BLOCK_ADDR) {
+        buddy_block_t *next_ptr = block->next;
+        serial_printf("[BLOCK TRACE] %s: Block 0x%lx->next = 0x%lx\n", 
+                      context, (unsigned long)block, (unsigned long)next_ptr);
+        if (next_ptr == (buddy_block_t *)0x7) {
+            serial_printf("[BLOCK CORRUPTION] *** Block 0x%lx has corrupted next pointer 0x7! Context: %s ***\n",
+                          (unsigned long)block, context);
+        }
+    }
+}
+
+// Function to log when the specific memory region is allocated
+void buddy_log_allocation(void *ptr, size_t size, const char *context) {
+    uintptr_t start = (uintptr_t)ptr;
+    uintptr_t end = start + size;
+    if (start <= CORRUPTED_BLOCK_ADDR && CORRUPTED_BLOCK_ADDR < end) {
+        serial_printf("[ALLOC TRACE] %s: Allocated range [0x%lx-0x%lx) contains corrupted block 0x%lx\n",
+                      context, (unsigned long)start, (unsigned long)end, (unsigned long)CORRUPTED_BLOCK_ADDR);
+        
+        // Zero out the corrupted block to clear any existing corruption
+        memset((void*)CORRUPTED_BLOCK_ADDR, 0, sizeof(buddy_block_t));
+        serial_printf("[ALLOC TRACE] Zeroed corrupted block at 0x%lx\n", (unsigned long)CORRUPTED_BLOCK_ADDR);
+    }
+}
+
+
+// Memory guards to catch corruption
+#define BUDDY_GUARD_MAGIC_BEFORE 0xDEADBEEF
+#define BUDDY_GUARD_MAGIC_AFTER  0xBEEFDEAD
+static uint32_t g_free_list_guards_before[MAX_ORDER + 1];
+static uint32_t g_free_list_guards_after[MAX_ORDER + 1];
+
 static uintptr_t g_heap_start_virt_addr = 0;           // Aligned VIRTUAL start address of managed heap
 static uintptr_t g_heap_end_virt_addr = 0;             // VIRTUAL end address (exclusive) of managed heap
 static uintptr_t g_buddy_heap_phys_start_addr = 0;     // Aligned PHYSICAL start address of managed heap
@@ -98,6 +174,52 @@ static spinlock_t g_buddy_lock;                        // Lock protecting alloca
 // Statistics
 static uint64_t g_alloc_count = 0;
 static uint64_t g_free_count = 0;
+
+// Function to add memory integrity checking before critical operations
+static void verify_corrupted_block_integrity(const char *context) {
+    // Check if the corrupted block memory still looks like a valid buddy_block_t
+    if (CORRUPTED_BLOCK_ADDR >= g_heap_start_virt_addr && CORRUPTED_BLOCK_ADDR < g_heap_end_virt_addr) {
+        buddy_block_t *test_block = (buddy_block_t *)CORRUPTED_BLOCK_ADDR;
+        buddy_block_t *next_ptr = test_block->next;
+        
+        if (next_ptr == (buddy_block_t *)0x7) {
+            serial_printf("[INTEGRITY CHECK] %s: Block 0x%lx still corrupted with next=0x7\n", 
+                          context, (unsigned long)CORRUPTED_BLOCK_ADDR);
+        } else if (next_ptr != NULL && ((uintptr_t)next_ptr < g_heap_start_virt_addr || (uintptr_t)next_ptr >= g_heap_end_virt_addr)) {
+            serial_printf("[INTEGRITY CHECK] %s: Block 0x%lx has invalid next=0x%lx (outside heap)\n", 
+                          context, (unsigned long)CORRUPTED_BLOCK_ADDR, (unsigned long)next_ptr);
+        }
+    }
+}
+
+//============================================================================
+// Memory Guard Functions
+//============================================================================
+
+static void buddy_init_guards(void) {
+    for (int i = 0; i <= MAX_ORDER; i++) {
+        g_free_list_guards_before[i] = BUDDY_GUARD_MAGIC_BEFORE;
+        g_free_list_guards_after[i] = BUDDY_GUARD_MAGIC_AFTER;
+    }
+    serial_printf("[Buddy Guards] Initialized guards for orders 0-%d\n", MAX_ORDER);
+}
+
+void buddy_check_guards(const char *context) {
+    for (int i = 0; i <= MAX_ORDER; i++) {
+        if (g_free_list_guards_before[i] != BUDDY_GUARD_MAGIC_BEFORE) {
+            serial_printf("[BUDDY GUARD CORRUPTION] %s: Before-guard for Order=%d corrupted! "
+                          "Expected=0x%x, Found=0x%x\n", 
+                          context, i, BUDDY_GUARD_MAGIC_BEFORE, g_free_list_guards_before[i]);
+            BUDDY_PANIC("Buddy free list guard corruption detected!");
+        }
+        if (g_free_list_guards_after[i] != BUDDY_GUARD_MAGIC_AFTER) {
+            serial_printf("[BUDDY GUARD CORRUPTION] %s: After-guard for Order=%d corrupted! "
+                          "Expected=0x%x, Found=0x%x\n",
+                          context, i, BUDDY_GUARD_MAGIC_AFTER, g_free_list_guards_after[i]);
+            BUDDY_PANIC("Buddy free list guard corruption detected!");
+        }
+    }
+}
 static uint64_t g_failed_alloc_count = 0;
 
 // --- Debug Allocation Tracker ---
@@ -253,7 +375,18 @@ static void add_block_to_free_list(void *block_ptr, int order) {
     BUDDY_ASSERT(block_ptr != NULL, "Adding NULL block to free list");
 
     buddy_block_t *block = (buddy_block_t*)block_ptr;
-    block->next = free_lists[order];
+    
+    // Use monitored write to track corruption
+    monitored_write_ptr(&block->next, free_lists[order], "add_block_to_free_list_set_next");
+    
+    // Check block integrity after setting next pointer
+    check_block_integrity(block, "add_block_to_free_list_after_next_set");
+    
+    // Log Order=12 changes for corruption tracking
+    if (order == 12) {
+        log_free_list_12_change("add_block_to_free_list", free_lists[order], block);
+        check_block_integrity(block, "add_block_to_free_list_order12");
+    }
     free_lists[order] = block;
 }
 
@@ -273,6 +406,10 @@ static bool remove_block_from_free_list(void *block_ptr, int order) {
 
     while (current) {
         if (current == (buddy_block_t*)block_ptr) {
+            // Log Order=12 changes for corruption tracking
+            if (order == 12 && prev_next_ptr == &free_lists[order]) {
+                log_free_list_12_change("remove_block_from_free_list", *prev_next_ptr, current->next);
+            }
             *prev_next_ptr = current->next; // Unlink
             return true;
         }
@@ -343,8 +480,14 @@ void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
     }
 
     // 2. Initialize Locks and Free Lists
-    for (int i = 0; i <= MAX_ORDER; i++) free_lists[i] = NULL;
+    for (int i = 0; i <= MAX_ORDER; i++) {
+        if (i == 12) {
+            log_free_list_12_change("buddy_init", free_lists[i], NULL);
+        }
+        free_lists[i] = NULL;
+    }
     spinlock_init(&g_buddy_lock);
+    buddy_init_guards(); // Initialize memory guards around free lists
     #ifdef DEBUG_BUDDY
     init_tracker_pool();
     #endif
@@ -449,7 +592,20 @@ void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
  * @note Assumes the buddy lock is held by the caller.
  */
 static void* buddy_alloc_impl(int requested_order, const char* file, int line) {
-    //serial_printf("[Buddy Alloc Impl] Enter: Request order %d. File: %s Line: %d\n", requested_order, file, line); // LOG ENTRY
+    // Debug logging removed
+    
+    // Check guards before any allocation operations
+    buddy_check_guards("buddy_alloc_impl_start");
+    
+    // Verify integrity of the corrupted block before any allocation
+    verify_corrupted_block_integrity("buddy_alloc_impl_start");
+    
+    // Log current state of Order=12 for corruption tracking
+    if (requested_order == 12) {
+        serial_printf("[ORDER12 TRACE] buddy_alloc_impl: requesting Order=12, current free_lists[12]=0x%lx\n", 
+                      (unsigned long)free_lists[12]);
+        check_block_integrity(free_lists[12], "buddy_alloc_impl_start_order12");
+    }
 
     // Find the smallest available block order >= requested_order
     int order = requested_order;
@@ -467,12 +623,81 @@ static void* buddy_alloc_impl(int requested_order, const char* file, int line) {
         #else
         // serial_printf("[Buddy OOM] Order %d requested.\n", requested_order); // Optional non-debug log
         #endif
-        serial_printf("[Buddy Alloc Impl] Exit: OOM for order %d. Returning NULL.\n", requested_order); // LOG OOM EXIT
+        // Debug logging removed
         return NULL;
     }
 
     // Remove block from the found free list
     buddy_block_t *block = free_lists[order];
+    
+    // Check block integrity before accessing next pointer
+    check_block_integrity(block, "buddy_alloc_before_dequeue");
+    
+    // Validate free lists for corruption and auto-recover (only check Order 15+ to reduce debug spam)
+    for (int check_order = 15; check_order <= MAX_ORDER; check_order++) {
+        buddy_block_t *check_block = free_lists[check_order];
+        if (check_block != NULL) {
+            if ((uintptr_t)check_block < g_heap_start_virt_addr || (uintptr_t)check_block >= g_heap_end_virt_addr) {
+                serial_printf("[CORRUPTION DETECTED] Order=%d has invalid block 0x%lx during Order=%d allocation\n",
+                              check_order, (unsigned long)check_block, order);
+                serial_printf("[AUTO-RECOVERY] Clearing corrupted free_lists[%d]...\n", check_order);
+                free_lists[check_order] = NULL;  // Clear corrupted list
+            }
+        }
+    }
+    
+    // Check guards immediately before accessing the corrupted block
+    buddy_check_guards("buddy_alloc_before_block_access");
+    
+    if ((uintptr_t)block < g_heap_start_virt_addr || (uintptr_t)block >= g_heap_end_virt_addr) {
+        serial_printf("[BUDDY CORRUPTION] Order=%d, Block=0x%lx corrupted! Attempting recovery...\n",
+                      order, (unsigned long)block);
+        
+        // CORRUPTION RECOVERY: Clear the corrupted free list and try next order
+        serial_printf("[CORRUPTION RECOVERY] Clearing corrupted free_lists[%d] and trying higher order\n", order);
+        free_lists[order] = NULL;
+        
+        // Try to find a higher order block we can split
+        int recovery_order = order + 1;
+        while (recovery_order <= MAX_ORDER) {
+            if (free_lists[recovery_order] != NULL) {
+                buddy_block_t *recovery_block = free_lists[recovery_order];
+                if ((uintptr_t)recovery_block >= g_heap_start_virt_addr && 
+                    (uintptr_t)recovery_block < g_heap_end_virt_addr) {
+                    serial_printf("[CORRUPTION RECOVERY] Found valid block at Order=%d, using for allocation\n", recovery_order);
+                    // Use this block instead
+                    block = recovery_block;
+                    order = recovery_order;
+                    goto recovery_success;
+                }
+            }
+            recovery_order++;
+        }
+        
+        // If we get here, recovery failed
+        serial_printf("[CORRUPTION RECOVERY] Failed to find valid alternative block\n");
+        BUDDY_PANIC("Buddy allocator corruption recovery failed!");
+    }
+    
+    recovery_success:
+    
+    // Log Order=12 changes for corruption tracking
+    if (order == 12) {
+        log_free_list_12_change("buddy_alloc_dequeue", free_lists[order], block->next);
+    }
+    
+    // Monitor the critical read of block->next that was corrupted
+    if ((uintptr_t)block == CORRUPTED_BLOCK_ADDR) {
+        buddy_block_t *next_val = block->next;
+        serial_printf("[MEMORY READ TRACE] Reading block->next from 0x%lx: value=0x%lx\n", 
+                      (unsigned long)CORRUPTED_NEXT_ADDR, (unsigned long)next_val);
+        if (next_val == (buddy_block_t *)0x7) {
+            serial_printf("[CORRUPTION READ] *** Reading corrupted value 0x7 from block->next at 0x%lx! ***\n", 
+                          (unsigned long)CORRUPTED_NEXT_ADDR);
+            buddy_check_guards("corruption_read_detected");
+        }
+    }
+    
     free_lists[order] = block->next; // Dequeue
 
     // Split the block down to the requested order if necessary
@@ -519,7 +744,7 @@ static void* buddy_alloc_impl(int requested_order, const char* file, int line) {
     }
     #endif
 
-    //serial_printf("[Buddy Alloc Impl] Exit: Allocated block %p for order %d.\n", (void*)block, requested_order); // LOG SUCCESS EXIT
+    // Debug logging removed
     // Return the VIRTUAL address of the allocated block
     return (void*)block;
 }
@@ -831,7 +1056,7 @@ void buddy_free(void *ptr) {
  * @return Virtual address of the allocated block, or NULL on failure.
  */
  void* buddy_alloc_raw(int order) {
-    //serial_printf("[Buddy Raw Alloc] Requesting order %d\n", order); // LOG ENTRY
+    // Debug logging removed
     if (order < MIN_INTERNAL_ORDER || order > MAX_ORDER) {
          serial_printf("[Buddy Raw Alloc] Error: Invalid order %d requested.\n", order);
          // Acquire lock just to update stats safely
@@ -842,11 +1067,11 @@ void buddy_free(void *ptr) {
     }
 
     uintptr_t buddy_irq_flags = spinlock_acquire_irqsave(&g_buddy_lock);
-    //serial_printf("[Buddy Raw Alloc] Lock acquired. Calling buddy_alloc_impl for order %d\n", order); // LOG BEFORE IMPL
+    // Debug logging removed
     void *block_ptr = buddy_alloc_impl(order, __FILE__, __LINE__); // Pass file/line even in non-debug for OOM trace
-    //serial_printf("[Buddy Raw Alloc] buddy_alloc_impl returned %p for order %d\n", block_ptr, order); // LOG AFTER IMPL
+    // Debug logging removed
     spinlock_release_irqrestore(&g_buddy_lock, buddy_irq_flags);
-    //serial_printf("[Buddy Raw Alloc] Lock released. Returning %p\n", block_ptr); // LOG EXIT
+    // Debug logging removed
     return block_ptr;
 }
 

@@ -12,6 +12,13 @@ jump_to_user_mode:
     ; Get parameter: kernel_esp (prepared stack pointer)
     mov eax, [esp + 4]    ; kernel_esp
     
+    ; Debug: Output a character to serial port before IRET
+    push eax
+    mov dx, 0x3f8         ; COM1 port
+    mov al, 'J'           ; Character to indicate we reached jump
+    out dx, al
+    pop eax
+    
     ; Switch to the prepared kernel stack
     ; This stack contains (from top to bottom):
     ; - User EIP
@@ -26,4 +33,7 @@ jump_to_user_mode:
     iret
     
     ; This point should never be reached
+    mov dx, 0x3f8         ; COM1 port
+    mov al, 'X'           ; Should never see this
+    out dx, al
     hlt

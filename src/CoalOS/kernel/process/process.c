@@ -443,7 +443,7 @@ extern int load_elf_and_init_memory(const char *path,
       // 1. Push User SS (Stack Segment)
       //    Use the User Data Selector from GDT, ensuring RPL=3.
       kstack_ptr--; // Decrement stack pointer first
-      *kstack_ptr = GDT_USER_DATA_SELECTOR | 3; // OR with RPL 3
+      *kstack_ptr = GDT_USER_DATA_SELECTOR; // Already includes RPL 3
       PROC_DEBUG_PRINTF("Pushed SS = %#lx at %p\n", (unsigned long)*kstack_ptr, kstack_ptr);
  
       // 2. Push User ESP (Stack Pointer)
@@ -461,7 +461,7 @@ extern int load_elf_and_init_memory(const char *path,
       // 4. Push User CS (Code Segment)
       //    Use the User Code Selector from GDT, ensuring RPL=3.
       kstack_ptr--;
-      *kstack_ptr = GDT_USER_CODE_SELECTOR | 3; // OR with RPL 3
+      *kstack_ptr = GDT_USER_CODE_SELECTOR; // Already includes RPL 3
       PROC_DEBUG_PRINTF("Pushed CS = %#lx at %p\n", (unsigned long)*kstack_ptr, kstack_ptr);
  
       // 5. Push User EIP (Instruction Pointer)
@@ -484,6 +484,18 @@ extern int load_elf_and_init_memory(const char *path,
       proc->kernel_esp_for_switch = (uint32_t)kstack_ptr; // This points to the last pushed value (EIP)
  
       serial_printf("  Kernel stack prepared for IRET. Final K_ESP = %#lx\n", (unsigned long)proc->kernel_esp_for_switch);
+     
+     // Debug: Print the values that will be used for IRET
+     serial_printf("  [DEBUG] IRET stack values: EIP=%#lx, CS=%#lx, EFLAGS=%#lx, ESP=%#lx, SS=%#lx\n",
+                   (unsigned long)kstack_ptr[0],  // EIP
+                   (unsigned long)kstack_ptr[1],  // CS
+                   (unsigned long)kstack_ptr[2],  // EFLAGS
+                   (unsigned long)kstack_ptr[3],  // ESP
+                   (unsigned long)kstack_ptr[4]); // SS
+     
+     // Debug: Verify entry point is mapped
+     // For now, just print a message since we don't have a simple way to check
+     serial_printf("  [DEBUG] Entry point 0x%x should be mapped during ELF loading\n", proc->entry_point);
       PROC_DEBUG_PRINTF("Exit\n");
  }
  

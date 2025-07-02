@@ -48,6 +48,9 @@
 #include <kernel/drivers/display/serial.h>         // Essential for early/debug logging
 #include <kernel/lib/assert.h>         // KERNEL_ASSERT, KERNEL_PANIC_HALT
 
+// === Test Functions ===
+extern pcb_t *create_simple_user_process(void);    // Hardcoded user process without filesystem
+
 // === Constants ===
 #define KERNEL_VERSION_STRING "0.1.0" // Coal OS Version
 #define MULTIBOOT2_BOOTLOADER_MAGIC_EXPECTED 0x36d76289
@@ -348,7 +351,8 @@ void main(uint32_t magic, uint32_t mb_info_phys_addr) {
 
         launch_program(SYSTEM_SHELL_PATH, "System Shell");
     } else {
-        terminal_write("  [Kernel] Skipping user process launch due to FS init failure.\n");
+        terminal_write("  [ERROR] Filesystem initialization failed. Cannot launch user processes.\n");
+        terminal_write("  [ERROR] System will continue running with kernel-only functionality.\n");
     }
 
     // --- Re-check and Force KBC Configuration (with OBF clear) ---

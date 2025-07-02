@@ -165,12 +165,15 @@
          if (phdr->p_flags & PF_W) { // Check ELF write flag
              flags |= PAGE_RW;
          }
-         // Note: PF_X (execute) flag isn't directly mapped to typical x86 page flags here.
-         // Apply NX bit based on write permission (heuristic: RW -> NX, R-X -> No NX)
-         if(flags & PAGE_RW) {
-             flags |= PAGE_NX_BIT; // If writable, assume not executable
+         // Check if segment is executable
+         bool is_executable = (phdr->p_flags & PF_X) != 0;
+         
+         // Apply NX bit: if NOT executable, set NX bit
+         // Note: In 32-bit mode without PAE, NX bit might not be available
+         if (!is_executable) {
+             flags |= PAGE_NX_BIT; // Mark as non-executable
          }
-         // If not writable, PAGE_NX_BIT remains unset, allowing execution if EFER.NXE=1
+         // If executable, PAGE_NX_BIT remains unset, allowing execution
  
  
          // Allocate and map each page for this segment

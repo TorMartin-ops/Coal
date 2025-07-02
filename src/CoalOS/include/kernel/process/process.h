@@ -44,6 +44,7 @@ typedef enum {
 // === Process Control Block (PCB) Structure ===
 typedef struct pcb {
     uint32_t pid;                   // Process ID
+    bool is_kernel_task;            // True if this is a kernel task (not user process)
     uint32_t *page_directory_phys;  // Physical address of the process's page directory
     uint32_t entry_point;           // Virtual address of the program's entry point
     void *user_stack_top;           // Virtual address for the initial user ESP setting

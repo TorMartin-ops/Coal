@@ -298,6 +298,9 @@ uint32_t scheduler_get_ticks(void) {
 
 void scheduler_tick(void) {
     g_tick_count++;
+    
+    // Tick count logging removed
+    
     if (!g_scheduler_ready) return;
 
     check_sleeping_tasks();
@@ -307,7 +310,10 @@ void scheduler_tick(void) {
     tcb_t *curr_task = (tcb_t *)curr_task_v;
 
     if (curr_task->pid == IDLE_TASK_PID) {
-        if (g_need_reschedule) { g_need_reschedule = false; schedule(); }
+        if (g_need_reschedule) { 
+            g_need_reschedule = false; 
+            schedule(); 
+        }
         return;
     }
 
@@ -390,10 +396,7 @@ static __attribute__((noreturn)) void kernel_idle_task_loop(void) {
         // This saves power and yields to other tasks if they become ready.
         asm volatile ("sti; hlt");
         
-        // Debug: Log wake from HLT only initially
-        if (loop_count <= 3) {
-            serial_printf("[Idle] Woke from HLT, loop %u\n", loop_count);
-        }
+        // HLT wake logging removed
 
         // Interrupts are automatically disabled by CPU upon IRQ.
         // The IRQ handler (e.g., pit_irq_handler) will re-enable them if necessary
@@ -577,12 +580,7 @@ static tcb_t* scheduler_select_next_task(void) {
 static void perform_context_switch(tcb_t *old_task, tcb_t *new_task) {
     KERNEL_ASSERT(new_task && new_task->process && new_task->process->page_directory_phys, "Invalid new task");
     
-    // Debug: Log context switching
-    if (old_task) {
-        serial_printf("[Sched DEBUG] Context switch: PID %lu -> PID %lu\n", old_task->pid, new_task->pid);
-    } else {
-        serial_printf("[Sched DEBUG] Initial context switch to PID %lu\n", new_task->pid);
-    }
+    // Context switch logging removed
     
     uintptr_t new_kernel_stack_top_vaddr = (new_task->pid == IDLE_TASK_PID)
         ? (uintptr_t)g_idle_task_pcb.kernel_stack_vaddr_top
@@ -592,17 +590,37 @@ static void perform_context_switch(tcb_t *old_task, tcb_t *new_task) {
 
     if (!new_task->has_run && new_task->pid != IDLE_TASK_PID) {
         new_task->has_run = true;
-        SCHED_DEBUG("First run for PID %lu. Jumping to user mode (PD=%p)",
-                      new_task->pid, new_task->process->page_directory_phys);
         
-        // Switch page directory if needed
-        if (pd_needs_switch) {
-            asm volatile("mov %0, %%cr3" : : "r" (new_task->process->page_directory_phys) : "memory");
+        // Check if this is a kernel task or user process
+        if (new_task->process->is_kernel_task) {
+            SCHED_DEBUG("First run for kernel task PID %lu. Starting in kernel mode (PD=%p)",
+                          new_task->pid, new_task->process->page_directory_phys);
+            
+            // Switch page directory if needed
+            if (pd_needs_switch) {
+                asm volatile("mov %0, %%cr3" : : "r" (new_task->process->page_directory_phys) : "memory");
+            }
+            
+            // For kernel tasks, start directly in kernel mode
+            // The context points to the entry point function
+            void (*kernel_task_entry)(void) = (void (*)(void))new_task->process->entry_point;
+            kernel_task_entry();
+            
+            // If kernel task returns, it's a bug - kernel tasks should never return
+            KERNEL_PANIC_HALT("Kernel task returned unexpectedly!");
+        } else {
+            SCHED_DEBUG("First run for user process PID %lu. Jumping to user mode (PD=%p)",
+                          new_task->pid, new_task->process->page_directory_phys);
+            
+            // Switch page directory if needed
+            if (pd_needs_switch) {
+                asm volatile("mov %0, %%cr3" : : "r" (new_task->process->page_directory_phys) : "memory");
+            }
+            
+            // For user processes first run, use IRET to transition to user mode
+            // The context points to a stack prepared with EIP, CS, EFLAGS, ESP, SS for IRET
+            jump_to_user_mode((uint32_t)new_task->context);
         }
-        
-        // For user processes first run, use IRET to transition to user mode
-        // The context points to a stack prepared with EIP, CS, EFLAGS, ESP, SS for IRET
-        jump_to_user_mode((uint32_t)new_task->context);
     } else {
         if (!new_task->has_run && new_task->pid == IDLE_TASK_PID) new_task->has_run = true;
         SCHED_DEBUG("Context switch: PID %lu -> PID %lu (PD Switch: %s)",
@@ -697,14 +715,21 @@ int scheduler_add_task(pcb_t *pcb) {
     // For user processes, use the IRET stack prepared by prepare_initial_kernel_stack
     // This points to a stack with EIP, CS, EFLAGS, ESP, SS ready for IRET
     new_task->context = (uint32_t*)pcb->kernel_esp_for_switch;
-    new_task->priority = SCHED_DEFAULT_PRIORITY;
+    // For kernel tasks, use priority from the PCB if it's a kernel task
+    if (pcb->is_kernel_task) {
+        // For kernel tasks, priority should be passed through another mechanism
+        // For now, default to SCHED_DEFAULT_PRIORITY but this needs fixing
+        new_task->priority = SCHED_DEFAULT_PRIORITY;
+    } else {
+        new_task->priority = SCHED_DEFAULT_PRIORITY;
+    }
     KERNEL_ASSERT(new_task->priority < SCHED_PRIORITY_LEVELS, "Bad default prio");
     new_task->time_slice_ticks = MS_TO_TICKS(g_priority_time_slices_ms[new_task->priority]);
     new_task->ticks_remaining = new_task->time_slice_ticks;
     
     // Initialize priority inheritance fields
-    new_task->base_priority = SCHED_DEFAULT_PRIORITY;
-    new_task->effective_priority = SCHED_DEFAULT_PRIORITY;
+    new_task->base_priority = new_task->priority;
+    new_task->effective_priority = new_task->priority;
     new_task->blocking_task = NULL;
     new_task->blocked_tasks_head = NULL;
     new_task->blocked_tasks_next = NULL;
@@ -816,12 +841,71 @@ void scheduler_start(void) {
     tss_set_kernel_stack((uint32_t)g_current_task->process->kernel_stack_vaddr_top);
 
     if (g_current_task->pid != IDLE_TASK_PID) {
-        // First task is a user process
-        terminal_printf("  [Scheduler Start] Jumping to user mode for PID %lu.\n", (unsigned long)g_current_task->pid);
-        // Set page directory for user process
-        asm volatile("mov %0, %%cr3" : : "r" (g_current_task->process->page_directory_phys) : "memory");
-        // Use IRET to transition to user mode
-        jump_to_user_mode((uint32_t)g_current_task->context);
+        if (g_current_task->process->is_kernel_task) {
+            // First task is a kernel task
+            terminal_printf("  [Scheduler Start] Starting kernel task PID %lu.\n", (unsigned long)g_current_task->pid);
+            // For kernel tasks, set up minimal context and call the entry point directly
+            void (*task_entry)(void) = (void (*)(void))g_current_task->process->entry_point;
+            
+            // Set up the task's stack
+            asm volatile("mov %0, %%esp" : : "r" (g_current_task->context) : "memory");
+            
+            // Call the task function directly (this should not return)
+            task_entry();
+            
+            // If we reach here, the task returned (which it shouldn't)
+            KERNEL_PANIC_HALT("Kernel task returned unexpectedly!");
+        } else {
+            // First task is a user process
+            terminal_printf("  [Scheduler Start] Jumping to user mode for PID %lu.\n", (unsigned long)g_current_task->pid);
+            serial_printf("  [DEBUG] Entry point: 0x%x, User ESP: 0x%x, Context ESP: 0x%x\n",
+                         g_current_task->process->entry_point,
+                         (uint32_t)g_current_task->process->user_stack_top,
+                         g_current_task->context);
+            
+            // Debug: Check control registers before transition
+            uint32_t cr0_val, cr3_val, cr4_val;
+            asm volatile("mov %%cr0, %0" : "=r"(cr0_val));
+            asm volatile("mov %%cr3, %0" : "=r"(cr3_val));
+            asm volatile("mov %%cr4, %0" : "=r"(cr4_val));
+            serial_printf("  [DEBUG] Control regs before jump: CR0=0x%x, CR3=0x%x, CR4=0x%x\n",
+                         cr0_val, cr3_val, cr4_val);
+            
+            // Verify the page directory has kernel mappings before switching
+            uint32_t new_pd_phys = (uint32_t)g_current_task->process->page_directory_phys;
+            serial_printf("  [DEBUG] About to switch to user PD: 0x%x\n", new_pd_phys);
+            
+            // Double-check the page directory is valid
+            if ((new_pd_phys & 0xFFF) != 0) {
+                serial_printf("  [ERROR] Page directory address not aligned: 0x%x\n", new_pd_phys);
+                KERNEL_PANIC_HALT("Invalid page directory alignment");
+            }
+            
+            // Get current EIP to see where we're executing from
+            uint32_t current_eip;
+            asm volatile("call 1f; 1: pop %0" : "=r"(current_eip));
+            serial_printf("  [DEBUG] Current EIP before CR3 switch: 0x%x\n", current_eip);
+            
+            // Set page directory for user process
+            serial_printf("  [DEBUG] Switching CR3 from 0x%x to 0x%x...\n", cr3_val, new_pd_phys);
+            asm volatile("mov %0, %%cr3" : : "r" (new_pd_phys) : "memory");
+            
+            // Check CR3 after setting
+            asm volatile("mov %%cr3, %0" : "=r"(cr3_val));
+            serial_printf("  [DEBUG] CR3 after setting page dir: 0x%x\n", cr3_val);
+            
+            // Debug: Print the IRET stack values one more time
+            uint32_t *iret_stack = (uint32_t*)g_current_task->context;
+            serial_printf("  [DEBUG] IRET stack check: EIP=0x%x, CS=0x%x, EFLAGS=0x%x, ESP=0x%x, SS=0x%x\n",
+                         iret_stack[0], iret_stack[1], iret_stack[2], iret_stack[3], iret_stack[4]);
+            
+            // Debug: Check TSS ESP0
+            uint32_t tss_esp0 = tss_get_esp0();
+            serial_printf("  [DEBUG] TSS ESP0 = 0x%x\n", tss_esp0);
+            
+            // Use IRET to transition to user mode
+            jump_to_user_mode((uint32_t)g_current_task->context);
+        }
     } else {
         // First task is the Idle Task. 
         // Start idle task directly without complex context switching
@@ -879,6 +963,125 @@ void scheduler_unblock_task(tcb_t *task) {
     }
 
     spinlock_release_irqrestore(&queue->lock, queue_irq_flags);
+}
+
+//============================================================================
+// Kernel Task Creation
+//============================================================================
+
+/**
+ * @brief Creates a simple kernel task for testing scheduler functionality
+ * @param entry_point Function to execute as the task
+ * @param priority Task priority (0=highest, 3=lowest)
+ * @param name Descriptive name for the task
+ * @return 0 on success, negative error code on failure
+ */
+int scheduler_create_kernel_task(void (*entry_point)(void), uint8_t priority, const char *name) {
+    if (!entry_point || priority >= SCHED_PRIORITY_LEVELS) {
+        SCHED_ERROR("Invalid parameters: entry_point=%p, priority=%u", entry_point, priority);
+        return SCHED_ERR_INVALID;
+    }
+    
+    // Allocate TCB
+    tcb_t *tcb = kmalloc(sizeof(tcb_t));
+    if (!tcb) {
+        SCHED_ERROR("Failed to allocate TCB for kernel task '%s'", name ? name : "unnamed");
+        return SCHED_ERR_NOMEM;
+    }
+    
+    // Allocate PCB (minimal for kernel task)
+    pcb_t *pcb = kmalloc(sizeof(pcb_t));
+    if (!pcb) {
+        kfree(tcb);
+        SCHED_ERROR("Failed to allocate PCB for kernel task '%s'", name ? name : "unnamed");
+        return SCHED_ERR_NOMEM;
+    }
+    
+    // Allocate kernel stack for the task
+    void *kernel_stack = kmalloc(PROCESS_KSTACK_SIZE);
+    if (!kernel_stack) {
+        kfree(pcb);
+        kfree(tcb);
+        SCHED_ERROR("Failed to allocate kernel stack for task '%s'", name ? name : "unnamed");
+        return SCHED_ERR_NOMEM;
+    }
+    
+    // Get next PID
+    static uint32_t next_pid = 1;
+    uint32_t task_pid = next_pid++;
+    
+    // Initialize PCB (minimal for kernel task)
+    memset(pcb, 0, sizeof(pcb_t));
+    pcb->pid = task_pid;
+    pcb->is_kernel_task = true; // Mark as kernel task
+    
+    // For kernel tasks, use the current kernel page directory
+    extern uint32_t g_kernel_page_directory_phys;
+    pcb->page_directory_phys = (uint32_t*)g_kernel_page_directory_phys;
+    pcb->entry_point = (uint32_t)entry_point;
+    pcb->kernel_stack_vaddr_top = (void*)((uintptr_t)kernel_stack + PROCESS_KSTACK_SIZE);
+    
+    // Set up initial context - prepare stack for context switch
+    uint32_t *stack_ptr = (uint32_t*)pcb->kernel_stack_vaddr_top;
+    
+    // For kernel tasks, create a simple stack frame with just the entry point
+    // This will be used with a simple jump, not a complex interrupt return
+    --stack_ptr; *stack_ptr = (uint32_t)entry_point; // Entry point address for simple call
+    
+    // Complete PCB initialization after stack setup
+    pcb->user_stack_top = pcb->kernel_stack_vaddr_top; // For kernel tasks, user stack is same as kernel stack
+    pcb->kernel_esp_for_switch = (uint32_t)stack_ptr;  // Point to our prepared context
+    
+    // Initialize TCB
+    memset(tcb, 0, sizeof(tcb_t));
+    tcb->process = pcb;
+    tcb->pid = task_pid;
+    tcb->state = TASK_READY;
+    tcb->in_run_queue = false;
+    tcb->has_run = false;
+    tcb->priority = priority;
+    tcb->base_priority = priority;
+    tcb->effective_priority = priority;
+    tcb->time_slice_ticks = MS_TO_TICKS(g_priority_time_slices_ms[priority]);
+    tcb->ticks_remaining = tcb->time_slice_ticks;
+    
+    tcb->context = stack_ptr;
+    
+    SCHED_DEBUG("Created kernel task '%s': PID=%lu, priority=%u, entry=0x%lx, stack=0x%lx",
+                name ? name : "unnamed", (unsigned long)task_pid, priority,
+                (unsigned long)entry_point, (unsigned long)pcb->kernel_stack_vaddr_top);
+    
+    // Add kernel task directly to scheduler (bypass scheduler_add_task to avoid duplicate TCB creation)
+    uintptr_t all_tasks_irq_flags = spinlock_acquire_irqsave(&g_all_tasks_lock);
+    tcb->all_tasks_next = g_all_tasks_head;
+    g_all_tasks_head = tcb;
+    spinlock_release_irqrestore(&g_all_tasks_lock, all_tasks_irq_flags);
+
+    run_queue_t *queue = &g_run_queues[tcb->priority];
+    uintptr_t queue_irq_flags = spinlock_acquire_irqsave(&queue->lock);
+    bool enqueue_success = enqueue_task_locked(tcb);
+    spinlock_release_irqrestore(&queue->lock, queue_irq_flags);
+    
+    if (!enqueue_success) {
+        // Remove from all_tasks list if enqueue failed
+        spinlock_acquire_irqsave(&g_all_tasks_lock);
+        // Simple case: if it's the head, just update head pointer
+        if (g_all_tasks_head == tcb) {
+            g_all_tasks_head = tcb->all_tasks_next;
+        }
+        spinlock_release_irqrestore(&g_all_tasks_lock, all_tasks_irq_flags);
+        
+        kfree(kernel_stack);
+        kfree(pcb);
+        kfree(tcb);
+        SCHED_ERROR("Failed to enqueue kernel task '%s'", name ? name : "unnamed");
+        return SCHED_ERR_FAIL;
+    }
+    
+    SCHED_INFO("Added task PID %lu (Prio %u, Slice %lu ticks)", 
+               (unsigned long)task_pid, priority, (unsigned long)tcb->time_slice_ticks);
+    
+    return 0;
 }
 
 //============================================================================
