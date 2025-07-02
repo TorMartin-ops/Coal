@@ -1,17 +1,69 @@
-.vscode
-src/build_*/*
-venv
-!build_*/kernel.bin
-!build_*/kernel.img
+# Build directories
+build/*/
+!build/CoalOS/.gitkeep
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+*.cmake
+.cmake/
+
+# Binary files
+*.bin
+*.elf
+*.o
+*.a
+*.iso
+*.img
+
+# Log files
+*.log
+*.txt
+
+# IDE specific files
+.vscode/browse.vc*
+.vscode/*.db
+.idea/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
 *.lock
+
+# Debug files
+*.map
+*.sym
+
+# Documentation build
+docs/_build/
+docs/_static/
+docs/_templates/
+
+# Python
+venv/
 *.egg-info*
-.cmake
-CMakeCache*
-CMakeFiles
-iso
+__pycache__/
+*.py[cod]
 .env
+
+# Ninja build
 build.ninja
 .ninja*
 
-00_per_arne
-src/group_name/src/kernel.c
+# ISO build directory
+iso/
+
+# Keep important files
+!build/CoalOS/
+!src/CoalOS/
