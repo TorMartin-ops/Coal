@@ -83,6 +83,15 @@ void scheduler_init(void);
 int scheduler_add_task(pcb_t *pcb);
 
 /**
+ * @brief Creates a simple kernel task for testing scheduler functionality.
+ * @param entry_point Function to execute as the task.
+ * @param priority Task priority (0=highest, 3=lowest).
+ * @param name Descriptive name for the task.
+ * @return 0 on success, negative error code on failure.
+ */
+int scheduler_create_kernel_task(void (*entry_point)(void), uint8_t priority, const char *name);
+
+/**
  * @brief Core scheduler function. Selects next task, performs context switch.
  * @note Called with interrupts disabled.
  */

@@ -19,6 +19,14 @@ _start:
     ; including any arguments (argc, argv) and environment variables, before
     ; transferring control to this _start routine. This simple entry point
     ; does not explicitly process argc/argv.
+    
+    ; First instruction: just a NOP to see if we even execute one instruction
+    nop
+    
+    ; Debug: Make a simple syscall first to verify we reached user space
+    mov eax, 7      ; SYS_PUTS
+    mov ebx, debug_msg
+    int 0x80
 
     call main       ; Invoke the C main function.
                     ; Per System V i386 ABI, 'main' returns its result in EAX.
@@ -43,3 +51,6 @@ hang:
     cli             ; Disable interrupts as a safety measure.
     hlt             ; Halt the processor.
     jmp hang        ; Loop indefinitely if somehow resumed.
+
+section .data
+debug_msg db "DEBUG: Reached _start in userspace!", 0

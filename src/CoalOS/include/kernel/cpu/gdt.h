@@ -18,8 +18,8 @@ extern "C" {
 // Index 2: Kernel Data Segment (Base=0, Limit=4G, Type=Data, DPL=0, G=1, DB=1)
 #define KERNEL_DATA_SELECTOR 0x10 // (2 * 8) | 0
 
- #define GDT_USER_CODE_SELECTOR 0x18 | 0x03 // 3rd entry (index 3), RPL 3
- #define GDT_USER_DATA_SELECTOR 0x20 | 0x03 // 4th entry (index 4), RPL 3
+ #define GDT_USER_CODE_SELECTOR (0x18 | 0x03) // 3rd entry (index 3), RPL 3
+ #define GDT_USER_DATA_SELECTOR (0x20 | 0x03) // 4th entry (index 4), RPL 3
 
 
 struct gdt_entry {

@@ -310,21 +310,27 @@ static int32_t sys_read_impl(uint32_t fd_arg, uint32_t user_buf_ptr, uint32_t co
 
         ssize_t bytes_read_this_chunk;
         
+        // Special case for STDIN_FILENO - read from terminal
+        if (fd == STDIN_FILENO) {
+            bytes_read_this_chunk = terminal_read_line_blocking(kbuf, current_chunk_size);
+        }
         // Check if this is a pipe file descriptor
-        pcb_t *current_process = get_current_process();
-        if (current_process && fd >= 0 && fd < MAX_FD && current_process->fd_table[fd]) {
-            sys_file_t *sf = current_process->fd_table[fd];
-            if (sf && sf->vfs_file && sf->vfs_file->vnode && 
-                sf->vfs_file->vnode->fs_driver == NULL && sf->vfs_file->vnode->data != NULL) {
-                // This is a pipe - call pipe_read_operation directly
-                bytes_read_this_chunk = pipe_read_operation(sf->vfs_file->vnode, kbuf, current_chunk_size, 0);
+        else {
+            pcb_t *current_process = get_current_process();
+            if (current_process && fd >= 0 && fd < MAX_FD && current_process->fd_table[fd]) {
+                sys_file_t *sf = current_process->fd_table[fd];
+                if (sf && sf->vfs_file && sf->vfs_file->vnode && 
+                    sf->vfs_file->vnode->fs_driver == NULL && sf->vfs_file->vnode->data != NULL) {
+                    // This is a pipe - call pipe_read_operation directly
+                    bytes_read_this_chunk = pipe_read_operation(sf->vfs_file->vnode, kbuf, current_chunk_size, 0);
+                } else {
+                    // Regular file - use existing VFS path
+                    bytes_read_this_chunk = sys_read(fd, kbuf, current_chunk_size);
+                }
             } else {
-                // Regular file - use existing VFS path
+                // Invalid fd or process - use existing VFS path which will return appropriate error
                 bytes_read_this_chunk = sys_read(fd, kbuf, current_chunk_size);
             }
-        } else {
-            // Invalid fd or process - use existing VFS path which will return appropriate error
-            bytes_read_this_chunk = sys_read(fd, kbuf, current_chunk_size);
         }
 
         if (bytes_read_this_chunk < 0) {
@@ -481,15 +487,31 @@ static int32_t sys_getpid_impl(uint32_t arg1, uint32_t arg2, uint32_t arg3, isr_
     return (int32_t)current_proc->pid;
 }
 
+// Forward declaration for buddy guard checking
+extern void buddy_check_guards(const char *context);
+
 static int32_t sys_puts_impl(uint32_t user_str_ptr_arg, uint32_t arg2, uint32_t arg3, isr_frame_t *regs) {
     (void)arg2; (void)arg3; (void)regs;
     const_userptr_t user_str_ptr = (const_userptr_t)user_str_ptr_arg;
     char kbuffer[MAX_PUTS_LEN];
 
+    // Check buddy guards at start of SYS_PUTS
+    buddy_check_guards("sys_puts_start");
+
     int copy_err = strncpy_from_user_safe(user_str_ptr, kbuffer, sizeof(kbuffer));
-    if (copy_err != 0) return copy_err;
+    if (copy_err != 0) {
+        buddy_check_guards("sys_puts_copy_error");
+        return copy_err;
+    }
+
+    // Check guards after memory copy but before terminal write
+    buddy_check_guards("sys_puts_before_terminal_write");
 
     terminal_write(kbuffer); // sys_puts usually writes to stdout.
+    
+    // Check guards after terminal write
+    buddy_check_guards("sys_puts_after_terminal_write");
+    
     // Standard puts adds a newline. If this sys_puts should too:
     // terminal_putchar('\n');
     return 0; // Return non-negative on success.
@@ -1561,6 +1583,14 @@ int32_t syscall_dispatcher(isr_frame_t *regs) {
     int32_t ret_val;
 
     pcb_t* current_proc = get_current_process();
+    
+    // Debug output for first few syscalls
+    static int syscall_count = 0;
+    if (syscall_count < 10) {
+        serial_printf("[SYSCALL DEBUG] Syscall #%d: num=%u, arg1=%x, arg2=%x, arg3=%x\n", 
+                      syscall_count++, syscall_num, arg1_ebx, arg2_ecx, arg3_edx);
+    }
+    
     if (!current_proc && syscall_num != SYS_EXIT && syscall_num != __NR_exit) {
         KERNEL_PANIC_HALT("Syscall (not SYS_EXIT) executed without process context!");
         //This path should ideally not be reached if process management is robust.
@@ -1568,12 +1598,12 @@ int32_t syscall_dispatcher(isr_frame_t *regs) {
     }
 
     // Check if we're in Linux compatibility mode
-    if (linux_compat_mode && syscall_num < __NR_syscalls) {
-        // Use Linux syscall dispatcher
+    if (linux_compat_mode && syscall_num < __NR_syscalls && syscall_num >= 100) {
+        // Use Linux syscall dispatcher for syscalls >= 100
         ret_val = linux_syscall_dispatcher(syscall_num, arg1_ebx, arg2_ecx, 
                                          arg3_edx, arg4_esi, arg5_edi);
     } else if (syscall_num < MAX_SYSCALLS && syscall_table[syscall_num] != NULL) {
-        // Use CoalOS native syscalls
+        // Use CoalOS native syscalls (including low-numbered ones)
         ret_val = syscall_table[syscall_num](arg1_ebx, arg2_ecx, arg3_edx, regs);
     } else {
         ret_val = -ENOSYS;

@@ -95,7 +95,11 @@ void* buddy_alloc_raw(int order);
 
 void buddy_free_raw(void* block_addr_virt, int order);
 
-
+/**
+ * @brief Debug function to check memory guards around buddy free lists
+ * @param context String describing where the check is called from
+ */
+void buddy_check_guards(const char *context);
 
 
 #endif // BUDDY_H

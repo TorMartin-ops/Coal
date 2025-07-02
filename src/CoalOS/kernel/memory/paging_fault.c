@@ -70,8 +70,33 @@ void page_fault_handler(registers_t* regs) {
     // Find the VMA for this address
     vma_struct_t *vma = find_vma(process->mm, fault_addr);
     if (!vma) {
-        LOGGER_ERROR(LOG_MODULE, "No VMA found for address %p", (void*)fault_addr);
-        goto fatal;
+        // Check if this might be a stack growth situation
+        // Look for a VMA just above the fault address with VM_GROWS_DOWN flag
+        uintptr_t page_aligned_fault = fault_addr & ~(PAGE_SIZE - 1);
+        
+        // Try to find a VMA that starts within one page above the fault
+        vma = find_vma(process->mm, page_aligned_fault + PAGE_SIZE);
+        
+        if (vma && (vma->vm_flags & VM_GROWS_DOWN)) {
+            // Check if the fault is within reasonable stack growth distance
+            // (typically within a few pages of the current stack bottom)
+            if (fault_addr >= (vma->vm_start - (16 * PAGE_SIZE))) {
+                LOGGER_DEBUG(LOG_MODULE, "Stack growth detected: extending VMA down to %p", 
+                            (void*)page_aligned_fault);
+                
+                // Extend the VMA downward
+                vma->vm_start = page_aligned_fault;
+                
+                // Fall through to normal fault handling which will allocate the page
+            } else {
+                LOGGER_ERROR(LOG_MODULE, "Stack growth too large: fault at %p, stack at %p",
+                            (void*)fault_addr, (void*)vma->vm_start);
+                goto fatal;
+            }
+        } else {
+            LOGGER_ERROR(LOG_MODULE, "No VMA found for address %p", (void*)fault_addr);
+            goto fatal;
+        }
     }
     
     // Try to handle the fault through the memory manager

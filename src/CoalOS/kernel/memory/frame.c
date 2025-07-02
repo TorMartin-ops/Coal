@@ -462,7 +462,14 @@ uintptr_t frame_alloc(void) {
     FRAME_PRINT(2, "[Frame Alloc] PFN=%lu, Current refcount=%lu\n", (unsigned long)pfn, (unsigned long)current_refcount);
 
     // This assertion is vital: We should only be allocating frames that are currently free (refcount 0).
-    FRAME_ASSERT(current_refcount == 0, "Allocating frame that already has non-zero refcount!");
+    if (current_refcount != 0) {
+        serial_printf("[Frame ERROR] PFN %lu has refcount %lu, expected 0!\n", 
+                      (unsigned long)pfn, (unsigned long)current_refcount);
+        serial_printf("[Frame ERROR] Physical addr 0x%lx, Virtual addr received 0x%lx\n",
+                      (unsigned long)block_phys, (unsigned long)virt_addr_received);
+        spinlock_release_irqrestore(&g_frame_lock, irq_flags);
+        return 0; // Return failure instead of crashing
+    }
 
     g_frame_refcounts[pfn] = 1; // Mark as allocated (set refcount to 1)
     FRAME_PRINT(1, "[Frame Alloc] PFN=%lu, Refcount set to 1.\n", (unsigned long)pfn);
