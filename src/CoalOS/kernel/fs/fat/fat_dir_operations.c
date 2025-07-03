@@ -92,7 +92,7 @@ vnode_t *fat_dir_operations_open_internal(void *fs_context, const char *path, in
         // Check O_EXCL flag if creating
         if ((flags & O_CREAT) && (flags & O_EXCL)) {
             FAT_ERROR_LOG("File '%s' exists and O_CREAT|O_EXCL flags were specified", path);
-            ret_err = -FS_ERR_FILE_EXISTS;
+            ret_err = FS_ERR_FILE_EXISTS;
             goto open_fail_locked;
         }
         
@@ -100,7 +100,7 @@ vnode_t *fat_dir_operations_open_internal(void *fs_context, const char *path, in
         if (is_dir && (flags & (O_WRONLY | O_RDWR | O_TRUNC | O_APPEND))) {
             FAT_ERROR_LOG("Cannot open directory '%s' with write/truncate/append flags (0x%x)", 
                          path, flags);
-            ret_err = -FS_ERR_IS_A_DIRECTORY;
+            ret_err = FS_ERR_IS_A_DIRECTORY;
             goto open_fail_locked;
         }
         
@@ -109,7 +109,7 @@ vnode_t *fat_dir_operations_open_internal(void *fs_context, const char *path, in
             if (!(flags & (O_WRONLY | O_RDWR))) {
                 FAT_ERROR_LOG("O_TRUNC specified for '%s' but no write permission requested (flags 0x%x)", 
                              path, flags);
-                ret_err = -FS_ERR_PERMISSION_DENIED;
+                ret_err = FS_ERR_PERMISSION_DENIED;
                 goto open_fail_locked;
             }
             FAT_INFO_LOG("Handling O_TRUNC for existing file '%s', original size=%lu", 

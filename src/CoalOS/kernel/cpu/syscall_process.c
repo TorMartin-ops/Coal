@@ -36,21 +36,18 @@ int32_t sys_exit_impl(uint32_t code, uint32_t arg2, uint32_t arg3, isr_frame_t *
     
     pcb_t *current = get_current_process();
     if (!current) {
-        KERNEL_PANIC_HALT("sys_exit called without process context!");
+        serial_printf("[Exit] sys_exit called without process context! Ignoring.\n");
         return -EFAULT;
     }
     
     serial_printf("[Exit] Process PID %u exiting with code %u\n", current->pid, code);
     
-    // Set exit status
-    current->exit_status = (int)code;
-    current->state = PROC_ZOMBIE;
+    // Mark the current task as zombie and remove it from scheduler
+    // This function will not return as it performs a context switch
+    remove_current_task_with_code(code);
     
-    // TODO: Notify parent, clean up resources
-    // For now, just halt the system as this is likely the only process
-    KERNEL_PANIC_HALT("Process exit not fully implemented - system halting");
-    
-    return 0; // Never reached
+    // Should never reach here
+    return 0;
 }
 
 int32_t sys_fork_impl(uint32_t arg1, uint32_t arg2, uint32_t arg3, isr_frame_t *regs)
@@ -179,10 +176,28 @@ int32_t sys_waitpid_impl(uint32_t pid, uint32_t user_status_ptr, uint32_t option
         return -ESRCH;
     }
     
-    // TODO: Implement proper waitpid logic
-    // For now, just return error as we don't have full process management
-    serial_printf("[Waitpid] PID %u waiting for child PID %u (not implemented)\n", 
-                  current->pid, pid);
+    // Check for obviously invalid PIDs (garbage values)
+    if (pid > 10000) {
+        serial_printf("[Waitpid] PID %u attempted to wait for invalid child PID %u (too large)\n", 
+                      current->pid, pid);
+        return -ECHILD;
+    }
+    
+    // TODO: Implement proper waitpid logic with process hierarchy
+    // For now, if the caller is repeatedly calling waitpid for non-existent children,
+    // we should exit the process to prevent infinite loops
+    static uint32_t waitpid_call_count = 0;
+    waitpid_call_count++;
+    
+    serial_printf("[Waitpid] PID %u waiting for child PID %u (not implemented, call #%u)\n", 
+                  current->pid, pid, waitpid_call_count);
+    
+    // If a process makes too many waitpid calls for non-existent children, exit it
+    if (waitpid_call_count > 10) {
+        serial_printf("[Waitpid] PID %u made too many waitpid calls for non-existent children, exiting process\n", 
+                      current->pid);
+        return sys_exit_impl(1, 0, 0, regs); // Exit with error code 1
+    }
     
     (void)options; // Suppress unused parameter warning
     
