@@ -204,3 +204,27 @@
      // Returning the raw head pointer. Caller must be aware of concurrency implications.
      return g_mount_list_head;
  }
+
+/**
+ * @brief Finds a mount entry by device ID (thread-safe).
+ * 
+ * @param device_id The device ID to search for.
+ * @return Pointer to the found mount_t entry if found, or NULL otherwise.
+ */
+mount_t *mount_find_by_device_id(uint32_t device_id) {
+    uintptr_t irq_flags = spinlock_acquire_irqsave(&g_mount_table_lock);
+    
+    mount_t *iter = g_mount_list_head;
+    while (iter) {
+        // Check if this mount has the requested device ID
+        // Note: We need to ensure mount_t has a device_id field
+        if (iter->device && iter->device_id == device_id) {
+            spinlock_release_irqrestore(&g_mount_table_lock, irq_flags);
+            return iter;
+        }
+        iter = iter->next;
+    }
+    
+    spinlock_release_irqrestore(&g_mount_table_lock, irq_flags);
+    return NULL;
+}

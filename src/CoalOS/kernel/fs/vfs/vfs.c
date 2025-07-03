@@ -580,7 +580,29 @@
      serial_write("[vfs_open] Enter. Path='"); serial_write(path ? path : "NULL");
      serial_write("', Flags=0x"); serial_print_hex((uint32_t)flags); serial_write("\n");
 
-     if (!path || path[0] != '/') { /* ... error logging ... */ return NULL; }
+     // Enhanced path validation
+     if (!path) {
+         serial_write("[vfs_open] ERROR: NULL path parameter\n");
+         return NULL;
+     }
+     
+     // Check for empty path or invalid first character
+     if (path[0] == '\0') {
+         serial_write("[vfs_open] ERROR: Empty path\n");
+         return NULL;
+     }
+     
+     if (path[0] != '/') {
+         serial_write("[vfs_open] ERROR: Path must start with '/'\n");
+         return NULL;
+     }
+     
+     // Validate path length to prevent buffer overflows  
+     size_t path_len = strlen(path);
+     if (path_len >= 4096) { // Reasonable path length limit
+         serial_printf("[vfs_open] ERROR: Path too long: %zu chars\n", path_len);
+         return NULL;
+     }
 
      // 1. Find mount point and driver
      mount_t *mnt = find_best_mount_for_path(path);
@@ -786,6 +808,103 @@
   * @param path Absolute path to the item to delete.
   * @return FS_SUCCESS or negative error code.
   */
+ /**
+  * @brief Create a directory
+  * @param path Path to the directory to create
+  * @param mode Directory permissions
+  * @return 0 on success, negative error code on failure
+  */
+ int vfs_mkdir(const char *path, mode_t mode) {
+     VFS_DEBUG_LOG("vfs_mkdir: Enter. Path='%s', mode=0%o", path ? path : "NULL", mode);
+     
+     // Validate path
+     if (!path || path[0] != '/') {
+         VFS_ERROR("vfs_mkdir: Invalid path");
+         return -FS_ERR_INVALID_PARAM;
+     }
+     
+     // Find mount point and driver
+     mount_t *mnt = find_best_mount_for_path(path);
+     if (!mnt) {
+         VFS_ERROR("vfs_mkdir: No mount point found for path '%s'", path);
+         return -FS_ERR_NOT_FOUND;
+     }
+     
+     vfs_driver_t *driver = vfs_get_driver(mnt->fs_name);
+     if (!driver) {
+         VFS_ERROR("vfs_mkdir: No driver found for filesystem '%s'", mnt->fs_name);
+         return -FS_ERR_NOT_FOUND;
+     }
+     
+     // Check if driver supports mkdir
+     if (!driver->mkdir) {
+         VFS_ERROR("vfs_mkdir: Driver '%s' does not support mkdir operation", driver->fs_name);
+         return -FS_ERR_NOT_SUPPORTED;
+     }
+     
+     // Get relative path
+     const char *rel_path = get_relative_path(path, mnt);
+     
+     // Call driver's mkdir function
+     int result = driver->mkdir(mnt->fs_context, rel_path, mode);
+     
+     if (result == 0) {
+         VFS_DEBUG_LOG("vfs_mkdir: Successfully created directory '%s'", path);
+     } else {
+         VFS_ERROR("vfs_mkdir: Failed to create directory '%s', error: %d", path, result);
+     }
+     
+     return result;
+ }
+
+ /**
+  * @brief Remove a directory
+  * @param path Path to the directory to remove
+  * @return 0 on success, negative error code on failure
+  */
+ int vfs_rmdir(const char *path) {
+     VFS_DEBUG_LOG("vfs_rmdir: Enter. Path='%s'", path ? path : "NULL");
+     
+     // Validate path
+     if (!path || path[0] != '/') {
+         VFS_ERROR("vfs_rmdir: Invalid path");
+         return -FS_ERR_INVALID_PARAM;
+     }
+     
+     // Find mount point and driver
+     mount_t *mnt = find_best_mount_for_path(path);
+     if (!mnt) {
+         VFS_ERROR("vfs_rmdir: No mount point found for path '%s'", path);
+         return -FS_ERR_NOT_FOUND;
+     }
+     
+     vfs_driver_t *driver = vfs_get_driver(mnt->fs_name);
+     if (!driver) {
+         VFS_ERROR("vfs_rmdir: No driver found for filesystem '%s'", mnt->fs_name);
+         return -FS_ERR_NOT_FOUND;
+     }
+     
+     // Check if driver supports rmdir
+     if (!driver->rmdir) {
+         VFS_ERROR("vfs_rmdir: Driver '%s' does not support rmdir operation", driver->fs_name);
+         return -FS_ERR_NOT_SUPPORTED;
+     }
+     
+     // Get relative path
+     const char *rel_path = get_relative_path(path, mnt);
+     
+     // Call driver's rmdir function
+     int result = driver->rmdir(mnt->fs_context, rel_path);
+     
+     if (result == 0) {
+         VFS_DEBUG_LOG("vfs_rmdir: Successfully removed directory '%s'", path);
+     } else {
+         VFS_ERROR("vfs_rmdir: Failed to remove directory '%s', error: %d", path, result);
+     }
+     
+     return result;
+ }
+
  int vfs_unlink(const char *path) {
      if (!path || path[0] != '/') { VFS_ERROR("vfs_unlink: Invalid path '%s'", path ? path : "NULL"); return -FS_ERR_INVALID_PARAM; }
      VFS_DEBUG_LOG("vfs_unlink: path='%s'", path);
@@ -856,7 +975,8 @@
  /**
   * @brief Checks if a path exists by attempting to open it read-only.
   */
-  bool vfs_path_exists(const char *path) {
+ 
+ bool vfs_path_exists(const char *path) {
      if (!path) return false;
      VFS_DEBUG_LOG("vfs_path_exists: Checking '%s'", path);
      file_t *file = vfs_open(path, O_RDONLY);

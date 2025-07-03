@@ -32,10 +32,12 @@
      void *fs_context;
      /** Pointer to the next mount_t entry in the global linked list. */
      struct mount *next;
-     // Optional: Add device identifier string here if needed frequently
-     // const char *device_name;
-     // Optional: Add pointer to vfs_driver_t here for quick access?
-     // struct vfs_driver *driver;
+     /** Device name string (e.g., "hda", "hdb") */
+     const char *device;
+     /** Unique device ID for this mount */
+     uint32_t device_id;
+     /** Filesystem type (e.g., "FAT16", "FAT32") - for quick reference */
+     const char *fs_type;
  } mount_t;
  
  

@@ -371,8 +371,17 @@ static inline uintptr_t get_buddy_addr(uintptr_t block_addr, int order) {
  * @note Assumes the buddy lock is held by the caller.
  */
 static void add_block_to_free_list(void *block_ptr, int order) {
-    BUDDY_ASSERT(order >= MIN_INTERNAL_ORDER && order <= MAX_ORDER, "Invalid order in add_block_to_free_list");
-    BUDDY_ASSERT(block_ptr != NULL, "Adding NULL block to free list");
+    // Validate parameters - use graceful error handling instead of assertions
+    if (order < MIN_INTERNAL_ORDER || order > MAX_ORDER) {
+        serial_printf("[Buddy ERROR] Invalid order %d in add_block_to_free_list (valid: %d-%d)\n", 
+                      order, MIN_INTERNAL_ORDER, MAX_ORDER);
+        return; // Gracefully fail instead of crashing
+    }
+    
+    if (!block_ptr) {
+        serial_printf("[Buddy ERROR] Attempting to add NULL block to free list (order %d)\n", order);
+        return; // Gracefully fail instead of crashing
+    }
 
     buddy_block_t *block = (buddy_block_t*)block_ptr;
     
@@ -398,8 +407,17 @@ static void add_block_to_free_list(void *block_ptr, int order) {
  * @note Assumes the buddy lock is held by the caller.
  */
 static bool remove_block_from_free_list(void *block_ptr, int order) {
-    BUDDY_ASSERT(order >= MIN_INTERNAL_ORDER && order <= MAX_ORDER, "Invalid order in remove_block_from_free_list");
-    BUDDY_ASSERT(block_ptr != NULL, "Removing NULL block from free list");
+    // Validate parameters - use graceful error handling instead of assertions
+    if (order < MIN_INTERNAL_ORDER || order > MAX_ORDER) {
+        serial_printf("[Buddy ERROR] Invalid order %d in remove_block_from_free_list (valid: %d-%d)\n", 
+                      order, MIN_INTERNAL_ORDER, MAX_ORDER);
+        return false; // Return error instead of crashing
+    }
+    
+    if (!block_ptr) {
+        serial_printf("[Buddy ERROR] Attempting to remove NULL block from free list (order %d)\n", order);
+        return false; // Return error instead of crashing
+    }
 
     buddy_block_t **prev_next_ptr = &free_lists[order];
     buddy_block_t *current = free_lists[order];
@@ -583,110 +601,115 @@ void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
 
 // === Allocation ===
 
-/**
- * @brief Internal implementation for buddy allocation. Finds/splits blocks.
- * @param requested_order The desired block order.
- * @param file Source file name (for debug builds).
- * @param line Source line number (for debug builds).
- * @return Virtual address of the allocated block, or NULL on failure.
- * @note Assumes the buddy lock is held by the caller.
- */
-static void* buddy_alloc_impl(int requested_order, const char* file, int line) {
-    // Debug logging removed
-    
-    // Check guards before any allocation operations
-    buddy_check_guards("buddy_alloc_impl_start");
-    
-    // Verify integrity of the corrupted block before any allocation
-    verify_corrupted_block_integrity("buddy_alloc_impl_start");
-    
-    // Log current state of Order=12 for corruption tracking
-    if (requested_order == 12) {
-        serial_printf("[ORDER12 TRACE] buddy_alloc_impl: requesting Order=12, current free_lists[12]=0x%lx\n", 
-                      (unsigned long)free_lists[12]);
-        check_block_integrity(free_lists[12], "buddy_alloc_impl_start_order12");
-    }
+//============================================================================
+// Refactored Helper Functions Following SRP
+//============================================================================
 
-    // Find the smallest available block order >= requested_order
+/**
+ * @brief Performs comprehensive integrity checks before allocation
+ * @param context Description of when this check is performed
+ */
+static void verify_allocator_integrity(const char *context) {
+    buddy_check_guards(context);
+    verify_corrupted_block_integrity(context);
+}
+
+/**
+ * @brief Finds the smallest suitable block order for allocation
+ * @param requested_order Minimum required order
+ * @return Order of found block, or MAX_ORDER + 1 if no suitable block found
+ */
+static int find_suitable_order(int requested_order) {
     int order = requested_order;
     while (order <= MAX_ORDER) {
         if (free_lists[order] != NULL) {
-            break; // Found a suitable free list
+            return order; // Found a suitable free list
         }
         order++;
     }
+    return MAX_ORDER + 1; // Out of memory
+}
 
-    if (order > MAX_ORDER) { // Out of memory
-        g_failed_alloc_count++;
-        #ifdef DEBUG_BUDDY
-        serial_printf("[Buddy OOM @ %s:%d] Order %d requested, no suitable blocks found.\n", file, line, requested_order);
-        #else
-        // serial_printf("[Buddy OOM] Order %d requested.\n", requested_order); // Optional non-debug log
-        #endif
-        // Debug logging removed
-        return NULL;
-    }
-
-    // Remove block from the found free list
-    buddy_block_t *block = free_lists[order];
-    
-    // Check block integrity before accessing next pointer
-    check_block_integrity(block, "buddy_alloc_before_dequeue");
-    
-    // Validate free lists for corruption and auto-recover (only check Order 15+ to reduce debug spam)
+/**
+ * @brief Validates and cleans corrupted free lists (defensive programming)
+ * @param current_order The order being processed
+ */
+static void validate_and_clean_free_lists(int current_order) {
+    // Only check higher orders to reduce debug spam
     for (int check_order = 15; check_order <= MAX_ORDER; check_order++) {
         buddy_block_t *check_block = free_lists[check_order];
         if (check_block != NULL) {
-            if ((uintptr_t)check_block < g_heap_start_virt_addr || (uintptr_t)check_block >= g_heap_end_virt_addr) {
+            if ((uintptr_t)check_block < g_heap_start_virt_addr || 
+                (uintptr_t)check_block >= g_heap_end_virt_addr) {
                 serial_printf("[CORRUPTION DETECTED] Order=%d has invalid block 0x%lx during Order=%d allocation\n",
-                              check_order, (unsigned long)check_block, order);
+                              check_order, (unsigned long)check_block, current_order);
                 serial_printf("[AUTO-RECOVERY] Clearing corrupted free_lists[%d]...\n", check_order);
                 free_lists[check_order] = NULL;  // Clear corrupted list
             }
         }
     }
+}
+
+/**
+ * @brief Attempts to recover from block corruption by finding alternative blocks
+ * @param corrupted_order The order where corruption was detected
+ * @param block_out Output parameter for recovered block
+ * @param order_out Output parameter for recovered block order
+ * @return true if recovery successful, false otherwise
+ */
+static bool attempt_corruption_recovery(int corrupted_order, buddy_block_t **block_out, int *order_out) {
+    serial_printf("[CORRUPTION RECOVERY] Clearing corrupted free_lists[%d] and trying higher order\n", corrupted_order);
+    free_lists[corrupted_order] = NULL;
     
-    // Check guards immediately before accessing the corrupted block
-    buddy_check_guards("buddy_alloc_before_block_access");
-    
-    if ((uintptr_t)block < g_heap_start_virt_addr || (uintptr_t)block >= g_heap_end_virt_addr) {
-        serial_printf("[BUDDY CORRUPTION] Order=%d, Block=0x%lx corrupted! Attempting recovery...\n",
-                      order, (unsigned long)block);
-        
-        // CORRUPTION RECOVERY: Clear the corrupted free list and try next order
-        serial_printf("[CORRUPTION RECOVERY] Clearing corrupted free_lists[%d] and trying higher order\n", order);
-        free_lists[order] = NULL;
-        
-        // Try to find a higher order block we can split
-        int recovery_order = order + 1;
-        while (recovery_order <= MAX_ORDER) {
-            if (free_lists[recovery_order] != NULL) {
-                buddy_block_t *recovery_block = free_lists[recovery_order];
-                if ((uintptr_t)recovery_block >= g_heap_start_virt_addr && 
-                    (uintptr_t)recovery_block < g_heap_end_virt_addr) {
-                    serial_printf("[CORRUPTION RECOVERY] Found valid block at Order=%d, using for allocation\n", recovery_order);
-                    // Use this block instead
-                    block = recovery_block;
-                    order = recovery_order;
-                    goto recovery_success;
-                }
+    // Try to find a higher order block we can split
+    int recovery_order = corrupted_order + 1;
+    while (recovery_order <= MAX_ORDER) {
+        if (free_lists[recovery_order] != NULL) {
+            buddy_block_t *recovery_block = free_lists[recovery_order];
+            if ((uintptr_t)recovery_block >= g_heap_start_virt_addr && 
+                (uintptr_t)recovery_block < g_heap_end_virt_addr) {
+                serial_printf("[CORRUPTION RECOVERY] Found valid block at Order=%d, using for allocation\n", recovery_order);
+                *block_out = recovery_block;
+                *order_out = recovery_order;
+                return true;
             }
-            recovery_order++;
         }
-        
-        // If we get here, recovery failed
-        serial_printf("[CORRUPTION RECOVERY] Failed to find valid alternative block\n");
-        BUDDY_PANIC("Buddy allocator corruption recovery failed!");
+        recovery_order++;
     }
     
-    recovery_success:
-    
-    // Log Order=12 changes for corruption tracking
-    if (order == 12) {
-        log_free_list_12_change("buddy_alloc_dequeue", free_lists[order], block->next);
+    serial_printf("[CORRUPTION RECOVERY] Failed to find valid alternative block\n");
+    return false;
+}
+
+/**
+ * @brief Validates a block address and attempts recovery if corrupted
+ * @param block The block to validate
+ * @param order Current order
+ * @param block_out Output parameter for validated/recovered block
+ * @param order_out Output parameter for validated/recovered order
+ * @return true if block is valid or recovery successful, false otherwise
+ */
+static bool validate_block_or_recover(buddy_block_t *block, int order, 
+                                     buddy_block_t **block_out, int *order_out) {
+    if ((uintptr_t)block >= g_heap_start_virt_addr && (uintptr_t)block < g_heap_end_virt_addr) {
+        // Block is valid
+        *block_out = block;
+        *order_out = order;
+        return true;
     }
     
-    // Monitor the critical read of block->next that was corrupted
+    serial_printf("[BUDDY CORRUPTION] Order=%d, Block=0x%lx corrupted! Attempting recovery...\n",
+                  order, (unsigned long)block);
+    
+    return attempt_corruption_recovery(order, block_out, order_out);
+}
+
+/**
+ * @brief Monitors critical memory reads for corruption detection
+ * @param block The block being accessed
+ */
+static void monitor_critical_memory_access(buddy_block_t *block) {
+    // Monitor the critical read of block->next that was previously corrupted
     if ((uintptr_t)block == CORRUPTED_BLOCK_ADDR) {
         buddy_block_t *next_val = block->next;
         serial_printf("[MEMORY READ TRACE] Reading block->next from 0x%lx: value=0x%lx\n", 
@@ -697,55 +720,126 @@ static void* buddy_alloc_impl(int requested_order, const char* file, int line) {
             buddy_check_guards("corruption_read_detected");
         }
     }
-    
-    free_lists[order] = block->next; // Dequeue
+}
 
-    // Split the block down to the requested order if necessary
-    while (order > requested_order) {
+/**
+ * @brief Splits a block down to the requested order
+ * @param block The block to split
+ * @param current_order Current order of the block
+ * @param target_order Desired order after splitting
+ */
+static void split_block_to_target_order(buddy_block_t *block, int current_order, int target_order) {
+    int order = current_order;
+    uintptr_t block_addr = (uintptr_t)block;
+    
+    while (order > target_order) {
         order--; // Go down one order
         size_t half_block_size = (size_t)1 << order;
         // Calculate the address of the buddy (the upper half)
-        uintptr_t buddy_addr = (uintptr_t)block + half_block_size;
+        uintptr_t buddy_addr = block_addr + half_block_size;
         // Add the buddy (upper half) to the free list of the smaller order
         add_block_to_free_list((void*)buddy_addr, order);
         // Continue splitting the lower half (pointed to by 'block')
     }
+}
 
-    // Update statistics
-    size_t allocated_block_size = (size_t)1 << requested_order;
+/**
+ * @brief Updates allocation statistics
+ * @param allocated_order Order of the allocated block
+ */
+static void update_allocation_statistics(int allocated_order) {
+    size_t allocated_block_size = (size_t)1 << allocated_order;
     g_buddy_free_bytes -= allocated_block_size;
     g_alloc_count++;
+}
 
-    // --- Physical Address Alignment Assertion ---
-    // This check ensures that if we allocate a page-sized block or larger,
-    // the corresponding physical address is page-aligned.
+/**
+ * @brief Validates physical and virtual address alignment for page-sized allocations
+ * @param block The allocated block
+ * @param allocated_order Order of the allocated block
+ */
+static void validate_allocation_alignment(void *block, int allocated_order) {
     #ifdef PAGE_ORDER
-    if (requested_order >= PAGE_ORDER) {
+    if (allocated_order >= PAGE_ORDER) {
         uintptr_t block_addr_virt = (uintptr_t)block;
 
-        // --- CORRECTED Physical Address Calculation ---
-        // Calculate offset within the managed virtual heap
+        // Calculate physical address
         uintptr_t offset_in_heap = block_addr_virt - g_heap_start_virt_addr;
-        // Add offset to the physical start address of the heap
         uintptr_t physical_addr = g_buddy_heap_phys_start_addr + offset_in_heap;
-
-        // Debug print before assertion
-        // Use %lx for addresses, %u for integers, %lu for size_t
-        // serial_printf("[Buddy Assert Check] Order=%d, Virt=0x%lx, Phys=0x%lx, PhysStart=0x%lx, PSize=%lu\n",
-        //                 requested_order, block_addr_virt, physical_addr, g_buddy_heap_phys_start_addr, (unsigned long)PAGE_SIZE);
 
         // Assert physical alignment
         BUDDY_ASSERT((physical_addr % PAGE_SIZE) == 0,
                      "Buddy returned non-page-aligned PHYS block for page-sized request!");
 
-        // Assert virtual alignment (should be guaranteed by buddy logic & init alignment)
+        // Assert virtual alignment
         BUDDY_ASSERT((block_addr_virt % PAGE_SIZE) == 0,
                      "Buddy returned non-page-aligned VIRTUAL block for page-sized request!");
     }
     #endif
+}
 
-    // Debug logging removed
-    // Return the VIRTUAL address of the allocated block
+/**
+ * @brief Logs debug information for Order=12 tracking
+ * @param order The block order being processed
+ * @param context Description of the operation
+ */
+static void log_order_debug_info(int order, const char *context) {
+    if (order == 12) {
+        serial_printf("[ORDER12 TRACE] %s: Order=12, current free_lists[12]=0x%lx\n", 
+                      context, (unsigned long)free_lists[12]);
+        check_block_integrity(free_lists[12], context);
+    }
+}
+
+/**
+ * @brief Internal implementation for buddy allocation. Finds/splits blocks.
+ * @param requested_order The desired block order.
+ * @param file Source file name (for debug builds).
+ * @param line Source line number (for debug builds).
+ * @return Virtual address of the allocated block, or NULL on failure.
+ * @note Assumes the buddy lock is held by the caller.
+ */
+static void* buddy_alloc_impl(int requested_order, const char* file, int line) {
+    // Verify allocator integrity before starting allocation
+    verify_allocator_integrity("buddy_alloc_impl_start");
+    
+    // Find suitable order for allocation
+    int current_order = find_suitable_order(requested_order);
+    if (current_order > MAX_ORDER) {
+        // Out of memory
+        g_failed_alloc_count++;
+        #ifdef DEBUG_BUDDY
+        serial_printf("[Buddy OOM @ %s:%d] Order %d requested, no suitable blocks found.\n", 
+                      file, line, requested_order);
+        #endif
+        return NULL;
+    }
+
+    // Validate and clean free lists before allocation
+    validate_and_clean_free_lists(current_order);
+    
+    // Attempt allocation with corruption recovery if needed
+    buddy_block_t *block = free_lists[current_order];
+    if (!validate_block_or_recover(block, current_order, &block, &current_order)) {
+        BUDDY_PANIC("Buddy allocator corruption recovery failed!");
+    }
+    
+    // Monitor critical memory access for debugging
+    monitor_critical_memory_access(block);
+    
+    // Dequeue block from free list
+    log_order_debug_info(current_order, "dequeue");
+    free_lists[current_order] = block->next;
+
+    // Split block to target order if necessary
+    split_block_to_target_order(block, current_order, requested_order);
+
+    // Update allocation statistics
+    update_allocation_statistics(requested_order);
+
+    // Validate allocation alignment
+    validate_allocation_alignment((void*)block, requested_order);
+
     return (void*)block;
 }
 
@@ -1141,4 +1235,113 @@ void buddy_get_stats(buddy_stats_t *stats) {
     stats->free_count = g_free_count;
     stats->failed_alloc_count = g_failed_alloc_count;
     spinlock_release_irqrestore(&g_buddy_lock, irq_flags);
+}
+
+//============================================================================
+// New Standardized Error Handling API Implementation
+//============================================================================
+
+error_t buddy_alloc_safe(size_t size, void **ptr_out) {
+    // Input validation
+    if (!ptr_out) {
+        return E_INVAL;
+    }
+    
+    if (size == 0) {
+        return E_INVAL;
+    }
+
+    // Calculate required order and check if size is too large
+    int req_order = buddy_required_order(size);
+    if (req_order > MAX_ORDER) {
+        // Update failure statistics
+        uintptr_t flags = spinlock_acquire_irqsave(&g_buddy_lock);
+        g_failed_alloc_count++;
+        spinlock_release_irqrestore(&g_buddy_lock, flags);
+        return E_OVERFLOW;
+    }
+
+    // Attempt allocation using existing implementation
+    void *allocated_ptr = buddy_alloc(size);
+    if (!allocated_ptr) {
+        // Check if this was due to insufficient memory or other issues
+        uintptr_t flags = spinlock_acquire_irqsave(&g_buddy_lock);
+        size_t free_space = g_buddy_free_bytes;
+        spinlock_release_irqrestore(&g_buddy_lock, flags);
+        
+        // If we have some free space but couldn't allocate, it's fragmentation
+        if (free_space > 0) {
+            return E_NOMEM; // Fragmentation - not enough contiguous space
+        } else {
+            return E_NOMEM; // Actually out of memory
+        }
+    }
+
+    // Success - return allocated pointer
+    *ptr_out = allocated_ptr;
+    return E_SUCCESS;
+}
+
+error_t buddy_free_safe(void *ptr) {
+    // Handle NULL pointer gracefully (not an error)
+    if (!ptr) {
+        return E_SUCCESS;
+    }
+
+    // Basic validation - check if pointer is within managed region
+    uintptr_t ptr_addr = (uintptr_t)ptr;
+    
+    if (ptr_addr < g_heap_start_virt_addr || ptr_addr >= g_heap_end_virt_addr) {
+        return E_INVAL;
+    }
+
+    // Check alignment - buddy allocator returns aligned pointers
+    if ((ptr_addr & (MIN_BLOCK_SIZE - 1)) != 0) {
+        return E_INVAL;
+    }
+
+    // Use existing free implementation
+    buddy_free(ptr);
+    
+    // If we get here, the free was successful
+    // (buddy_free would have panicked on serious corruption)
+    return E_SUCCESS;
+}
+
+error_t buddy_get_allocation_info(void *ptr, size_t *size_out) {
+    // Input validation
+    if (!ptr || !size_out) {
+        return E_INVAL;
+    }
+
+    // Basic validation - check if pointer is within managed region
+    uintptr_t ptr_addr = (uintptr_t)ptr;
+    
+    if (ptr_addr < g_heap_start_virt_addr || ptr_addr >= g_heap_end_virt_addr) {
+        return E_INVAL;
+    }
+
+    // Check alignment
+    if ((ptr_addr & (MIN_BLOCK_SIZE - 1)) != 0) {
+        return E_INVAL;
+    }
+
+    // Calculate the order based on pointer alignment
+    // This is a simplified approach - in a full implementation,
+    // we would need block metadata to determine the exact size
+    uintptr_t offset = ptr_addr - g_heap_start_virt_addr;
+    int order = MIN_ORDER;
+    
+    // Find the highest order this address could represent
+    for (int test_order = MAX_ORDER; test_order >= MIN_ORDER; test_order--) {
+        size_t block_size = (size_t)1 << test_order;
+        if ((offset & (block_size - 1)) == 0) {
+            // This address is aligned for this order
+            order = test_order;
+            break;
+        }
+    }
+
+    *size_out = (size_t)1 << order;
+    return E_SUCCESS;
 }

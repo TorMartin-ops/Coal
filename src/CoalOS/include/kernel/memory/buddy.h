@@ -2,6 +2,7 @@
 #define BUDDY_H
 
 #include <kernel/core/types.h> // Or stdint.h etc. - This should define size_t
+#include <kernel/core/error.h>    // For standardized error_t
 // #include <stddef.h> // For size_t <-- REMOVE THIS LINE
 
 // --- Configuration ---
@@ -39,6 +40,44 @@ void *buddy_alloc(size_t size);
  * If ptr is NULL, the function does nothing.
  */
 void buddy_free(void *ptr);
+
+// === New Standardized Error Handling API ===
+
+/**
+ * @brief Allocates a block of memory with standardized error reporting.
+ * The actual allocated block size will be a power of two.
+ *
+ * @param size The minimum number of bytes required.
+ * @param ptr_out Output parameter for the allocated memory block pointer.
+ * @return E_SUCCESS on success, specific error_t code on failure:
+ *         - E_INVAL: Invalid input parameters (size is 0 or ptr_out is NULL)
+ *         - E_NOMEM: Insufficient memory available for allocation
+ *         - E_OVERFLOW: Size too large (exceeds maximum allocatable size)
+ */
+error_t buddy_alloc_safe(size_t size, void **ptr_out);
+
+/**
+ * @brief Frees a previously allocated memory block with error checking.
+ *
+ * @param ptr Pointer to the memory block previously returned by buddy_alloc.
+ * @return E_SUCCESS on success, specific error_t code on failure:
+ *         - E_INVAL: Invalid pointer (not from buddy allocator)
+ *         - E_FAULT: Corrupted block metadata detected
+ *         - E_CORRUPT: Memory corruption detected in block guards
+ */
+error_t buddy_free_safe(void *ptr);
+
+/**
+ * @brief Gets allocation size and validates allocation with error reporting.
+ *
+ * @param ptr Pointer to check
+ * @param size_out Output parameter for the allocated block size
+ * @return E_SUCCESS if valid allocation, error_t code on failure:
+ *         - E_INVAL: Invalid pointer or size_out is NULL
+ *         - E_NOTFOUND: Pointer not found in allocator tracking
+ *         - E_CORRUPT: Block metadata corruption detected
+ */
+error_t buddy_get_allocation_info(void *ptr, size_t *size_out);
 
 
 // --- Macros for Debug/Release ---

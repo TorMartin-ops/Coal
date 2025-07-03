@@ -4,6 +4,12 @@
  * 
  * This file centralizes all magic numbers and constants used throughout
  * the Coal OS kernel to improve maintainability and reduce errors.
+ * 
+ * Recently added:
+ * - Hardware timeout values (keyboard controller, delays)
+ * - Common bit manipulation masks
+ * - HAL (Hardware Abstraction Layer) constants
+ * - FAT32 filesystem masks
  */
 
 #ifndef KERNEL_CORE_CONSTANTS_H
@@ -88,6 +94,7 @@ extern "C" {
 #define FAT_ATTR_DIRECTORY          0x10U          // Directory attribute
 #define FAT_ATTR_ARCHIVE            0x20U          // Archive attribute
 #define FAT_ATTR_LFN                0x0FU          // Long filename attribute
+#define FAT32_CLUSTER_MASK          0x0FFFFFFFU    // FAT32 cluster mask (28 bits)
 
 // Boot sector
 #define BOOT_SIGNATURE              0xAA55U        // Boot sector signature
@@ -199,6 +206,13 @@ extern "C" {
 #define X86_EFLAGS_RESERVED         (1U << 1)      // Reserved flag (always 1)
 #define USER_EFLAGS_DEFAULT         (X86_EFLAGS_IF | X86_EFLAGS_RESERVED)
 
+// Common bit masks
+#define BYTE_MASK                   0xFFU          // Full byte mask
+#define NIBBLE_HIGH_MASK            0xF0U          // High nibble mask
+#define NIBBLE_LOW_MASK             0x0FU          // Low nibble mask
+#define WORD_MASK                   0xFFFFU        // Full word mask
+#define DWORD_MASK                  0xFFFFFFFFU    // Full double word mask
+
 // GDT selectors
 #define GDT_KERNEL_CODE_SELECTOR    0x08U          // Kernel code segment
 #define GDT_KERNEL_DATA_SELECTOR    0x10U          // Kernel data segment
@@ -218,12 +232,31 @@ extern "C" {
 #define US_PER_SECOND               1000000U       // Microseconds per second
 #define NS_PER_SECOND               1000000000U    // Nanoseconds per second
 
+// Hardware timeout values
+#define KBC_WAIT_TIMEOUT_CYCLES     300000U        // Keyboard controller timeout
+#define KBC_FLUSH_MAX_ATTEMPTS      100U           // Max keyboard flush attempts
+#define SHORT_DELAY_CYCLES          15000U         // Short hardware delay cycles
+
 // =============================================================================
 // String and Text Constants
 // =============================================================================
 
 #define MAX_STRING_LENGTH           4096U          // Maximum string length
 #define PRINTF_BUFFER_SIZE          256U           // Printf buffer size
+
+// =============================================================================
+// Hardware Abstraction Layer Constants
+// =============================================================================
+
+// HAL layer configuration
+#define HAL_MAX_TIMERS              8U             // Maximum HAL timers
+#define HAL_MAX_IRQS                256U           // Maximum IRQ numbers
+#define HAL_DEFAULT_TIMER_FREQ      1000U          // Default timer frequency
+
+// HAL timer types
+#define HAL_TIMER_SYSTEM            0U             // System timer ID
+#define HAL_TIMER_ONE_SHOT          1U             // One-shot timer type
+#define HAL_TIMER_PERIODIC          2U             // Periodic timer type
 
 // =============================================================================
 // Validation and Limits

@@ -10,28 +10,36 @@
 #define MAX_SYSCALLS 256 // Or a more appropriate number for your system
 #endif
 
-// Syscall numbers (ensure these match your definitions in hello.c and elsewhere)
-#define SYS_EXIT    1
-#define SYS_READ    3
-#define SYS_WRITE   4
-#define SYS_OPEN    5
-#define SYS_CLOSE   6
-#define SYS_PUTS    7
-#define SYS_LSEEK   19
-#define SYS_GETPID  20
-#define SYS_READ_TERMINAL_LINE 21
-#define SYS_FORK        2  // POSIX fork()
-#define SYS_EXECVE      11 // POSIX execve()
-#define SYS_WAITPID     17 // POSIX waitpid()
-#define SYS_PIPE        42 // POSIX pipe()
-#define SYS_GETPPID     64 // POSIX getppid()
-#define SYS_DUP2        33 // POSIX dup2()
-#define SYS_SIGNAL      48 // POSIX signal()
-#define SYS_KILL        37 // POSIX kill()
-#define SYS_CHDIR       12 // POSIX chdir()
-#define SYS_GETCWD      183 // POSIX getcwd()
-#define SYS_STAT        4  // POSIX stat()
-#define SYS_READDIR     89 // Read directory entries
+// Linux x86 32-bit compatible syscall numbers
+// Fully aligned with standard Linux ABI
+#define SYS_EXIT    1   // __NR_exit
+#define SYS_FORK    2   // __NR_fork  
+#define SYS_READ    3   // __NR_read
+#define SYS_WRITE   4   // __NR_write
+#define SYS_OPEN    5   // __NR_open
+#define SYS_CLOSE   6   // __NR_close
+#define SYS_WAITPID 7   // __NR_waitpid
+#define SYS_EXECVE  11  // __NR_execve
+#define SYS_CHDIR   12  // __NR_chdir
+#define SYS_LSEEK   19  // __NR_lseek
+#define SYS_GETPID  20  // __NR_getpid
+#define SYS_KILL    37  // __NR_kill
+#define SYS_MKDIR   39  // __NR_mkdir
+#define SYS_RMDIR   40  // __NR_rmdir
+#define SYS_PIPE    42  // __NR_pipe
+#define SYS_BRK     45  // __NR_brk
+#define SYS_SIGNAL  48  // __NR_signal
+#define SYS_DUP2    63  // __NR_dup2
+#define SYS_GETPPID 64  // __NR_getppid
+#define SYS_MMAP    90  // __NR_mmap
+#define SYS_STAT    106 // __NR_stat
+#define SYS_GETDENTS 141 // __NR_getdents (CORRECTED from 89)
+#define SYS_GETCWD  183 // __NR_getcwd
+#define SYS_UNLINK  10  // __NR_unlink
+
+// Coal OS specific syscalls (non-standard)
+#define SYS_PUTS               7000  // Custom puts syscall
+#define SYS_READ_TERMINAL_LINE 7001  // Custom terminal line reader
 
 // Process Groups and Sessions syscalls
 #define SYS_SETSID      66 // POSIX setsid()

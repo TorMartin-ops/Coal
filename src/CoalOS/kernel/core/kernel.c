@@ -14,6 +14,7 @@
 // === Standard/Core Headers ===
 #include <kernel/arch/multiboot2.h>
 #include <kernel/core/types.h>
+#include <kernel/core/init.h>
 #include <kernel/lib/string.h>       // Kernel's string functions
 #include <libc/stdint.h>  // Kernel's fixed-width integers
 #include <libc/stddef.h>  // Kernel's NULL, offsetof
@@ -309,121 +310,9 @@ static void launch_program(const char *path_on_disk, const char *program_descrip
 // Kernel Main Entry Point
 //-----------------------------------------------------------------------------
 void main(uint32_t magic, uint32_t mb_info_phys_addr) {
-    g_multiboot_info_phys_addr_global = mb_info_phys_addr; 
-
-    serial_init();    
-    terminal_init();  
-
-    terminal_printf("\n=== Coal OS Kernel Booting (Version: %s) ===\n", KERNEL_VERSION_STRING);
-    terminal_printf("[Boot] A hobby operating system project\n");
-
-    terminal_write("[Boot] Verifying Multiboot environment...\n");
-    if (magic != MULTIBOOT2_BOOTLOADER_MAGIC_EXPECTED) {
-        KERNEL_PANIC_HALT("Invalid Multiboot Magic number.");
-    }
-    if (mb_info_phys_addr == 0 || mb_info_phys_addr >= 0x100000) { 
-        KERNEL_PANIC_HALT("Invalid Multiboot info physical address.");
-    }
-    terminal_printf("  Multiboot magic OK (Info at phys %#lx).\n", (unsigned long)mb_info_phys_addr);
-
-    terminal_write("[Kernel] Initializing core systems (pre-interrupts)...\n");
-    gdt_init(); 
-    initialize_memory_management(g_multiboot_info_phys_addr_global); 
-    idt_init();    
-    init_pit();    
-    keyboard_init(); 
-    keymap_load(KEYMAP_NORWEGIAN); 
-    scheduler_init();
-
-    terminal_write("[Kernel] Initializing Filesystem Layer...\n");
-    bool fs_ready = (fs_init() == FS_SUCCESS); 
-    if (fs_ready) {
-        terminal_write("  [OK] Filesystem initialized and root mounted.\n");
-    } else {
-        terminal_write("  [CRITICAL] Filesystem initialization FAILED. User programs cannot be loaded.\n");
-    }
-    serial_printf("[Kernel Debug] KBC Status after fs_init(): 0x%08x\n", inb(KBC_STATUS_PORT));
-
-
-    if (fs_ready) {
-        launch_program(INITIAL_TEST_PROGRAM_PATH, "Test Suite");
-        serial_printf("[Kernel Debug] KBC Status after hello.elf launch: 0x%08x\n", inb(KBC_STATUS_PORT));
-
-        launch_program(SYSTEM_SHELL_PATH, "System Shell");
-    } else {
-        terminal_write("  [ERROR] Filesystem initialization failed. Cannot launch user processes.\n");
-        terminal_write("  [ERROR] System will continue running with kernel-only functionality.\n");
-    }
-
-    // --- Re-check and Force KBC Configuration (with OBF clear) ---
-    terminal_write("[Kernel] Re-checking and forcing KBC configuration before interrupts...\n");
+    // Use modular initialization system following Single Responsibility Principle
+    kernel_main_init(magic, mb_info_phys_addr);
     
-    uint8_t current_kbc_config_val_before_force = 0;
-    outb(KBC_CMD_PORT, KBC_CMD_READ_CONFIG); 
-    for(volatile int d_wait1=0; d_wait1 < 15000; ++d_wait1) { asm volatile("pause"); } 
-    if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) { 
-      current_kbc_config_val_before_force = inb(KBC_DATA_PORT); 
-    }
-    serial_printf("   Read KBC Config Byte (before final write): 0x%x\n", current_kbc_config_val_before_force);
-
-    uint8_t desired_final_kbc_config = 0x41; 
-    
-    serial_printf("   Forcing KBC Config Byte to 0x%x (Command 0x60)...\n", desired_final_kbc_config);
-    for(volatile int t_cmd=0; (inb(KBC_STATUS_PORT) & KBC_SR_IBF) && t_cmd<100000; ++t_cmd) { asm volatile("pause"); }
-    outb(KBC_CMD_PORT, KBC_CMD_WRITE_CONFIG); 
-
-    for(volatile int t_data=0; (inb(KBC_STATUS_PORT) & KBC_SR_IBF) && t_data<100000; ++t_data) { asm volatile("pause"); }
-    outb(KBC_DATA_PORT, desired_final_kbc_config); 
-    
-    for(volatile int d_kbc=0; d_kbc < 25000; ++d_kbc) { asm volatile("pause");} 
-
-    // *** MODIFIED/ENHANCED FIX: Loop to clear ALL bytes from KBC output buffer after final config write ***
-    int obf_clear_count = 0;
-    uint8_t kbc_status_check_flush;
-    serial_printf("   [KERNEL FIX] Attempting to clear KBC output buffer...\n");
-    while ((kbc_status_check_flush = inb(KBC_STATUS_PORT)) & KBC_SR_OBF) { 
-        uint8_t discarded_byte = inb(KBC_DATA_PORT); 
-        obf_clear_count++;
-        serial_printf("     Cleared byte %d from KBC OBF: 0x%x (status was 0x%x)\n", obf_clear_count, discarded_byte, kbc_status_check_flush);
-        if (obf_clear_count >= KBC_MAX_FLUSH) { 
-            serial_printf("   [KERNEL WARNING] KBC OBF clear loop maxed out at %d reads!\n", KBC_MAX_FLUSH);
-            break;
-        }
-        for(volatile int d_obf_loop=0; d_obf_loop < 5000; ++d_obf_loop) { asm volatile("pause");} 
-    }
-    if (obf_clear_count > 0) {
-        serial_printf("   [KERNEL FIX] Total %d bytes cleared from KBC output buffer.\n", obf_clear_count);
-    } else {
-        serial_printf("   [KERNEL INFO] KBC output buffer was already clear or became clear quickly.\n");
-    }
-    
-    uint8_t final_kbc_status_check = inb(KBC_STATUS_PORT); 
-    serial_printf("   KBC Status register *after* explicit config write AND ROBUST OBF CLEAR: 0x%x\n", final_kbc_status_check);
-    // --- End KBC Re-check ---
-
-    terminal_write("[Kernel] Finalizing setup and enabling interrupts...\n");
-    syscall_init();    
-
-    terminal_printf("\n[Kernel] Initialization complete. Coal OS %s operational. Enabling interrupts.\n", KERNEL_VERSION_STRING);
-    terminal_write("================================================================================\n\n");
-
-    serial_printf("[Kernel Debug] KBC Status before final sti: 0x%08x\n", inb(KBC_STATUS_PORT));
-
-    // Ensure segment registers are set properly before first context switch
-    asm volatile (
-        "mov $0x10, %%ax\n"
-        "mov %%ax, %%ds\n"
-        "mov %%ax, %%es\n"
-        "mov %%ax, %%fs\n"
-        "mov %%ax, %%gs\n"
-        : : : "ax"
-    );
-
-    asm volatile ("sti"); 
-
-    // scheduler_start() will select the first task to run and perform the initial context switch.
-    // It should not return. If it does, something went wrong.
-    scheduler_start();
-    
-    KERNEL_PANIC_HALT("scheduler_start() returned unexpectedly!");
+    // Should never reach here - kernel_main_init() should not return
+    KERNEL_PANIC_HALT("kernel_main_init() returned unexpectedly!");
 }

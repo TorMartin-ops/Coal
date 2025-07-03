@@ -6,6 +6,12 @@
 #include <libc/stdint.h>
 #include <libc/stdbool.h> // Ensure bool is included
 
+// Scheduler Configuration Constants
+#define SCHED_PRIORITY_LEVELS   4    // Number of priority levels
+#define SCHED_IDLE_PRIORITY     3    // Lowest priority (idle tasks)
+#define SCHED_DEFAULT_PRIORITY  1    // Default priority for user tasks
+#define SCHED_KERNEL_PRIORITY   0    // Highest priority for kernel tasks
+
 // Assembly function for jumping to user mode
 extern void jump_to_user_mode(uint32_t kernel_esp);
 

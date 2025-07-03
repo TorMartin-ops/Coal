@@ -6,6 +6,7 @@
 
 #include <kernel/cpu/syscall_linux.h>
 #include <kernel/cpu/syscall.h>
+#include "syscall_security.h"
 #include <kernel/process/process.h>
 #include <kernel/process/scheduler.h>
 #include <kernel/memory/mm.h>
@@ -20,7 +21,7 @@
 #include <libc/limits.h>
 
 // Define POSIX types for compatibility
-typedef long time_t;
+// typedef long time_t; - already defined in sys/stat.h
 typedef int pid_t;
 
 // POSIX limits
@@ -48,35 +49,18 @@ extern volatile uint32_t g_pit_ticks;
 // Forward declarations for stub functions
 static pcb_t *process_fork(pcb_t *parent);
 static uint32_t find_free_vma_region(mm_struct_t *mm, size_t size);
-static int vfs_mkdir(const char *path, uint32_t mode);
-static int vfs_rmdir(const char *path);
-static int vfs_unlink(const char *path);
+// vfs_mkdir, vfs_rmdir, and vfs_unlink are now declared in vfs.h
 static time_t get_unix_timestamp(void);
 static uint32_t get_system_ticks(void);
 static void scheduler_sleep(uint32_t ms);
 
-// Helper functions for user space validation
+// Helper functions for user space validation - now using enhanced security
 static bool validate_user_buffer(const void *ptr, size_t size, bool write) {
-    if (!ptr) return false;
-    int type = write ? VERIFY_WRITE : VERIFY_READ;
-    return access_ok(type, (const_userptr_t)ptr, size);
+    return syscall_validate_buffer((userptr_t)ptr, size, write);
 }
 
 static bool validate_user_string(const char *str, size_t max_len) {
-    if (!str) return false;
-    if (!access_ok(VERIFY_READ, (const_userptr_t)str, 1)) return false;
-    
-    // Check string is null-terminated within max_len
-    size_t len = 0;
-    while (len < max_len) {
-        char c;
-        if (copy_from_user(&c, (const_userptr_t)(str + len), 1) != 0) {
-            return false;
-        }
-        if (c == '\0') return true;
-        len++;
-    }
-    return false; // String too long
+    return syscall_validate_string_len((const_userptr_t)str, max_len);
 }
 
 // Forward declarations for syscall handlers
@@ -427,6 +411,12 @@ static int sys_linux_mmap(uint32_t addr, uint32_t length, uint32_t prot,
         return -LINUX_EINVAL;
     }
     
+    // Additional security check for buffer size
+    if (length > SYSCALL_MAX_BUFFER_LEN) {
+        serial_printf("[sys_mmap] Requested size too large: %u\n", length);
+        return -LINUX_EINVAL;
+    }
+    
     // Convert protection flags
     uint32_t vm_flags = 0;
     if (prot & 0x1) vm_flags |= VM_READ;
@@ -543,13 +533,17 @@ static int sys_linux_mkdir(uint32_t pathname, uint32_t mode, uint32_t unused1,
                           uint32_t unused2, uint32_t unused3, uint32_t unused4) {
     (void)unused1; (void)unused2; (void)unused3; (void)unused4;
     
-    // Validate pathname
-    if (!validate_user_string((const char *)pathname, PATH_MAX)) {
-        return -LINUX_EFAULT;
+    // Copy pathname from user space with enhanced security
+    char k_pathname[SYSCALL_MAX_PATH_LEN];
+    int copy_result = syscall_copy_path_from_user((const_userptr_t)pathname, 
+                                                  k_pathname, sizeof(k_pathname));
+    if (copy_result < 0) {
+        serial_printf("[sys_mkdir] Failed to copy pathname: error %d\n", copy_result);
+        return coalos_to_linux_error(copy_result);
     }
     
     // Create directory
-    int result = vfs_mkdir((const char *)pathname, mode);
+    int result = vfs_mkdir(k_pathname, mode);
     return result < 0 ? coalos_to_linux_error(result) : 0;
 }
 
@@ -557,13 +551,17 @@ static int sys_linux_rmdir(uint32_t pathname, uint32_t unused1, uint32_t unused2
                           uint32_t unused3, uint32_t unused4, uint32_t unused5) {
     (void)unused1; (void)unused2; (void)unused3; (void)unused4; (void)unused5;
     
-    // Validate pathname
-    if (!validate_user_string((const char *)pathname, PATH_MAX)) {
-        return -LINUX_EFAULT;
+    // Copy pathname from user space with enhanced security
+    char k_pathname[SYSCALL_MAX_PATH_LEN];
+    int copy_result = syscall_copy_path_from_user((const_userptr_t)pathname, 
+                                                  k_pathname, sizeof(k_pathname));
+    if (copy_result < 0) {
+        serial_printf("[sys_rmdir] Failed to copy pathname: error %d\n", copy_result);
+        return coalos_to_linux_error(copy_result);
     }
     
     // Remove directory
-    int result = vfs_rmdir((const char *)pathname);
+    int result = vfs_rmdir(k_pathname);
     return result < 0 ? coalos_to_linux_error(result) : 0;
 }
 
@@ -571,13 +569,17 @@ static int sys_linux_unlink(uint32_t pathname, uint32_t unused1, uint32_t unused
                            uint32_t unused3, uint32_t unused4, uint32_t unused5) {
     (void)unused1; (void)unused2; (void)unused3; (void)unused4; (void)unused5;
     
-    // Validate pathname
-    if (!validate_user_string((const char *)pathname, PATH_MAX)) {
-        return -LINUX_EFAULT;
+    // Copy pathname from user space with enhanced security
+    char k_pathname[SYSCALL_MAX_PATH_LEN];
+    int copy_result = syscall_copy_path_from_user((const_userptr_t)pathname, 
+                                                  k_pathname, sizeof(k_pathname));
+    if (copy_result < 0) {
+        serial_printf("[sys_unlink] Failed to copy pathname: error %d\n", copy_result);
+        return coalos_to_linux_error(copy_result);
     }
     
     // Remove file
-    int result = vfs_unlink((const char *)pathname);
+    int result = vfs_unlink(k_pathname);
     return result < 0 ? coalos_to_linux_error(result) : 0;
 }
 
@@ -703,24 +705,7 @@ static uint32_t find_free_vma_region(mm_struct_t *mm, size_t size) {
     return 0x40000000; // Return a placeholder address
 }
 
-static int vfs_mkdir(const char *path, uint32_t mode) {
-    // TODO: Implement directory creation
-    (void)path;
-    (void)mode;
-    return -LINUX_ENOSYS;
-}
-
-static int vfs_rmdir(const char *path) {
-    // TODO: Implement directory removal
-    (void)path;
-    return -LINUX_ENOSYS;
-}
-
-static int vfs_unlink(const char *path) {
-    // TODO: Implement file deletion
-    (void)path;
-    return -LINUX_ENOSYS;
-}
+// vfs_mkdir, vfs_rmdir, and vfs_unlink are now implemented in vfs.c
 
 static time_t get_unix_timestamp(void) {
     // TODO: Implement proper time tracking
