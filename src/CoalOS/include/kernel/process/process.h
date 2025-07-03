@@ -21,11 +21,13 @@ struct sys_file;
 // (Must be page-aligned and > 0)
 #define PROCESS_KSTACK_SIZE (PAGE_SIZE *4) // Example: 4 pages (16KB)
 
-// Define User Stack Layout Constants
+// Define User Stack Layout Constants (if not already defined in constants.h)
+#ifndef USER_STACK_TOP_VIRT_ADDR
 #define USER_STACK_PAGES        4                      // Example: 4 pages
 #define USER_STACK_SIZE         (USER_STACK_PAGES * PAGE_SIZE)    // Example: 16KB
-#define USER_STACK_TOP_VIRT_ADDR (KERNEL_SPACE_VIRT_START)        // Stack grows down from just below kernel space
-#define USER_STACK_BOTTOM_VIRT  (USER_STACK_TOP_VIRT_ADDR - USER_STACK_SIZE) // Lowest valid stack address
+#define USER_STACK_TOP_VIRT_ADDR 0xBFFF0000            // Stack grows down from well below kernel space
+#define USER_STACK_BOTTOM_VIRT  0xBF000000             // Lowest valid stack address
+#endif
 
 #ifdef __cplusplus
 extern "C" {

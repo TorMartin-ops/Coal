@@ -46,7 +46,8 @@
  // Internal helper to find and assign a file descriptor.
  // Assumes proc->fd_table_lock is held.
  static int assign_fd_locked(pcb_t *proc, sys_file_t *sf) {
-     for (int fd = 0; fd < MAX_FD; fd++) {
+     // Start from fd=0 since standard I/O descriptors are now properly initialized
+    for (int fd = 0; fd < MAX_FD; fd++) {
          if (proc->fd_table[fd] == NULL) {
              proc->fd_table[fd] = sf;
              SF_DETAILED_LOG("Assigned fd %d to sys_file %p", fd, sf);

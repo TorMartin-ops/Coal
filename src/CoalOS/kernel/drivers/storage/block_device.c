@@ -248,8 +248,13 @@ static int ata_identify(block_device_t *dev) {
             terminal_printf("[ATA IDENTIFY %s] Logical Sector Size supported: %u bytes.\n",
                              dev->device_name, dev->sector_size);
         } else {
-            terminal_printf("[ATA IDENTIFY %s] Warning: Reported logical sector size (%u bytes) invalid or unsupported by cache. Defaulting to 512.\n",
-                             dev->device_name, logical_sector_size_bytes);
+            if (logical_sector_size_bytes == 0) {
+                terminal_printf("[ATA IDENTIFY %s] Device reports 0-byte sector size (words 117-118=0). Using standard 512 bytes.\n",
+                                 dev->device_name);
+            } else {
+                terminal_printf("[ATA IDENTIFY %s] Warning: Reported logical sector size (%u bytes) invalid (not power-of-2 or out of range 512-%u). Defaulting to 512.\n",
+                                 dev->device_name, logical_sector_size_bytes, MAX_BUFFER_BLOCK_SIZE);
+            }
             dev->sector_size = 512;
         }
     } else {

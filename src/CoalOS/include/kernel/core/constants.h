@@ -34,6 +34,11 @@ extern "C" {
 #define KERNEL_STACK_VIRT_START     0xE0000000U    // Kernel stack region start
 #define KERNEL_STACK_VIRT_END       0xF0000000U    // Kernel stack region end
 
+// User stack layout (within user space)
+#define USER_STACK_TOP_VIRT_ADDR    0xBFFF0000U    // Top of user stack (grows down)
+#define USER_STACK_BOTTOM_VIRT      0xBF000000U    // Bottom of user stack region
+#define USER_STACK_SIZE             0x00FF0000U    // ~16MB stack space
+
 // Page sizes and alignment
 #define PAGE_SIZE                   4096U          // 4KB pages
 #define PAGE_SHIFT                  12U            // log2(PAGE_SIZE)

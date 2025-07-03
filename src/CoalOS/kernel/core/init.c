@@ -23,6 +23,7 @@
 #include <kernel/drivers/display/terminal.h>
 #include <kernel/drivers/timer/pit.h>
 #include <kernel/drivers/input/keyboard.h>
+#include <kernel/drivers/display/console_dev.h>
 #include <kernel/drivers/input/keymap.h>
 #include <kernel/process/scheduler.h>
 #include <kernel/fs/vfs/vfs.h>
@@ -83,7 +84,7 @@ const char *SYSTEM_SHELL_PATH = "/bin/shell.elf";
 //============================================================================
 // Function Prototypes
 //============================================================================
-void launch_program(const char *path_on_disk, const char *program_description);
+static void launch_program(const char *path_on_disk, const char *program_description);
 
 //============================================================================
 // Constants
@@ -178,6 +179,9 @@ init_result_t init_basic_io(void)
     // Initialize terminal for user output
     terminal_init();
     
+    // Initialize console device driver
+    console_dev_init();
+    
     // Display boot banner
     terminal_printf("\n=== Coal OS Kernel Booting (Version: %s) ===\n", KERNEL_VERSION_STRING);
     terminal_printf("[Boot] A hobby operating system project\n");
@@ -249,6 +253,7 @@ init_result_t init_launch_processes(bool filesystem_ready)
     
     // Launch system shell
     launch_program(SYSTEM_SHELL_PATH, "System Shell");
+    serial_printf("[Init] Shell launched\n");
     
     return init_success("Initial User Processes Launched");
 }
@@ -630,7 +635,7 @@ static bool initialize_memory_management(uint32_t mb_info_phys) {
 // Process Launch Helper
 //============================================================================
 
-void launch_program(const char *path_on_disk, const char *program_description) {
+static void launch_program(const char *path_on_disk, const char *program_description) {
     terminal_printf("[Kernel] Attempting to launch %s from '%s'...\n", program_description, path_on_disk);
     pcb_t *proc_pcb = create_user_process(path_on_disk);
 

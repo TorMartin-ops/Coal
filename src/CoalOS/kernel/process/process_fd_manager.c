@@ -15,6 +15,10 @@
 #include <kernel/lib/assert.h>
 #include <kernel/drivers/display/serial.h>
 #include <kernel/sync/spinlock.h>
+#include <kernel/drivers/display/console_dev.h>
+
+// Forward declaration
+static void assign_standard_io_fds(pcb_t *proc);
 
 /**
  * @brief Initializes the file descriptor table for a new process.
@@ -38,13 +42,58 @@ void process_init_fds(pcb_t *proc) {
    memset(proc->fd_table, 0, sizeof(proc->fd_table));
    spinlock_release_irqrestore(&proc->fd_table_lock, irq_flags);
 
-   // --- Optional: Initialize Standard I/O Descriptors ---
-   // If your kernel provides standard I/O handles (e.g., via a console device driver),
-   // you would allocate sys_file_t structures for them and place them in fd_table[0], [1], [2] here.
-   // This requires interacting with your device/console driver API.
-   // Example Placeholder:
-   // assign_standard_io_fds(proc); // Hypothetical function
-   // ----------------------------------------------------
+   // --- Initialize Standard I/O Descriptors ---
+   // Initialize stdin (fd 0), stdout (fd 1), and stderr (fd 2)
+   assign_standard_io_fds(proc);
+}
+
+/**
+ * @brief Assigns standard I/O file descriptors to a process
+ * @param proc Pointer to the process PCB
+ */
+static void assign_standard_io_fds(pcb_t *proc) {
+    // Create sys_file_t structures for standard I/O
+    
+    // stdin (fd 0) - read-only console
+    sys_file_t *stdin_sf = (sys_file_t *)kmalloc(sizeof(sys_file_t));
+    if (stdin_sf) {
+        memset(stdin_sf, 0, sizeof(sys_file_t));
+        stdin_sf->vfs_file = create_console_file(CONSOLE_STDIN_MODE);
+        if (stdin_sf->vfs_file) {
+            proc->fd_table[0] = stdin_sf;
+        } else {
+            kfree(stdin_sf);
+            serial_printf("[FD Init] Failed to create stdin console file\n");
+        }
+    }
+    
+    // stdout (fd 1) - write-only console  
+    sys_file_t *stdout_sf = (sys_file_t *)kmalloc(sizeof(sys_file_t));
+    if (stdout_sf) {
+        memset(stdout_sf, 0, sizeof(sys_file_t));
+        stdout_sf->vfs_file = create_console_file(CONSOLE_STDOUT_MODE);
+        if (stdout_sf->vfs_file) {
+            proc->fd_table[1] = stdout_sf;
+        } else {
+            kfree(stdout_sf);
+            serial_printf("[FD Init] Failed to create stdout console file\n");
+        }
+    }
+    
+    // stderr (fd 2) - write-only console (same as stdout)
+    sys_file_t *stderr_sf = (sys_file_t *)kmalloc(sizeof(sys_file_t));
+    if (stderr_sf) {
+        memset(stderr_sf, 0, sizeof(sys_file_t));
+        stderr_sf->vfs_file = create_console_file(CONSOLE_STDERR_MODE);
+        if (stderr_sf->vfs_file) {
+            proc->fd_table[2] = stderr_sf;
+        } else {
+            kfree(stderr_sf);
+            serial_printf("[FD Init] Failed to create stderr console file\n");
+        }
+    }
+    
+    serial_printf("[FD Init] Standard I/O descriptors initialized for PID %u\n", proc->pid);
 }
 
 /**
