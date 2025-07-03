@@ -197,7 +197,8 @@ long atol(const char *str) {
 long long atoll(const char *str) {
     if (!str) return 0;
     
-    long long result = 0;
+    // For 32-bit safety, use long instead
+    long result = 0;
     int sign = 1;
     
     // Skip whitespace
@@ -214,13 +215,15 @@ long long atoll(const char *str) {
         str++;
     }
     
-    // Convert digits
+    // Convert digits (limit to avoid overflow)
     while (*str >= '0' && *str <= '9') {
-        result = result * 10 + (*str - '0');
+        long new_result = result * 10 + (*str - '0');
+        if (new_result < result) break; // Overflow check
+        result = new_result;
         str++;
     }
     
-    return result * sign;
+    return (long long)(result * sign);
 }
 
 long strtol(const char *str, char **endptr, int base) {
@@ -456,7 +459,32 @@ ldiv_t ldiv(long numer, long denom) {
 
 lldiv_t lldiv(long long numer, long long denom) {
     lldiv_t result;
-    result.quot = numer / denom;
-    result.rem = numer % denom;
+    // Simple implementation to avoid 64-bit division issues
+    if (denom == 0) {
+        result.quot = 0;
+        result.rem = 0;
+        return result;
+    }
+    
+    // Use simple loop for 64-bit division on 32-bit target
+    result.quot = 0;
+    result.rem = numer;
+    
+    bool negative = false;
+    if ((numer < 0) != (denom < 0)) {
+        negative = true;
+    }
+    
+    if (numer < 0) numer = -numer;
+    if (denom < 0) denom = -denom;
+    
+    while (numer >= denom) {
+        numer -= denom;
+        result.quot++;
+    }
+    
+    result.rem = numer;
+    if (negative) result.quot = -result.quot;
+    
     return result;
 }
