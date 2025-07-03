@@ -8,6 +8,7 @@
 #include <libc/stdbool.h>   // For bool
 #include <kernel/core/types.h>
 #include <kernel/sync/spinlock.h>       // <<< ADDED: Include for spinlock_t
+#include <sys/stat.h>        // For struct stat
 
 #ifdef __cplusplus
 extern "C" {
@@ -57,8 +58,18 @@ typedef struct vfs_driver {
     off_t (*lseek)(file_t *file, off_t offset, int whence);
     int (*readdir)(file_t *dir_file, struct dirent *d_entry_out, size_t entry_index); // Add this
     int (*unlink)(void *fs_context, const char *path); // Add this
+    int (*mkdir)(void *fs_context, const char *path, mode_t mode); // Add this
+    int (*rmdir)(void *fs_context, const char *path); // Add this
+    
+    /* Inode-based operations for page cache */
+    ssize_t (*read_inode)(void *fs_context, uint32_t inode_number, 
+                          uint64_t offset, void *buffer, size_t size);
+    ssize_t (*write_inode)(void *fs_context, uint32_t inode_number,
+                           uint64_t offset, const void *buffer, size_t size);
+    int (*stat_inode)(void *fs_context, uint32_t inode_number, struct stat *st);
+    
     struct vfs_driver *next;
-} vfs_driver_t;;
+} vfs_driver_t;
 
 /* Abstract vnode structure */
 struct vnode {
@@ -79,7 +90,16 @@ int vfs_close(file_t *file);
 int vfs_read(file_t *file, void *buf, size_t len);
 int vfs_write(file_t *file, const void *buf, size_t len);
 off_t vfs_lseek(file_t *file, off_t offset, int whence);
+int vfs_unlink(const char *path);
+int vfs_mkdir(const char *path, mode_t mode);
+int vfs_rmdir(const char *path);
 
+/* Page cache I/O functions */
+ssize_t vfs_read_at(uint32_t device_id, uint32_t inode_number,
+                    uint64_t offset, void *buffer, size_t size);
+ssize_t vfs_write_at(uint32_t device_id, uint32_t inode_number,
+                     uint64_t offset, const void *buffer, size_t size);
+int vfs_get_file_size(uint32_t device_id, uint32_t inode_number, uint64_t *size);
 
 #ifdef __cplusplus
 }

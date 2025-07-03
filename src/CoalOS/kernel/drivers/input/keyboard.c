@@ -10,6 +10,7 @@
 #include <kernel/drivers/input/keyboard.h>
 #include <kernel/drivers/input/keyboard_hw.h> // Should define KB_RESP_ACK, etc.
 #include <kernel/core/types.h>
+#include <kernel/core/constants.h> // For centralized constants
 #include <kernel/cpu/idt.h>          // For PIC_EOI, outb, PIC1_COMMAND, PIC2_COMMAND constants
 #include <kernel/lib/port_io.h>      // For outb, inb
 #include <kernel/cpu/isr_frame.h>
@@ -28,8 +29,9 @@
 // Definitions and Constants
 //============================================================================
 #define KB_BUFFER_SIZE 256
-#define KBC_WAIT_TIMEOUT 300000 
-#define KBC_MAX_FLUSH 100       
+// Use centralized constants from constants.h
+#define KBC_WAIT_TIMEOUT KBC_WAIT_TIMEOUT_CYCLES
+#define KBC_MAX_FLUSH KBC_FLUSH_MAX_ATTEMPTS
 
 #define DEFAULT_KEYMAP_US keymap_us_qwerty 
 

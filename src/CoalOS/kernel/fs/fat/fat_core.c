@@ -28,6 +28,10 @@
  extern int      fat_readdir_internal(file_t *dir_file, struct dirent *d_entry_out, size_t entry_index);
  extern int      fat_unlink_internal(void *fs_context, const char *path);
  
+ // Implemented in fat_dir_ops.c
+ extern int      fat_mkdir_internal(void *fs_context, const char *path, mode_t mode);
+ extern int      fat_rmdir_internal(void *fs_context, const char *path);
+ 
  // Implemented in fat_io.c
  extern int   fat_read_internal(file_t *file, void *buf, size_t len);
  extern int   fat_write_internal(file_t *file, const void *buf, size_t len);
@@ -47,7 +51,9 @@
      .lseek   = fat_lseek_internal,    // Lseek function pointer
      .readdir = fat_readdir_internal,  // Readdir function pointer
      .unlink  = fat_unlink_internal,   // Unlink function pointer
-     // Add .mkdir, .rmdir, .stat, etc. here if/when implemented
+    .mkdir   = fat_mkdir_internal,    // Mkdir function pointer
+    .rmdir   = fat_rmdir_internal,    // Rmdir function pointer
+     // Add .stat, etc. here if/when implemented
      .next    = NULL                 // Linked list pointer for VFS internal use
  };
  

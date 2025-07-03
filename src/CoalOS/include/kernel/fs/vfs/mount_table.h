@@ -72,6 +72,14 @@
   */
  mount_t *mount_table_get_head(void);
  
+ /**
+  * @brief Finds a mount entry by device ID (thread-safe).
+  *
+  * @param device_id The device ID to search for.
+  * @return Pointer to the found mount_t entry if found, or NULL otherwise.
+  * The caller MUST NOT free the returned pointer.
+  */
+ mount_t *mount_find_by_device_id(uint32_t device_id);
  
  #ifdef __cplusplus
  }
