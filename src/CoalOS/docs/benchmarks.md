@@ -49,3 +49,21 @@ The usual rationale: string instructions are microcoded and cost per iteration, 
 | pipe_bw (MB/s) | 117 | 661 |
 | fork_exit_wait (ns) | 97274 | 52115 |
 | fork_exec_wait (ns) | 250837 | 120025 |
+
+### Slab: free-list sharding
+
+`slab.c` follows mimalloc's free-list sharding (Leijen, Zorn, de Moura, MSR-TR-2019-18): every page has an
+allocation list (`free`) and a `local_free` list that frees push to; they are merged only when `free` runs
+dry. A cache allocates from one current page, so the fast path is a load, a pop and a counter increment, and
+a fresh page bumps an offset instead of threading all its objects into a list (a 16-byte page used to cost
+252 stores up front). A free into a full page puts it back on the partial list; a page that empties goes back
+to the buddy allocator at once unless it is the cache's current page. The per-free `%` (a division) that
+validated the pointer is gone. Result in icount mode: small but consistent (0.1 to 1.7 percent fewer
+instructions on syscall, pipe, mmap and fork paths) and 64 bytes less kernel text.
+
+| test | before | after |
+|------|--------|-------|
+| mmap_munmap_1m (ns) | 1270.7 | 1249.2 |
+| pipe_rw_1b (ns) | 1814.9 | 1800.9 |
+| fork_exit_wait (ns) | 52114.9 | 52071.1 |
+| open_close (ns) | 11915.4 | 11877.3 |
