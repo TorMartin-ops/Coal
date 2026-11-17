@@ -32,6 +32,9 @@ bool frame_refill_zeroed(void);
 /** Frames waiting in the zeroed pool in a zone (they count as free memory). */
 size_t frame_pool_pages(unsigned zone);
 
+/** Same, for work nobody asked for: fails instead of taking the last free memory. */
+uintptr_t frame_alloc_user_zeroed_spare(void);
+
 /** Copy one frame to another; either may be highmem. */
 void frame_copy(uintptr_t dst, uintptr_t src);
 

@@ -108,3 +108,17 @@ out of order). The libc test that expected a freed 100-byte block to serve a 50-
 |------|--------|-------|
 | malloc_free_64 (ns) | 102.0 | 87.0 |
 | malloc_churn (ns) | 86890 | 12862 |
+
+### Fault-around for demand-zero pages
+
+A demand-zero fault in a growing-up VMA (heap, mmap; not the stack) also maps the next three absent pages
+that share the page table. Only spare memory is used (`frame_alloc_user_zeroed_spare` fails below 256 free pages)
+and the OOM killer is never involved for the extra pages. Four pages is the knee: eight pages gave only
+12.0 percent instead of 10.2 percent on `page_fault` because zeroing the frames dominates. ELF segments are
+loaded eagerly by exec, so there is nothing to fault around for file-backed pages.
+Worst case for a process that touches one page in a sparse region: three extra frames, freed on exit or munmap.
+
+| test | before | after |
+|------|--------|-------|
+| page_fault (ns) | 1594.5 | 1431.7 |
+| page_fault_idle (ns) | 357.9 | 195.3 |

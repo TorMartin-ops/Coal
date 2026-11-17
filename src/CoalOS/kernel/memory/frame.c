@@ -102,6 +102,12 @@ uintptr_t frame_alloc_user_zeroed(void) {
     return phys;
 }
 
+uintptr_t frame_alloc_user_zeroed_spare(void) {
+    if (buddy_free_pages_count(ZONE_NORMAL) + buddy_free_pages_count(ZONE_HIGH) < POOL_RESERVE)
+        return 0;
+    return frame_alloc_user_zeroed();
+}
+
 void frame_copy(uintptr_t dst, uintptr_t src) {
     void *d = kmap(dst), *s = kmap(src);
     memcpy(d, s, PAGE_SIZE);
