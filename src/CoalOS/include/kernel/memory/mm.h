@@ -68,6 +68,9 @@ vma_struct_t *insert_vma(mm_struct_t *mm, uintptr_t start, uintptr_t end, uint32
 /** munmap: unmap and free [start, start+length), splitting or trimming VMAs. */
 int remove_vma_range(mm_struct_t *mm, uintptr_t start, size_t length);
 
+/** Bytes of address space covered by the VMAs (for RLIMIT_AS). */
+size_t mm_total_vm(mm_struct_t *mm);
+
 /** Move the program break (Linux brk semantics). new_brk == 0 queries.
  *  @return the resulting break; unchanged if the request could not be met. */
 uintptr_t mm_brk(mm_struct_t *mm, uintptr_t new_brk);

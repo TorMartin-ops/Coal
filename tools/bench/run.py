@@ -64,7 +64,7 @@ def kernel_size(build_dir):
 
 
 def measure_boot(mcp, boots):
-    """QEMU start to mcpd ready. The server reports it in 0.1 s steps, so the wall time of
+    """QEMU start to agentd ready. The server reports it in 0.1 s steps, so the wall time of
     coal_boot minus the (no-op) kernel rebuild it does first is used instead."""
     noop = []
     for _ in range(3):

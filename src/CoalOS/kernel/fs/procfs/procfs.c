@@ -11,6 +11,7 @@
 #include <kernel/memory/paging.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/process/process.h>
+#include <kernel/process/rlimit.h>
 #include <kernel/lib/string.h>
 #include <libc/stdarg.h>
 
@@ -88,8 +89,13 @@ static size_t render(const struct node *n, char *out) {
     }
     case K_STATUS:
         if (proc_info_get(n->pid, &pi) < 0) return 0;
-        return (size_t)pf(out, SNAPSHOT_MAX, "Name:\t%s\nState:\t%c\nPid:\t%u\nPPid:\t%u\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n",
-                          pi.name, pi.state, pi.pid, pi.ppid);
+        {
+            char hits[24];
+            rlimit_hits_text(pi.rl_hits, hits, sizeof(hits));
+            return (size_t)pf(out, SNAPSHOT_MAX,
+                              "Name:\t%s\nState:\t%c\nPid:\t%u\nPPid:\t%u\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nRlimitHits:\t%s\n",
+                              pi.name, pi.state, pi.pid, pi.ppid, hits);
+        }
     case K_CMDLINE:
         if (proc_info_get(n->pid, &pi) < 0) return 0;
         memcpy(out, pi.cmdline, pi.cmdline_len);

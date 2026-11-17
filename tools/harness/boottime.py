@@ -5,12 +5,12 @@
 
 Milestones: QEMU's COM1/COM2 sockets appear, first serial byte, kernel entry (the
 banner), every kernel log line (one per init stage, including "starting /sbin/init"),
-mcpd's ready event and the first ping reply over COM2. Runs are repeatable: the disk
+agentd's hello event and the first ping reply over COM2. Runs are repeatable: the disk
 is attached with -snapshot, so nothing a run writes survives it.
 
 --icount makes QEMU's virtual clock follow executed instructions (TCG only). Host
 timing is then meaningless, so the report uses guest time: the kernel's own log
-timestamps and the up_ms field of mcpd's ready event. Those are identical from run
+timestamps and the up_ms field of agentd's hello event. Those are identical from run
 to run, which makes the numbers comparable across commits. Standard library only.
 """
 import argparse
@@ -30,7 +30,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SRC_DIR = REPO / "src" / "CoalOS"
 KLOG = re.compile(rb"^\[\s*(\d+)\.(\d{3})\] \[\w+\s*\] ([\w-]+): (.*)$")
-PING = b'{"id":1,"op":"ping"}\n'
+sys.path.insert(0, str(REPO / "tools" / "coal-gateway"))
+from coal_gateway import frames  # noqa: E402
+
+PING = frames.encode({"id": 1, "op": "ping"})
 LABEL_MAX = 44
 
 
@@ -125,7 +128,8 @@ def collect(args, proc, tl, s1, s2, deadline):
         s.setblocking(False)
         sel.register(s, selectors.EVENT_READ, name)
     bufs = {"com1": b"", "com2": b""}
-    started = ready = pinged = None        # init-start, mcpd ready, ping sent: host ms
+    agent = frames.Decoder()
+    started = ready = pinged = None        # init-start, agentd ready, ping sent: host ms
     got_byte = replied = False
     done_at = None
     while time.monotonic() < deadline:
@@ -142,21 +146,21 @@ def collect(args, proc, tl, s1, s2, deadline):
             if name == "com1" and not got_byte:
                 got_byte = True
                 tl.add("first_byte", "first serial byte", host_ms=now)
+            if name == "com2":
+                for msg in agent.feed(data):
+                    if msg.get("event") == "hello":
+                        ready = now
+                        tl.add("agentd_ready", "agentd hello event", msg.get("up_ms"), now)
+                    elif msg.get("pong") and not replied:
+                        replied = True
+                        tl.add("agentd_ping", "first agentd ping reply", host_ms=now)
+                        done_at = time.monotonic() + args.linger / 1000.0
+                continue
             bufs[name] += data
             *lines, bufs[name] = bufs[name].split(b"\n")
             for raw in lines:
-                line = raw.strip(b"\r ")
-                if name == "com1":
-                    started = on_kernel_line(tl, line, now, started)
-                elif b'"event":"ready"' in line:
-                    ready = now
-                    up = re.search(rb'"up_ms":(\d+)', line)
-                    tl.add("mcpd_ready", "mcpd ready event", int(up.group(1)) if up else None, now)
-                elif b'"pong"' in line and not replied:
-                    replied = True
-                    tl.add("mcpd_ping", "first mcpd ping reply", host_ms=now)
-                    done_at = time.monotonic() + args.linger / 1000.0
-        # Ping once mcpd announced itself; if the announcement was missed, 2 s after init started.
+                started = on_kernel_line(tl, raw.strip(b"\r "), now, started)
+        # Ping once agentd announced itself; if the announcement was missed, 2 s after init started.
         if (not replied and (ready is not None or (started is not None and tl.host_ms() - started > 2000))
                 and (pinged is None or tl.host_ms() - pinged > 50)):
             pinged = tl.host_ms()

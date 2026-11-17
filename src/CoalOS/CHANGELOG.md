@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- agentd replaces mcpd: length-prefixed JSON frames with multiplexed requests (a slow command no longer
+  blocks a ping), a structured exec result (exit code, signal, duration, `killed_by`, per-stream byte
+  counts), head and tail truncation with the full output kept in a file, non-interactive commands
+  (stdin `/dev/null`, `CI=1 TERM=dumb`), background jobs with their own process groups and resource limits,
+  atomic file writes, `fs.stat/mkdir/remove`. Wire protocol: `docs/agent-vm/protocol.md`.
+- Kernel: `setrlimit`, `ugetrlimit` and `prlimit64` for CPU time, address space and process count
+  (SIGXCPU then SIGKILL, ENOMEM, EAGAIN); the parent receives SIGCHLD when a child exits.
+- coal-gateway: the MCP server core moved to `tools/coal-gateway`; adds Streamable HTTP with a bearer token,
+  the tasks extension, job, `coal_stat`, `coal_mkdir` and `coal_remove` tools, `workspace_id` / `run_id` /
+  `job_id` handles and a per-run JSONL call log. `tools/coal-mcp/server.py` stays the stdio entry point.
 - mcpd: every command runs in its own session and is killed as a group on timeout; `coal_run`
   returns when the shell exits (background jobs no longer hold it); unlimited output is drained and
   flagged as truncated; errors carry errno text; numbers are range-checked instead of clamped.

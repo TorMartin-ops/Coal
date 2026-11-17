@@ -14,7 +14,7 @@ including an IPv4 stack.
    `/sbin/init`, sets up the keyboard controller, enables interrupts and starts
    the scheduler. A failure before that point panics.
 3. `/sbin/init` (PID 1, `userspace/init`) starts `/bin/sh` on the console and
-   `/sbin/mcpd` (the MCP agent) and restarts them when they exit.
+   `/sbin/agentd` (the host agent) and restarts them when they exit.
 
 ## Memory
 
@@ -112,14 +112,16 @@ screen, COM1 and a 16 KiB ring read by `syslog(2)` (`dmesg`). Levels below
 - `userspace/coalbox`: BusyBox-style multi-call binary, installed as `/bin/coalbox`;
   `sh` finds the applets (cat, ls, cp, grep, ps, ...) through it.
 - `userspace/sh`: shell with pipes, redirection, `&&`/`||`, background jobs, history.
-- `userspace/init`, `userspace/mcpd`, and tests in `userspace/tests`.
+- `userspace/init`, `userspace/agentd`, and tests in `userspace/tests`.
 
 ## MCP integration
 
-`tools/coal-mcp/server.py` (host) boots the image in QEMU and talks JSON lines
-over COM2 to `/sbin/mcpd`, which runs commands and transfers files. See
-`tools/coal-mcp/README.md`. The UART receive ring is 2 KiB and drops bytes when full (no flow
-control), so the host keeps each request line below that size.
+`tools/coal-gateway` (host) boots the image in QEMU and talks length-prefixed JSON frames over COM2 to
+`/sbin/agentd`, which runs commands, manages background jobs with resource limits and transfers
+files; the MCP front ends are `tools/coal-mcp/server.py` (stdio) and `tools/coal-gateway/gateway.py`
+(stdio or HTTP). The protocol is in `docs/agent-vm/protocol.md`, the gateway in
+`docs/agent-vm/gateway.md`. The UART holds the sender back when the 8 KiB receive ring is full, so the
+link is lossless and frames of up to 256 KiB need no host-side pacing.
 
 ## Source layout
 
@@ -127,7 +129,7 @@ control), so the host keeps each request line below that size.
 boot/            Multiboot2 entry
 kernel/          core cpu drivers fs lib memory process sync
 include/kernel/  kernel headers        include/libc/  headers shared with user space
-userspace/       libc coalbox sh init mcpd tests hello
+userspace/       libc coalbox sh init agentd tests hello
 rootfs/etc/      files copied into the disk image
 scripts/         QEMU launcher, system call number check
 src/arch/i386/   linker scripts

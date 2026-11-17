@@ -101,6 +101,17 @@ vma_struct_t *insert_vma(mm_struct_t *mm, uintptr_t start, uintptr_t end, uint32
     return v;
 }
 
+size_t mm_total_vm(mm_struct_t *mm) {
+    size_t total = 0;
+    uintptr_t flags = spinlock_acquire_irqsave(&mm->lock);
+    for (struct rb_node *n = rb_tree_first(&mm->vma_tree); n; n = rb_node_next(n)) {
+        vma_struct_t *v = rb_entry(n, vma_struct_t, rb_node);
+        total += v->vm_end - v->vm_start;
+    }
+    spinlock_release_irqrestore(&mm->lock, flags);
+    return total;
+}
+
 mm_struct_t *dup_mm(mm_struct_t *parent) {
     uintptr_t flags = spinlock_acquire_irqsave(&parent->lock);
 

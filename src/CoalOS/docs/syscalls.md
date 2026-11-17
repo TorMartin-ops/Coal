@@ -49,6 +49,7 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 64 | getppid | `sc_getppid` |  |
 | 65 | getpgrp | `sc_getpgrp` |  |
 | 66 | setsid | `sc_setsid` |  |
+| 75 | setrlimit | `sc_setrlimit` | CPU, AS, NPROC only (see below) |
 | 78 | gettimeofday | `sc_gettimeofday` |  |
 | 82 | select | `sc_oldselect` | old argument-block form |
 | 83 | symlink | `sc_symlink` | EPERM on FAT |
@@ -76,6 +77,7 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 174 | rt_sigaction | `sc_rt_sigaction` |  |
 | 175 | rt_sigprocmask | `sc_rt_sigprocmask` |  |
 | 183 | getcwd | `sc_getcwd` |  |
+| 191 | ugetrlimit | `sc_ugetrlimit` | other resources report unlimited |
 | 192 | mmap2 | `sc_mmap2` |  |
 | 195 | stat64 | `sc_stat64` |  |
 | 196 | lstat64 | `sc_stat64` | no symbolic links |
@@ -97,6 +99,7 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 300 | fstatat64 | `sc_fstatat64` |  |
 | 308 | pselect6 | `sc_pselect6` | temporary signal mask, timespec timeout |
 | 331 | pipe2 | `sc_pipe2` |  |
+| 340 | prlimit64 | `sc_prlimit64` | any process; 64-bit values |
 | 359 | socket | `sc_socket` |  |
 | 360 | socketpair | `sc_socketpair` | AF_UNIX, SOCK_STREAM only |
 | 361 | bind | `sc_bind` |  |
@@ -115,6 +118,15 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 
 Behaviour worth knowing:
 
+- Resource limits: `RLIMIT_CPU` (SIGXCPU at the soft limit, repeated every second, SIGKILL at the
+  hard limit; counted per process in timer ticks, children start at zero), `RLIMIT_AS` (`mmap2` and
+  `brk` fail with `ENOMEM`; the stack is not counted) and `RLIMIT_NPROC` (`fork` fails with `EAGAIN`;
+  there is one user, so the limit applies to every process in the system). Other resources read as
+  unlimited and `setrlimit` on them returns `EINVAL`. A hard limit cannot be raised (`EPERM`). Limits
+  that stopped a process are listed in `RlimitHits` of `/proc/<pid>/status` and are merged into the
+  parent when the process exits, so the parent can read them from the zombie before it reaps it.
+- A process whose parent exits sends it `SIGCHLD` (ignored by default). A parent with a handler
+  therefore wakes from `poll` with `EINTR` when a child dies.
 - Single-threaded processes, no users: `getuid` and friends return 0.
 - Signals: handlers, `sa_mask`, `SA_RESETHAND`, `SA_NODEFER`, `SA_RESTORER` and
   `SA_RESTART` work; delivery happens on return from system calls and interrupts.

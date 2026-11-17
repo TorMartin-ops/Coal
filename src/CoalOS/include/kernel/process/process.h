@@ -8,6 +8,7 @@
 #include <kernel/core/types.h>
 #include <kernel/cpu/isr_frame.h>
 #include <kernel/memory/paging.h>
+#include <kernel/process/rlimit.h>
 #include <kernel/process/scheduler.h>
 #include <kernel/sync/spinlock.h>
 
@@ -48,6 +49,10 @@ typedef struct pcb {
     uint32_t sig_saved;               /* mask to restore when sig_restore is set (pselect6) */
     bool     sig_restore;
     struct sigact sigact[32];         /* NSIG entries */
+
+    struct rlim rlim[RL_COUNT];       /* resource limits, see rlimit.h */
+    uint32_t cpu_ms, cpu_next;        /* CPU time used; the time at which rlimit_tick() has to act */
+    uint32_t rl_hits;                 /* RL_HIT() mask of limits that stopped this process or a child */
 
     uint32_t tls_base, tls_pages;     /* set_thread_area descriptor, loaded on every switch */
     char     cwd[CWD_MAX];
