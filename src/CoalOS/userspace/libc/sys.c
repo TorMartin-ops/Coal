@@ -21,6 +21,10 @@
 int errno;
 char **environ;
 
+/* The fallback entry for programs started without AT_SYSINFO; __libc_start replaces it. */
+__attribute__((naked)) static void int80_entry(void) { __asm__("int $0x80; ret"); }
+void (*__vsyscall)(void) = int80_entry;
+
 long __syscall_ret(long r) {
     if ((unsigned long)r > (unsigned long)-4096) {
         errno = (int)-r;
@@ -51,7 +55,6 @@ int symlink(const char *a, const char *b)      { RET(__SC3(SYS_SYMLINK, a, b, 0)
 ssize_t readlink(const char *p, char *b, size_t n) { RET(__SC3(SYS_READLINK, p, b, n)); }
 int chmod(const char *p, mode_t m)             { RET(__SC3(SYS_CHMOD, p, m, 0)); }
 int statfs(const char *p, struct statfs *s)    { RET(__SC3(SYS_STATFS, p, s, 0)); }
-int gettimeofday(struct timeval *tv, void *tz) { RET(__SC3(SYS_GETTIMEOFDAY, tv, tz, 0)); }
 int socketpair(int d, int t, int p, int fds[2]) { RET(__sc(SYS_SOCKETPAIR, d, t, p, (long)fds, 0)); }
 
 int select(int n, fd_set *r, fd_set *w, fd_set *e, struct timeval *tv) {
@@ -98,7 +101,6 @@ pid_t setsid(void)                        { RET(__SC1(SYS_SETSID, 0)); }
 int setpgid(pid_t p, pid_t g)             { RET(__SC3(SYS_SETPGID, p, g, 0)); }
 uid_t getuid(void)                        { return (uid_t)__SC1(SYS_GETUID, 0); }
 int kill(pid_t p, int s)                  { RET(__SC3(SYS_KILL, p, s, 0)); }
-time_t time(time_t *t)                    { RET(__SC1(SYS_TIME, t)); }
 int nanosleep(const struct timespec *r, struct timespec *m) { RET(__SC3(SYS_NANOSLEEP, r, m, 0)); }
 
 pid_t waitpid(pid_t pid, int *status, int options) {

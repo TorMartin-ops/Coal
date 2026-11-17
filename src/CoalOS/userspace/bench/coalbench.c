@@ -24,6 +24,7 @@
 #include <libc/sys/stat.h>
 #include <libc/sys/wait.h>
 #include <libc/syscall.h>
+#include <libc/sys/time.h>
 #include <libc/time.h>
 #include <libc/unistd.h>
 
@@ -73,7 +74,7 @@ static inline uint64_t rdtsc(void) {
 
 static double mono_ns(void) {
     struct timespec ts;
-    __sc(SYS_CLOCK_GETTIME, 1, (long)&ts, 0, 0, 0);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec * 1e9 + (double)ts.tv_nsec;
 }
 
@@ -154,13 +155,13 @@ static uint64_t t_write_null(unsigned n) {
 }
 
 static uint64_t t_gettimeofday(unsigned n) {
-    long tv[2];
-    LOOP(n, if (__SC3(SYS_GETTIMEOFDAY, tv, 0, 0) != 0) return 0);
+    struct timeval tv;
+    LOOP(n, if (gettimeofday(&tv, NULL) != 0) return 0);
 }
 
 static uint64_t t_clock_gettime(unsigned n) {
     struct timespec ts;
-    LOOP(n, if (__SC3(SYS_CLOCK_GETTIME, 1, &ts, 0) != 0) return 0);
+    LOOP(n, if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0);
 }
 
 static uint64_t t_open_close(unsigned n) {
