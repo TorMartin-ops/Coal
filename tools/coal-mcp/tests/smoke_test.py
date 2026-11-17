@@ -4,6 +4,7 @@
 Usage: smoke_test.py [build-dir]    exits non-zero on the first failure.
 """
 import functools
+import hashlib
 import http.server
 import threading
 import json
@@ -85,6 +86,28 @@ def main():
         check("hello from smoke" in text, "wget from a host http.server", text)
         err, text = c.tool("coal_run", command="wget -O /tmp/x https://example.com/; echo rc=$?", timeout_ms=15000)
         check("not supported" in text, "https gives a clear error", text)
+        err, text = c.tool("coal_run", command="false; echo rc=$?; sh -c 'exit 3'; echo rc=$?; echo a | grep b; echo rc=$?")
+        check(text.split("--- stdout ---\n")[1].split() == ["rc=1", "rc=3", "rc=1"], "$? is expanded when each command runs", text)
+        err, text = c.tool("coal_run", command="sleep 3000 | sleep 3001", timeout_ms=1000)
+        check("timed out" in text, "timeout kills a pipeline", text)
+        err, text = c.tool("coal_run", command="ps")
+        check("sleep" not in text, "no orphans after a timeout (the process group was killed)", text)
+        err, text = c.tool("coal_run", command="sleep 2 & echo started", timeout_ms=1500)
+        check("started" in text and "timed out" not in text, "a background job does not hold coal_run", text)
+        err, text = c.tool("coal_run", command="yes 0123456789 | head -n 100000", timeout_ms=20000)
+        check("exit code: 0" in text and "output truncated" in text, "large stdout is capped, not hung", text[:200])
+        blob = os.urandom(3 * 1024 * 1024)
+        src, back = os.path.join(www, "blob.bin"), os.path.join(www, "blob.back")
+        with open(src, "wb") as f:
+            f.write(blob)
+        err, text = c.tool("coal_write_file", path="/tmp/blob.bin", host_path=src)
+        check(not err, "write a 3 MiB file", text)
+        err, text = c.tool("coal_read_file", path="/tmp/blob.bin", save_to=back)
+        with open(back, "rb") as f:
+            got = f.read()
+        check(not err and hashlib.sha256(got).digest() == hashlib.sha256(blob).digest(),
+              "3 MiB read back byte for byte (%d bytes)" % len(got), text)
+        err, text = c.tool("coal_run", command="rm /tmp/blob.bin")
         err, text = c.tool("coal_snapshot", name="smoke")
         check(not err, "snapshot", text)
         err, text = c.tool("coal_run", command="rm /tmp/f && echo gone")
