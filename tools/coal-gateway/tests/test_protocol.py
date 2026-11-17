@@ -46,7 +46,7 @@ class ProtocolCases:
         h = self.c.request("hello")
         self.assertEqual(h["proto"], 1)
         self.assertEqual(h["max_frame"], 256 * 1024)
-        self.assertIn("cpu_s", h["rlimits"] if isinstance(h["rlimits"], list) else list(h["rlimits"]) + ["cpu_s"])
+        self.assertEqual(h["rlimits"], ["cpu_s", "mem_mb", "nproc"])
         self.assertGreaterEqual(h["max_jobs"], 8)
         self.assertEqual(self.c.hello["event"], "hello")
 

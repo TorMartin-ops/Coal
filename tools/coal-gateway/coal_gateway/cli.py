@@ -31,30 +31,31 @@ def default_token_file():
     return os.path.join(base, "coal-gateway", "token")
 
 
-def add_common(ap):
+def common_options():
+    ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("--attach", metavar="unix:PATH|tcp:HOST:PORT|vsock:CID:PORT",
                     help="use an already running agentd at this address instead of managing QEMU")
     ap.add_argument("--build-dir", help="CMake build directory (default: <repo>/build/coal-mcp)")
     ap.add_argument("--memory", type=int, metavar="MIB",
                     help="default guest RAM for coal_boot (default: $COAL_MEMORY_MB or 512)")
     ap.add_argument("--log-dir", help="where per-run JSONL logs go (default: <build-dir>/runs)")
+    return ap
 
 
-def parser(prog="coal-gateway", with_http=True):
-    ap = argparse.ArgumentParser(prog=prog, description="MCP gateway that drives Coal OS in QEMU")
-    add_common(ap)
-    if with_http:
-        sub = ap.add_subparsers(dest="mode", required=True)
-        sub.add_parser("stdio", help="serve one client on stdin/stdout")
-        h = sub.add_parser("http", help="serve MCP over Streamable HTTP (stateless, bearer token)")
-        h.add_argument("--host", default="127.0.0.1", help="address to bind (default 127.0.0.1)")
-        h.add_argument("--port", type=int, default=7077)
-        h.add_argument("--token-file", default=default_token_file(),
-                       help="bearer token file, mode 0600, created on first run (default: %(default)s)")
-        h.add_argument("--allow-origin", action="append", default=[], metavar="ORIGIN",
-                       help="accept browser requests from this Origin (localhost origins are always accepted)")
-        h.add_argument("--allow-non-loopback", action="store_true",
-                       help="permit binding a non-loopback address (put TLS and OAuth 2.1 in front)")
+def parser():
+    """gateway.py stdio|http [options]; the common options follow the mode word."""
+    ap = argparse.ArgumentParser(prog="coal-gateway", description="MCP gateway that drives Coal OS in QEMU")
+    sub = ap.add_subparsers(dest="mode", required=True)
+    sub.add_parser("stdio", parents=[common_options()], help="serve one client on stdin/stdout")
+    h = sub.add_parser("http", parents=[common_options()], help="serve MCP over Streamable HTTP (stateless, bearer token)")
+    h.add_argument("--host", default="127.0.0.1", help="address to bind (default 127.0.0.1)")
+    h.add_argument("--port", type=int, default=7077)
+    h.add_argument("--token-file", default=default_token_file(),
+                   help="bearer token file, mode 0600, created on first run (default: %(default)s)")
+    h.add_argument("--allow-origin", action="append", default=[], metavar="ORIGIN",
+                   help="accept browser requests from this Origin (localhost origins are always accepted)")
+    h.add_argument("--allow-non-loopback", action="store_true",
+                   help="permit binding a non-loopback address (put TLS and OAuth 2.1 in front)")
     return ap
 
 
@@ -107,4 +108,6 @@ def main(argv=None):
 
 def main_stdio(argv=None, name="coal-mcp"):
     """Entry point of the stdio-only server: the same options, no mode word."""
-    run_stdio(parser("coal-mcp", with_http=False).parse_args(argv), name)
+    ap = argparse.ArgumentParser(prog="coal-mcp", description="MCP server (stdio) that drives Coal OS in QEMU",
+                                 parents=[common_options()])
+    run_stdio(ap.parse_args(argv), name)
