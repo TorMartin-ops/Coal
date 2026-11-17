@@ -7,6 +7,7 @@ import signal
 import socket
 import subprocess
 import tempfile
+import collections
 import threading
 import time
 import uuid
@@ -160,7 +161,11 @@ class Machine:
             self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                          preexec_fn=_die_with_parent)
+            self.qemu_stderr = collections.deque(maxlen=20)
+            self.stderr_thread = threading.Thread(target=_drain, args=(self.proc.stderr, self.qemu_stderr), daemon=True)
+            self.stderr_thread.start()
             self.agent = AgentClient(parse_address(link))
+            self.agent.explain = self.qemu_fate
             start = time.monotonic()
             deadline = start + timeout
             while link.startswith("unix:") and not os.path.exists(com2) and time.monotonic() < deadline and self.running():
@@ -168,11 +173,23 @@ class Machine:
         if self.agent.wait_ready(max(1.0, deadline - time.monotonic()), self.running):
             return "%sbooted in %.1fs; agentd is ready" % (note, time.monotonic() - start)
         if not self.running():
-            err = self.proc.stderr.read().decode("utf-8", "replace").strip()
-            raise ToolError("QEMU exited during boot: %s\n%s" % (err, self.kernel_log(20)))
+            raise ToolError("QEMU exited during boot: %s\n%s" % (self.qemu_fate(), self.kernel_log(20)))
         raise ToolError("the VM is running but agentd did not answer within %ds. "
                         "Is /sbin/agentd on the disk image and started by init?\n"
                         "Kernel log tail:\n%s" % (timeout, self.kernel_log(30)))
+
+    def qemu_fate(self):
+        """What became of QEMU: still running, or its exit code or signal and the last lines of its stderr."""
+        if self.proc is None:
+            return ""
+        code = self.proc.poll()
+        if code is None:
+            return "QEMU is still running (pid %d)" % self.proc.pid
+        if getattr(self, "stderr_thread", None):
+            self.stderr_thread.join(1.0)
+        how = "killed by signal %d" % -code if code < 0 else "exited with code %d" % code
+        tail = "\n".join(self.qemu_stderr)
+        return "QEMU %s%s" % (how, "; last stderr lines:\n" + tail if tail else "; no stderr output")
 
     def _cleanup_workdir(self):
         if self.workdir:
@@ -320,6 +337,12 @@ class Machine:
             with open(path, "w") as f:
                 f.write(wid + "\n")
             return wid
+
+
+def _drain(pipe, lines):
+    """Keeps the last lines of QEMU's stderr (and the pipe from filling up)."""
+    for raw in iter(pipe.readline, b""):
+        lines.append(raw.decode("utf-8", "replace").rstrip())
 
 
 def _die_with_parent():
