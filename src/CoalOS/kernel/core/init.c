@@ -50,7 +50,6 @@ const char *KERNEL_VERSION_STRING = "0.1.0";
 const char *INIT_PATH = "/sbin/init";
 
 #define MIN_USABLE_HEAP_SIZE (1 * 1024 * 1024)            // 1MB
-#define MAX_CLAMPED_INITIAL_HEAP_SIZE (256 * 1024 * 1024) // 256MB
 #define MULTIBOOT2_BOOTLOADER_MAGIC_EXPECTED  0x36d76289U
 #define SHORT_DELAY_CYCLES                   15000
 #define KBC_FORCE_CONFIG_DELAY               25000
@@ -420,7 +419,9 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
 
         if (region_p_end > total_span) total_span = region_p_end;
 
-        if (entry->type == MULTIBOOT_MEMORY_AVAILABLE && region_p_len64 >= MIN_USABLE_HEAP_SIZE) {
+        // Non-PAE: RAM above 4 GiB cannot be addressed
+        if (entry->type == MULTIBOOT_MEMORY_AVAILABLE && entry->addr < 0x100000000ull &&
+            region_p_len64 >= MIN_USABLE_HEAP_SIZE) {
             // The heap must not overlap the kernel image or the boot info
             uintptr_t cand_start = region_p_start;
             uintptr_t cand_end = region_p_end;
@@ -445,9 +446,8 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
 
     if (best_candidate_size64 >= MIN_USABLE_HEAP_SIZE && best_candidate_base != 0) {
         *out_heap_base = best_candidate_base;
-        *out_heap_size = (best_candidate_size64 > (uint64_t)MAX_CLAMPED_INITIAL_HEAP_SIZE) ?
-                         MAX_CLAMPED_INITIAL_HEAP_SIZE : (size_t)best_candidate_size64;
-        terminal_printf("  Best Heap Found: PhysBase=%#x, Size=%zu (may be clamped)\n", *out_heap_base, *out_heap_size);
+        *out_heap_size = (size_t)best_candidate_size64;
+        terminal_printf("  RAM region: PhysBase=%#x, Size=%zu\n", *out_heap_base, *out_heap_size);
         return true;
     }
     terminal_printf("  [FATAL] No suitable heap region found (>= %u bytes).\n", MIN_USABLE_HEAP_SIZE);

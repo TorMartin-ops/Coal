@@ -6,7 +6,7 @@
 #include <kernel/fs/vfs/vfs.h>
 #include <kernel/drivers/display/terminal.h>
 #include <kernel/drivers/timer/pit.h>
-#include <kernel/memory/frame.h>
+#include <kernel/memory/buddy.h>
 #include <kernel/memory/paging.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/process/process.h>
@@ -63,11 +63,13 @@ static size_t render(const struct node *n, char *out) {
     uint32_t ms = (uint32_t)timer_uptime_ms();
     switch (n->kind) {
     case K_MEMINFO: {
-        size_t total_pages, free_pages;
-        frame_stats(&total_pages, &free_pages);
-        uint32_t total = (uint32_t)total_pages * (PAGE_SIZE / 1024), free = (uint32_t)free_pages * (PAGE_SIZE / 1024);
-        return (size_t)pf(out, SNAPSHOT_MAX, "MemTotal:    %8u kB\nMemFree:     %8u kB\nMemAvailable:%8u kB\n",
-                          total, free, free);
+        uint32_t lt = (uint32_t)buddy_total_pages(ZONE_NORMAL), lf = (uint32_t)buddy_free_pages_count(ZONE_NORMAL);
+        uint32_t ht = (uint32_t)buddy_total_pages(ZONE_HIGH), hf = (uint32_t)buddy_free_pages_count(ZONE_HIGH);
+        const uint32_t kb = PAGE_SIZE / 1024;
+        return (size_t)pf(out, SNAPSHOT_MAX,
+                          "MemTotal:    %8u kB\nMemFree:     %8u kB\nMemAvailable:%8u kB\n"
+                          "HighTotal:   %8u kB\nHighFree:    %8u kB\n",
+                          (lt + ht) * kb, (lf + hf) * kb, (lf + hf) * kb, ht * kb, hf * kb);
     }
     case K_UPTIME:
         return (size_t)pf(out, SNAPSHOT_MAX, "%u.%u%u %u.00\n", ms / 1000, ms / 100 % 10, ms / 10 % 10, ms / 1000);

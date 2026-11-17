@@ -21,12 +21,16 @@ paging_invalidate_page:
 
 ; ----------------------------------------------------
 ; void paging_activate(uint32_t *page_directory_phys);
-; Loads a page directory and enables paging and write protection (CR0.PG, CR0.WP).
+; Loads a page directory and enables 4 MiB pages, paging and write protection (CR4.PSE, CR0.PG, CR0.WP).
 ; Argument page_directory_phys is at [esp + 4]
 ; ----------------------------------------------------
 paging_activate:
     mov eax, [esp + 4]  ; Get physical address of the Page Directory from the stack
     mov cr3, eax        ; Load the physical address into CR3
+
+    mov eax, cr4
+    or eax, 0x10        ; PSE: 4 MiB pages for the direct map
+    mov cr4, eax
 
     mov eax, cr0
     or eax, 0x80010000  ; PG (bit 31) | WP (bit 16): the kernel honours read-only pages

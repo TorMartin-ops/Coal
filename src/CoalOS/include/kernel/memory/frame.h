@@ -2,23 +2,31 @@
  * @file frame.h
  * @brief Reference-counted physical frames (single 4 KiB pages).
  *
- * Frames come from the buddy allocator and lie in the kernel direct map
- * (see paging.h). A present page-table entry owns one reference; unmapping
- * drops it. Frame contents are not cleared unless asked for.
+ * frame_alloc*() return lowmem frames, always reachable through the direct
+ * map (page tables, kernel stacks, anything the kernel dereferences).
+ * frame_alloc_user*() may return highmem frames, which are for user data only
+ * and must be touched through kmap(). A present page-table entry owns one
+ * reference; unmapping drops it.
  */
 #ifndef FRAME_H
 #define FRAME_H
 
 #include <kernel/core/types.h>
 
-/** Allocate the reference-count array. Called once after buddy_init(). */
-void frame_init(void);
-
-/** Allocate a frame with reference count 1. Returns its physical address, or 0 when out of memory. */
+/** Lowmem frame with reference count 1, contents undefined. Returns its physical address, or 0 when out of memory. */
 uintptr_t frame_alloc(void);
 
-/** Same, with the frame zero-filled. */
+/** Same, zero-filled. */
 uintptr_t frame_alloc_zeroed(void);
+
+/** User-data frame (highmem preferred), contents undefined. */
+uintptr_t frame_alloc_user(void);
+
+/** Same, zero-filled. */
+uintptr_t frame_alloc_user_zeroed(void);
+
+/** Copy one frame to another; either may be highmem. */
+void frame_copy(uintptr_t dst, uintptr_t src);
 
 /** Take an additional reference. */
 void get_frame(uintptr_t phys);
@@ -32,8 +40,5 @@ static inline void frame_free(uintptr_t phys) { put_frame(phys); }
 
 /** Current reference count, or -1 for an address the allocator does not manage. */
 int get_frame_refcount(uintptr_t phys);
-
-/** Total and free page counts of the allocator. */
-void frame_stats(size_t *total_pages, size_t *free_pages);
 
 #endif /* FRAME_H */

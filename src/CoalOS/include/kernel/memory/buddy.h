@@ -1,11 +1,14 @@
 /**
  * @file buddy.h
- * @brief Physical page allocator (binary buddy system).
+ * @brief Physical page allocator (binary buddy system) with two zones.
  *
- * Manages one contiguous RAM region in units of pages (its per-page metadata
- * is stored at the start of the region). Blocks are 2^order
- * pages; a block's order is remembered by the allocator, so freeing needs only
- * the address. All managed memory must lie inside the kernel direct map.
+ * One contiguous RAM region is managed in pages. Pages below the lowmem limit
+ * form the NORMAL zone (permanently direct-mapped, usable for kernel objects);
+ * pages above it form the HIGH zone (user data only, reached through kmap()).
+ * Per-page state lives in an array of struct page that the caller places in
+ * lowmem, so free lists never touch the pages themselves. Blocks are 2^order
+ * pages; the allocator remembers each block's order, so freeing needs only
+ * the address.
  */
 #ifndef BUDDY_H
 #define BUDDY_H
@@ -13,21 +16,39 @@
 #include <kernel/core/types.h>
 
 #define BUDDY_MAX_ORDER 13                  /* largest block: 8192 pages = 32 MiB */
-#define BUDDY_MAX_PAGES 65536u              /* managed region is capped at 256 MiB */
 
-/** Start managing [phys_start, phys_start+size). Paging must be active. */
-void buddy_init(uintptr_t phys_start, size_t size);
+#define ZONE_NORMAL 0
+#define ZONE_HIGH   1
+#define ZONE_COUNT  2
 
-/** Allocate 2^order contiguous pages. Returns the physical address or 0. */
+struct page {
+    uint32_t next, prev;                    /* free-list links (page indexes) */
+    uint16_t refcount;                      /* frame.c: references by page-table entries */
+    uint8_t  meta;                          /* free/allocated flag and block order */
+};
+
+/** Bytes of struct page needed to manage a region of the given size. */
+static inline size_t buddy_meta_bytes(size_t region_bytes) {
+    return (region_bytes >> 12) * sizeof(struct page);
+}
+
+/** Manage [base, end); pages from `high_start` up are the HIGH zone (high_start == end: none).
+ *  `pages` (direct-mapped) must hold buddy_meta_bytes(end - base) bytes. */
+void buddy_init(uintptr_t base, uintptr_t high_start, uintptr_t end, struct page *pages);
+
+/** Allocate 2^order contiguous pages from the NORMAL zone. Returns the physical address or 0. */
 uintptr_t buddy_alloc_pages(unsigned order);
 
-/** Free a block returned by buddy_alloc_pages(). Panics on an invalid or double free. */
+/** Allocate one page, preferring the HIGH zone. */
+uintptr_t buddy_alloc_page_user(void);
+
+/** Free a block returned by one of the allocators. Panics on an invalid or double free. */
 void buddy_free_pages(uintptr_t phys);
 
-/** Page index of phys inside the managed region, or -1 if it is not managed. */
-long buddy_page_index(uintptr_t phys);
+/** Page descriptor for a managed address, or NULL. */
+struct page *buddy_page(uintptr_t phys);
 
-size_t buddy_total_pages(void);
-size_t buddy_free_pages_count(void);
+size_t buddy_total_pages(unsigned zone);
+size_t buddy_free_pages_count(unsigned zone);
 
 #endif /* BUDDY_H */
