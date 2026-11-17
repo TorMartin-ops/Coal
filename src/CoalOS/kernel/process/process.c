@@ -3,6 +3,7 @@
  * exec and the user stack live in exec.c, signals in signal.c.
  */
 #include <kernel/process/process.h>
+#include <kernel/process/fpu.h>
 #include <kernel/process/exec.h>
 #include <kernel/process/signal.h>
 #include <kernel/drivers/wait.h>
@@ -170,6 +171,7 @@ static void pcb_free(pcb_t *p) {
     uintptr_t flags = local_irq_save();
     unlink_from(&g_all, p, offsetof(pcb_t, all_next));
     local_irq_restore(flags);
+    fpu_release(p);
     kstack_free_pages(p);
     kfree(p);
 }
@@ -263,6 +265,7 @@ int process_fork(const isr_frame_t *regs) {
     child->tls_base = parent->tls_base;
     child->tls_pages = parent->tls_pages;
     child->sig_blocked = parent->sig_blocked;
+    fpu_fork(child, parent);
     memcpy(child->sigact, parent->sigact, sizeof(child->sigact));
     sys_files_clone(child, parent);
     f = process_user_frame(child);

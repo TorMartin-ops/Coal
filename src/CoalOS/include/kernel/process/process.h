@@ -41,6 +41,8 @@ typedef struct pcb {
     int      exit_status;             /* Linux wait status encoding */
     bool     wait_blocked;            /* parent is blocked in process_waitpid() */
     bool     exiting;                 /* process_exit() has started */
+    uint8_t  *fpu_raw, *fpu;          /* FPU/SSE save area (fpu is 16-byte aligned inside fpu_raw), see fpu.c */
+    bool     fpu_valid;               /* the save area holds state to load on first FPU use */
     uint32_t pending_signals;
     uint32_t sig_blocked;             /* blocked signal mask (bit n = signal n) */
     uint32_t sig_saved;               /* mask to restore when sig_restore is set (pselect6) */

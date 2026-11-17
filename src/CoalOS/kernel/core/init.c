@@ -8,6 +8,7 @@
 #include <kernel/core/multiboot.h>
 #include <kernel/cpu/gdt.h>
 #include <kernel/cpu/idt.h>
+#include <kernel/process/fpu.h>
 #include <kernel/memory/paging.h>
 #include <kernel/memory/frame.h>
 #include <kernel/memory/kmalloc.h>
@@ -116,6 +117,7 @@ void kernel_main_init(uint32_t magic, uint32_t mb_info_phys_addr) {
     initialize_memory_management(mb_info_phys_addr);
     idt_init();
     init_pit();
+    fpu_init();
     scheduler_init();
     keyboard_init();
     keymap_load(KEYMAP_NORWEGIAN);

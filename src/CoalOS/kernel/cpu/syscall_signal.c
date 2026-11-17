@@ -10,6 +10,7 @@
 
 #include "syscall_internal.h"
 #include <kernel/lib/string.h>
+#include <kernel/process/fpu.h>
 
 #define KSIGSET_SIZE    8                       /* bytes in the kernel sigset_t */
 #define UNBLOCKABLE     ((1u << SIGKILL) | (1u << SIGSTOP))
@@ -37,6 +38,7 @@ struct rt_sigframe {
         uint32_t sigmask[2];
     } uc;
     uint8_t  retcode[8];                        /* mov eax, __NR_rt_sigreturn; int 0x80 */
+    uint8_t  fpstate[FPU_AREA_SIZE];            /* FXSAVE image of the interrupted code (sc.fpstate points here) */
 };
 
 int signal_disposition(struct pcb *p, int sig) {
@@ -150,6 +152,10 @@ void signal_deliver(isr_frame_t *regs, uint32_t restart_nr) {
         .esp_at_signal = regs->useresp, .ss = regs->ss, .oldmask = mask_to_user(old_mask),
     };
 
+    if (fpu_save_current()) {                   /* the handler may use the FPU: keep the interrupted state in the frame */
+        memcpy(f.fpstate, fpu_area(p), FPU_AREA_SIZE);
+        f.uc.sc.fpstate = sp + offsetof(struct rt_sigframe, fpstate);
+    }
     p->pending_signals &= ~(1u << sig);
     if (copy_to_user((void *)sp, &f, sizeof(f)) != 0)
         process_exit(SIGSEGV);                  /* no usable stack: Linux forces SIGSEGV */
@@ -165,9 +171,9 @@ long sc_rt_sigreturn(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e,
     (void)a; (void)b; (void)c; (void)d; (void)e; (void)ebp_arg;
     pcb_t *ps = get_current_process();
     struct rt_sigframe f;
+    uint32_t frame = regs->useresp - 4;         /* the handler's ret popped pretcode: esp is one word past the frame start */
 
-    /* The handler's ret popped pretcode, so esp is one word past the frame start. */
-    if (copy_from_user(&f, (const void *)(regs->useresp - 4), sizeof(f)) != 0)
+    if (copy_from_user(&f, (const void *)frame, sizeof(f)) != 0)
         process_exit(SIGSEGV);
 
     struct sigcontext *sc = &f.uc.sc;
@@ -178,5 +184,7 @@ long sc_rt_sigreturn(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e,
     regs->useresp = sc->esp;
     regs->eflags = (sc->eflags & EFLAGS_USER) | EFLAGS_IF | 0x2;
     ps->sig_blocked = mask_from_user(f.uc.sigmask[0]);
+    if (sc->fpstate == frame + offsetof(struct rt_sigframe, fpstate))
+        fpu_restore_current(f.fpstate);
     return regs->eax;                           /* the dispatcher stores this back into eax */
 }

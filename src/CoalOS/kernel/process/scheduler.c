@@ -5,6 +5,7 @@
  */
 #include <kernel/process/scheduler.h>
 #include <kernel/process/process.h>
+#include <kernel/process/fpu.h>
 #include <kernel/process/exec.h>
 #include <kernel/cpu/tss.h>
 #include <kernel/cpu/gdt.h>
@@ -77,6 +78,7 @@ static void switch_to(tcb_t *prev, tcb_t *next) {
     if (!prev || np->tls_base != prev->process->tls_base || np->tls_pages != prev->process->tls_pages)
         gdt_set_tls_base(np->tls_base, np->tls_pages);
     tss_set_kernel_stack((uint32_t)np->kernel_stack_vaddr_top);
+    fpu_task_switch(np);
     if (np->page_directory_phys) {
         asm volatile("mov %%cr3, %0" : "=r"(cr3));
         if (cr3 != (uint32_t)np->page_directory_phys)

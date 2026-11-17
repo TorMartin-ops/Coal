@@ -5,6 +5,7 @@
  */
 #include <kernel/process/exec.h>
 #include <kernel/process/elf_loader.h>
+#include <kernel/process/fpu.h>
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/fs/vfs/read_file.h>
 #include <kernel/lib/string.h>
@@ -277,6 +278,7 @@ int process_execve(const char *path, const char *const *argv, const char *const 
     local_irq_restore(flags);
 
     if (old) exec_free_mm(old);
+    fpu_exec_reset(p);
     exec_set_name(p, path, argv);
     process_init_user_frame(regs, img.entry, img.sp);
     return 0;
