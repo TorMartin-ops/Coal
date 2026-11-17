@@ -7,6 +7,7 @@
 #include <kernel/core/log.h>
 #include <kernel/core/multiboot.h>
 #include <kernel/core/cmdline.h>
+#include <kernel/drivers/virtio/virtio.h>
 #include <kernel/cpu/gdt.h>
 #include <kernel/cpu/idt.h>
 #include <kernel/cpu/syscall.h>
@@ -131,6 +132,7 @@ void kernel_main_init(uint32_t magic, uint32_t mb_info_phys_addr) {
     keyboard_init();
     keymap_load(KEYMAP_NORWEGIAN);
     net_init();
+    virtio_init();
 
     if (fs_init() != FS_SUCCESS) KERNEL_PANIC_HALT("cannot mount the root file system");
     pcb_t *init = create_user_process(INIT_PATH);

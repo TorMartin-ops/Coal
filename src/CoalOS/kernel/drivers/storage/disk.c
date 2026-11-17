@@ -3,6 +3,7 @@
  * @brief Logical disk layer: wraps the block device and parses the MBR.
  */
 #include <kernel/drivers/storage/disk.h>
+#include <kernel/drivers/virtio/virtio_blk.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/lib/string.h>
 
@@ -47,7 +48,8 @@ int disk_init(disk_t *disk, const char *device_name) {
     if (!disk || !device_name) return BLOCK_ERR_PARAMS;
 
     memset(disk, 0, sizeof(*disk));
-    int r = block_device_init(device_name, &disk->blk_dev);
+    int r = device_name[0] == 'v' ? virtio_blk_attach(device_name, &disk->blk_dev)
+                                  : block_device_init(device_name, &disk->blk_dev);
     if (r != BLOCK_ERR_OK) return r;
 
     disk->initialized = true;
