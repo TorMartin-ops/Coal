@@ -65,6 +65,7 @@ typedef struct pcb {
     size_t   sigaltstack_size;
     char     cwd[CWD_MAX];
     uint32_t cloexec;                 /* bit n: descriptor n is closed by execve */
+    uint32_t umask;
 
     struct mm_struct *mm;
     void    *page_directory_phys;     /* PML4, physical; NULL for kernel tasks: they run on any directory */

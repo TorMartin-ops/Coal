@@ -16,6 +16,7 @@
 #define IO_CHUNK    PAGE_SIZE
 #define IOV_MAX     1024
 #define F_DUPFD_CLOEXEC 1030
+#define LINUX_O_LARGEFILE 0x8000
 #define MAX_RW_COUNT    0x7ffff000ul    /* what Linux clamps a single read or write to */
 
 _Static_assert(sizeof(struct kstat) == 144 && sizeof(struct kstatfs) == 120, "x86_64 struct stat and statfs sizes");
@@ -45,9 +46,18 @@ long sc_openat(int dirfd, uintptr_t path, uint32_t flags, uint32_t mode) {
     return sc_open(path, flags, mode);
 }
 
+long sc_creat(uintptr_t path, uint32_t mode) { return sc_open(path, O_CREAT | O_WRONLY | O_TRUNC, mode); }
+
 long sc_close(uint32_t fd) {
     set_cloexec(fd, false);
     return sys_close(fd);
+}
+
+long sc_dup3(uint32_t oldfd, uint32_t newfd, uint32_t flags) {
+    if (flags & ~(uint32_t)LINUX_O_CLOEXEC || oldfd == newfd) return -EINVAL;
+    long r = sc_dup2(oldfd, newfd);
+    if (r >= 0) set_cloexec(r, flags & LINUX_O_CLOEXEC);
+    return r;
 }
 
 long sc_dup(uint32_t fd) { return sys_dup(fd); }
@@ -93,7 +103,7 @@ long sc_fcntl(uint32_t fd, uint32_t cmd, unsigned long arg) {
         if (cmd == F_GETFD) {
             r = (get_current_process()->cloexec >> fd) & 1 ? FD_CLOEXEC : 0;
         } else if (cmd == F_GETFL) {
-            r = sf->flags;
+            r = (sf->flags & ~(O_CREAT | O_EXCL | O_TRUNC | O_NOCTTY)) | LINUX_O_LARGEFILE;
         } else {
             sf->flags = (sf->flags & ~(O_APPEND | O_NONBLOCK)) | (arg & (O_APPEND | O_NONBLOCK));
             if (sf->vfs_file->vnode->fs_driver->set_nonblock)       /* drivers that block themselves (sockets) */
@@ -272,6 +282,55 @@ long sc_utime(uintptr_t path, uintptr_t utimes) {
     return vfs_utime(kpath, (uint32_t)t[0], (uint32_t)t[1]);
 }
 
+long sc_truncate(uintptr_t path, int64_t len) {
+    char kpath[PATH_MAX_SYS];
+    file_t *f;
+    int err = user_path(path, kpath, sizeof(kpath));
+
+    if (!err) err = vfs_open(kpath, O_WRONLY, 0, &f);
+    if (err) return err;
+    err = vfs_ftruncate(f, len);
+    vfs_close(f);
+    return err;
+}
+
+long sc_ftruncate(uint32_t fd, int64_t len) {
+    sys_file_t *sf = sys_file_get(fd);
+
+    if (!sf) return -EBADF;
+    long r = vfs_ftruncate(sf->vfs_file, len);
+    sys_file_put(sf);
+    return r;
+}
+
+/* Every file belongs to root and FAT stores no owner. Like vfat, chown succeeds only if nothing would change. */
+static long chown_result(long err, uint32_t uid, uint32_t gid) {
+    if (err) return err;
+    return (uid == 0 || uid == (uint32_t)-1) && (gid == 0 || gid == (uint32_t)-1) ? 0 : -EPERM;
+}
+
+long sc_chown(uintptr_t path, uint32_t uid, uint32_t gid) {
+    struct kstat st;
+    char kpath[PATH_MAX_SYS];
+    int err = user_path(path, kpath, sizeof(kpath));
+
+    return chown_result(err ? err : vfs_stat(kpath, &st), uid, gid);
+}
+
+long sc_fchown(uint32_t fd, uint32_t uid, uint32_t gid) {
+    struct kstat st;
+
+    return chown_result(sys_fstat(fd, &st), uid, gid);
+}
+
+long sc_umask(uint32_t mask) {
+    pcb_t *p = get_current_process();
+    uint32_t old = p->umask;
+
+    p->umask = mask & 0777;
+    return old;
+}
+
 long sc_sync(void) {
     vfs_sync();
     return 0;
@@ -342,8 +401,8 @@ long sc_access(uintptr_t path, uint32_t mode) {
     struct kstat st;
     char kpath[PATH_MAX_SYS];
     int err = user_path(path, kpath, sizeof(kpath));
-    (void)mode;                                     /* single user, no permission bits enforced */
-    return err ? err : vfs_stat(kpath, &st);
+    if (mode & ~(uint32_t)7) return -EINVAL;
+    return err ? err : vfs_stat(kpath, &st);        /* single user, no permission bits enforced */
 }
 
 //============================================================================

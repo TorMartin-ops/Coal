@@ -143,13 +143,13 @@ static const char *ftype(uint32_t m) {
     return "?";
 }
 
-/* stat family result: file type, permission bits, link count, size, owner. */
+/* stat family result: file type, link count, size, owner. Permission bits only through STATM: FAT cannot store them. */
 static void stshow_(const char *label, long call, struct kstat_ *s) {
     if (call < 0) tr(label, call, NULL);
     else if ((s->mode & 0170000) == 040000)       /* directory link counts and sizes depend on the file system */
-        tr(label, call, "type=dir mode=%04o uid=%u gid=%u", s->mode & 07777, s->uid, s->gid);
+        tr(label, call, "type=dir uid=%u gid=%u", s->uid, s->gid);
     else
-        tr(label, call, "type=%s mode=%04o nlink=%lu size=%ld uid=%u gid=%u", ftype(s->mode), s->mode & 07777,
+        tr(label, call, "type=%s nlink=%lu size=%ld uid=%u gid=%u", ftype(s->mode),
            (unsigned long)s->nlink, (long)s->size, s->uid, s->gid);
 }
 #define STAT(label, path) do { struct kstat_ s_; memset(&s_, 0xa5, sizeof s_); stshow_(label, K(SYS_stat, path, &s_), &s_); } while (0)
@@ -176,3 +176,5 @@ static void ignsig(int sig) {
 
 /* Type and permission bits only, for files whose size or content is not under the program's control. */
 #define STATT(label, path) do { struct kstat_ s_; long r_ = K(SYS_stat, path, &s_); if (r_ < 0) tr(label, r_, NULL); else tr(label, r_, "type=%s mode=%04o", ftype(s_.mode), s_.mode & 07777); } while (0)
+/* The permission bits of a path (chmod, umask and creation-mode tests only). */
+#define STATM(label, path) do { struct kstat_ s_; long r_ = K(SYS_stat, path, &s_); if (r_ < 0) tr(label, r_, NULL); else tr(label, r_, "mode=%04o", s_.mode & 07777); } while (0)

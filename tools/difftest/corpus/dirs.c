@@ -33,7 +33,7 @@ int main(void) {
     R("mkdir(noent parent)", K(SYS_mkdir, "x/y", 0755));
     STAT("stat(d)", "d");
     R("mkdir(d/e)", K(SYS_mkdir, "d/e", 0700));
-    STAT("stat(d/e mode)", "d/e");
+    STATM("stat(d/e mode)", "d/e");
     STAT("stat(d nlink)", "d");
     long fd = R("creat(d/f)", K(SYS_creat, "d/f", 0644));
     K(SYS_close, fd);

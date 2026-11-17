@@ -111,7 +111,7 @@ int main(void) {
     char lb[32] = "";
     RF("readlinkat", K(SYS_readlinkat, d, "sl", lb, sizeof lb), "%s", lb);
     R("fchmodat", K(SYS_fchmodat, d, "r2", 0600));
-    STAT("stat(a/r2 after fchmodat)", "a/r2");
+    STATM("stat(a/r2 after fchmodat)", "a/r2");
     R("faccessat", K(SYS_faccessat, d, "r2", R_OK, 0));
     R("linkat", K(SYS_linkat, d, "r2", d, "r3", 0));
     STAT("stat(a/r3 nlink)", "a/r3");

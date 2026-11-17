@@ -130,6 +130,7 @@ static pcb_t *pcb_new(void) {
     spinlock_init(&p->fd_table_lock);
     p->task.process = p;
     strcpy(p->cwd, "/");
+    p->umask = 022;
     rlimit_init(p);
     if (!kstack_alloc(p)) { kfree(p); return NULL; }
     return p;
@@ -257,6 +258,7 @@ int process_fork(const isr_frame_t *regs) {
     child->cmdline_len = parent->cmdline_len;
     strcpy(child->cwd, parent->cwd);
     child->cloexec = parent->cloexec;
+    child->umask = parent->umask;
     child->task.nice = parent->task.nice;
     rlimit_fork(child, parent);
     child->fs_base = parent->fs_base;

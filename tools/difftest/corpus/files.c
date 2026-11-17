@@ -75,15 +75,15 @@ int main(void) {
     STAT("stat(d)", "d");
     R("unlink(missing)", K(SYS_unlink, "c"));
     R("chmod(d 0400)", K(SYS_chmod, "d", 0400));
-    STAT("stat(d chmod)", "d");
+    STATM("stat(d chmod)", "d");
     R("fchmod", ({ long f = K(SYS_open, "d", O_RDONLY); long q = K(SYS_fchmod, f, 0640); K(SYS_close, f); q; }));
-    STAT("stat(d fchmod)", "d");
+    STATM("stat(d fchmod)", "d");
     R("access(R_OK)", K(SYS_access, "d", R_OK));
     R("access(F_OK missing)", K(SYS_access, "zz", F_OK));
     R("umask(077)", K(SYS_umask, 077));
     fd = R("creat(umask)", K(SYS_creat, "e", 0666));
     R("close", K(SYS_close, fd));
-    STAT("stat(e umask)", "e");
+    STATM("stat(e umask)", "e");
     R("umask(restore)", K(SYS_umask, 022));
 
     /* unlink of an open file keeps it readable */

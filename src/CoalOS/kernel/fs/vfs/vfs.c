@@ -326,7 +326,7 @@ off_t vfs_lseek(file_t *f, off_t off, int whence) {
     }
     int64_t pos = base + off;
     if (pos < 0) return -EINVAL;
-    if (pos > 0x7fffffff) return -EOVERFLOW;
+    if (pos > 0x7fffffff) return -EINVAL;           /* beyond the largest file, as vfat answers */
     f->offset = (off_t)pos;
     return f->offset;
 }
