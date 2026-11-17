@@ -1,6 +1,12 @@
 /**
  * @file net.c
- * @brief Ethernet, ARP, IPv4 and ICMP echo on one interface.
+ * @brief Ethernet, ARP, IPv4, ICMP echo and port unreachable, and the loopback interface.
+ *
+ * Packets for 127.0.0.0/8 or for our own address never reach the NIC: they are
+ * queued (LO_SLOTS packets, excess is dropped like on a full NIC ring) and
+ * delivered by net_tick() on the next millisecond. Delivering from the tick
+ * rather than from net_ip_send() keeps the transport code from being re-entered
+ * while it is still building the packet.
  */
 #define LOG_MODULE "net"
 
@@ -17,6 +23,9 @@
 #define ARP_REPLY   2
 #define ARP_TTL_MS  300000u
 #define ARP_SLOTS   8
+#define LO_SLOTS    16
+#define ICMP_UNREACH      3
+#define ICMP_PORT_UNREACH 3
 
 struct eth_hdr { uint8_t dst[6], src[6]; uint16_t type; } __attribute__((packed));
 
@@ -51,6 +60,15 @@ static uint8_t  arp_held[ETH_HLEN + NET_MTU];       /* a frame waiting for its n
 static size_t   arp_held_len;
 static uint32_t arp_held_hop;
 static uint16_t ip_id;
+
+static struct { size_t len; uint8_t pkt[NET_MTU]; } lo_q[LO_SLOTS];     /* loopback packets in flight */
+static unsigned lo_head, lo_tail;                                      /* free-running counters */
+
+bool net_is_loopback(uint32_t ip) { return (ip >> 24) == 127; }
+
+static bool is_local(uint32_t ip) { return net_is_loopback(ip) || (net_if.ip && ip == net_if.ip); }
+
+uint32_t net_src_for(uint32_t dst) { return net_is_loopback(dst) ? dst : net_if.ip; }
 
 /* ---- checksums ------------------------------------------------------------ */
 
@@ -145,8 +163,8 @@ int net_ip_send(uint8_t proto, uint32_t src, uint32_t dst, size_t len) {
     const uint8_t *mac;
     uint32_t hop = dst;
 
-    if (!net_if.present) return -ENETDOWN;
-    if (dst != IP4_BROADCAST) {
+    if (!net_if.present && !is_local(dst)) return -ENETDOWN;
+    if (dst != IP4_BROADCAST && !is_local(dst)) {
         if (!net_if.ip) return -ENETUNREACH;
         if ((dst & net_if.mask) != (net_if.ip & net_if.mask)) hop = net_if.gw;
         if (!hop) return -ENETUNREACH;
@@ -159,10 +177,19 @@ int net_ip_send(uint8_t proto, uint32_t src, uint32_t dst, size_t len) {
     ip->ttl = 64;
     ip->proto = proto;
     ip->csum = 0;
-    ip->src = htonl(src ? src : net_if.ip);
+    if (!src) src = net_src_for(dst);
+    ip->src = htonl(src);
     ip->dst = htonl(dst);
     ip->csum = net_csum_fold(net_csum_add(0, ip, IP_HLEN));
 
+    if (is_local(dst)) {
+        if (lo_tail - lo_head < LO_SLOTS) {
+            lo_q[lo_tail % LO_SLOTS].len = IP_HLEN + len;
+            memcpy(lo_q[lo_tail % LO_SLOTS].pkt, ip, IP_HLEN + len);
+            lo_tail++;
+        }
+        return 0;
+    }
     memcpy(((struct eth_hdr *)tx_frame)->src, net_if.mac, 6);      /* complete the header a held frame keeps */
     ((struct eth_hdr *)tx_frame)->type = htons(ETH_IP);
 
@@ -184,7 +211,7 @@ static void icmp_input(const uint8_t *ip_packet, size_t ip_len, uint32_t src, si
     size_t len = ip_len - hl;
 
     if (len < sizeof(*ic) || net_csum_fold(net_csum_add(0, ic, len)) != 0) return;
-    if (ic->type == 8 && ic->code == 0 && net_if.ip) {          /* echo request: answer from our address */
+    if (ic->type == 8 && ic->code == 0 && (net_if.ip || net_is_loopback(src))) {          /* echo request: answer from our address */
         uint8_t *out = net_tx_payload();
         memcpy(out, ic, len);
         ((struct icmp_hdr *)out)->type = 0;
@@ -192,7 +219,24 @@ static void icmp_input(const uint8_t *ip_packet, size_t ip_len, uint32_t src, si
         ((struct icmp_hdr *)out)->csum = net_csum_fold(net_csum_add(0, out, len));
         net_ip_send(IPPROTO_ICMP, 0, src, len);
     }
+    if (ic->type == ICMP_UNREACH && ic->code == ICMP_PORT_UNREACH) icmp_port_unreachable((const uint8_t *)(ic + 1) + 4, len > sizeof(*ic) + 4 ? len - sizeof(*ic) - 4 : 0);
     icmp_deliver(ip_packet, ip_len);
+}
+
+/* Answers a datagram for a port nobody listens on: the ICMP error carries the offending IP header and 8 bytes. */
+static void icmp_send_port_unreachable(const uint8_t *pkt, size_t total, size_t hl) {
+    const struct ip_hdr *ip = (const struct ip_hdr *)pkt;
+    uint8_t *out = net_tx_payload();
+    struct icmp_hdr *ic = (struct icmp_hdr *)out;
+    size_t quoted = total < hl + 8 ? total : hl + 8;
+
+    ic->type = ICMP_UNREACH;
+    ic->code = ICMP_PORT_UNREACH;
+    ic->csum = 0;
+    memset(out + sizeof(*ic), 0, 4);
+    memcpy(out + sizeof(*ic) + 4, pkt, quoted);
+    ic->csum = net_csum_fold(net_csum_add(0, out, sizeof(*ic) + 4 + quoted));
+    net_ip_send(IPPROTO_ICMP, ntohl(ip->dst), ntohl(ip->src), sizeof(*ic) + 4 + quoted);
 }
 
 static void ip_input(const uint8_t *pkt, size_t len) {
@@ -200,16 +244,18 @@ static void ip_input(const uint8_t *pkt, size_t len) {
     size_t hl = (ip->vihl & 0xF) * 4u, total = ntohs(ip->len);
     uint32_t src = ntohl(ip->src), dst = ntohl(ip->dst);
 
-    if (len < IP_HLEN || (ip->vihl >> 4) != 4 || hl < IP_HLEN || total < hl || total > len) return;
+    if (len < IP_HLEN || (ip->vihl >> 4) != 4 || hl < IP_HLEN || total < hl || total > len || total > NET_MTU) return;
     if (net_csum_fold(net_csum_add(0, pkt, hl)) != 0) return;
     if (ntohs(ip->frag) & 0x3FFF) return;               /* fragments are not reassembled */
-    if (net_if.ip && dst != net_if.ip && dst != IP4_BROADCAST &&
-        dst != (net_if.ip | ~net_if.mask)) return;
+    bool unicast = net_is_loopback(dst) || (net_if.ip && dst == net_if.ip);
+    if (net_if.ip && !unicast && dst != IP4_BROADCAST && dst != (net_if.ip | ~net_if.mask)) return;
 
     switch (ip->proto) {
     case IPPROTO_ICMP: icmp_input(pkt, total, src, hl); break;
-    case IPPROTO_UDP:  udp_input(src, dst, pkt + hl, total - hl); break;
-    case IPPROTO_TCP:  if (net_if.ip) tcp_input(src, dst, pkt + hl, total - hl); break;
+    case IPPROTO_UDP:
+        if (!udp_input(src, dst, pkt + hl, total - hl) && unicast) icmp_send_port_unreachable(pkt, total, hl);
+        break;
+    case IPPROTO_TCP:  if (net_if.ip || net_is_loopback(dst)) tcp_input(src, dst, pkt + hl, total - hl); break;
     }
 }
 
@@ -224,15 +270,25 @@ void net_rx_frame(const uint8_t *frame, size_t len) {
 
 /* ---- init and timers -------------------------------------------------------- */
 
+/* Delivers the loopback packets queued so far; replies queued meanwhile wait for the next tick. */
+static void lo_deliver(void) {
+    for (unsigned n = lo_tail - lo_head; n; n--) {
+        ip_input(lo_q[lo_head % LO_SLOTS].pkt, lo_q[lo_head % LO_SLOTS].len);
+        lo_head++;
+    }
+}
+
 void net_tick(void) {
     static uint32_t ms;
+    lo_deliver();
     if (++ms % 10) return;
-    e1000_poll();                       /* picks up frames when the interrupt line is not wired */
+    if (net_if.present) e1000_poll();   /* picks up frames when the interrupt line is not wired */
     dhcp_tick();
     tcp_tick();
 }
 
 void net_init(void) {
+    timer_set_hook(net_tick);           /* loopback works without a NIC */
     if (!e1000_init(net_if.mac)) {
         LOG_WARN("no network adapter found");
         return;
@@ -240,6 +296,5 @@ void net_init(void) {
     net_if.present = true;
     LOG_INFO("e1000 %02x:%02x:%02x:%02x:%02x:%02x", net_if.mac[0], net_if.mac[1], net_if.mac[2],
              net_if.mac[3], net_if.mac[4], net_if.mac[5]);
-    timer_set_hook(net_tick);
     dhcp_start();
 }

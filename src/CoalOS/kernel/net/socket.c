@@ -30,6 +30,7 @@
 #define SIOCGIFMTU      0x8921
 #define SIOCGIFHWADDR   0x8927
 #define IFF_UP_RUNNING  (0x1 | 0x2 | 0x40 | 0x1000)    /* UP BROADCAST RUNNING MULTICAST */
+#define IFF_LO_FLAGS    (0x1 | 0x8 | 0x40)              /* UP LOOPBACK RUNNING */
 
 struct sock *net_socks[NET_MAX_SOCKS];
 static uint16_t next_port = EPHEMERAL_FIRST;
@@ -66,8 +67,26 @@ static int wait_event(struct sock *s, const struct waiter *w) {
 
 void sock_wake(struct sock *s) { drv_wake_all(&s->wq); }
 
-/* DHCP may still be running just after boot: give it until its own fallback to finish. */
-static int wait_configured(void) {
+/* Port unreachable for a datagram we sent: a connected UDP socket to that peer sees ECONNREFUSED once. */
+void icmp_port_unreachable(const uint8_t *quoted, size_t len) {
+    size_t hl = len ? (quoted[0] & 0xFu) * 4u : 0;
+
+    if (hl < IP_HLEN || len < hl + 4 || quoted[9] != IPPROTO_UDP) return;
+    uint32_t peer = (uint32_t)quoted[16] << 24 | quoted[17] << 16 | quoted[18] << 8 | quoted[19];
+    uint16_t lport = (uint16_t)(quoted[hl] << 8 | quoted[hl + 1]), rport = (uint16_t)(quoted[hl + 2] << 8 | quoted[hl + 3]);
+
+    for (int i = 0; i < NET_MAX_SOCKS; i++) {
+        struct sock *s = net_socks[i];
+        if (s && s->type == SOCK_DGRAM && s->connected && s->lport == lport && s->raddr == peer && s->rport == rport) {
+            s->err = ECONNREFUSED;
+            sock_wake(s);
+        }
+    }
+}
+
+/* DHCP may still be running just after boot: give it until its own fallback to finish. Loopback needs no NIC. */
+static int wait_configured(uint32_t dst) {
+    if (net_is_loopback(dst)) return 0;
     for (int i = 0; i < 600 && net_if.present && !net_if.ip; i++) sleep_ms(10);
     return net_if.present ? 0 : -ENETDOWN;
 }
@@ -192,7 +211,7 @@ int sock_bind(struct sock *s, uint32_t addr, uint16_t port) {
     int rc = 0;
 
     if (s->lport) rc = -EINVAL;
-    else if (addr && addr != net_if.ip && addr != IP4_BROADCAST) rc = -EADDRNOTAVAIL;
+    else if (addr && addr != net_if.ip && addr != IP4_BROADCAST && !net_is_loopback(addr)) rc = -EADDRNOTAVAIL;
     else if (!port) rc = autobind(s);
     else {
         for (int i = 0; i < NET_MAX_SOCKS && !rc; i++) {
@@ -241,9 +260,9 @@ int sock_accept(struct sock *s, uint32_t *raddr, uint16_t *rport, int flags) {
     n->tcp = c;
     n->connected = true;
     n->nonblock = (flags & SOCK_NONBLOCK) != 0;
-    n->laddr = net_if.ip;
     n->lport = s->lport;
     n->raddr = tcp_peer_addr(c, &n->rport);
+    n->laddr = net_src_for(n->raddr);
     tcp_attach(c, n);
     *raddr = n->raddr;
     *rport = n->rport;
@@ -273,14 +292,14 @@ int sock_connect(struct sock *s, uint32_t addr, uint16_t port) {
         return rc;
     }
     local_irq_restore(irq);
-    if ((rc = wait_configured()) != 0) return rc;
+    if ((rc = wait_configured(addr)) != 0) return rc;
     irq = local_irq_save();
     if ((rc = autobind(s)) != 0) { local_irq_restore(irq); return rc; }
     s->tcp = tcp_open(s);
     if (!s->tcp) { local_irq_restore(irq); return -ENOMEM; }
     s->raddr = addr;
     s->rport = port;
-    s->laddr = net_if.ip;
+    s->laddr = net_src_for(addr);
     if ((rc = tcp_connect(s->tcp, addr, port, s->lport)) != 0) {
         tcp_close(s->tcp);
         s->tcp = NULL;
@@ -340,9 +359,12 @@ ssize_t sock_send(struct sock *s, const void *buf, size_t len, int flags, const 
     else if (!s->connected) return -EDESTADDRREQ;
     if (len > (s->type == SOCK_DGRAM ? UDP_PAYLOAD_MAX : IP_PAYLOAD_MAX)) return -EMSGSIZE;
 
-    if ((rc = wait_configured()) != 0) return rc;
+    if ((rc = wait_configured(dst)) != 0) return rc;
     irq = local_irq_save();
-    if (s->type == SOCK_DGRAM) {
+    if (s->type == SOCK_DGRAM && s->err) {
+        rc = -s->err;
+        s->err = 0;
+    } else if (s->type == SOCK_DGRAM) {
         rc = autobind(s);
         if (!rc) rc = udp_send(s->laddr, s->lport, dst, dport, buf, len);
     } else {
@@ -381,6 +403,7 @@ ssize_t sock_recv(struct sock *s, void *buf, size_t len, int flags, struct socka
         }
     } else {
         while (!s->rxq) {
+            if (s->err) { rc = -s->err; s->err = 0; break; }        /* ICMP error for a connected socket */
             if (nonblocking(s, flags)) { rc = -EAGAIN; break; }
             if ((rc = wait_event(s, &w)) != 0) break;
         }
@@ -417,7 +440,7 @@ int sock_shutdown(struct sock *s, int how) {
 
 void sock_name(const struct sock *s, bool peer, struct sockaddr_in *out) {
     if (peer) fill_from(out, s->raddr, s->rport);
-    else fill_from(out, s->laddr ? s->laddr : net_if.ip, s->lport);
+    else fill_from(out, s->laddr ? s->laddr : s->connected ? net_src_for(s->raddr) : net_if.ip, s->lport);
 }
 
 /* ---- options -------------------------------------------------------------------------- */
@@ -540,15 +563,16 @@ static int ifreq_ioctl(uint32_t cmd, void *uarg) {
     struct ifreq r;
 
     if (copy_from_user(&r, uarg, sizeof(r)) != 0) return -EFAULT;
-    if (strcmp(r.name, "eth0") != 0 || !net_if.present) return -ENODEV;
+    bool lo = strcmp(r.name, "lo") == 0;
+    if (!lo && (strcmp(r.name, "eth0") != 0 || !net_if.present)) return -ENODEV;
     memset(&r.u, 0, sizeof(r.u));
     switch (cmd) {
-    case SIOCGIFADDR:    fill_from(&r.u.addr, net_if.ip, 0); break;
-    case SIOCGIFNETMASK: fill_from(&r.u.addr, net_if.mask, 0); break;
-    case SIOCGIFBRDADDR: fill_from(&r.u.addr, net_if.ip | ~net_if.mask, 0); break;
-    case SIOCGIFFLAGS:   r.u.flags = IFF_UP_RUNNING; break;
+    case SIOCGIFADDR:    fill_from(&r.u.addr, lo ? IP4(127, 0, 0, 1) : net_if.ip, 0); break;
+    case SIOCGIFNETMASK: fill_from(&r.u.addr, lo ? IP4(255, 0, 0, 0) : net_if.mask, 0); break;
+    case SIOCGIFBRDADDR: fill_from(&r.u.addr, lo ? 0 : net_if.ip | ~net_if.mask, 0); break;
+    case SIOCGIFFLAGS:   r.u.flags = lo ? IFF_LO_FLAGS : IFF_UP_RUNNING; break;
     case SIOCGIFMTU:     r.u.mtu = NET_MTU; break;
-    case SIOCGIFHWADDR:  r.u.hw.family = 1; memcpy(r.u.hw.data, net_if.mac, 6); break;
+    case SIOCGIFHWADDR:  r.u.hw.family = lo ? 772 : 1; if (!lo) memcpy(r.u.hw.data, net_if.mac, 6); break;
     default: return -EINVAL;
     }
     return copy_to_user(uarg, &r, sizeof(r)) ? -EFAULT : 0;

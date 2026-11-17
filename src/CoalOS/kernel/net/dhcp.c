@@ -1,9 +1,10 @@
 /**
  * @file dhcp.c
- * @brief DHCP client: DISCOVER, OFFER, REQUEST, ACK at boot, then a static fallback.
+ * @brief DHCP client: DISCOVER, OFFER, REQUEST, ACK at boot, a static fallback, and
+ *        lease renewal (RFC 2131: unicast REQUEST at T1, broadcast at T2).
  *
- * Driven by dhcp_tick() and the UDP input path, so it never blocks. The lease
- * is not renewed; QEMU hands out day-long leases.
+ * Driven by dhcp_tick() and the UDP input path, so it never blocks. When the
+ * lease runs out the address is dropped and discovery starts over.
  */
 #define LOG_MODULE "dhcp"
 
@@ -24,9 +25,12 @@
 #define FALLBACK_DNS  IP4(10, 0, 2, 3)
 
 enum { OPT_MASK = 1, OPT_ROUTER = 3, OPT_DNS = 6, OPT_REQ_IP = 50, OPT_LEASE = 51, OPT_TYPE = 53,
-       OPT_SERVER = 54, OPT_PARAMS = 55, OPT_END = 255 };
-enum { DISCOVER = 1, OFFER = 2, REQUEST = 3, ACK = 5 };
-enum { IDLE, SELECTING, REQUESTING, BOUND };
+       OPT_SERVER = 54, OPT_PARAMS = 55, OPT_T1 = 58, OPT_T2 = 59, OPT_END = 255 };
+enum { DISCOVER = 1, OFFER = 2, REQUEST = 3, ACK = 5, NAK = 6 };
+enum { IDLE, SELECTING, REQUESTING, BOUND, RENEWING, REBINDING };
+
+#define LEASE_MAX_S    (20u * 86400u)   /* keeps lease times in milliseconds inside 32 bits */
+#define RENEW_RETRY_MS 10000u
 
 struct bootp {
     uint8_t  op, htype, hlen, hops;
@@ -41,6 +45,7 @@ struct bootp {
 static int      state;
 static uint32_t xid, retry_at, offered_ip, server_ip;
 static int      tries;
+static uint32_t bound_at, t1_ms, t2_ms, lease_ms;   /* lease times, counted from bound_at */
 
 static void send_msg(uint8_t type) {
     struct bootp m;
@@ -51,17 +56,18 @@ static void send_msg(uint8_t type) {
     m.htype = 1;
     m.hlen = 6;
     m.xid = htonl(xid);
-    m.flags = htons(0x8000);                    /* ask for a broadcast reply: we have no address yet */
+    if (!net_if.ip) m.flags = htons(0x8000);    /* ask for a broadcast reply: we have no address yet */
+    if (state == RENEWING || state == REBINDING) m.ciaddr = htonl(net_if.ip);
     memcpy(m.chaddr, net_if.mac, 6);
     m.magic = htonl(MAGIC);
     *o++ = OPT_TYPE; *o++ = 1; *o++ = type;
-    if (type == REQUEST) {
+    if (type == REQUEST && state != RENEWING && state != REBINDING) {
         *o++ = OPT_REQ_IP; *o++ = 4; *(uint32_t *)o = htonl(offered_ip); o += 4;
         *o++ = OPT_SERVER; *o++ = 4; *(uint32_t *)o = htonl(server_ip); o += 4;
     }
     *o++ = OPT_PARAMS; *o++ = 3; *o++ = OPT_MASK; *o++ = OPT_ROUTER; *o++ = OPT_DNS;
     *o++ = OPT_END;
-    udp_send(0, CLIENT_PORT, IP4_BROADCAST, SERVER_PORT, &m, sizeof(m));
+    udp_send(net_if.ip, CLIENT_PORT, state == RENEWING ? server_ip : IP4_BROADCAST, SERVER_PORT, &m, sizeof(m));
 }
 
 static unsigned prefix_len(uint32_t mask) {
@@ -70,7 +76,13 @@ static unsigned prefix_len(uint32_t mask) {
     return n;
 }
 
-static void configure(uint32_t ip, uint32_t mask, uint32_t gw, uint32_t dns, uint32_t lease, const char *how) {
+static void configure(uint32_t ip, uint32_t mask, uint32_t gw, uint32_t dns, uint32_t lease, uint32_t t1, uint32_t t2,
+                      const char *how) {
+    if (lease > LEASE_MAX_S) lease = LEASE_MAX_S;
+    bound_at = net_now();
+    lease_ms = lease * 1000u;                   /* 0: static fallback, never renewed */
+    t1_ms = (t1 && t1 < lease ? t1 : lease / 2) * 1000u;
+    t2_ms = (t2 && t2 < lease && t2 > t1_ms / 1000u ? t2 : lease - lease / 8) * 1000u;
     net_if.ip = ip;
     net_if.mask = mask;
     net_if.gw = gw;
@@ -88,11 +100,42 @@ void dhcp_start(void) {
     send_msg(DISCOVER);
 }
 
+/* Next retransmission while renewing: half the time left, at least RENEW_RETRY_MS. */
+static uint32_t renew_delay(uint32_t until_ms) {
+    uint32_t left = until_ms - (net_now() - bound_at), half = (int32_t)left > 0 ? left / 2 : 0;
+    return half > RENEW_RETRY_MS ? half : RENEW_RETRY_MS;
+}
+
+static void lease_tick(void) {
+    uint32_t elapsed = net_now() - bound_at;
+
+    if (!lease_ms) return;
+    if (elapsed >= lease_ms) {
+        LOG_WARN("lease expired");
+        net_if.ip = net_if.mask = net_if.gw = net_if.dns = 0;
+        dhcp_start();
+    } else if (elapsed >= t2_ms && state != REBINDING) {
+        state = REBINDING;
+        xid++;
+        retry_at = net_now() + renew_delay(lease_ms);
+        send_msg(REQUEST);
+    } else if (elapsed >= t1_ms && state == BOUND) {
+        state = RENEWING;
+        xid++;
+        retry_at = net_now() + renew_delay(t2_ms);
+        send_msg(REQUEST);
+    } else if ((state == RENEWING || state == REBINDING) && (int32_t)(net_now() - retry_at) >= 0) {
+        retry_at = net_now() + renew_delay(state == RENEWING ? t2_ms : lease_ms);
+        send_msg(REQUEST);
+    }
+}
+
 void dhcp_tick(void) {
+    if (state == BOUND || state == RENEWING || state == REBINDING) { lease_tick(); return; }
     if ((state != SELECTING && state != REQUESTING) || (int32_t)(net_now() - retry_at) < 0) return;
     if (tries >= MAX_TRIES) {
         LOG_WARN("no answer, using the static QEMU defaults");
-        configure(FALLBACK_IP, FALLBACK_MASK, FALLBACK_GW, FALLBACK_DNS, 0, "static");
+        configure(FALLBACK_IP, FALLBACK_MASK, FALLBACK_GW, FALLBACK_DNS, 0, 0, 0, "static");
         return;
     }
     tries++;
@@ -102,11 +145,11 @@ void dhcp_tick(void) {
 
 void dhcp_input(const uint8_t *msg, size_t len) {
     const struct bootp *m = (const struct bootp *)msg;
-    uint32_t mask = 0, gw = 0, dns = 0, lease = 0, srv = 0;
+    uint32_t mask = 0, gw = 0, dns = 0, lease = 0, srv = 0, t1 = 0, t2 = 0;
     int type = 0;
 
     if (len < offsetof(struct bootp, options) || m->op != 2 || ntohl(m->xid) != xid ||
-        ntohl(m->magic) != MAGIC || (state != SELECTING && state != REQUESTING)) return;
+        ntohl(m->magic) != MAGIC || state == IDLE || state == BOUND) return;
     if (memcmp(m->chaddr, net_if.mac, 6) != 0) return;
 
     for (size_t i = 0; i + 1 < len - offsetof(struct bootp, options);) {
@@ -121,6 +164,8 @@ void dhcp_input(const uint8_t *msg, size_t len) {
         case OPT_ROUTER: if (n >= 4) gw = ntohl(*(const uint32_t *)v); break;
         case OPT_DNS:    if (n >= 4) dns = ntohl(*(const uint32_t *)v); break;
         case OPT_LEASE:  if (n >= 4) lease = ntohl(*(const uint32_t *)v); break;
+        case OPT_T1:     if (n >= 4) t1 = ntohl(*(const uint32_t *)v); break;
+        case OPT_T2:     if (n >= 4) t2 = ntohl(*(const uint32_t *)v); break;
         case OPT_SERVER: if (n >= 4) srv = ntohl(*(const uint32_t *)v); break;
         }
         i += 2u + n;
@@ -132,7 +177,12 @@ void dhcp_input(const uint8_t *msg, size_t len) {
         tries = 1;
         retry_at = net_now() + RETRY_MS;
         send_msg(REQUEST);
-    } else if (type == ACK && state == REQUESTING) {
-        configure(ntohl(m->yiaddr), mask ? mask : FALLBACK_MASK, gw, dns, lease, "lease");
+    } else if (type == ACK && state != SELECTING) {
+        bool renewed = state != REQUESTING;
+        configure(ntohl(m->yiaddr), mask ? mask : FALLBACK_MASK, gw, dns, lease, t1, t2, renewed ? "renewed" : "lease");
+    } else if (type == NAK && state != SELECTING) {             /* the server withdrew the lease */
+        LOG_WARN("lease refused, starting over");
+        net_if.ip = net_if.mask = net_if.gw = net_if.dns = 0;
+        dhcp_start();
     }
 }

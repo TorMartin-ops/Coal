@@ -41,7 +41,7 @@ struct netif {
 };
 extern struct netif net_if;
 
-/** Finds the NIC, starts DHCP and the protocol timers. Call once with interrupts able to run later. */
+/** Starts the protocol timers and the loopback; finds the NIC and starts DHCP. Call once with interrupts able to run later. */
 void net_init(void);
 
 /** Milliseconds since boot, wrapping. Compare with (int32_t)(a - b). */
@@ -53,27 +53,34 @@ uint16_t net_csum_fold(uint32_t sum);
 /** Checksum over the TCP/UDP pseudo header plus the segment. */
 uint16_t net_l4_csum(uint32_t src, uint32_t dst, uint8_t proto, const void *seg, size_t len);
 
+/** True for 127.0.0.0/8. Packets to it, and to our own address, are looped back inside the stack. */
+bool net_is_loopback(uint32_t ip);
+/** The source address a packet to dst leaves with: dst itself for loopback, else the interface address. */
+uint32_t net_src_for(uint32_t dst);
+
 /** The IP payload area of the shared transmit frame. Fill up to IP_PAYLOAD_MAX bytes, then net_ip_send(). */
 uint8_t *net_tx_payload(void);
 
-/** Sends the payload in net_tx_payload() to dst from net_if.ip (src 0 means the interface address).
+/** Sends the payload in net_tx_payload() to dst (src 0 means net_src_for(dst)).
  *  Returns 0, or -ENETDOWN / -ENETUNREACH. A packet waiting for ARP is sent once the peer answers. */
 int net_ip_send(uint8_t proto, uint32_t src, uint32_t dst, size_t len);
 
 /** Called by the NIC driver for every received frame (interrupt context). */
 void net_rx_frame(const uint8_t *frame, size_t len);
 
-/** Per-millisecond timer entry; runs the protocol timers every 10 ms. */
+/** Per-millisecond timer entry: delivers loopback packets, and runs the NIC poll and protocol timers every 10 ms. */
 void net_tick(void);
 
 /** Sends one UDP datagram (payload up to IP_PAYLOAD_MAX - 8 bytes) from sport. src 0 = the interface address. */
 int udp_send(uint32_t src, uint16_t sport, uint32_t dst, uint16_t dport, const void *data, size_t len);
 
 /* Transport hooks. src/dst are host order, seg points at the transport header. */
-void udp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len);
+bool udp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len);   /* false: no socket, send port unreachable */
 void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len);
 void tcp_tick(void);
 void icmp_deliver(const uint8_t *ip_packet, size_t len);   /* to raw sockets */
+/** An ICMP port unreachable arrived; quoted is the IP header and first 8 bytes of our datagram. */
+void icmp_port_unreachable(const uint8_t *quoted, size_t len);
 
 /* DHCP client (UDP port 68). */
 void dhcp_start(void);

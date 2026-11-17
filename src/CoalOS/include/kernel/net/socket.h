@@ -42,7 +42,7 @@
 #define TCP_NODELAY     1
 
 #define NET_MAX_SOCKS   64
-#define BACKLOG_MAX     8
+#define BACKLOG_MAX     32
 #define DGRAM_QUEUE_MAX 16
 
 /** The Linux sockaddr_in: port and address in network byte order. */

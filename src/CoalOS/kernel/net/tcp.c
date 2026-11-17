@@ -3,9 +3,10 @@
  * @brief TCP: active and passive open, in-order receive, retransmission with
  *        exponential backoff, slow start and congestion avoidance, FIN/RST.
  *
- * Deliberately small: out-of-order segments are dropped (the peer retransmits),
- * there are no window scaling, timestamps or SACK, and every received segment
- * is acknowledged immediately. MSS is negotiated.
+ * Deliberately small: out-of-order data is kept in the receive ring (at most
+ * OOO_MAX ranges) and merged when the gap fills, there are no window scaling,
+ * timestamps or SACK, and every received segment is acknowledged immediately.
+ * MSS is negotiated and clamped to [536, MSS_MAX].
  */
 #include <kernel/net/net.h>
 #include <kernel/net/tcp.h>
@@ -15,7 +16,8 @@
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/lib/string.h>
 
-#define MAX_CONNS       32
+#define MAX_CONNS       64
+#define OOO_MAX         4                   /* out-of-order ranges kept per connection */
 #define BUF_SIZE        16384u              /* per direction; power of two */
 #define MSS_MAX         (NET_MTU - IP_HLEN - 20)
 #define MSS_DEFAULT     536u
@@ -50,11 +52,13 @@ struct tcp_conn {
     int      err;
     struct sock *sock;                  /* owner; NULL once orphaned */
     struct sock *parent;                /* listener until accepted */
-    uint32_t rip;
+    uint32_t rip, laddr;                /* peer and local address (loopback connections use 127.x for both) */
     uint16_t lport, rport, mss;
     uint32_t iss, snd_una, snd_nxt, snd_wnd, rcv_nxt;
     uint32_t cwnd, ssthresh, adv_wnd;
-    uint32_t rto, srtt, rttvar, rtx_at, rtt_seq, rtt_at;
+    uint32_t rto, srtt, rttvar, rtx_at, rtt_seq, rtt_at, born;
+    struct { uint32_t seq, len; } ooo[OOO_MAX];  /* ranges past rcv_nxt, already stored in rx */
+    uint8_t  ooo_n;
     uint8_t *tx, *rx;
     uint32_t tx_start, tx_len, rx_start, rx_len;
 };
@@ -112,7 +116,7 @@ static void arm(struct tcp_conn *c, uint32_t ms) {
 static uint32_t window(const struct tcp_conn *c) { return BUF_SIZE - c->rx_len; }
 
 /* Builds and sends one segment. Data comes from the send ring at offset off past snd_una. */
-static int emit(const struct tcp_conn *c, uint32_t dst, uint16_t sport, uint16_t dport,
+static int emit(const struct tcp_conn *c, uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
                 uint32_t seq, uint32_t ack, uint8_t flags, uint32_t win, uint32_t off, size_t dlen) {
     uint8_t *p = net_tx_payload();
     struct tcp_hdr *h = (struct tcp_hdr *)p;
@@ -131,23 +135,23 @@ static int emit(const struct tcp_conn *c, uint32_t dst, uint16_t sport, uint16_t
     }
     h->off = (uint8_t)(hl / 4 << 4);
     if (dlen) ring_get(c->tx, c->tx_start + off, p + hl, dlen);
-    h->csum = net_l4_csum(net_if.ip, dst, IPPROTO_TCP, p, hl + dlen);
-    return net_ip_send(IPPROTO_TCP, 0, dst, hl + dlen);
+    h->csum = net_l4_csum(src, dst, IPPROTO_TCP, p, hl + dlen);
+    return net_ip_send(IPPROTO_TCP, src, dst, hl + dlen);
 }
 
 static int send_seg(struct tcp_conn *c, uint8_t flags, uint32_t seq, uint32_t off, size_t dlen) {
     c->adv_wnd = window(c);
     c->ack_now = false;
-    return emit(c, c->rip, c->lport, c->rport, seq, (flags & ACK) ? c->rcv_nxt : 0, flags, c->adv_wnd, off, dlen);
+    return emit(c, c->laddr, c->rip, c->lport, c->rport, seq, (flags & ACK) ? c->rcv_nxt : 0, flags, c->adv_wnd, off, dlen);
 }
 
 /* Reset in reply to a segment that belongs to no connection. */
-static void send_reset(uint32_t src, const struct tcp_hdr *h, size_t seg_len) {
+static void send_reset(uint32_t local, uint32_t src, const struct tcp_hdr *h, size_t seg_len) {
     uint32_t seq = ntohl(h->seq);
     if (h->flags & ACK)
-        emit(NULL, src, ntohs(h->dport), ntohs(h->sport), ntohl(h->ack), 0, RST, 0, 0, 0);
+        emit(NULL, local, src, ntohs(h->dport), ntohs(h->sport), ntohl(h->ack), 0, RST, 0, 0, 0);
     else
-        emit(NULL, src, ntohs(h->dport), ntohs(h->sport), 0, seq + (uint32_t)seg_len, RST | ACK, 0, 0, 0);
+        emit(NULL, local, src, ntohs(h->dport), ntohs(h->sport), 0, seq + (uint32_t)seg_len, RST | ACK, 0, 0, 0);
 }
 
 /* ---- output ------------------------------------------------------------------ */
@@ -243,11 +247,46 @@ static uint16_t peer_mss(const uint8_t *opts, size_t len) {
         if (i + 1 >= len || opts[i + 1] < 2 || i + opts[i + 1] > len) break;
         if (opts[i] == 2 && opts[i + 1] == 4) {
             uint16_t m = (uint16_t)(opts[i + 2] << 8 | opts[i + 3]);
-            return m < MSS_MAX ? m : MSS_MAX;
+            return m < MSS_DEFAULT ? MSS_DEFAULT : m < MSS_MAX ? m : MSS_MAX;
         }
         i += opts[i + 1];
     }
     return MSS_DEFAULT;
+}
+
+/* Records [seq, seq+len) as stored past rcv_nxt, merging it with touching ranges. */
+static void ooo_add(struct tcp_conn *c, uint32_t seq, uint32_t len) {
+    uint32_t end = seq + len;
+
+    for (unsigned i = 0; i < c->ooo_n;) {
+        uint32_t os = c->ooo[i].seq, oe = os + c->ooo[i].len;
+        if (SEQ_LEQ(os, end) && SEQ_LEQ(seq, oe)) {
+            if (SEQ_LT(os, seq)) seq = os;
+            if (SEQ_LT(end, oe)) end = oe;
+            c->ooo[i] = c->ooo[--c->ooo_n];
+            i = 0;
+        } else {
+            i++;
+        }
+    }
+    if (c->ooo_n < OOO_MAX) {
+        c->ooo[c->ooo_n].seq = seq;
+        c->ooo[c->ooo_n++].len = end - seq;
+    }
+}
+
+/* Moves ranges that rcv_nxt has reached into the readable part of the ring. */
+static void ooo_drain(struct tcp_conn *c) {
+    for (unsigned i = 0; i < c->ooo_n;) {
+        uint32_t os = c->ooo[i].seq, oe = os + c->ooo[i].len;
+        if (!SEQ_LEQ(os, c->rcv_nxt)) { i++; continue; }
+        if (SEQ_LT(c->rcv_nxt, oe)) {
+            c->rx_len += oe - c->rcv_nxt;
+            c->rcv_nxt = oe;
+        }
+        c->ooo[i] = c->ooo[--c->ooo_n];
+        i = 0;
+    }
 }
 
 static void rtt_sample(struct tcp_conn *c, uint32_t ack) {
@@ -294,7 +333,8 @@ static bool process_ack(struct tcp_conn *c, uint32_t ack, uint16_t win, size_t d
         c->dupacks = 0;
         rtt_sample(c, ack);
         if (c->cwnd < c->ssthresh) c->cwnd += acked < c->mss ? acked : c->mss;
-        else c->cwnd += c->mss * c->mss / c->cwnd + 1;
+        else c->cwnd += c->mss * c->mss / (c->cwnd ? c->cwnd : c->mss) + 1;
+        if (c->cwnd < c->mss) c->cwnd = c->mss;
         if (c->cwnd > 2 * BUF_SIZE) c->cwnd = 2 * BUF_SIZE;
         c->rtx_on = false;
         if (c->snd_una != c->snd_nxt) arm(c, c->rto);
@@ -322,18 +362,27 @@ static bool process_ack(struct tcp_conn *c, uint32_t ack, uint16_t win, size_t d
     return true;
 }
 
-static void new_connection(struct sock *l, uint32_t src, const struct tcp_hdr *h, const uint8_t *opts, size_t olen) {
+static void new_connection(struct sock *l, uint32_t src, uint32_t dst, const struct tcp_hdr *h, const uint8_t *opts, size_t olen) {
     unsigned pending = l->acc_n;
     struct tcp_conn *c = NULL;
 
     for (int i = 0; i < MAX_CONNS; i++)
         if (conns[i].used && conns[i].parent == l && conns[i].state == TCP_SYN_RCVD) pending++;
-    if (pending >= l->backlog) return;
+    if (pending >= l->backlog) {                        /* SYN flood: make room by dropping the oldest half-open */
+        struct tcp_conn *old = NULL;
+        for (int i = 0; i < MAX_CONNS; i++)
+            if (conns[i].used && conns[i].parent == l && conns[i].state == TCP_SYN_RCVD &&
+                (!old || SEQ_LT(conns[i].born, old->born))) old = &conns[i];
+        if (!old) return;
+        release(old);
+    }
     c = tcp_open(NULL);
     if (!c) return;
     c->parent = l;
+    c->born = net_now();
     c->state = TCP_SYN_RCVD;
     c->rip = src;
+    c->laddr = dst;
     c->lport = ntohs(h->dport);
     c->rport = ntohs(h->sport);
     c->mss = peer_mss(opts, olen);
@@ -368,14 +417,14 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len) {
 
     if (!c) {
         struct sock *l = (flags & (SYN | ACK | RST)) == SYN ? sock_find_listener(dport) : NULL;
-        if (l) new_connection(l, src, h, seg + sizeof(*h), hl - sizeof(*h));
-        else if (!(flags & RST)) send_reset(src, h, seg_len);
+        if (l) new_connection(l, src, dst, h, seg + sizeof(*h), hl - sizeof(*h));
+        else if (!(flags & RST)) send_reset(dst, src, h, seg_len);
         return;
     }
 
     if (c->state == TCP_SYN_SENT) {
         if ((flags & ACK) && ack != c->iss + 1) {
-            if (!(flags & RST)) send_reset(src, h, seg_len);
+            if (!(flags & RST)) send_reset(dst, src, h, seg_len);
             return;
         }
         if (flags & RST) {
@@ -406,7 +455,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len) {
     if (!(flags & ACK)) return;
 
     if (c->state == TCP_SYN_RCVD) {
-        if (ack != c->iss + 1) { send_reset(src, h, seg_len); return; }
+        if (ack != c->iss + 1) { send_reset(dst, src, h, seg_len); return; }
         c->snd_una = ack;
         established(c);
     }
@@ -420,8 +469,14 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len) {
         if (skip > dlen) skip = (uint32_t)dlen;
         data += skip;
         dlen -= skip;
-    } else if (seq != c->rcv_nxt) {
-        c->ack_now = true;                                       /* out of order: ask for the gap again */
+    } else if (seq != c->rcv_nxt) {                              /* out of order: keep the data, ask for the gap again */
+        uint32_t off = seq - c->rcv_nxt;
+        if (dlen && !orphan(c) && off <= window(c) && dlen <= window(c) - off &&
+            (c->state == TCP_ESTABLISHED || c->state == TCP_FIN_WAIT1 || c->state == TCP_FIN_WAIT2)) {
+            ring_put(c->rx, c->rx_start + c->rx_len + off, data, dlen);
+            ooo_add(c, seq, (uint32_t)dlen);
+        }
+        c->ack_now = true;
         output(c);
         return;
     }
@@ -429,7 +484,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len) {
     bool receiving = c->state == TCP_ESTABLISHED || c->state == TCP_FIN_WAIT1 || c->state == TCP_FIN_WAIT2;
 
     if (dlen && orphan(c) && receiving) {                        /* data for a closed socket */
-        emit(NULL, src, dport, sport, c->snd_nxt, 0, RST, 0, 0, 0);
+        emit(NULL, dst, src, dport, sport, c->snd_nxt, 0, RST, 0, 0, 0);
         finish(c, ECONNRESET);
         return;
     }
@@ -438,6 +493,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len) {
         ring_put(c->rx, c->rx_start + c->rx_len, data, dlen);
         c->rx_len += (uint32_t)dlen;
         c->rcv_nxt += (uint32_t)dlen;
+        ooo_drain(c);
         c->ack_now = true;
     }
     if (fin && receiving && !c->fin_rcvd) {
@@ -479,6 +535,7 @@ struct tcp_conn *tcp_open(struct sock *owner) {
 
 int tcp_connect(struct tcp_conn *c, uint32_t addr, uint16_t port, uint16_t lport) {
     c->rip = addr;
+    c->laddr = net_src_for(addr);
     c->rport = port;
     c->lport = lport;
     c->mss = MSS_DEFAULT;
@@ -499,7 +556,7 @@ void tcp_attach(struct tcp_conn *c, struct sock *owner) {
 
 static void abort_conn(struct tcp_conn *c) {
     if (c->state >= TCP_ESTABLISHED && c->state != TCP_TIME_WAIT)
-        emit(NULL, c->rip, c->lport, c->rport, c->snd_nxt, c->rcv_nxt, RST | ACK, 0, 0, 0);
+        emit(NULL, c->laddr, c->rip, c->lport, c->rport, c->snd_nxt, c->rcv_nxt, RST | ACK, 0, 0, 0);
     release(c);
 }
 
