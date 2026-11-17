@@ -122,13 +122,15 @@ def run(machine, only=None, out=None, build_dir=None, host_only=False):
     build(names, bin_dir)
     if not host_only:
         machine.run("mkdir -p %s" % GUEST_DIR)
+        gone = machine.put_tree(bin_dir, GUEST_DIR, names) if hasattr(machine, "put_tree") else names
+        for n in gone:
+            machine.put(os.path.join(bin_dir, n), "%s/%s" % (GUEST_DIR, n))
     res = {"programs": {}}
     for n in names:
         exe = os.path.join(bin_dir, n)
         host = run_host(exe)
         entry = {"host_lines": len(parse(host["stdout"])), "host_exit": host["exit_code"], "host_signal": host["signal"]}
         if not host_only:
-            machine.put(exe, "%s/%s" % (GUEST_DIR, n))
             guest = run_guest(machine, n)
             divs, total = compare(host, guest)
             entry.update(coal_lines=len(parse(guest["stdout"])), coal_exit=guest["exit_code"], coal_signal=guest["signal"],

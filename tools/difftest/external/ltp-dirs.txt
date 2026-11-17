@@ -1,0 +1,18 @@
+# LTP testcases/kernel/syscalls directories run inside Coal (one per line; # comments).
+# Files and descriptors
+access chdir chmod chown close creat dup dup2 dup3 fchdir fchmod fcntl fdatasync fstat fstatfs fsync ftruncate
+getcwd getdents link lseek lstat mkdir mkdirat mknod open openat pipe pipe2 pread preadv pwrite pwritev read
+readlink readv rename rmdir stat statfs symlink truncate umask unlink unlinkat utime utimes write writev
+# Processes, ids, limits
+fork vfork wait waitpid wait4 exit exit_group getpid getppid getpgid getpgrp setpgid setsid getsid kill pause
+getuid geteuid getgid getegid setuid setgid getrlimit setrlimit getrusage getpriority setpriority nice uname
+sysinfo gettid tgkill tkill sched_yield getcpu prctl arch_prctl
+# Memory
+brk sbrk mmap mprotect munmap madvise mremap msync mlock munlock
+# Signals
+rt_sigaction rt_sigprocmask sigaction sigprocmask sigpending sigsuspend sigaltstack signal
+# Time
+nanosleep clock_gettime clock_getres clock_nanosleep gettimeofday time times alarm getitimer setitimer
+# Waiting and sockets
+select pselect poll ppoll socket socketpair bind listen connect accept accept4 send sendto recv recvfrom
+recvmsg sendmsg shutdown getsockname getpeername getsockopt setsockopt getrandom
