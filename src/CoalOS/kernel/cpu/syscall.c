@@ -133,6 +133,8 @@ void syscall_dispatch(isr_frame_t *r) {
     long rc = fn ? fn(r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp, r) : -ENOSYS;
 
     r->eax = (uint32_t)rc;
-    signal_return_to_user(r, rc == -EINTR && restartable(nr) ? nr : 0);
-    signal_mask_restore();
+
+    pcb_t *p = get_current_process();       /* the common case, no signal and no temporary mask, takes two loads */
+    if (p->pending_signals) signal_return_to_user(r, rc == -EINTR && restartable(nr) ? nr : 0);
+    if (p->sig_restore) signal_mask_restore();
 }
