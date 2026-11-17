@@ -735,6 +735,47 @@ def tool_screen(m, a):
     return m.screen()
 
 
+# QEMU key names for typing on the console. The console uses the Norwegian
+# layout, so punctuation is mapped to the physical keys that produce it there.
+_KEYS = {" ": "spc", "\n": "ret", "\t": "tab", "-": "slash", "_": "shift-slash", ".": "dot",
+         ",": "comma", ":": "shift-dot", ";": "shift-comma", "/": "shift-7", "=": "shift-0",
+         "!": "shift-1", '"': "shift-2", "#": "shift-3", "&": "shift-6", "(": "shift-8",
+         ")": "shift-9", "?": "shift-minus", "+": "minus", "*": "shift-backslash",
+         "'": "backslash", "<": "less", ">": "shift-less", "|": "grave_accent"}
+NAMED_KEYS = {"up", "down", "left", "right", "ret", "esc", "spc", "tab", "backspace", "delete",
+              "home", "end", "pgup", "pgdn", "ctrl-c", "ctrl-d", "ctrl-l", "ctrl-u", "ctrl-z"}
+
+
+def _qemu_key(ch):
+    if ch in _KEYS:
+        return _KEYS[ch]
+    if ch.isdigit() or ("a" <= ch <= "z"):
+        return ch
+    if "A" <= ch <= "Z":
+        return "shift-" + ch.lower()
+    raise ToolError("cannot type %r on the console; use coal_run for such input" % ch)
+
+
+def tool_keys(m, a):
+    text = a.get("text") or ""
+    keys = a.get("keys") or []
+    if not isinstance(text, str) or not isinstance(keys, list):
+        raise ToolError("text must be a string and keys a list of key names")
+    seq = [_qemu_key(c) for c in text]
+    for k in keys:
+        if k not in NAMED_KEYS:
+            raise ToolError("unknown key %r; known: %s" % (k, ", ".join(sorted(NAMED_KEYS))))
+        seq.append(k)
+    if len(seq) > 500:
+        raise ToolError("at most 500 keys per call")
+    delay = _int(a, "delay_ms", 30, 0, 2000) / 1000.0
+    for k in seq:
+        m._monitor("sendkey " + k)
+        if delay:
+            time.sleep(delay)
+    return "sent %d key(s) to the console" % len(seq)
+
+
 def tool_status(m, a):
     if m.attached:
         up = "attached"
@@ -828,6 +869,15 @@ TOOLS = [
      ann("Kernel log", read_only=True), tool_kernel_log),
     ("coal_screen", "Read the 80x25 VGA text screen of the VM as plain text (what a monitor would show).",
      schema(), ann("Screen text", read_only=True), tool_screen),
+    ("coal_keys", "Type on the VM's keyboard, as a person at the console would: `text` is typed key by key "
+     "(letters, digits, space, newline and common punctuation), then each name in `keys` is pressed "
+     "(up, down, left, right, ret, esc, tab, backspace, ctrl-c, ctrl-d, ...). Use it for interactive, "
+     "full-screen programs on the console (the shell on the screen, games, editors) and read the result "
+     "with coal_screen. Input goes to whatever runs on the console; coal_run is better for scripted commands.",
+     schema({"text": {**S, "description": "Characters to type."},
+             "keys": {"type": "array", "items": S, "description": "Named keys to press after the text."},
+             "delay_ms": {"type": "integer", "description": "Pause between keys (default 30)."}}),
+     ann("Type on the console"), tool_keys),
     ("coal_snapshot", "Save the current disk image under a name (runs sync first). Snapshots live in "
      "<build-dir>/snapshots and survive reboots and coal_shutdown. Overwrites a snapshot of the same name.",
      schema({"name": {**S, "description": "1-64 characters: letters, digits, _ . -"}}, ["name"]),
