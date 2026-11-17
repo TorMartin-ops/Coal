@@ -30,4 +30,11 @@
 #define SIGWINCH 28
 #define NSIG     32
 
+/* How the target treats a signal right now; answered by the system call layer. */
+#define SIGDISP_DEFAULT 0       /* default action */
+#define SIGDISP_IGNORE  1       /* SIG_IGN: drop it */
+#define SIGDISP_HOLD    2       /* blocked or has a user handler: keep it pending */
+struct pcb;
+int signal_disposition(struct pcb *p, int sig);
+
 #endif

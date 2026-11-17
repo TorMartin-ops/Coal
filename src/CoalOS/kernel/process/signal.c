@@ -1,8 +1,9 @@
 /**
- * Signals, default actions only: SIGCHLD/SIGCONT/SIGURG/SIGWINCH and the job
- * control stops are ignored, everything else terminates the target. There is
- * no handler registration, so a fatal signal is a single bit in pending_signals
- * that the target acts on the next time it is scheduled.
+ * Signals: SIGCHLD/SIGCONT/SIGURG/SIGWINCH and the job control stops are
+ * ignored by default, everything else terminates the target. A signal is a bit
+ * in pending_signals; signals the target blocks or handles in user mode
+ * (signal_disposition() == SIGDISP_HOLD) stay pending and are delivered by the
+ * system call layer, the rest act the next time the target is scheduled.
  */
 #include <kernel/process/process.h>
 #include <kernel/process/signal.h>
@@ -16,13 +17,21 @@ void signal_dispatch_current(void) {
     uint32_t pending;
 
     if (!p || !(pending = p->pending_signals)) return;
-    p->pending_signals = 0;
-    process_exit(__builtin_ctz(pending));   /* wait status of a signalled process is the signal number */
+    for (int sig = 1; sig < NSIG; sig++) {
+        if ((pending & (1u << sig)) && signal_disposition(p, sig) == SIGDISP_DEFAULT) {
+            p->pending_signals &= ~(1u << sig);
+            process_exit(sig);              /* wait status of a signalled process is the signal number */
+        }
+    }
 }
 
 static void send_one(pcb_t *p, int sig) {
-    if (p->task.state == TASK_ZOMBIE || ((1u << sig) & IGNORED_BY_DEFAULT)) return;
+    int disp = signal_disposition(p, sig);
+
+    if (p->task.state == TASK_ZOMBIE || disp == SIGDISP_IGNORE ||
+        (disp == SIGDISP_DEFAULT && ((1u << sig) & IGNORED_BY_DEFAULT))) return;
     p->pending_signals |= 1u << sig;
+    if (disp == SIGDISP_HOLD) return;
     if (p == get_current_process()) signal_dispatch_current();
     else scheduler_wake(&p->task);
 }
