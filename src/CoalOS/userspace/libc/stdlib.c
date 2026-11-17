@@ -1,408 +1,226 @@
-/**
- * @file stdlib.c
- * @brief Standard library functions for Coal OS userspace
- */
-
 #include <libc/stdlib.h>
 #include <libc/string.h>
 #include <libc/unistd.h>
-#include <libc/limits.h>
-#include <libc/stdbool.h>
-#include <libc/stdint.h>
+#include <libc/errno.h>
+#include <libc/ctype.h>
+#include <libc/syscall.h>
+#include <libc/signal.h>
 
-// Simple heap allocator for userspace
-static char heap[HEAP_SIZE];
-static bool heap_initialized = false;
+/* --- heap: first-fit free list on brk, blocks coalesce with their successor --- */
 
-// Block structure for tracking allocations
-typedef struct block {
-    size_t size;
-    bool free;
-    struct block *next;
-} block_t;
+struct block {
+    size_t size;            /* payload bytes, multiple of 8 */
+    struct block *next;     /* next block in address order */
+    int free;
+};
 
-static block_t *heap_head = NULL;
+#define HDR ((size_t)sizeof(struct block))
+static struct block *head, *tail;
 
-static void init_heap(void) {
-    if (heap_initialized) return;
-    
-    heap_head = (block_t*)heap;
-    heap_head->size = HEAP_SIZE - sizeof(block_t);
-    heap_head->free = true;
-    heap_head->next = NULL;
-    heap_initialized = true;
+static struct block *grow(size_t size) {
+    long cur = __syscall_ret(__SC1(SYS_BRK, 0));
+    if (cur < 0) return NULL;
+    size_t want = (HDR + size + 4095) & ~(size_t)4095;
+    long end = __syscall_ret(__SC1(SYS_BRK, cur + want));
+    if (end < 0 || (size_t)end < (size_t)cur + want) return NULL;
+    struct block *b = (struct block *)cur;
+    b->size = want - HDR;
+    b->next = NULL;
+    b->free = 1;
+    if (tail) tail->next = b; else head = b;
+    tail = b;
+    return b;
 }
 
-void *malloc(size_t size) {
-    if (size == 0 || size > HEAP_SIZE) return NULL;
-
-    init_heap();
-    
-    // Align size to 8 bytes
-    size = (size + 7) & ~7;
-    
-    block_t *current = heap_head;
-    
-    // Find a free block
-    while (current) {
-        if (current->free && current->size >= size) {
-            // Split block if it's much larger
-            if (current->size > size + sizeof(block_t) + 8) {
-                block_t *new_block = (block_t*)((char*)current + sizeof(block_t) + size);
-                new_block->size = current->size - size - sizeof(block_t);
-                new_block->free = true;
-                new_block->next = current->next;
-                
-                current->size = size;
-                current->next = new_block;
-            }
-            
-            current->free = false;
-            return (char*)current + sizeof(block_t);
-        }
-        current = current->next;
-    }
-    
-    return NULL; // Out of memory
-}
-
-void *calloc(size_t nmemb, size_t size) {
-    if (nmemb == 0 || size == 0) return NULL;
-    
-    // Check for overflow
-    if (nmemb > SIZE_MAX / size) return NULL;
-    
-    size_t total_size = nmemb * size;
-    void *ptr = malloc(total_size);
-    
-    if (ptr) {
-        memset(ptr, 0, total_size);
-    }
-    
-    return ptr;
-}
-
-void *realloc(void *ptr, size_t size) {
-    if (!ptr) return malloc(size);
-    if (size == 0) {
-        free(ptr);
+void *malloc(size_t n) {
+    if (n > 0x40000000) {
+        errno = ENOMEM;
         return NULL;
     }
-    
-    // Find the block for this pointer
-    block_t *block = (block_t*)((char*)ptr - sizeof(block_t));
-    
-    if (block->size >= size) {
-        // Block is already large enough
-        return ptr;
-    }
-    
-    // Need to allocate new block
-    void *new_ptr = malloc(size);
-    if (new_ptr) {
-        memcpy(new_ptr, ptr, block->size);
-        free(ptr);
-    }
-    
-    return new_ptr;
-}
-
-void free(void *ptr) {
-    if (!ptr) return;
-    
-    block_t *block = (block_t*)((char*)ptr - sizeof(block_t));
-    block->free = true;
-    
-    // Coalesce with next free blocks
-    while (block->next && block->next->free) {
-        block->size += sizeof(block_t) + block->next->size;
-        block->next = block->next->next;
-    }
-    
-    // Coalesce with previous free blocks
-    block_t *current = heap_head;
-    while (current && current->next != block) {
-        current = current->next;
-    }
-    
-    if (current && current->free) {
-        current->size += sizeof(block_t) + block->size;
-        current->next = block->next;
-    }
-}
-
-// String conversion
-
-static int is_space(int c) {
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
-}
-
-static int digit_value(int c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'z') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
-    return -1;
-}
-
-/*
- * Shared parser behind atoi, atol, atoll and strtol. Returns the magnitude,
- * saturated to ULLONG_MAX on overflow, and sets *negative. If no digits are
- * found, *endptr is set to nptr.
- */
-static unsigned long long parse_number(const char *nptr, char **endptr, int base,
-                                       int *negative, int *overflow) {
-    const char *s = nptr;
-    unsigned long long result = 0;
-    int any = 0;
-
-    *negative = 0;
-    *overflow = 0;
-    if (endptr) *endptr = (char *)nptr;
-    if (base < 0 || base == 1 || base > 36) return 0;
-
-    while (is_space(*s)) s++;
-    if (*s == '-') {
-        *negative = 1;
-        s++;
-    } else if (*s == '+') {
-        s++;
-    }
-
-    if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') &&
-        digit_value(s[2]) >= 0 && digit_value(s[2]) < 16) {
-        s += 2;
-        base = 16;
-    } else if (base == 0) {
-        base = (s[0] == '0') ? 8 : 10;
-    }
-
-    for (;;) {
-        int d = digit_value(*s);
-        if (d < 0 || d >= base) break;
-        unsigned long long next;
-        if (__builtin_mul_overflow(result, (unsigned long long)base, &next) ||
-            __builtin_add_overflow(next, (unsigned long long)d, &next)) {
-            *overflow = 1;
-            result = ULLONG_MAX;
-        } else if (!*overflow) {
-            result = next;
+    n = (n + 7) & ~(size_t)7;
+    if (!n) n = 8;
+    for (int pass = 0; pass < 2; pass++) {
+        for (struct block *b = head; b; b = b->next) {
+            while (b->free && b->next && b->next->free && (char *)b + HDR + b->size == (char *)b->next) {
+                b->size += HDR + b->next->size;
+                if (tail == b->next) tail = b;
+                b->next = b->next->next;
+            }
+            if (!b->free || b->size < n) continue;
+            if (b->size >= n + HDR + 8) {
+                struct block *r = (struct block *)((char *)b + HDR + n);
+                r->size = b->size - n - HDR;
+                r->free = 1;
+                r->next = b->next;
+                if (tail == b) tail = r;
+                b->next = r;
+                b->size = n;
+            }
+            b->free = 0;
+            return (char *)b + HDR;
         }
-        any = 1;
-        s++;
+        if (pass == 0 && !grow(n)) break;
     }
-
-    if (any && endptr) *endptr = (char *)s;
-    return any ? result : 0;
+    errno = ENOMEM;
+    return NULL;
 }
 
-static long long strtoll_internal(const char *nptr, char **endptr, int base) {
-    int neg, ovf;
-    unsigned long long v = parse_number(nptr, endptr, base, &neg, &ovf);
-    if (neg) {
-        if (v > (unsigned long long)LLONG_MAX + 1ULL) return LLONG_MIN;
-        return (long long)(0ULL - v);
+void free(void *p) {
+    if (p) ((struct block *)((char *)p - HDR))->free = 1;
+}
+
+void *calloc(size_t n, size_t m) {
+    if (m && n > (size_t)-1 / m) {
+        errno = ENOMEM;
+        return NULL;
     }
-    if (v > (unsigned long long)LLONG_MAX) return LLONG_MAX;
-    return (long long)v;
+    void *p = malloc(n * m);
+    return p ? memset(p, 0, n * m) : NULL;
 }
 
-long strtol(const char *str, char **endptr, int base) {
-    long long v = strtoll_internal(str ? str : "", endptr, base);
-    if (!str && endptr) *endptr = (char *)str;
-    if (v > LONG_MAX) return LONG_MAX;
-    if (v < LONG_MIN) return LONG_MIN;
-    return (long)v;
+void *realloc(void *p, size_t n) {
+    if (!p) return malloc(n);
+    struct block *b = (struct block *)((char *)p - HDR);
+    if (b->size >= n) return p;
+    void *q = malloc(n);
+    if (!q) return NULL;
+    memcpy(q, p, b->size);
+    free(p);
+    return q;
 }
 
-int atoi(const char *str) {
-    return (int)strtol(str, NULL, 10);
-}
+/* --- process exit --- */
 
-long atol(const char *str) {
-    return strtol(str, NULL, 10);
-}
+extern void __stdio_flush_all(void);
+static void (*exit_fns[8])(void);
+static int exit_count;
 
-long long atoll(const char *str) {
-    return strtoll_internal(str ? str : "", NULL, 10);
-}
-
-// Random number generation (simple LCG)
-static unsigned int next_rand = 1;
-
-int rand(void) {
-    next_rand = next_rand * 1103515245 + 12345;
-    return (int)((next_rand / 65536) % (RAND_MAX + 1));
-}
-
-void srand(unsigned int seed) {
-    next_rand = seed;
-}
-
-// Environment variables, stored as "NAME=value" strings.
-static char *environ_storage[MAX_ENV_VARS];
-static int environ_count = 0;
-
-char **environ = environ_storage;
-
-/* Index of the variable called name, or -1. */
-static int env_find(const char *name, size_t name_len) {
-    for (int i = 0; i < environ_count; i++) {
-        if (strncmp(environ_storage[i], name, name_len) == 0 &&
-            environ_storage[i][name_len] == '=') {
-            return i;
-        }
-    }
-    return -1;
-}
-
-char *getenv(const char *name) {
-    if (!name) return NULL;
-    size_t name_len = strlen(name);
-    int i = env_find(name, name_len);
-    return i < 0 ? NULL : environ_storage[i] + name_len + 1;
-}
-
-int setenv(const char *name, const char *value, int overwrite) {
-    if (!name || !*name || !value || strchr(name, '=')) return -1;
-
-    size_t name_len = strlen(name);
-    int i = env_find(name, name_len);
-    if (i >= 0 && !overwrite) return 0;
-    if (i < 0 && environ_count >= MAX_ENV_VARS - 1) return -1;
-
-    char *entry = malloc(name_len + strlen(value) + 2);
-    if (!entry) return -1;
-    strcpy(entry, name);
-    strcat(entry, "=");
-    strcat(entry, value);
-
-    if (i >= 0) {
-        free(environ_storage[i]);
-        environ_storage[i] = entry;
-    } else {
-        environ_storage[environ_count++] = entry;
-        environ_storage[environ_count] = NULL;
-    }
-    return 0;
-}
-
-int unsetenv(const char *name) {
-    if (!name || !*name || strchr(name, '=')) return -1;
-
-    int i = env_find(name, strlen(name));
-    if (i < 0) return 0;
-
-    free(environ_storage[i]);
-    for (int j = i; j < environ_count - 1; j++) {
-        environ_storage[j] = environ_storage[j + 1];
-    }
-    environ_count--;
-    environ_storage[environ_count] = NULL;
-    return 0;
-}
-
-// Process control
-#define ATEXIT_MAX 32
-static void (*atexit_handlers[ATEXIT_MAX])(void);
-static int atexit_count = 0;
-
-int atexit(void (*function)(void)) {
-    if (!function || atexit_count >= ATEXIT_MAX) return -1;
-    atexit_handlers[atexit_count++] = function;
+int atexit(void (*fn)(void)) {
+    if (exit_count == 8) return -1;
+    exit_fns[exit_count++] = fn;
     return 0;
 }
 
 void exit(int status) {
-    while (atexit_count > 0) {
-        atexit_handlers[--atexit_count]();
-    }
+    while (exit_count) exit_fns[--exit_count]();
+    __stdio_flush_all();
     _exit(status);
 }
 
 void abort(void) {
+    kill(getpid(), SIGABRT);
     _exit(134);
 }
 
-int system(const char *command) {
-    if (!command) return 1; // Shell is available
+/* --- numbers --- */
 
-    pid_t pid = fork();
-    if (pid == 0) {
-        char *argv[] = {"/bin/shell.elf", "-c", (char *)command, NULL};
-        execve("/bin/shell.elf", argv, environ);
-        _exit(127); // execve failed
-    } else if (pid > 0) {
-        int status;
-        waitpid(pid, &status, 0);
-        return status;
+unsigned long strtoul(const char *s, char **end, int base) {
+    const char *p = s;
+    unsigned long v = 0;
+    int neg = 0, any = 0;
+    while (isspace(*p)) p++;
+    if (*p == '-' || *p == '+') neg = *p++ == '-';
+    if ((base == 0 || base == 16) && p[0] == '0' && (p[1] | 32) == 'x' && isxdigit(p[2])) {
+        p += 2;
+        base = 16;
+    } else if (base == 0) {
+        base = *p == '0' ? 8 : 10;
     }
-
-    return -1; // fork failed
+    for (;; p++) {
+        int d = isdigit(*p) ? *p - '0' : isalpha(*p) ? (*p | 32) - 'a' + 10 : 99;
+        if (d >= base) break;
+        v = v * base + d;
+        any = 1;
+    }
+    if (end) *end = (char *)(any ? p : s);
+    return neg ? -v : v;
 }
 
-// Absolute value functions
-int abs(int j) {
-    return (j < 0) ? -j : j;
+long strtol(const char *s, char **end, int base) { return (long)strtoul(s, end, base); }
+int atoi(const char *s) { return (int)strtol(s, NULL, 10); }
+int abs(int x) { return x < 0 ? -x : x; }
+
+static unsigned long rand_state = 1;
+void srand(unsigned seed) { rand_state = seed; }
+int rand(void) {
+    rand_state = rand_state * 1103515245UL + 12345UL;
+    return (int)((rand_state >> 1) & RAND_MAX);
 }
 
-long labs(long j) {
-    return (j < 0) ? -j : j;
-}
-
-long long llabs(long long j) {
-    return (j < 0) ? -j : j;
-}
-
-// Division functions
-div_t div(int numer, int denom) {
-    div_t result;
-    result.quot = numer / denom;
-    result.rem = numer % denom;
-    return result;
-}
-
-ldiv_t ldiv(long numer, long denom) {
-    ldiv_t result;
-    result.quot = numer / denom;
-    result.rem = numer % denom;
-    return result;
-}
-
-/*
- * 64-bit division by shift and subtract. The target has no libgcc to provide
- * __udivdi3, and the compiler would otherwise call it for "/" and "%".
- */
-static unsigned long long udivmod64(unsigned long long n, unsigned long long d,
-                                    unsigned long long *rem) {
-    unsigned long long q = 0, r = 0;
-    for (int i = 63; i >= 0; i--) {
-        r = (r << 1) | ((n >> i) & 1);
-        if (r >= d) {
-            r -= d;
-            q |= 1ULL << i;
+void qsort(void *base, size_t n, size_t size, int (*cmp)(const void *, const void *)) {
+    char *a = base, tmp[64];
+    if (size > sizeof tmp) return;
+    /* shell sort: small, no recursion, no allocation */
+    for (size_t gap = n / 2; gap; gap /= 2)
+        for (size_t i = gap; i < n; i++) {
+            memcpy(tmp, a + i * size, size);
+            size_t j = i;
+            for (; j >= gap && cmp(a + (j - gap) * size, tmp) > 0; j -= gap)
+                memcpy(a + j * size, a + (j - gap) * size, size);
+            memcpy(a + j * size, tmp, size);
         }
-    }
-    *rem = r;
-    return q;
 }
 
-lldiv_t lldiv(long long numer, long long denom) {
-    lldiv_t result;
-    if (denom == 0) {
-        result.quot = 0;
-        result.rem = 0;
-        return result;
+/* --- environment --- */
+
+static int env_owned;   /* environ points to a malloc'd copy */
+
+static int env_find(const char *name, size_t len) {
+    if (!environ) return -1;
+    for (int i = 0; environ[i]; i++)
+        if (!strncmp(environ[i], name, len) && environ[i][len] == '=') return i;
+    return -1;
+}
+
+char *getenv(const char *name) {
+    int i = env_find(name, strlen(name));
+    return i < 0 ? NULL : environ[i] + strlen(name) + 1;
+}
+
+int setenv(const char *name, const char *value, int overwrite) {
+    size_t nl = strlen(name), vl = strlen(value);
+    if (!nl || strchr(name, '=')) {
+        errno = EINVAL;
+        return -1;
     }
+    int i = env_find(name, nl);
+    if (i >= 0 && !overwrite) return 0;
+    char *kv = malloc(nl + vl + 2);
+    if (!kv) return -1;
+    memcpy(kv, name, nl);
+    kv[nl] = '=';
+    memcpy(kv + nl + 1, value, vl + 1);
+    if (i >= 0) {
+        environ[i] = kv;
+        return 0;
+    }
+    int n = 0;
+    while (environ && environ[n]) n++;
+    char **ne = malloc((size_t)(n + 2) * sizeof *ne);
+    if (!ne) return -1;
+    for (int k = 0; k < n; k++) ne[k] = environ[k];
+    ne[n] = kv;
+    ne[n + 1] = NULL;
+    if (env_owned) free(environ);
+    environ = ne;
+    env_owned = 1;
+    return 0;
+}
 
-    // Work on magnitudes so that LLONG_MIN does not overflow.
-    unsigned long long un = numer < 0 ? 0ULL - (unsigned long long)numer : (unsigned long long)numer;
-    unsigned long long ud = denom < 0 ? 0ULL - (unsigned long long)denom : (unsigned long long)denom;
-    unsigned long long urem;
-    unsigned long long uq = udivmod64(un, ud, &urem);
+int unsetenv(const char *name) {
+    int i = env_find(name, strlen(name));
+    if (i < 0) return 0;
+    for (; environ[i]; i++) environ[i] = environ[i + 1];
+    return 0;
+}
 
-    // Truncate toward zero: quotient is negative if the signs differ, the
-    // remainder takes the sign of the numerator.
-    result.quot = (long long)(((numer < 0) != (denom < 0)) ? 0ULL - uq : uq);
-    result.rem = (long long)(numer < 0 ? 0ULL - urem : urem);
-    return result;
+/* --- program start: called by _start with the initial stack pointer --- */
+
+extern int main(int argc, char **argv, char **envp);
+
+void __libc_start(long *sp) {
+    int argc = (int)sp[0];
+    char **argv = (char **)(sp + 1);
+    environ = argv + argc + 1;
+    exit(main(argc, argv, environ));
 }

@@ -2,29 +2,29 @@
 #define LIBC_STRING_H
 
 #include <libc/stddef.h>
-#include <libc/stdint.h>
 
-// Memory functions
-void *memcpy(void *dest, const void *src, size_t n);
-void *memset(void *s, int c, size_t n);
-void *memmove(void *dest, const void *src, size_t n);
-int memcmp(const void *s1, const void *s2, size_t n);
-
-// String functions
+void *memcpy(void *d, const void *s, size_t n);
+void *memmove(void *d, const void *s, size_t n);
+void *memset(void *d, int c, size_t n);
+int   memcmp(const void *a, const void *b, size_t n);
+void *memchr(const void *s, int c, size_t n);
 size_t strlen(const char *s);
-int strcmp(const char *s1, const char *s2);
-int strncmp(const char *s1, const char *s2, size_t n);
-char *strcpy(char *dest, const char *src);
-char *strncpy(char *dest, const char *src, size_t n);
-char *strcat(char *dest, const char *src);
-char *strncat(char *dest, const char *src, size_t n);
-char *strchr(const char *s, int c);
-char *strrchr(const char *s, int c);
-char *strstr(const char *haystack, const char *needle);
+char *strcpy(char *d, const char *s);
+char *strncpy(char *d, const char *s, size_t n);
+char *strcat(char *d, const char *s);
+char *strncat(char *d, const char *s, size_t n);
 size_t strspn(const char *s, const char *accept);
 size_t strcspn(const char *s, const char *reject);
-char *strtok(char *str, const char *delim);
-char *strtok_r(char *str, const char *delim, char **saveptr);
-void *memchr(const void *s, int c, size_t n);
+char *strpbrk(const char *s, const char *accept);
+char *strtok_r(char *s, const char *delim, char **save);
+char *strtok(char *s, const char *delim);
+int   strcmp(const char *a, const char *b);
+int   strncmp(const char *a, const char *b, size_t n);
+int   strcasecmp(const char *a, const char *b);
+char *strchr(const char *s, int c);
+char *strrchr(const char *s, int c);
+char *strstr(const char *h, const char *n);
+char *strdup(const char *s);
+char *strerror(int err);
 
-#endif // LIBC_STRING_H
+#endif
