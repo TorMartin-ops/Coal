@@ -33,8 +33,8 @@ enum { T_WORD, T_PIPE, T_AND, T_OR, T_SEMI, T_BG, T_IN, T_OUT, T_APP, T_ERR, T_E
 
 struct tok {
     int type;
-    int glob;           /* word contains an unquoted * or ? */
-    char *s;
+    int len;            /* T_WORD: the word's source text s[0..len), expanded when its command runs */
+    const char *s;
 };
 
 static struct tok toks[MAX_TOKENS];
@@ -77,17 +77,37 @@ static void expand(const char **pp) {
     *pp = p;
 }
 
-static int add_tok(int type, char *s, int glob) {
+static int add_tok(int type, const char *s, int len) {
     if (ntok == MAX_TOKENS) return -1;
     toks[ntok].type = type;
     toks[ntok].s = s;
-    toks[ntok++].glob = glob;
+    toks[ntok++].len = len;
     return 0;
 }
 
-/* Splits a line into tokens; returns -1 on an unterminated quote or overflow. */
+/* End of the word starting at p (quotes and escapes respected); NULL on an unterminated quote. */
+static const char *skip_word(const char *p) {
+    while (*p && !strchr(" \t|&;<>", *p)) {
+        if (*p == '\'') {
+            p = strchr(p + 1, '\'');
+            if (!p) return NULL;
+            p++;
+        } else if (*p == '"') {
+            for (p++; *p && *p != '"'; p += (*p == '\\' && p[1]) ? 2 : 1)
+                ;
+            if (!*p) return NULL;
+            p++;
+        } else {
+            p += (*p == '\\' && p[1]) ? 2 : 1;
+        }
+    }
+    return p;
+}
+
+/* Splits a line into tokens; returns -1 on an unterminated quote or too many tokens.
+   Variables are not expanded here: `false; echo $?` must see the status of `false`. */
 static int lex(const char *p) {
-    ntok = apos = overflow = 0;
+    ntok = 0;
     for (;;) {
         while (*p == ' ' || *p == '\t') p++;
         if (!*p || *p == '#') break;
@@ -109,43 +129,50 @@ static int lex(const char *p) {
             if (add_tok(op, NULL, 0)) return -1;
             continue;
         }
-        char *w = arena + apos;
-        int glob = 0, quoted = 0;
-        while (*p && !strchr(" \t|&;<>", *p)) {
-            if (*p == '\'') {
-                quoted = 1;
-                for (p++; *p && *p != '\''; p++) put(*p);
-                if (!*p) return -1;
-                p++;
-            } else if (*p == '"') {
-                quoted = 1;
-                for (p++; *p && *p != '"';) {
-                    if (*p == '$') expand(&p);
-                    else if (*p == '\\' && strchr("\"\\$", p[1]) && p[1]) { put(p[1]); p += 2; }
-                    else put(*p++);
-                }
-                if (!*p) return -1;
-                p++;
-            } else if (*p == '\\' && p[1]) {
-                quoted = 1;
-                put(p[1]);
-                p += 2;
-            } else if (*p == '$') {
-                expand(&p);
-            } else if (*p == '~' && arena + apos == w && (!p[1] || strchr("/ \t|&;<>", p[1]))) {
-                put_str(getenv("HOME"));
-                p++;
-            } else {
-                if (*p == '*' || *p == '?') glob = 1;
-                put(*p++);
-            }
-        }
-        put(0);
-        if (overflow) return -1;
-        if (arena + apos - 1 == w && !quoted) { apos--; continue; }    /* empty expansion vanishes */
-        if (add_tok(T_WORD, w, glob)) return -1;
+        const char *end = skip_word(p);
+        if (!end || add_tok(T_WORD, p, (int)(end - p))) return -1;
+        p = end;
     }
     return 0;
+}
+
+/* Expands a word into the arena. Returns the string, or NULL if an unquoted expansion left it empty.
+   *glob is set when it has an unquoted * or ?. */
+static char *expand_word(const struct tok *t, int *glob) {
+    const char *p = t->s, *end = t->s + t->len;
+    char *w = arena + apos;
+    int quoted = 0;
+    *glob = 0;
+    while (p < end) {
+        if (*p == '\'') {
+            quoted = 1;
+            for (p++; *p != '\''; p++) put(*p);
+            p++;
+        } else if (*p == '"') {
+            quoted = 1;
+            for (p++; *p != '"';) {
+                if (*p == '$') expand(&p);
+                else if (*p == '\\' && strchr("\"\\$", p[1]) && p[1]) { put(p[1]); p += 2; }
+                else put(*p++);
+            }
+            p++;
+        } else if (*p == '\\' && p[1]) {
+            quoted = 1;
+            put(p[1]);
+            p += 2;
+        } else if (*p == '$') {
+            expand(&p);
+        } else if (*p == '~' && arena + apos == w && (p + 1 == end || p[1] == '/')) {
+            put_str(getenv("HOME"));
+            p++;
+        } else {
+            if (*p == '*' || *p == '?') *glob = 1;
+            put(*p++);
+        }
+    }
+    put(0);
+    if (arena + apos - 1 == w && !quoted) { apos--; return NULL; }
+    return w;
 }
 
 /* ---------------------------------------------------------------- globbing */
@@ -242,7 +269,7 @@ static int is_assignment(const char *w) {
 /* Builds commands from tokens [from, to); returns the count or -1 (syntax error). */
 static int build_cmds(int from, int to, struct cmd *cmds) {
     int n = 0;
-    pool_n = gpos = 0;
+    pool_n = gpos = apos = overflow = 0;
     for (int i = from; i <= to; n++) {
         if (n == MAX_CMDS) return -1;
         struct cmd *c = &cmds[n];
@@ -253,15 +280,21 @@ static int build_cmds(int from, int to, struct cmd *cmds) {
             struct tok *t = &toks[i];
             if (t->type == T_WORD) {
                 char *m[MAX_ARGS];
-                int k = t->glob && nw > 0 ? glob_word(t->s, m, MAX_ARGS - 2 - pool_n - nw) : 0;
-                if (!k) { m[0] = t->s; k = 1; }
+                int glob;
+                char *w = expand_word(t, &glob);
+                if (overflow) return -1;
+                if (!w) continue;
+                int k = glob && nw > 0 ? glob_word(w, m, MAX_ARGS - 2 - pool_n - nw) : 0;
+                if (!k) { m[0] = w; k = 1; }
                 if (pool_n + nw + k >= MAX_ARGS) return -1;
                 for (int j = 0; j < k; j++) words[nw++] = m[j];
                 continue;
             }
             if (t->type == T_ERR2OUT) { c->err_to_out = 1; continue; }
             if (i + 1 >= to || toks[i + 1].type != T_WORD) return -1;
-            const char *f = toks[++i].s;
+            int fglob;
+            const char *f = expand_word(&toks[++i], &fglob);
+            if (overflow || !f) return -1;
             switch (t->type) {
             case T_IN: c->in = f; break;
             case T_OUT: c->out = f; c->out_append = 0; break;
