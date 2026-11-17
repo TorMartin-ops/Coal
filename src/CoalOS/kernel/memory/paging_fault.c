@@ -12,7 +12,7 @@
 #include <kernel/memory/mm.h>
 #include <kernel/process/process.h>
 #include <kernel/process/scheduler.h>
-#include <kernel/interfaces/logger.h>
+#include <kernel/core/log.h>
 #include <kernel/drivers/display/terminal.h>
 #include <kernel/drivers/display/serial.h>
 #include <kernel/lib/assert.h>
@@ -43,9 +43,9 @@ void page_fault_handler(registers_t* regs) {
     g_pf_stats.total_faults++;
     
     // Log the fault details
-    LOGGER_DEBUG(LOG_MODULE, "Page fault at %p (EIP=%p, error=%#x)",
+    KLOG_DEBUG(LOG_MODULE, "Page fault at %p (EIP=%p, error=%#x)",
                  (void*)fault_addr, (void*)regs->eip, error_code);
-    LOGGER_DEBUG(LOG_MODULE, "  - %s, %s, %s mode%s%s",
+    KLOG_DEBUG(LOG_MODULE, "  - %s, %s, %s mode%s%s",
                  is_present ? "protection violation" : "not present",
                  is_write ? "write" : "read",
                  is_user ? "user" : "kernel",
@@ -55,7 +55,7 @@ void page_fault_handler(registers_t* regs) {
     // Get current process
     tcb_t* current_task = get_current_task();
     if (!current_task || !current_task->process) {
-        LOGGER_ERROR(LOG_MODULE, "Page fault with no current process!");
+        KLOG_ERROR(LOG_MODULE, "Page fault with no current process!");
         goto fatal;
     }
     
@@ -63,7 +63,7 @@ void page_fault_handler(registers_t* regs) {
     
     // Check if this is a kernel mode fault
     if (!is_user && fault_addr >= KERNEL_SPACE_VIRT_START) {
-        LOGGER_ERROR(LOG_MODULE, "Kernel page fault at %p", (void*)fault_addr);
+        KLOG_ERROR(LOG_MODULE, "Kernel page fault at %p", (void*)fault_addr);
         goto fatal;
     }
     
@@ -81,7 +81,7 @@ void page_fault_handler(registers_t* regs) {
             // Check if the fault is within reasonable stack growth distance
             // (typically within a few pages of the current stack bottom)
             if (fault_addr >= (vma->vm_start - (16 * PAGE_SIZE))) {
-                LOGGER_DEBUG(LOG_MODULE, "Stack growth detected: extending VMA down to %p", 
+                KLOG_DEBUG(LOG_MODULE, "Stack growth detected: extending VMA down to %p", 
                             (void*)page_aligned_fault);
                 
                 // Extend the VMA downward
@@ -89,12 +89,12 @@ void page_fault_handler(registers_t* regs) {
                 
                 // Fall through to normal fault handling which will allocate the page
             } else {
-                LOGGER_ERROR(LOG_MODULE, "Stack growth too large: fault at %p, stack at %p",
+                KLOG_ERROR(LOG_MODULE, "Stack growth too large: fault at %p, stack at %p",
                             (void*)fault_addr, (void*)vma->vm_start);
                 goto fatal;
             }
         } else {
-            LOGGER_ERROR(LOG_MODULE, "No VMA found for address %p", (void*)fault_addr);
+            KLOG_ERROR(LOG_MODULE, "No VMA found for address %p", (void*)fault_addr);
             goto fatal;
         }
     }
@@ -105,22 +105,22 @@ void page_fault_handler(registers_t* regs) {
     if (result == 0) {
         // Successfully handled
         g_pf_stats.handled_faults++;
-        LOGGER_DEBUG(LOG_MODULE, "Page fault handled successfully");
+        KLOG_DEBUG(LOG_MODULE, "Page fault handled successfully");
         return;
     }
     
     // Check specific error cases
     if (result == -1) {
-        LOGGER_ERROR(LOG_MODULE, "No VMA found for address %p", (void*)fault_addr);
+        KLOG_ERROR(LOG_MODULE, "No VMA found for address %p", (void*)fault_addr);
     } else if (result == -2) {
-        LOGGER_ERROR(LOG_MODULE, "Access violation: %s to %s page at %p",
+        KLOG_ERROR(LOG_MODULE, "Access violation: %s to %s page at %p",
                      is_write ? "write" : "read",
                      is_present ? "read-only" : "unmapped",
                      (void*)fault_addr);
     } else if (result == -3) {
-        LOGGER_ERROR(LOG_MODULE, "Out of memory while handling page fault");
+        KLOG_ERROR(LOG_MODULE, "Out of memory while handling page fault");
     } else {
-        LOGGER_ERROR(LOG_MODULE, "Unknown error handling page fault: %d", result);
+        KLOG_ERROR(LOG_MODULE, "Unknown error handling page fault: %d", result);
     }
     
 fatal:

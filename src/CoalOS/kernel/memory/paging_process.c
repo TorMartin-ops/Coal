@@ -10,7 +10,7 @@
 #include <kernel/memory/paging_internal.h>
 #include <kernel/memory/paging_temp.h>
 #include <kernel/memory/frame.h>
-#include <kernel/interfaces/logger.h>
+#include <kernel/core/log.h>
 #include <kernel/lib/string.h>
 
 // Page Size bit for 4MB pages in PDEs
@@ -28,7 +28,7 @@ extern uint32_t g_kernel_page_directory_phys;
  */
 void copy_kernel_pde_entries(uint32_t* new_pd_virt) {
     if (!new_pd_virt || !g_kernel_page_directory_virt) {
-        LOGGER_ERROR(LOG_MODULE, "Invalid page directory pointers");
+        KLOG_ERROR(LOG_MODULE, "Invalid page directory pointers");
         return;
     }
     
@@ -37,14 +37,14 @@ void copy_kernel_pde_entries(uint32_t* new_pd_virt) {
     // during the page directory switch
     if (g_kernel_page_directory_virt[0] & PAGE_PRESENT) {
         new_pd_virt[0] = g_kernel_page_directory_virt[0];
-        LOGGER_DEBUG(LOG_MODULE, "Copied identity mapping PDE[0] = %#x", new_pd_virt[0]);
+        KLOG_DEBUG(LOG_MODULE, "Copied identity mapping PDE[0] = %#x", new_pd_virt[0]);
     }
     
     // Copy kernel PDEs (everything at or above KERNEL_SPACE_VIRT_START)
     // This typically starts at PDE index 768 (0xC0000000 / 4MB)
     uint32_t kernel_pde_start = PDE_INDEX(KERNEL_SPACE_VIRT_START);
     
-    LOGGER_DEBUG(LOG_MODULE, "Copying kernel PDEs from index %u to 1022", kernel_pde_start);
+    KLOG_DEBUG(LOG_MODULE, "Copying kernel PDEs from index %u to 1022", kernel_pde_start);
     
     for (uint32_t i = kernel_pde_start; i < 1023; i++) {
         new_pd_virt[i] = g_kernel_page_directory_virt[i];
@@ -76,7 +76,7 @@ uintptr_t paging_clone_directory(uint32_t* src_pd_phys) {
     // Allocate a new page directory
     uintptr_t new_pd_phys = frame_alloc();
     if (!new_pd_phys) {
-        LOGGER_ERROR(LOG_MODULE, "Failed to allocate frame for new page directory");
+        KLOG_ERROR(LOG_MODULE, "Failed to allocate frame for new page directory");
         return 0;
     }
     
@@ -100,7 +100,7 @@ uintptr_t paging_clone_directory(uint32_t* src_pd_phys) {
     
     paging_temp_unmap(new_pd_virt);
     
-    LOGGER_DEBUG(LOG_MODULE, "Cloned page directory: %#x -> %#x", (uint32_t)src_pd_phys, new_pd_phys);
+    KLOG_DEBUG(LOG_MODULE, "Cloned page directory: %#x -> %#x", (uint32_t)src_pd_phys, new_pd_phys);
     
     return new_pd_phys;
 }
@@ -115,7 +115,7 @@ void paging_free_user_space(uint32_t* page_directory_phys) {
                         : (uint32_t*)paging_temp_map((uintptr_t)page_directory_phys);
     
     if (!pd_virt) {
-        LOGGER_ERROR(LOG_MODULE, "Failed to map page directory for cleanup");
+        KLOG_ERROR(LOG_MODULE, "Failed to map page directory for cleanup");
         return;
     }
     
@@ -133,7 +133,7 @@ void paging_free_user_space(uint32_t* page_directory_phys) {
             // 4MB page - free it
             uintptr_t large_page_phys = pde & PAGING_PDE_ADDR_MASK_4MB;
             // TODO: Handle 4MB page freeing
-            LOGGER_WARN(LOG_MODULE, "4MB page freeing not implemented");
+            KLOG_WARN(LOG_MODULE, "4MB page freeing not implemented");
         } else {
             // Page table - free all pages in it, then free the PT itself
             uintptr_t pt_phys = pde & PAGING_ADDR_MASK;
@@ -165,5 +165,5 @@ void paging_free_user_space(uint32_t* page_directory_phys) {
         paging_temp_unmap(pd_virt);
     }
     
-    LOGGER_DEBUG(LOG_MODULE, "Freed user space for PD %p", page_directory_phys);
+    KLOG_DEBUG(LOG_MODULE, "Freed user space for PD %p", page_directory_phys);
 }

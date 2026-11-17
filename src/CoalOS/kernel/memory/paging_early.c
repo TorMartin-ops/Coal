@@ -55,7 +55,7 @@ static inline void enable_cr4_pse(void) {
  */
 static struct multiboot_tag *find_multiboot_tag_early(uint32_t mb_info_phys_addr, uint16_t type) {
     if (mb_info_phys_addr == 0 || mb_info_phys_addr >= 0x100000) {
-        LOG_ERROR("Invalid MB info address %#lx", (unsigned long)mb_info_phys_addr);
+        LOG_ERROR("Invalid MB info address %#x", mb_info_phys_addr);
         return NULL;
     }
     
@@ -63,7 +63,7 @@ static struct multiboot_tag *find_multiboot_tag_early(uint32_t mb_info_phys_addr
     uint32_t total_size = mb_info_ptr[0];
 
     if (total_size < 8 || total_size > 16 * 1024) {
-        LOG_ERROR("Invalid MB total size %lu", (unsigned long)total_size);
+        LOG_ERROR("Invalid MB total size %u", total_size);
         return NULL;
     }
 
@@ -75,8 +75,8 @@ static struct multiboot_tag *find_multiboot_tag_early(uint32_t mb_info_phys_addr
         if (current_tag_addr + sizeof(struct multiboot_tag) > info_end ||
             tag->size < 8 ||
             current_tag_addr + tag->size > info_end) {
-            LOG_ERROR("Invalid tag at %#lx (type %u, size %lu)", 
-                     (unsigned long)current_tag_addr, tag->type, (unsigned long)tag->size);
+            LOG_ERROR("Invalid tag at %#x (type %u, size %u)", 
+                     current_tag_addr, tag->type, tag->size);
             return NULL;
         }
 
@@ -86,8 +86,8 @@ static struct multiboot_tag *find_multiboot_tag_early(uint32_t mb_info_phys_addr
 
         uintptr_t next_tag_addr = current_tag_addr + ((tag->size + 7) & ~7);
         if (next_tag_addr <= current_tag_addr || next_tag_addr >= info_end) {
-            LOG_ERROR("Invalid next tag address %#lx from tag at %#lx", 
-                     (unsigned long)next_tag_addr, (unsigned long)current_tag_addr);
+            LOG_ERROR("Invalid next tag address %#x from tag at %#x", 
+                     next_tag_addr, current_tag_addr);
             break;
         }
         tag = (struct multiboot_tag *)next_tag_addr;
@@ -195,7 +195,7 @@ uintptr_t paging_alloc_early_frame_physical(void) {
 
                 early_allocated_frames[early_allocated_count++] = current_frame_addr;
                 memset((void*)current_frame_addr, 0, PAGE_SIZE);
-                LOG_TRACE("Allocated early frame at %#lx", current_frame_addr);
+                LOG_TRACE("Allocated early frame at %#x", current_frame_addr);
                 return current_frame_addr;
             }
         }
@@ -297,7 +297,7 @@ static int paging_map_physical_early(uintptr_t page_directory_phys,
                                     uint32_t flags,
                                     bool map_to_higher_half) {
     if (page_directory_phys == 0 || (page_directory_phys % PAGE_SIZE) != 0 || size == 0) {
-        LOG_ERROR("Invalid PD phys (%#lx) or size (%lu)", page_directory_phys, size);
+        LOG_ERROR("Invalid PD phys (%#x) or size (%u)", page_directory_phys, size);
         return KERN_EINVAL;
     }
 
@@ -321,7 +321,7 @@ static int paging_map_physical_early(uintptr_t page_directory_phys,
     size_t map_size = end_phys - current_phys;
     volatile uint32_t* pd_phys_ptr = (volatile uint32_t*)page_directory_phys;
 
-    LOG_INFO("Mapping Phys [%#lx - %#lx) -> %s (Size: %lu KB)", 
+    LOG_INFO("Mapping Phys [%#x - %#x) -> %s (Size: %u KB)", 
              current_phys, end_phys,
              map_to_higher_half ? "HigherHalf" : "Identity",
              map_size / 1024);
@@ -339,14 +339,14 @@ static int paging_map_physical_early(uintptr_t page_directory_phys,
         uintptr_t target_vaddr;
         if (map_to_higher_half) {
             if (current_phys > UINTPTR_MAX - KERNEL_SPACE_VIRT_START) {
-                LOG_ERROR("Virtual address overflow for Phys %#lx", current_phys);
+                LOG_ERROR("Virtual address overflow for Phys %#x", current_phys);
                 return KERN_EINVAL;
             }
             target_vaddr = KERNEL_SPACE_VIRT_START + current_phys;
         } else {
             target_vaddr = current_phys;
             if (target_vaddr >= KERNEL_SPACE_VIRT_START) {
-                LOG_WARN("Identity map target %#lx overlaps kernel space", target_vaddr);
+                LOG_WARN("Identity map target %#x overlaps kernel space", target_vaddr);
             }
         }
 
@@ -361,7 +361,7 @@ static int paging_map_physical_early(uintptr_t page_directory_phys,
             // Allocate new page table
             uint32_t* new_pt = allocate_page_table_phys();
             if (!new_pt) {
-                LOG_ERROR("Failed to allocate PT frame for VAddr %#lx", target_vaddr);
+                LOG_ERROR("Failed to allocate PT frame for VAddr %#x", target_vaddr);
                 return KERN_ENOMEM;
             }
             pt_phys_addr = (uintptr_t)new_pt;
@@ -375,7 +375,7 @@ static int paging_map_physical_early(uintptr_t page_directory_phys,
             LOG_TRACE("Created PT for PDE[%u]", pd_idx);
         } else {
             if (pde & PAGE_SIZE_4MB) {
-                LOG_ERROR("Attempt to map 4K page over existing 4M page at VAddr %#lx", target_vaddr);
+                LOG_ERROR("Attempt to map 4K page over existing 4M page at VAddr %#x", target_vaddr);
                 return KERN_EINVAL;
             }
             pt_phys_addr = (uintptr_t)(pde & PAGING_ADDR_MASK);
@@ -398,7 +398,7 @@ static int paging_map_physical_early(uintptr_t page_directory_phys,
 
         if (pte & PAGE_PRESENT) {
             if (pte != new_pte) {
-                LOG_ERROR("PTE already present/different for VAddr %#lx", target_vaddr);
+                LOG_ERROR("PTE already present/different for VAddr %#x", target_vaddr);
                 return KERN_EINVAL;
             }
         }
@@ -428,7 +428,7 @@ int paging_initialize_directory(uintptr_t* out_pd_phys) {
         return KERN_ENOMEM;
     }
     
-    LOG_INFO("Allocated initial PD at Phys: %#lx", pd_phys);
+    LOG_INFO("Allocated initial PD at Phys: %#x", pd_phys);
 
     if (!check_and_enable_pse()) {
         LOG_ERROR("PSE support is required but not available/enabled!");
@@ -467,7 +467,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
     uintptr_t kernel_phys_aligned_end = PAGE_ALIGN_UP(kernel_phys_end);
     size_t kernel_size = kernel_phys_aligned_end - kernel_phys_aligned_start;
     
-    LOG_INFO("Mapping Kernel Phys [%#lx - %#lx) to Higher Half",
+    LOG_INFO("Mapping Kernel Phys [%#x - %#x) to Higher Half",
              kernel_phys_aligned_start, kernel_phys_aligned_end);
     if (paging_map_physical_early(page_directory_phys, kernel_phys_aligned_start, 
                                  kernel_size, PTE_KERNEL_DATA_FLAGS, true) != 0) {
@@ -485,7 +485,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
         }
         size_t heap_aligned_size = heap_phys_aligned_end - heap_phys_aligned_start;
         
-        LOG_INFO("Mapping Kernel Heap Phys [%#lx - %#lx) to Higher Half",
+        LOG_INFO("Mapping Kernel Heap Phys [%#x - %#x) to Higher Half",
                  heap_phys_aligned_start, heap_phys_aligned_end);
         if (paging_map_physical_early(page_directory_phys, heap_phys_aligned_start, 
                                      heap_aligned_size, PTE_KERNEL_DATA_FLAGS, true) != 0) {
@@ -495,7 +495,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
     }
 
     // Map VGA buffer
-    LOG_INFO("Mapping VGA Buffer Phys %#lx to Virt %#lx", VGA_PHYS_ADDR, VGA_VIRT_ADDR);
+    LOG_INFO("Mapping VGA Buffer Phys %#x to Virt %#x", VGA_PHYS_ADDR, VGA_VIRT_ADDR);
     if (paging_map_physical_early(page_directory_phys, VGA_PHYS_ADDR, PAGE_SIZE, 
                                  PTE_KERNEL_DATA_FLAGS, true) != 0) {
         LOG_ERROR("Failed to map VGA buffer!");
@@ -503,7 +503,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
     }
 
     // Pre-allocate Kernel Stack Page Tables
-    LOG_INFO("Pre-allocating Page Tables for Kernel Stack Range [%#lx - %#lx)",
+    LOG_INFO("Pre-allocating Page Tables for Kernel Stack Range [%#x - %#x)",
              KERNEL_STACK_VADDR_START, KERNEL_TEMP_MAP_START);
 
     uint32_t stack_start_pde_idx = PDE_INDEX(KERNEL_STACK_VADDR_START);
@@ -540,7 +540,7 @@ int paging_setup_early_maps(uintptr_t page_directory_phys,
             temp_pde_flags |= PAGE_NX_BIT;
         }
         pd_phys_ptr[temp_map_pde_index] = (temp_pt_phys & PAGING_ADDR_MASK) | temp_pde_flags;
-        LOG_DEBUG("Mapped PDE[%u] to PT Phys %#lx", temp_map_pde_index, temp_pt_phys);
+        LOG_DEBUG("Mapped PDE[%u] to PT Phys %#x", temp_map_pde_index, temp_pt_phys);
     } else {
         LOG_DEBUG("PT for Temporary Mapping Area (PDE %u) already exists", temp_map_pde_index);
     }
@@ -565,7 +565,7 @@ int paging_finalize_and_activate(uintptr_t page_directory_phys, uintptr_t total_
     // Set up recursive mapping
     uint32_t recursive_pde_flags = PAGE_PRESENT | PAGE_RW | PAGE_NX_BIT;
     pd_phys_ptr[RECURSIVE_PDE_INDEX] = (page_directory_phys & PAGING_ADDR_MASK) | recursive_pde_flags;
-    LOG_INFO("Set recursive PDE[%u] to point to PD Phys=%#lx", RECURSIVE_PDE_INDEX, page_directory_phys);
+    LOG_INFO("Set recursive PDE[%u] to point to PD Phys=%#x", RECURSIVE_PDE_INDEX, page_directory_phys);
 
     LOG_INFO("Activating Paging (Loading CR3, Setting CR0.PG)...");
     paging_activate((uint32_t*)page_directory_phys);
@@ -583,7 +583,7 @@ int paging_finalize_and_activate(uintptr_t page_directory_phys, uintptr_t total_
     uint32_t expected_phys = page_directory_phys & PAGING_ADDR_MASK;
 
     if (actual_phys_in_pte != expected_phys) {
-        LOG_ERROR("Recursive PDE verification failed! Expected %#lx, got %#lx",
+        LOG_ERROR("Recursive PDE verification failed! Expected %#x, got %#x",
                   expected_phys, actual_phys_in_pte);
         return KERN_EINVAL;
     }

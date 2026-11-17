@@ -1,5 +1,6 @@
 #include <kernel/sync/spinlock.h>
-#include <kernel/interfaces/logger.h> // For logging
+#include <kernel/core/log.h>
+#include <kernel/drivers/display/terminal.h>
 
 #define LOG_MODULE "spinlock"
 
@@ -22,7 +23,7 @@ void spinlock_init(spinlock_t *lock) {
 uintptr_t spinlock_acquire_irqsave(spinlock_t *lock) {
     uintptr_t flags = local_irq_save(); // Disable interrupts, save state
     if (!lock) {
-        LOGGER_ERROR(LOG_MODULE, "Trying to acquire NULL lock!");
+        KLOG_ERROR(LOG_MODULE, "Trying to acquire NULL lock!");
         return flags; // Return saved flags even on error
     }
 

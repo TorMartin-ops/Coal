@@ -13,7 +13,7 @@
 #include <kernel/memory/paging_internal.h>
 #include <kernel/memory/paging_temp.h>
 #include <kernel/memory/frame.h>
-#include <kernel/interfaces/logger.h>
+#include <kernel/core/log.h>
 #include <kernel/lib/string.h>
 #include <kernel/lib/assert.h>
 
@@ -32,7 +32,7 @@ int paging_map_range(uint32_t* page_directory_phys,
     
     // Validate alignment
     if ((virt_start_addr & (PAGE_SIZE - 1)) || (phys_start_addr & (PAGE_SIZE - 1))) {
-        LOGGER_ERROR(LOG_MODULE, "Addresses not page-aligned: virt=%p, phys=%p",
+        KLOG_ERROR(LOG_MODULE, "Addresses not page-aligned: virt=%p, phys=%p",
                      (void*)virt_start_addr, (void*)phys_start_addr);
         return -1;
     }
@@ -40,7 +40,7 @@ int paging_map_range(uint32_t* page_directory_phys,
     // Calculate number of pages
     size_t num_pages = (memsz + PAGE_SIZE - 1) / PAGE_SIZE;
     
-    LOGGER_INFO(LOG_MODULE, "Mapping range: pd_phys=%p, virt=%p, phys=%p, pages=%zu, flags=%#x",
+    KLOG_INFO(LOG_MODULE, "Mapping range: pd_phys=%p, virt=%p, phys=%p, pages=%zu, flags=%#x",
                  page_directory_phys, (void*)virt_start_addr, (void*)phys_start_addr, num_pages, flags);
     
     // Map each page
@@ -50,7 +50,7 @@ int paging_map_range(uint32_t* page_directory_phys,
         
         int result = paging_map_single_4k(page_directory_phys, vaddr, paddr, flags);
         if (result != 0) {
-            LOGGER_ERROR(LOG_MODULE, "Failed to map page at virt=%p, phys=%p, result=%d", 
+            KLOG_ERROR(LOG_MODULE, "Failed to map page at virt=%p, phys=%p, result=%d", 
                          (void*)vaddr, (void*)paddr, result);
             // TODO: Unmap already mapped pages on failure
             return result;
@@ -69,14 +69,14 @@ int paging_unmap_range(uint32_t* page_directory_phys,
     
     // Validate alignment
     if (virt_start_addr & (PAGE_SIZE - 1)) {
-        LOGGER_ERROR(LOG_MODULE, "Virtual address not page-aligned: %p", (void*)virt_start_addr);
+        KLOG_ERROR(LOG_MODULE, "Virtual address not page-aligned: %p", (void*)virt_start_addr);
         return -1;
     }
     
     // Calculate number of pages
     size_t num_pages = (memsz + PAGE_SIZE - 1) / PAGE_SIZE;
     
-    LOGGER_DEBUG(LOG_MODULE, "Unmapping range: virt=%p, pages=%zu",
+    KLOG_DEBUG(LOG_MODULE, "Unmapping range: virt=%p, pages=%zu",
                  (void*)virt_start_addr, num_pages);
     
     // Get virtual address of page directory
@@ -85,7 +85,7 @@ int paging_unmap_range(uint32_t* page_directory_phys,
                         : (uint32_t*)paging_temp_map((uintptr_t)page_directory_phys);
     
     if (!pd_virt) {
-        LOGGER_ERROR(LOG_MODULE, "Failed to map page directory");
+        KLOG_ERROR(LOG_MODULE, "Failed to map page directory");
         return -1;
     }
     
@@ -136,7 +136,7 @@ int paging_map_single_4k(uint32_t* page_directory_phys,
     
     // Validate alignment
     if ((vaddr & (PAGE_SIZE - 1)) || (paddr & (PAGE_SIZE - 1))) {
-        LOGGER_ERROR(LOG_MODULE, "Addresses not page-aligned: virt=%p, phys=%p",
+        KLOG_ERROR(LOG_MODULE, "Addresses not page-aligned: virt=%p, phys=%p",
                      (void*)vaddr, (void*)paddr);
         return -1;
     }
@@ -154,7 +154,7 @@ int paging_map_single_4k(uint32_t* page_directory_phys,
     } else {
         pd_virt = (uint32_t*)paging_temp_map((uintptr_t)page_directory_phys);
         if (!pd_virt) {
-            LOGGER_ERROR(LOG_MODULE, "Failed to map page directory");
+            KLOG_ERROR(LOG_MODULE, "Failed to map page directory");
             return -1;
         }
         pd_is_temp = true;
@@ -170,7 +170,7 @@ int paging_map_single_4k(uint32_t* page_directory_phys,
         // Allocate new page table
         pt_phys = frame_alloc();
         if (!pt_phys) {
-            LOGGER_ERROR(LOG_MODULE, "Failed to allocate page table");
+            KLOG_ERROR(LOG_MODULE, "Failed to allocate page table");
             if (pd_is_temp) paging_temp_unmap(pd_virt);
             return -1;
         }
@@ -274,7 +274,7 @@ int paging_get_physical_address_and_flags(uint32_t* page_directory_phys,
                         : (uint32_t*)paging_temp_map((uintptr_t)page_directory_phys);
     
     if (!pd_virt) {
-        LOGGER_ERROR(LOG_MODULE, "Failed to map page directory");
+        KLOG_ERROR(LOG_MODULE, "Failed to map page directory");
         return -1;
     }
     

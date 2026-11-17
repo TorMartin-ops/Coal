@@ -11,7 +11,7 @@
 #include <kernel/memory/paging_temp.h>
 #include <kernel/memory/paging.h>
 #include <kernel/memory/paging_internal.h>
-#include <kernel/interfaces/logger.h>
+#include <kernel/core/log.h>
 #include <kernel/sync/spinlock.h>
 #include <kernel/lib/assert.h>
 #include <kernel/lib/string.h>
@@ -41,7 +41,7 @@ void* paging_temp_map_with_flags(uintptr_t phys_addr, uint32_t flags);
  */
 int paging_temp_map_init(void) {
     if (g_temp_initialized) {
-        LOGGER_WARN(LOG_MODULE, "Temporary mapping already initialized");
+        KLOG_WARN(LOG_MODULE, "Temporary mapping already initialized");
         return 0;
     }
     
@@ -53,7 +53,7 @@ int paging_temp_map_init(void) {
     // set up during early paging initialization
     
     g_temp_initialized = true;
-    LOGGER_INFO(LOG_MODULE, "Temporary mapping initialized with %d slots at %p",
+    KLOG_INFO(LOG_MODULE, "Temporary mapping initialized with %d slots at %p",
                 TEMP_MAP_SLOTS, (void*)TEMP_MAP_VIRT_START);
     
     return 0;
@@ -71,13 +71,13 @@ void* paging_temp_map(uintptr_t phys_addr) {
  */
 void* paging_temp_map_with_flags(uintptr_t phys_addr, uint32_t flags) {
     if (!g_temp_initialized) {
-        LOGGER_ERROR(LOG_MODULE, "Temporary mapping not initialized");
+        KLOG_ERROR(LOG_MODULE, "Temporary mapping not initialized");
         return NULL;
     }
     
     // Validate alignment
     if (phys_addr & (PAGE_SIZE - 1)) {
-        LOGGER_ERROR(LOG_MODULE, "Physical address %p not page-aligned", (void*)phys_addr);
+        KLOG_ERROR(LOG_MODULE, "Physical address %p not page-aligned", (void*)phys_addr);
         return NULL;
     }
     
@@ -94,7 +94,7 @@ void* paging_temp_map_with_flags(uintptr_t phys_addr, uint32_t flags) {
     
     if (slot == -1) {
         spinlock_release_irqrestore(&g_temp_lock, irq_flags);
-        LOGGER_ERROR(LOG_MODULE, "No free temporary mapping slots");
+        KLOG_ERROR(LOG_MODULE, "No free temporary mapping slots");
         return NULL;
     }
     
@@ -110,7 +110,7 @@ void* paging_temp_map_with_flags(uintptr_t phys_addr, uint32_t flags) {
     uint32_t* pde = &g_kernel_page_directory_virt[pd_index];
     if (!(*pde & PAGE_PRESENT)) {
         spinlock_release_irqrestore(&g_temp_lock, irq_flags);
-        LOGGER_ERROR(LOG_MODULE, "Page table not present for temp mapping region");
+        KLOG_ERROR(LOG_MODULE, "Page table not present for temp mapping region");
         return NULL;
     }
     
@@ -131,7 +131,7 @@ void* paging_temp_map_with_flags(uintptr_t phys_addr, uint32_t flags) {
     
     spinlock_release_irqrestore(&g_temp_lock, irq_flags);
     
-    LOGGER_DEBUG(LOG_MODULE, "Mapped phys %p to temp virt %p (slot %d)",
+    KLOG_DEBUG(LOG_MODULE, "Mapped phys %p to temp virt %p (slot %d)",
                  (void*)phys_addr, (void*)vaddr, slot);
     
     return (void*)vaddr;
@@ -149,14 +149,14 @@ void paging_temp_unmap(void *temp_vaddr) {
     
     // Validate address is in temp region
     if (vaddr < TEMP_MAP_VIRT_START || vaddr >= (TEMP_MAP_VIRT_START + TEMP_MAP_SIZE)) {
-        LOGGER_ERROR(LOG_MODULE, "Address %p not in temporary mapping region", temp_vaddr);
+        KLOG_ERROR(LOG_MODULE, "Address %p not in temporary mapping region", temp_vaddr);
         return;
     }
     
     // Calculate slot index
     int slot = (vaddr - TEMP_MAP_VIRT_START) / PAGE_SIZE;
     if (slot < 0 || slot >= TEMP_MAP_SLOTS) {
-        LOGGER_ERROR(LOG_MODULE, "Invalid temp mapping slot");
+        KLOG_ERROR(LOG_MODULE, "Invalid temp mapping slot");
         return;
     }
     
@@ -164,7 +164,7 @@ void paging_temp_unmap(void *temp_vaddr) {
     
     if (!g_temp_slots[slot].in_use) {
         spinlock_release_irqrestore(&g_temp_lock, irq_flags);
-        LOGGER_WARN(LOG_MODULE, "Attempting to unmap unused slot %d", slot);
+        KLOG_WARN(LOG_MODULE, "Attempting to unmap unused slot %d", slot);
         return;
     }
     
@@ -189,7 +189,7 @@ void paging_temp_unmap(void *temp_vaddr) {
     
     spinlock_release_irqrestore(&g_temp_lock, irq_flags);
     
-    LOGGER_DEBUG(LOG_MODULE, "Unmapped temp virt %p (slot %d)", (void*)temp_vaddr, slot);
+    KLOG_DEBUG(LOG_MODULE, "Unmapped temp virt %p (slot %d)", (void*)temp_vaddr, slot);
 }
 
 /**

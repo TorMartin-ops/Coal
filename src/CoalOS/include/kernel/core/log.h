@@ -1,6 +1,9 @@
 /**
  * @file log.h
- * @brief Kernel logging system for Coal OS
+ * @brief Kernel logging: the single logging path (klog / KLOG_* / LOG_*)
+ *
+ * Output goes to the terminal and the serial port. LOG_* macros need
+ * LOG_MODULE defined before this header is included.
  */
 
 #ifndef COAL_CORE_LOG_H
@@ -21,11 +24,6 @@ typedef enum {
 } log_level_t;
 
 /**
- * @brief Initialize logging system
- */
-void log_init(void);
-
-/**
  * @brief Set minimum log level
  */
 void log_set_level(log_level_t level);
@@ -33,7 +31,8 @@ void log_set_level(log_level_t level);
 /**
  * @brief Core logging function
  */
-void klog(log_level_t level, const char* module, const char* fmt, ...);
+void klog(log_level_t level, const char* module, const char* fmt, ...)
+    __attribute__((format(printf, 3, 4)));
 
 /**
  * @brief Log with va_list
@@ -62,15 +61,5 @@ void kvlog(log_level_t level, const char* module, const char* fmt, va_list args)
 #define LOG_ERROR(fmt, ...) KLOG_ERROR(LOG_MODULE, fmt, ##__VA_ARGS__)
 #define LOG_FATAL(fmt, ...) KLOG_FATAL(LOG_MODULE, fmt, ##__VA_ARGS__)
 #endif
-
-/**
- * @brief Assertion with logging
- */
-#define KLOG_ASSERT(cond, module, fmt, ...) do { \
-    if (!(cond)) { \
-        KLOG_FATAL(module, "Assertion failed: " #cond " - " fmt, ##__VA_ARGS__); \
-        asm volatile("cli; hlt"); \
-    } \
-} while(0)
 
 #endif // COAL_CORE_LOG_H

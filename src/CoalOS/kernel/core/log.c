@@ -1,6 +1,6 @@
 /**
  * @file log.c
- * @brief Kernel logging system implementation - simplified version
+ * @brief Kernel logging implementation
  */
 
 #include <kernel/core/log.h>
@@ -19,11 +19,6 @@ static const char* level_strings[] = {
     "ERROR",
     "FATAL"
 };
-
-void log_init(void) {
-    spinlock_init(&g_log_lock);
-    g_min_level = LOG_DEBUG;
-}
 
 void log_set_level(log_level_t level) {
     if (level >= LOG_TRACE && level <= LOG_FATAL) {

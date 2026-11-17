@@ -16,7 +16,7 @@
 #include <kernel/memory/mm.h>
 #include <kernel/memory/paging.h>
 #include <kernel/memory/frame.h>
-#include <kernel/interfaces/logger.h>
+#include <kernel/core/log.h>
 #include <kernel/lib/string.h>
 #include <kernel/lib/assert.h>
 #include <kernel/cpu/gdt.h>
@@ -30,7 +30,7 @@ extern bool g_nx_supported;
 // Debug macros
 #define PROCESS_DEBUG 0
 #if PROCESS_DEBUG
-#define PROC_DEBUG_PRINTF(fmt, ...) LOGGER_DEBUG(LOG_MODULE, fmt, ##__VA_ARGS__)
+#define PROC_DEBUG_PRINTF(fmt, ...) KLOG_DEBUG(LOG_MODULE, fmt, ##__VA_ARGS__)
 #else
 #define PROC_DEBUG_PRINTF(fmt, ...)
 #endif
@@ -89,7 +89,7 @@ static void prepare_initial_kernel_stack(pcb_t *proc) {
     // 6. Save the final Kernel Stack Pointer
     proc->kernel_esp_for_switch = (uint32_t)kstack_ptr;
 
-    LOGGER_INFO(LOG_MODULE, "Kernel stack prepared for IRET. Final K_ESP = %#x", proc->kernel_esp_for_switch);
+    KLOG_INFO(LOG_MODULE, "Kernel stack prepared for IRET. Final K_ESP = %#x", proc->kernel_esp_for_switch);
 }
 
 /**
@@ -100,17 +100,17 @@ static error_t initialize_process_page_directory(pcb_t *proc) {
     
     uintptr_t pd_phys = frame_alloc();
     if (!pd_phys) {
-        LOGGER_ERROR(LOG_MODULE, "Failed to allocate page directory frame for PID %u", proc->pid);
+        KLOG_ERROR(LOG_MODULE, "Failed to allocate page directory frame for PID %u", proc->pid);
         return E_NOMEM;
     }
     
     proc->page_directory_phys = (uint32_t*)pd_phys;
-    LOGGER_DEBUG(LOG_MODULE, "Allocated PD Phys: %#lx for PID %u", pd_phys, proc->pid);
+    KLOG_DEBUG(LOG_MODULE, "Allocated PD Phys: %#lx for PID %u", pd_phys, proc->pid);
 
     // Initialize page directory
     void* proc_pd_virt_temp = paging_temp_map(pd_phys);
     if (!proc_pd_virt_temp) {
-        LOGGER_ERROR(LOG_MODULE, "Failed to temp map page directory");
+        KLOG_ERROR(LOG_MODULE, "Failed to temp map page directory");
         put_frame(pd_phys);
         return E_IO;
     }
@@ -133,17 +133,17 @@ static error_t initialize_process_page_directory(pcb_t *proc) {
         uint32_t process_kernel_base_pde = ((uint32_t*)temp_pd_check)[KERNEL_PDE_INDEX];
         uint32_t global_kernel_base_pde = g_kernel_page_directory_virt[KERNEL_PDE_INDEX];
         
-        LOGGER_DEBUG(LOG_MODULE, "Verification: Proc PD[%d]=%#08x, Global PD[%d]=%#08x",
+        KLOG_DEBUG(LOG_MODULE, "Verification: Proc PD[%d]=%#08x, Global PD[%d]=%#08x",
                     KERNEL_PDE_INDEX, process_kernel_base_pde, KERNEL_PDE_INDEX, global_kernel_base_pde);
         
         if (!(process_kernel_base_pde & PAGE_PRESENT)) {
-            LOGGER_ERROR(LOG_MODULE, "Kernel Base PDE missing in process PD!");
+            KLOG_ERROR(LOG_MODULE, "Kernel Base PDE missing in process PD!");
             paging_temp_unmap(temp_pd_check);
             return E_INVAL;
         }
         paging_temp_unmap(temp_pd_check);
     } else {
-        LOGGER_ERROR(LOG_MODULE, "Verification failed: Could not temp map process PD (%#lx)", pd_phys);
+        KLOG_ERROR(LOG_MODULE, "Verification failed: Could not temp map process PD (%#lx)", pd_phys);
         return E_IO;
     }
 
@@ -157,7 +157,7 @@ static error_t setup_standard_vmas(pcb_t *proc) {
     PROC_DEBUG_PRINTF("Setting up standard VMAs for process PID %u", proc->pid);
     
     if (!proc->mm) {
-        LOGGER_ERROR(LOG_MODULE, "Process mm_struct is NULL");
+        KLOG_ERROR(LOG_MODULE, "Process mm_struct is NULL");
         return E_INVAL;
     }
 
@@ -168,11 +168,11 @@ static error_t setup_standard_vmas(pcb_t *proc) {
     uint32_t heap_page_prot = PAGE_PRESENT | PAGE_RW | PAGE_USER | (g_nx_supported ? PAGE_NX_BIT : 0);
     if (!insert_vma(proc->mm, heap_start, heap_start, 
                    VM_READ | VM_WRITE | VM_USER | VM_ANONYMOUS, heap_page_prot, NULL, 0)) {
-        LOGGER_ERROR(LOG_MODULE, "Failed to insert heap VMA");
+        KLOG_ERROR(LOG_MODULE, "Failed to insert heap VMA");
         return E_NOMEM;
     }
     
-    LOGGER_DEBUG(LOG_MODULE, "Initial Heap VMA placeholder added: [%#lx - %#lx)",
+    KLOG_DEBUG(LOG_MODULE, "Initial Heap VMA placeholder added: [%#lx - %#lx)",
                 heap_start, heap_start);
 
     // Setup user stack VMA
@@ -180,11 +180,11 @@ static error_t setup_standard_vmas(pcb_t *proc) {
     if (!insert_vma(proc->mm, USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR,
                    VM_READ | VM_WRITE | VM_USER | VM_GROWS_DOWN | VM_ANONYMOUS, 
                    stack_page_prot, NULL, 0)) {
-        LOGGER_ERROR(LOG_MODULE, "Failed to insert user stack VMA");
+        KLOG_ERROR(LOG_MODULE, "Failed to insert user stack VMA");
         return E_NOMEM;
     }
     
-    LOGGER_DEBUG(LOG_MODULE, "User Stack VMA added: [%#lx - %#lx)",
+    KLOG_DEBUG(LOG_MODULE, "User Stack VMA added: [%#lx - %#lx)",
                 USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR);
 
     return E_SUCCESS;
@@ -199,7 +199,7 @@ static error_t setup_initial_user_stack(pcb_t *proc) {
     // Allocate physical frame for initial stack page
     uintptr_t initial_stack_phys_frame = frame_alloc();
     if (!initial_stack_phys_frame) {
-        LOGGER_ERROR(LOG_MODULE, "Failed to allocate initial user stack frame");
+        KLOG_ERROR(LOG_MODULE, "Failed to allocate initial user stack frame");
         return E_NOMEM;
     }
 
@@ -212,7 +212,7 @@ static error_t setup_initial_user_stack(pcb_t *proc) {
                                       initial_stack_phys_frame, 
                                       stack_page_prot);
     if (map_res != 0) {
-        LOGGER_ERROR(LOG_MODULE, "Failed to map initial user stack page");
+        KLOG_ERROR(LOG_MODULE, "Failed to map initial user stack page");
         put_frame(initial_stack_phys_frame);
         return E_IO;
     }
@@ -220,7 +220,7 @@ static error_t setup_initial_user_stack(pcb_t *proc) {
     // Set user stack top
     proc->user_stack_top = (void*)USER_STACK_TOP_VIRT_ADDR;
     
-    LOGGER_INFO(LOG_MODULE, "Initial user stack page allocated (P=%#lx) and mapped (V=%p). User ESP set to %p",
+    KLOG_INFO(LOG_MODULE, "Initial user stack page allocated (P=%#lx) and mapped (V=%p). User ESP set to %p",
                initial_stack_phys_frame, (void*)initial_user_stack_page_vaddr, proc->user_stack_top);
 
     // Zero out the stack page
@@ -229,7 +229,7 @@ static error_t setup_initial_user_stack(pcb_t *proc) {
         memset(temp_stack_map, 0, PAGE_SIZE);
         paging_temp_unmap(temp_stack_map);
     } else {
-        LOGGER_WARN(LOG_MODULE, "Could not zero initial user stack page");
+        KLOG_WARN(LOG_MODULE, "Could not zero initial user stack page");
     }
 
     return E_SUCCESS;
@@ -252,12 +252,12 @@ static error_t verify_process_mappings(pcb_t *proc) {
     int eip_check_res = paging_get_physical_address_and_flags(proc->page_directory_phys, 
                                                              eip_page_vaddr, &eip_phys, &eip_pte_flags);
     if (eip_check_res != 0 || eip_phys == 0) {
-        LOGGER_ERROR(LOG_MODULE, "EIP page %#lx not mapped for PID %u", eip_page_vaddr, proc->pid);
+        KLOG_ERROR(LOG_MODULE, "EIP page %#lx not mapped for PID %u", eip_page_vaddr, proc->pid);
         mapping_error = true;
     } else {
         bool flags_ok = (eip_pte_flags & PAGE_PRESENT) && (eip_pte_flags & PAGE_USER);
         if (!flags_ok) {
-            LOGGER_ERROR(LOG_MODULE, "EIP page %#lx has incorrect flags %#x for PID %u", 
+            KLOG_ERROR(LOG_MODULE, "EIP page %#lx has incorrect flags %#x for PID %u", 
                         eip_page_vaddr, eip_pte_flags, proc->pid);
             mapping_error = true;
         }
@@ -271,19 +271,19 @@ static error_t verify_process_mappings(pcb_t *proc) {
     int esp_check_res = paging_get_physical_address_and_flags(proc->page_directory_phys, 
                                                              esp_page_vaddr_check, &esp_phys, &esp_pte_flags);
     if (esp_check_res != 0 || esp_phys == 0) {
-        LOGGER_ERROR(LOG_MODULE, "ESP page %#lx not mapped for PID %u", esp_page_vaddr_check, proc->pid);
+        KLOG_ERROR(LOG_MODULE, "ESP page %#lx not mapped for PID %u", esp_page_vaddr_check, proc->pid);
         mapping_error = true;
     } else {
         bool flags_ok = (esp_pte_flags & PAGE_PRESENT) && (esp_pte_flags & PAGE_USER) && (esp_pte_flags & PAGE_RW);
         if (!flags_ok) {
-            LOGGER_ERROR(LOG_MODULE, "ESP page %#lx has incorrect flags %#x for PID %u", 
+            KLOG_ERROR(LOG_MODULE, "ESP page %#lx has incorrect flags %#x for PID %u", 
                         esp_page_vaddr_check, esp_pte_flags, proc->pid);
             mapping_error = true;
         }
     }
 
     if (mapping_error) {
-        LOGGER_ERROR(LOG_MODULE, "Process mapping verification failed for PID %u", proc->pid);
+        KLOG_ERROR(LOG_MODULE, "Process mapping verification failed for PID %u", proc->pid);
         return E_FAULT;
     }
 
@@ -298,7 +298,7 @@ static error_t verify_process_mappings(pcb_t *proc) {
  * @brief Initialize process loading subsystem
  */
 error_t process_loader_init(void) {
-    LOGGER_INFO(LOG_MODULE, "Process loader initialized");
+    KLOG_INFO(LOG_MODULE, "Process loader initialized");
     return E_SUCCESS;
 }
 
@@ -306,5 +306,5 @@ error_t process_loader_init(void) {
  * @brief Cleanup process loading subsystem
  */
 void process_loader_cleanup(void) {
-    LOGGER_INFO(LOG_MODULE, "Process loader cleaned up");
+    KLOG_INFO(LOG_MODULE, "Process loader cleaned up");
 }

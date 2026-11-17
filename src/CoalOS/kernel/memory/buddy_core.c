@@ -11,7 +11,7 @@
 #define LOG_MODULE "buddy_core"
 
 #include <kernel/memory/buddy_core.h>
-#include <kernel/interfaces/logger.h>
+#include <kernel/core/log.h>
 #include <kernel/sync/spinlock.h>
 #include <kernel/lib/assert.h>
 #include <kernel/lib/string.h>
@@ -172,13 +172,13 @@ static uintptr_t try_coalesce(uintptr_t block_addr, uint8_t order) {
  */
 error_t buddy_core_init(uintptr_t start_virt, size_t size) {
     if (buddy_initialized) {
-        LOGGER_WARN(LOG_MODULE, "Buddy allocator already initialized");
+        KLOG_WARN(LOG_MODULE, "Buddy allocator already initialized");
         return E_SUCCESS;
     }
     
     // Validate parameters
     if (start_virt == 0 || size == 0) {
-        LOGGER_ERROR(LOG_MODULE, "Invalid initialization parameters");
+        KLOG_ERROR(LOG_MODULE, "Invalid initialization parameters");
         return E_INVAL;
     }
     
@@ -219,7 +219,7 @@ error_t buddy_core_init(uintptr_t start_virt, size_t size) {
     
     buddy_initialized = true;
     
-    LOGGER_INFO(LOG_MODULE, "Buddy allocator initialized: start=%#x, size=%zu, free=%zu",
+    KLOG_INFO(LOG_MODULE, "Buddy allocator initialized: start=%#x, size=%zu, free=%zu",
                heap_start_virt, total_managed_size, free_bytes);
     
     return E_SUCCESS;
@@ -235,7 +235,7 @@ uintptr_t buddy_core_alloc(size_t size) {
     
     uint8_t order = size_to_order(size);
     if (order > MAX_ORDER) {
-        LOGGER_ERROR(LOG_MODULE, "Requested size %zu exceeds maximum", size);
+        KLOG_ERROR(LOG_MODULE, "Requested size %zu exceeds maximum", size);
         return 0;
     }
     
@@ -250,7 +250,7 @@ uintptr_t buddy_core_alloc(size_t size) {
     if (alloc_order > MAX_ORDER) {
         // No suitable block found
         spinlock_release_irqrestore(&buddy_lock, flags);
-        LOGGER_DEBUG(LOG_MODULE, "No free block available for size %zu", size);
+        KLOG_DEBUG(LOG_MODULE, "No free block available for size %zu", size);
         return 0;
     }
     
@@ -264,7 +264,7 @@ uintptr_t buddy_core_alloc(size_t size) {
     
     spinlock_release_irqrestore(&buddy_lock, flags);
     
-    LOGGER_DEBUG(LOG_MODULE, "Allocated block at %#x, order %u for size %zu",
+    KLOG_DEBUG(LOG_MODULE, "Allocated block at %#x, order %u for size %zu",
                 block_addr, order, size);
     
     return block_addr;
@@ -279,12 +279,12 @@ void buddy_core_free(uintptr_t block_addr, uint8_t order) {
     }
     
     if (!is_valid_heap_address(block_addr)) {
-        LOGGER_ERROR(LOG_MODULE, "Invalid block address %#x", block_addr);
+        KLOG_ERROR(LOG_MODULE, "Invalid block address %#x", block_addr);
         return;
     }
     
     if (order > MAX_ORDER) {
-        LOGGER_ERROR(LOG_MODULE, "Invalid order %u", order);
+        KLOG_ERROR(LOG_MODULE, "Invalid order %u", order);
         return;
     }
     
@@ -306,7 +306,7 @@ void buddy_core_free(uintptr_t block_addr, uint8_t order) {
     
     spinlock_release_irqrestore(&buddy_lock, flags);
     
-    LOGGER_DEBUG(LOG_MODULE, "Freed block at %#x, final order %u", block_addr, final_order);
+    KLOG_DEBUG(LOG_MODULE, "Freed block at %#x, final order %u", block_addr, final_order);
 }
 
 /**
@@ -343,5 +343,5 @@ void buddy_core_cleanup(void) {
     }
     
     buddy_initialized = false;
-    LOGGER_INFO(LOG_MODULE, "Buddy allocator cleaned up");
+    KLOG_INFO(LOG_MODULE, "Buddy allocator cleaned up");
 }
