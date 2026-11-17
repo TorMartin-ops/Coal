@@ -48,21 +48,17 @@ SECTIONS {
         *(.bss .bss.*)         /* Link all .bss sections */
     }
 
-    /* Define end of the kernel image */
-    /* This point is after the BSS section */
-    . = ALIGN(4K); /* Optional: Align the end symbol */
-    end = .;                  /* Standard symbol for the end */
-    _kernel_end_phys = .;     /* Physical end address of the kernel */
-
-
-     /* === ADD THIS SECTION === */
-    /* Exception Table for safe user memory access */
-    . = ALIGN(4); /* Ensure alignment */
+    /* Exception table for safe user memory access */
+    . = ALIGN(4);
     .ex_table : ALIGN(4) {
-        __start_ex_table = .; /* Symbol marking the start */
-        *(.ex_table)          /* Link all .ex_table sections from .o files */
-        __stop_ex_table = .;  /* Symbol marking the end */
+        __start_ex_table = .;
+        *(.ex_table)
+        __stop_ex_table = .;
     }
-    /* === END OF ADDED SECTION === */
 
+    /* End of the kernel image. Placed after .ex_table so the heap, which
+     * starts here, does not overwrite it. */
+    . = ALIGN(4K);
+    end = .;
+    _kernel_end_phys = .;
 }
