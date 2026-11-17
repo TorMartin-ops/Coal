@@ -38,8 +38,13 @@ including an IPv4 stack.
 - O(1) scheduler (`scheduler.c`): four priority levels with a bitmap of non-empty
   FIFO queues, 20 ms slices, a sorted sleep list. System calls run with
   interrupts on, so a task in the kernel can be preempted.
-- Blocking uses wait queues (`drivers/wait.c`): tty, serial, pipes and `poll`
-  sleep until a driver wakes them. `poll` asks each driver for readiness.
+- Blocking uses wait queues (`drivers/wait.c`): tty, serial, pipes and `poll`/`select`
+  sleep until a driver wakes them. `poll` asks each driver for readiness. A restartable call
+  interrupted by a `SA_RESTART` handler is restarted by rewinding `eip` over `int 0x80`.
+- The x87/SSE registers are switched lazily (`fpu.c`): CR0.TS is set when the running task is not
+  the owner and the `#NM` trap swaps FXSAVE images.
+- Out of memory (`oom.c`): a fault that finds no frame kills the process with the most resident
+  pages (never init), logs one line and lets the faulting task retry.
 - `fork`, `execve` (`exec.c`, `elf_loader.c`), `wait4`, sessions and process groups
   follow Linux. Signals: default actions in `signal.c`, user handlers on an rt
   signal frame built on return from system calls and interrupts
@@ -61,25 +66,30 @@ driver interface with optional `poll`/`utime`/`ioctl` operations. Drivers:
   buffer cache (`kernel/drivers/storage`). Mounted on `/`.
 - devfs on `/dev`: `console`, `tty`, `null`, `zero`, `ttyS0` (kernel log), `ttyS1`
   (MCP link).
-- procfs on `/proc`: `meminfo`, `uptime`, `version`, `<pid>/status`, `self`.
-- pipefs: anonymous pipes created by `pipe`/`pipe2`.
+- procfs on `/proc`: `meminfo`, `uptime`, `version`, `mounts`, `<pid>/status`, `self`.
+- pipefs: pipes and socket pairs (`pipe`, `pipe2`, `socketpair`), a 64 KiB ring of lazily
+  allocated pages per direction.
 
 ## Drivers
 
-VGA text console with a VT100 subset (`terminal.c`), line discipline with
+VGA text console with a VT100 subset (`terminal.c`; o-slash glyphs are uploaded into the VGA font
+and UTF-8 for U+00A0..U+00FF is mapped to Latin-1/CP437), line discipline with
 canonical/raw modes and job-control signal keys (`tty.c`), PS/2 keyboard with a
-Norwegian keymap, 16550 UART with interrupt-driven rings (`serial.c`), PIT, ATA
+Norwegian keymap, lock-key LEDs and an ESC prefix for Alt, 16550 UART with interrupt-driven rings (`serial.c`), PIT, ATA
 PIO with LBA48 (`block_device.c`). PCI bus 0 scan (`pci.c`) and an Intel e1000
 (82540EM) NIC with MMIO at `KERNEL_MMIO_VADDR_START`, 32 RX and 16 TX
 descriptors, interrupt-driven RX with a 10 ms poll fallback (`net/e1000.c`).
 
 ## Network
 
-`kernel/net`: Ethernet, ARP cache, IPv4 (fragments dropped), ICMP echo, UDP,
-DHCP client with static fallback (10.0.2.15/24), and TCP (in-order receive,
-RTO with backoff, 16 KiB buffers, 32 connections). `socket.c` exposes them as
-fds through a sockfs vfs driver; `syscall_socket.c` implements the Linux socket
-calls. No IPv6, loopback, fragment reassembly or lease renewal.
+`kernel/net`: Ethernet, ARP cache, IPv4 (fragments dropped), ICMP echo and port unreachable,
+UDP, a DHCP client with renewal (T1 unicast, T2 broadcast) and static fallback (10.0.2.15/24),
+and TCP (RTO with backoff, slow start, a bounded out-of-order queue of four ranges kept in the
+receive ring, 16 KiB buffers, 64 connections, listen backlog 32 that drops the oldest half-open
+connection when full, MSS clamped to [536, MTU-40]). Packets to 127.0.0.0/8 or the own address
+go through a 16-packet loopback queue delivered by the millisecond tick, so local sockets work
+without a NIC. `socket.c` exposes the protocols as fds through a sockfs vfs driver;
+`syscall_socket.c` implements the Linux socket calls. No IPv6 or fragment reassembly.
 
 ## Kernel log
 

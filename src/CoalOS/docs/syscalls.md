@@ -17,6 +17,7 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 5 | open | `sc_open` |  |
 | 6 | close | `sc_close` |  |
 | 7 | waitpid | `sc_waitpid` |  |
+| 9 | link | `sc_link` | EPERM on FAT |
 | 10 | unlink | `sc_unlink` |  |
 | 11 | execve | `sc_execve` |  |
 | 12 | chdir | `sc_chdir` |  |
@@ -46,8 +47,13 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 65 | getpgrp | `sc_getpgrp` |  |
 | 66 | setsid | `sc_setsid` |  |
 | 78 | gettimeofday | `sc_gettimeofday` |  |
+| 82 | select | `sc_oldselect` | old argument-block form |
+| 83 | symlink | `sc_symlink` | EPERM on FAT |
+| 85 | readlink | `sc_readlink` | EINVAL: no symbolic links |
 | 88 | reboot | `sc_reboot` |  |
 | 91 | munmap | `sc_munmap` |  |
+| 99 | statfs | `sc_statfs` |  |
+| 100 | fstatfs | `sc_fstatfs` |  |
 | 102 | socketcall | `sc_socketcall` | multiplexer for the calls below |
 | 103 | syslog | `sc_syslog` |  |
 | 114 | wait4 | `sc_wait4` |  |
@@ -55,10 +61,11 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 122 | uname | `sc_uname` |  |
 | 132 | getpgid | `sc_getpgid` |  |
 | 140 | llseek | `sc_llseek` |  |
+| 142 | _newselect | `sc_newselect` | built on the poll machinery |
 | 145 | readv | `sc_readv` |  |
-| 148 | fdatasync | `sc_fsync` | same as fsync |
 | 146 | writev | `sc_writev` |  |
 | 147 | getsid | `sc_getsid` |  |
+| 148 | fdatasync | `sc_fsync` | same as fsync |
 | 158 | sched_yield | `sc_sched_yield` |  |
 | 162 | nanosleep | `sc_nanosleep` |  |
 | 168 | poll | `sc_poll` |  |
@@ -81,10 +88,14 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 252 | exit_group | `sc_exit` |  |
 | 258 | set_tid_address | `sc_set_tid_address` |  |
 | 265 | clock_gettime | `sc_clock_gettime` |  |
+| 268 | statfs64 | `sc_statfs64` |  |
+| 269 | fstatfs64 | `sc_fstatfs64` |  |
 | 295 | openat | `sc_openat` |  |
 | 300 | fstatat64 | `sc_fstatat64` |  |
+| 308 | pselect6 | `sc_pselect6` | temporary signal mask, timespec timeout |
 | 331 | pipe2 | `sc_pipe2` |  |
 | 359 | socket | `sc_socket` |  |
+| 360 | socketpair | `sc_socketpair` | AF_UNIX, SOCK_STREAM only |
 | 361 | bind | `sc_bind` |  |
 | 362 | connect | `sc_connect` |  |
 | 363 | listen | `sc_listen` |  |
@@ -102,9 +113,29 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 Behaviour worth knowing:
 
 - Single-threaded processes, no users: `getuid` and friends return 0.
-- Signals: handlers, `sa_mask`, `SA_RESETHAND`, `SA_NODEFER` and `SA_RESTORER`
-  work; delivery happens on return from system calls and interrupts.
+- Signals: handlers, `sa_mask`, `SA_RESETHAND`, `SA_NODEFER`, `SA_RESTORER` and
+  `SA_RESTART` work; delivery happens on return from system calls and interrupts.
   `SIGSTOP`/`SIGTSTP` have no effect (no job control stop).
+- `SA_RESTART`: `read`, `write`, `readv`, `writev`, `wait4`/`waitpid`, `accept4`, `sendto`,
+  `sendmsg`, `recvfrom` and `recvmsg` interrupted by such a handler are re-executed after
+  `sigreturn`; `poll`, `select`, `pselect6`, `nanosleep`, `connect` and `socketcall` always
+  return `EINTR`, as on Linux. Sockets with `SO_RCVTIMEO` restart with the full timeout.
+- The x87/SSE state is per process (lazy switching); a signal frame carries it in
+  `sigcontext.fpstate`.
+- `execve` runs `#!interpreter [arg]` scripts (the rest of the line is one argument, at most four
+  levels, `ELOOP` beyond); other formats give `ENOEXEC`.
+- Pipes hold 64 KiB; writes of up to `PIPE_BUF` (4096) bytes are atomic. `socketpair`
+  (`AF_UNIX`, `SOCK_STREAM`) is a pair of such pipes; the descriptors are sockets for `fstat`,
+  `send`/`recv` and `shutdown`.
+- `rmdir` and `rename` over an open directory follow Linux: the open descriptor then sees an
+  empty directory with `st_nlink` 0.
+- `select` and `pselect6` accept descriptors below 32 (`EBADF` above) and report only read,
+  write and error readiness like `poll`.
+- `statfs`/`statfs64` report cluster counts for FAT and a type for devfs/procfs. `link` and
+  `symlink` return `EPERM` (FAT), `readlink` returns `EINVAL` for existing paths.
+- Networking: `127.0.0.0/8` and the own address are looped back without a NIC (interface `lo`,
+  16-packet queue, UDP overflow is dropped); a connected UDP socket sees `ECONNREFUSED` once
+  after an ICMP port unreachable.
 - `poll` asks each driver (tty, pipe, serial) for readiness and sleeps until an
   event or the timeout. Regular files are always ready.
 - `mmap2` supports anonymous private mappings only; `brk` grows the heap.

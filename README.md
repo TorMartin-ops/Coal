@@ -16,9 +16,9 @@ security boundary. See [SECURITY.md](SECURITY.md) and [Limitations](#limitations
   user handlers, `poll`, TLS, a 16 KiB kernel log ring (`dmesg`).
 - **File systems**: VFS with FAT16/32 (long file names) on ATA, devfs, procfs, pipes. Linux
   layout: `/bin /sbin /etc /home /root /tmp /dev /proc /usr /var`.
-- **Network**: Intel e1000 driver, ARP, IPv4, ICMP, UDP, TCP, DHCP, DNS, and the Linux socket
+- **Network**: Intel e1000 driver, ARP, IPv4, ICMP, UDP, TCP, loopback, DHCP, DNS, and the Linux socket
   calls. `ping`, `nslookup`, `wget` (http), `nc` and `ifconfig` are applets.
-- **System calls**: 86 Linux i386 calls with Linux numbers and struct layouts, one table
+- **System calls**: 99 Linux i386 calls with Linux numbers and struct layouts, one table
   ([docs/syscalls.md](src/CoalOS/docs/syscalls.md)). Unimplemented calls return `-ENOSYS`.
 - **User space**: a small libc, `coalbox` (BusyBox-style multi-call binary with 43 applets),
   `sh` (pipes, redirection, `&&`, `||`, background jobs, history), `init`, and `mcpd`.
@@ -143,13 +143,14 @@ Start with [ARCHITECTURE.md](src/CoalOS/docs/ARCHITECTURE.md).
 - The disk is a 32 MiB FAT16 image: no permissions, no symbolic links.
 - `mmap2` supports anonymous private mappings only, no file-backed mappings. Programs must be
   static ELF32 executables; there is no dynamic loader.
-- Network: IPv4 only, no TLS, no loopback interface, no IP fragment reassembly, no DHCP lease
-  renewal, TCP drops out-of-order segments.
+- Network: IPv4 only, no TLS, no IP fragment reassembly, at most four out-of-order TCP ranges
+  per connection; the loopback queue holds 16 packets.
 - The shell has no subshells, `$!` or command substitution.
 - File data and metadata are written to disk on `sync`, `fsync`, unmount and by a flush thread every
   5 s; a hard reset can lose the last few seconds of changes.
 - `mount` attaches extra FAT disks (`mount -t fat /dev/hdb /mnt`); the root disk is `hda`.
-- Interrupted blocking calls return `EINTR` (no `SA_RESTART`).
+- `poll`, `select` and `nanosleep` always return `EINTR` when a handler runs (as on Linux); `connect` too.
+- `select` only handles descriptors below 32; `socketpair` is `AF_UNIX` stream only.
 - Hobby quality: not audited and not a security boundary.
 
 ## Credits
