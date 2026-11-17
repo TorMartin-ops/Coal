@@ -55,11 +55,41 @@ class SocketTransport(Transport):
             s.close()
 
 
+class HybridVsockTransport(SocketTransport):
+    """A guest port behind a hybrid-vsock unix socket (Firecracker, vhost-device-vsock): connect, then "CONNECT port"."""
+
+    def __init__(self, path, port):
+        super().__init__(socket.AF_UNIX, path)
+        self.port = port
+
+    def connect(self, timeout=5.0):
+        super().connect(timeout)
+        self.sock.settimeout(timeout)
+        try:
+            self.sock.sendall(b"CONNECT %d\n" % self.port)
+            reply = b""
+            while not reply.endswith(b"\n"):          # one byte at a time: agentd's hello follows immediately
+                c = self.sock.recv(1)
+                if not c:
+                    raise OSError("vsock connection refused")
+                reply += c
+            if not reply.startswith(b"OK"):
+                raise OSError("vsock: " + reply.decode("ascii", "replace").strip())
+        except OSError:
+            self.close()
+            raise
+        self.sock.settimeout(None)
+
+
 def parse_address(spec):
-    """'unix:PATH', 'tcp:HOST:PORT' or 'vsock:CID:PORT' -> a new, unconnected transport."""
+    """'unix:PATH', 'tcp:HOST:PORT', 'vsock:CID:PORT' or 'hvsock:PATH:PORT' -> a new, unconnected transport."""
     kind, _, rest = spec.partition(":")
     if kind == "unix" and rest:
         return SocketTransport(socket.AF_UNIX, rest)
+    if kind == "hvsock":
+        path, _, port = rest.rpartition(":")
+        if path and port.isdigit():
+            return HybridVsockTransport(path, int(port))
     if kind in ("tcp", "vsock"):
         host, _, port = rest.rpartition(":")
         if host and port.isdigit():
@@ -67,4 +97,4 @@ def parse_address(spec):
                 return SocketTransport(socket.AF_INET, (host, int(port)))
             if host.isdigit() and hasattr(socket, "AF_VSOCK"):
                 return SocketTransport(socket.AF_VSOCK, (int(host), int(port)))
-    raise ValueError("address must be unix:PATH, tcp:HOST:PORT or vsock:CID:PORT, got %r" % spec)
+    raise ValueError("address must be unix:PATH, tcp:HOST:PORT, vsock:CID:PORT or hvsock:PATH:PORT, got %r" % spec)
