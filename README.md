@@ -61,8 +61,9 @@ cmake --build build --target run    # QEMU window, serial log on the terminal
 
 `tools/coal-mcp/server.py` is an [MCP](https://modelcontextprotocol.io) server (Python 3.9+,
 standard library only). It builds Coal, boots it headless in QEMU and talks to `/sbin/mcpd` inside
-the VM over the second serial port. Claude gets 18 tools: boot, run a command, read and write
-files, list directories and processes, kernel log, screen dump, snapshot and restore.
+the VM over the second serial port. Claude gets 19 tools: boot, run a command, read and write
+files, list directories and processes, kernel log, read the screen, type on the keyboard, snapshot
+and restore.
 
 ```sh
 claude mcp add coal -- python3 tools/coal-mcp/server.py
@@ -79,6 +80,8 @@ For Claude Desktop, add the same command to `claude_desktop_config.json`
   kernel log."
 - "Download https://example.com/data.txt into /tmp with `coal_download` and count its lines in Coal."
 - "I broke something: restore the snapshot."
+- "Start `snake` on the console and play it." Claude reads the board with `coal_screen` and steers
+  with `coal_keys`; in testing it reached 150 points before boxing itself in.
 
 A session:
 
@@ -100,8 +103,7 @@ syscall_test: 43 checks, 0 failed
 ```
 
 Commands run in their own process group and are killed as a group on timeout; a `cmd &` does not
-keep the call waiting. Large files move in small checked requests: a 3 MiB file takes about 20 s up
-and 7 s down. Trust model and details: [tools/coal-mcp/README.md](tools/coal-mcp/README.md).
+keep the call waiting. Large files move in checked requests over a flow-controlled serial line. Trust model and details: [tools/coal-mcp/README.md](tools/coal-mcp/README.md).
 
 ## Networking
 

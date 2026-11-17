@@ -26,6 +26,9 @@ void klog(int level, const char *module, const char *fmt, ...)
 void kprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 /** Bytes currently held in the ring, copy of the most recent len bytes, discard all. */
+/** From now on INFO and below go only to COM1 and the log ring, not the screen. */
+void klog_console_quiet(void);
+
 size_t klog_ring_size(void);
 size_t klog_ring_copy(char *buf, size_t len);
 void   klog_ring_clear(void);

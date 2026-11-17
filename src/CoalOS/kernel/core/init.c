@@ -128,6 +128,7 @@ void kernel_main_init(uint32_t magic, uint32_t mb_info_phys_addr) {
 
     configure_keyboard_controller();
     LOG_INFO("starting %s", INIT_PATH);
+    klog_console_quiet();
     asm volatile("sti");
     scheduler_start();
     KERNEL_PANIC_HALT("scheduler_start() returned");

@@ -28,23 +28,31 @@ static int _snprintf(char *buf, size_t size, const char *fmt, ...) {
     return n;
 }
 
-static void emit(const char *s, size_t n) {
+/* Once user space owns the console, only warnings and errors go to the screen
+ * (like Linux's console loglevel); everything still reaches COM1 and dmesg. */
+static bool g_console_quiet;
+
+void klog_console_quiet(void) {
+    g_console_quiet = true;
+}
+
+static void emit(const char *s, size_t n, bool to_screen) {
     uintptr_t flags = spinlock_acquire_irqsave(&g_lock);
 
     for (size_t i = 0; i < n; i++) g_ring[g_total++ % KLOG_RING_SIZE] = s[i];
-    terminal_write_bytes(s, n);
+    if (to_screen) terminal_write_bytes(s, n);
     serial_write(s);
     spinlock_release_irqrestore(&g_lock, flags);
 }
 
-static void emit_va(char *buf, size_t used, const char *fmt, va_list ap) {
+static void emit_va(char *buf, size_t used, bool to_screen, const char *fmt, va_list ap) {
     int n = _vsnprintf(buf + used, LINE_MAX_LEN - used - 2, fmt, ap);
 
     if (n < 0) return;
     used += (size_t)n;
     if (used == 0 || buf[used - 1] != '\n') buf[used++] = '\n';
     buf[used] = '\0';
-    emit(buf, used);
+    emit(buf, used, to_screen);
 }
 
 void klog(int level, const char *module, const char *fmt, ...) {
@@ -59,7 +67,7 @@ void klog(int level, const char *module, const char *fmt, ...) {
         for (const char *p = parts[i]; *p && head < sizeof(buf) / 2; p++) buf[head++] = *p;
 
     va_start(ap, fmt);
-    emit_va(buf, head, fmt, ap);
+    emit_va(buf, head, !g_console_quiet || level >= LVL_WARN, fmt, ap);
     va_end(ap);
 }
 
@@ -68,7 +76,7 @@ void kprintf(const char *fmt, ...) {
     va_list ap;
 
     va_start(ap, fmt);
-    emit_va(buf, 0, fmt, ap);
+    emit_va(buf, 0, true, fmt, ap);
     va_end(ap);
 }
 

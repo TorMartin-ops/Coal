@@ -47,7 +47,8 @@ INSTRUCTIONS = (
     "Drives a Coal OS virtual machine (a small Linux-compatible i386 OS) in QEMU. You have full control: "
     "commands run as root inside the VM, which is the sandbox. Call coal_guide once for the system guide "
     "(layout, commands, limits). Start with coal_boot, then use coal_run, coal_read_file, coal_write_file, "
-    "coal_ls, coal_ps, coal_sysinfo; coal_kernel_log and coal_screen show what the kernel printed. "
+    "coal_ls, coal_ps, coal_sysinfo; coal_kernel_log and coal_screen show what the kernel printed; coal_keys types on the console "
+    "for interactive programs such as /usr/bin/snake. "
     "Changes persist on the disk image across reboots. Before risky changes run coal_snapshot; "
     "coal_restore or coal_reset undo any mistake. Never overwrite /sbin/init, /sbin/mcpd or /bin/sh "
     "without a snapshot: mcpd and the shell are how you reach the VM. Call coal_shutdown when finished.")

@@ -57,6 +57,7 @@ managing QEMU.
 | `coal_ls`, `coal_ps`, `coal_sysinfo` | Directory listing, process list (`/proc`), uname, uptime, meminfo |
 | `coal_kernel_log` | Tail of the COM1 serial log; first stop for boot failures and panics |
 | `coal_screen` | The 80x25 VGA text screen as text |
+| `coal_keys` | Type text and named keys (arrows, Enter, Ctrl-C) on the console keyboard |
 | `coal_status` | Whether the VM is running |
 
 The server speaks MCP 2026-07-28 (stateless, `server/discover`) and the
