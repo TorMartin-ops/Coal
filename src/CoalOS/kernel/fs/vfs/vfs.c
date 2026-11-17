@@ -358,6 +358,16 @@ int vfs_stat(const char *path, struct kstat64 *st) {
     return rc;
 }
 
+int vfs_utime(const char *path, uint32_t atime, uint32_t mtime) {
+    file_t *f;
+    int rc = vfs_open(path, O_RDONLY, 0, &f);
+    if (rc < 0) return rc;
+    vfs_driver_t *d = f->vnode->fs_driver;
+    rc = d->utime ? d->utime(f->vnode, atime, mtime) : -EROFS;
+    vfs_close(f);
+    return rc;
+}
+
 enum ns_op { NS_UNLINK, NS_MKDIR, NS_RMDIR };
 
 static int ns_op(enum ns_op op, const char *path, mode_t mode) {

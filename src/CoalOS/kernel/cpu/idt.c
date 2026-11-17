@@ -7,9 +7,8 @@
 #include <kernel/cpu/gdt.h>
 #include <kernel/core/types.h>
 #include <kernel/lib/string.h>
-#include <kernel/drivers/display/serial.h>
+#include <kernel/core/log.h>
 #include <kernel/lib/assert.h>
-#include <kernel/drivers/display/terminal.h>
 #include <kernel/drivers/storage/block_device.h>
 
 #define IDT_FLAG_INTERRUPT_GATE 0x8E   // ring 0, present, 32-bit interrupt gate
@@ -100,28 +99,22 @@ void register_int_handler(int vector, int_handler_t handler, void *data) {
 }
 
 static void dump_frame(const isr_frame_t *f) {
-    serial_printf("\n*** KERNEL PANIC: unhandled exception %lu ***\n", (unsigned long)f->int_no);
-    serial_printf(" err=0x%lx eip=0x%08lx cs=0x%lx eflags=0x%lx\n",
-                  (unsigned long)f->err_code, (unsigned long)f->eip,
-                  (unsigned long)f->cs, (unsigned long)f->eflags);
-    if (f->cs & 3)
-        serial_printf(" user esp=0x%08lx ss=0x%lx\n", (unsigned long)f->useresp, (unsigned long)f->ss);
-    serial_printf(" eax=%08lx ebx=%08lx ecx=%08lx edx=%08lx\n",
-                  (unsigned long)f->eax, (unsigned long)f->ebx,
-                  (unsigned long)f->ecx, (unsigned long)f->edx);
-    serial_printf(" esi=%08lx edi=%08lx ebp=%08lx\n",
-                  (unsigned long)f->esi, (unsigned long)f->edi, (unsigned long)f->ebp);
+    kprintf("\n*** KERNEL PANIC: unhandled exception %u ***", f->int_no);
+    kprintf(" err=%#x eip=%#010x cs=%#x eflags=%#x", f->err_code, f->eip, f->cs, f->eflags);
+    if (f->cs & 3) kprintf(" user esp=%#010x ss=%#x", f->useresp, f->ss);
+    kprintf(" eax=%08x ebx=%08x ecx=%08x edx=%08x", f->eax, f->ebx, f->ecx, f->edx);
+    kprintf(" esi=%08x edi=%08x ebp=%08x", f->esi, f->edi, f->ebp);
 }
 
 // Page fault in kernel mode that no exception-table entry covers.
 void kernel_fault_panic(isr_frame_t *frame) {
     uint32_t cr2;
     asm volatile("mov %%cr2, %0" : "=r"(cr2));
+    asm volatile("cli");
     dump_frame(frame);
-    serial_printf(" cr2=%08lx\n", (unsigned long)cr2);
-    terminal_write("\n*** KERNEL PANIC ***\nKernel page fault, see the serial log.\n");
+    kprintf(" cr2=%08x", cr2);
     for (;;)
-        asm volatile("cli; hlt");
+        asm volatile("hlt");
 }
 
 // Called by the stubs for every vector except page faults and syscalls.
@@ -136,10 +129,10 @@ void isr_common_handler(isr_frame_t *frame) {
         pic_send_eoi(frame->int_no);    // no driver for this IRQ: acknowledge and ignore
         return;
     }
+    asm volatile("cli");
     dump_frame(frame);
-    terminal_write("\n*** KERNEL PANIC ***\nUnhandled exception, see the serial log.\n");
     for (;;)
-        asm volatile("cli; hlt");
+        asm volatile("hlt");
 }
 
 void idt_init(void) {

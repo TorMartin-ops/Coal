@@ -78,3 +78,4 @@ isr14:
 ; ===============================
 ; END OF PAGE-FAULT ISR
 ; ===============================
+section .note.GNU-stack noalloc noexec nowrite progbits

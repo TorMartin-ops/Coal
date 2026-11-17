@@ -10,7 +10,6 @@
 
 #include <kernel/process/process.h>
 #include <kernel/process/scheduler.h>
-#include <kernel/core/error.h>
 #include <libc/stdint.h>
 #include <libc/stdbool.h>
 

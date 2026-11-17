@@ -13,23 +13,10 @@
 
 #define NR_SYSCALLS 384
 
-void syscall_init(void);
-
 /** Entry point called by syscall.asm with the saved register frame. */
 void syscall_dispatch(isr_frame_t *regs);
 
-/*
- * Services the system calls need that no other subsystem provides yet. Each has
- * a weak fallback in syscall_deps.c (-ENOSYS or "nothing"); the owning
- * subsystem only has to define the strong symbol.
- */
-
 /** Set access and modification times of a file (utime). */
 int vfs_utime(const char *path, uint32_t atime, uint32_t mtime);
-
-/** Kernel log ring (dmesg): total capacity, copy of the most recent bytes, discard. */
-size_t klog_ring_size(void);
-size_t klog_ring_copy(char *buf, size_t len);
-void   klog_ring_clear(void);
 
 #endif

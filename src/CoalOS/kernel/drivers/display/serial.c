@@ -163,11 +163,6 @@ size_t serial_port_read(int port, void *buf, size_t len) {
     return n;
 }
 
-size_t serial_port_rx_available(int port) {
-    uart_t *u = uart_get(port);
-    return u ? ring_count(u->rx_head, u->rx_tail) : 0;
-}
-
 /* ---- Kernel log on COM1 (synchronous) -------------------------------- */
 
 /** Sends len bytes, waiting for the FIFO as needed, without holding IRQs off while waiting. */
@@ -188,14 +183,6 @@ static void log_send(const char *s, size_t len) {
     }
 }
 
-void serial_putchar(char c) {
-    if (c == '\n') {
-        log_send("\r\n", 2);
-    } else {
-        log_send(&c, 1);
-    }
-}
-
 void serial_write(const char *str) {
     const char *run = str;
     for (const char *p = str; ; p++) {
@@ -206,32 +193,4 @@ void serial_write(const char *str) {
             run = p + 1;
         }
     }
-}
-
-void serial_print_hex(uint32_t n) {
-    char buf[8];
-    for (int i = 7; i >= 0; i--, n >>= 4) {
-        buf[i] = "0123456789ABCDEF"[n & 0xF];
-    }
-    log_send(buf, sizeof(buf));
-}
-
-void serial_vprintf(const char *fmt, va_list args) {
-    char buf[256];
-    int len = _vsnprintf(buf, sizeof(buf), fmt, args);
-    char *run = buf;
-    for (int i = 0; i <= len; i++) {
-        if (buf[i] == '\n' || i == len) {
-            log_send(run, (size_t)(&buf[i] - run));
-            if (i < len) log_send("\r\n", 2);
-            run = &buf[i + 1];
-        }
-    }
-}
-
-void serial_printf(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    serial_vprintf(fmt, args);
-    va_end(args);
 }

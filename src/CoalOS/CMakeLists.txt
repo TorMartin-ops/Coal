@@ -18,6 +18,8 @@ set(CMAKE_ASM_NASM_OBJECT_FORMAT elf32)
 set(CMAKE_ASM_NASM_COMPILE_OBJECT
     "<CMAKE_ASM_NASM_COMPILER> <INCLUDES> <FLAGS> -f elf32 -g -o <OBJECT> <SOURCE>")
 
+file(STRINGS ${CMAKE_SOURCE_DIR}/VERSION COAL_VERSION LIMIT_COUNT 1)
+
 set(ARCH_DIR ${CMAKE_SOURCE_DIR}/src/arch/i386)
 
 set(FREESTANDING_FLAGS
@@ -36,6 +38,7 @@ file(GLOB_RECURSE KERNEL_SOURCES CONFIGURE_DEPENDS
 add_executable(kernel ${KERNEL_SOURCES})
 set_target_properties(kernel PROPERTIES OUTPUT_NAME kernel.bin)
 target_include_directories(kernel PRIVATE include kernel)
+target_compile_definitions(kernel PRIVATE COAL_VERSION="${COAL_VERSION}")
 target_compile_options(kernel PRIVATE $<$<COMPILE_LANGUAGE:C>:${FREESTANDING_FLAGS}>)
 target_link_options(kernel PRIVATE
     -m32 -nostdlib -static -no-pie -Wl,--build-id=none -T${ARCH_DIR}/linker.ld)
@@ -97,8 +100,6 @@ add_custom_command(
     COMMAND mcopy ${IMG} $<TARGET_FILE:coalbox> ::/bin/coalbox
     COMMAND mcopy ${IMG} $<TARGET_FILE:init> ::/sbin/init
     COMMAND mcopy ${IMG} $<TARGET_FILE:mcpd> ::/sbin/mcpd
-    COMMAND mcopy ${IMG} $<TARGET_FILE:shell> ::/bin/shell.elf
-    COMMAND mcopy ${IMG} $<TARGET_FILE:hello> ::/hello.elf
     COMMAND mcopy ${IMG} $<TARGET_FILE:hello> ::/usr/bin/hello
     COMMAND mcopy ${IMG} $<TARGET_FILE:libc_test> ::/usr/bin/libc_test
     COMMAND mcopy ${IMG} $<TARGET_FILE:syscall_test> ::/usr/bin/syscall_test

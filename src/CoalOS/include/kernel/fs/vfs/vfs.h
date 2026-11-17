@@ -122,6 +122,7 @@ struct vfs_driver {
     int   (*fsync)(vnode_t *v);
     int   (*sync)(void *fs);                        /* flush the whole file system */
     int   (*ioctl)(vnode_t *v, uint32_t cmd, void *arg);
+    int   (*utime)(vnode_t *v, uint32_t atime, uint32_t mtime);
     int   (*unlink)(void *fs, const char *path);
     int   (*mkdir)(void *fs, const char *path, mode_t mode);
     int   (*rmdir)(void *fs, const char *path);
@@ -157,6 +158,7 @@ int  vfs_unlink(const char *path);
 int  vfs_mkdir(const char *path, mode_t mode);
 int  vfs_rmdir(const char *path);
 int  vfs_rename(const char *from, const char *to);
+int  vfs_utime(const char *path, uint32_t atime, uint32_t mtime);
 
 /** Seconds since the Unix epoch used for new timestamps. */
 uint32_t vfs_time(void);

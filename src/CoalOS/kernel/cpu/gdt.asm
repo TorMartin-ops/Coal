@@ -17,3 +17,5 @@ gdt_flush:
     jmp     KERNEL_CS:.done
 .done:
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits

@@ -1,58 +1,81 @@
 /**
  * @file log.c
- * @brief Kernel logging implementation
+ * @brief Kernel log: formats a message once and sends it to the screen, COM1
+ *        and the ring buffer behind dmesg.
  */
-
 #include <kernel/core/log.h>
 #include <kernel/drivers/display/terminal.h>
 #include <kernel/drivers/display/serial.h>
 #include <kernel/sync/spinlock.h>
+#include <libc/stdarg.h>
 
-static log_level_t g_min_level = LOG_DEBUG;
-static spinlock_t g_log_lock = {0};
+#define LINE_MAX_LEN 256
 
-static const char* level_strings[] = {
-    "TRACE",
-    "DEBUG",
-    "INFO ",
-    "WARN ",
-    "ERROR",
-    "FATAL"
-};
+static char     g_ring[KLOG_RING_SIZE];
+static uint32_t g_total;                 /* bytes ever written */
+static uint32_t g_cleared;               /* value of g_total at the last clear */
+static spinlock_t g_lock;
 
-void log_set_level(log_level_t level) {
-    if (level >= LOG_TRACE && level <= LOG_FATAL) {
-        g_min_level = level;
-    }
+static const char *const level_names[] = { "TRACE", "DEBUG", "INFO ", "WARN ", "ERROR", "FATAL" };
+
+/* s must be NUL terminated at s[n]. */
+static void emit(const char *s, size_t n) {
+    uintptr_t flags = spinlock_acquire_irqsave(&g_lock);
+
+    for (size_t i = 0; i < n; i++) g_ring[g_total++ % KLOG_RING_SIZE] = s[i];
+    terminal_write_bytes(s, n);
+    serial_write(s);
+    spinlock_release_irqrestore(&g_lock, flags);
 }
 
-void kvlog(log_level_t level, const char* module, const char* fmt, va_list args) {
-    if (level < g_min_level) {
-        return;
-    }
+static void emit_va(char *buf, size_t used, const char *fmt, va_list ap) {
+    int n = _vsnprintf(buf + used, LINE_MAX_LEN - used - 2, fmt, ap);
 
-    uintptr_t flags = spinlock_acquire_irqsave(&g_log_lock);
-
-    // Print to terminal
-    terminal_printf("[%s] %s: ", level_strings[level], module);
-    terminal_vprintf(fmt, args);
-    terminal_write("\n");
-
-    // Also log to serial with proper formatting
-    serial_printf("[%s] %s: ", level_strings[level], module);
-    serial_vprintf(fmt, args);
-    serial_write("\n");
-
-    spinlock_release_irqrestore(&g_log_lock, flags);
+    if (n < 0) return;
+    used += (size_t)n;
+    if (used == 0 || buf[used - 1] != '\n') buf[used++] = '\n';
+    buf[used] = '\0';
+    emit(buf, used);
 }
 
-void klog(log_level_t level, const char* module, const char* fmt, ...) {
-    if (level < g_min_level) {
-        return;
-    }
+void klog(int level, const char *module, const char *fmt, ...) {
+    char buf[LINE_MAX_LEN];
+    va_list ap;
+    size_t head = 0;
+    const char *parts[] = { "[", level_names[level], "] ", module, ": " };
 
-    va_list args;
-    va_start(args, fmt);
-    kvlog(level, module, fmt, args);
-    va_end(args);
+    for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++)
+        for (const char *p = parts[i]; *p && head < sizeof(buf) / 2; p++) buf[head++] = *p;
+
+    va_start(ap, fmt);
+    emit_va(buf, head, fmt, ap);
+    va_end(ap);
+}
+
+void kprintf(const char *fmt, ...) {
+    char buf[LINE_MAX_LEN];
+    va_list ap;
+
+    va_start(ap, fmt);
+    emit_va(buf, 0, fmt, ap);
+    va_end(ap);
+}
+
+size_t klog_ring_size(void) {
+    uint32_t n = g_total - g_cleared;
+    return n < KLOG_RING_SIZE ? n : KLOG_RING_SIZE;
+}
+
+size_t klog_ring_copy(char *buf, size_t len) {
+    uintptr_t flags = spinlock_acquire_irqsave(&g_lock);
+    size_t n = klog_ring_size();
+
+    if (len < n) n = len;
+    for (size_t i = 0; i < n; i++) buf[i] = g_ring[(g_total - n + i) % KLOG_RING_SIZE];
+    spinlock_release_irqrestore(&g_lock, flags);
+    return n;
+}
+
+void klog_ring_clear(void) {
+    g_cleared = g_total;
 }

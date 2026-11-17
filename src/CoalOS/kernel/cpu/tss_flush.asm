@@ -9,3 +9,5 @@ tss_flush:
     mov ax, [esp + 4]   ; ax <- TSS selector
     ltr ax              ; Load TR with TSS selector
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits

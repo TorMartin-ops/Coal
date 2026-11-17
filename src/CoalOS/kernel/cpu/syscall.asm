@@ -40,3 +40,5 @@ syscall_entry:
 .return:
     RESTORE_FRAME
     iret
+
+section .note.GNU-stack noalloc noexec nowrite progbits
