@@ -47,19 +47,22 @@ class HttpServer:
 
         self.httpd = ThreadingHTTPServer((host, port), Handler)
         self.httpd.daemon_threads = True
+        self.serving = False
 
     @property
     def address(self):
         return self.httpd.server_address[:2]
 
     def serve(self):
+        self.serving = True
         self.httpd.serve_forever()
 
     def start(self):
         threading.Thread(target=self.serve, daemon=True).start()
 
     def close(self):
-        self.httpd.shutdown()
+        if self.serving:
+            self.httpd.shutdown()
         self.httpd.server_close()
 
 
@@ -96,6 +99,9 @@ class _Handler(BaseHTTPRequestHandler):
         if body is not None:
             self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        if status >= 400:                               # a request body we did not read must not be parsed as the next request
+            self.close_connection = True
+            self.send_header("Connection", "close")
         for k, v in headers:
             self.send_header(k, v)
         self.end_headers()
@@ -137,7 +143,6 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self.reject(411, INVALID_REQUEST, "Content-Length required")
         if length < 0 or length > MAX_BODY:
-            self.close_connection = True
             return self.reject(413, INVALID_REQUEST, "Body larger than %d bytes" % MAX_BODY)
         raw = self.rfile.read(length)
         try:
