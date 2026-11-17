@@ -26,7 +26,7 @@ set(FREESTANDING_FLAGS
     -m32 -march=i386 -ffreestanding -nostdinc -fno-builtin
     -fno-stack-protector -fno-pie -fno-pic
     -mno-mmx -mno-sse -mno-sse2 -mno-red-zone
-    -O0 -g -Wall -Wextra -Wno-unused-parameter)
+    -O2 -g -fno-strict-aliasing -Wall -Wextra -Wno-unused-parameter -Werror)
 
 execute_process(COMMAND ${CMAKE_C_COMPILER} -m32 -print-libgcc-file-name
                 OUTPUT_VARIABLE LIBGCC OUTPUT_STRIP_TRAILING_WHITESPACE)

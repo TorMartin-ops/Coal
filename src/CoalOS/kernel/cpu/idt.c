@@ -12,7 +12,7 @@
 #include <kernel/drivers/storage/block_device.h>
 
 #define IDT_FLAG_INTERRUPT_GATE 0x8E   // ring 0, present, 32-bit interrupt gate
-#define IDT_FLAG_SYSCALL_GATE   0xEE   // same, callable from ring 3
+#define IDT_FLAG_SYSCALL_GATE   0xEF   // ring 3 callable trap gate: system calls run with interrupts on
 
 #define ICW1_INIT   0x10
 #define ICW1_ICW4   0x01

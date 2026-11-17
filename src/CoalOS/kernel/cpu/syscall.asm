@@ -1,7 +1,7 @@
 ; int 0x80 entry. Linux i386 ABI: eax = number, ebx ecx edx esi edi ebp =
 ; arguments, result or -errno comes back in eax.
 ;
-; The gate is an interrupt gate, so IF is clear for the whole call. The frame
+; The gate is a trap gate: interrupts stay on, so a blocked call never starves the timer. The frame
 ; is an isr_frame_t, which fork/execve need to build or rewrite the user context.
 
 bits 32
