@@ -1,22 +1,49 @@
-/*
- * The one system call entry point for user programs.
- *
- * The kernel takes the number in EAX and up to three arguments in EBX, ECX
- * and EDX (int 0x80) and returns the result in EAX. Negative results are
- * negated error numbers.
- */
+/* int 0x80 entry: number in eax, arguments in ebx, ecx, edx, esi, edi, ebp. */
 #ifndef LIBC_SYSCALL_H
 #define LIBC_SYSCALL_H
 
 #include <libc/syscall_numbers.h>
 
-static inline int syscall(int num, int arg1, int arg2, int arg3) {
-    int result;
-    __asm__ volatile ("int $0x80"
-                      : "=a"(result)
-                      : "a"(num), "b"(arg1), "c"(arg2), "d"(arg3)
-                      : "memory", "cc");
-    return result;
+/* Linux numbers the shared table does not list (it only names what the kernel serves). */
+#ifndef SYS_MOUNT
+#define SYS_MOUNT   21
+#endif
+#ifndef SYS_UTIME
+#define SYS_UTIME   30
+#endif
+#ifndef SYS_SYNC
+#define SYS_SYNC    36
+#endif
+#ifndef SYS_RENAME
+#define SYS_RENAME  38
+#endif
+#ifndef SYS_UMOUNT2
+#define SYS_UMOUNT2 52
+#endif
+#ifndef SYS_REBOOT
+#define SYS_REBOOT  88
+#endif
+#ifndef SYS_SYSLOG
+#define SYS_SYSLOG  103
+#endif
+#ifndef SYS_FCNTL64
+#define SYS_FCNTL64 221
+#endif
+
+/* Returns the raw kernel result; -4095..-1 is -errno. */
+static inline long __sc(long n, long a, long b, long c, long d, long e) {
+    long r;
+    __asm__ volatile("int $0x80"
+                     : "=a"(r)
+                     : "0"(n), "b"(a), "c"(b), "d"(c), "S"(d), "D"(e)
+                     : "memory", "cc");
+    return r;
 }
 
-#endif /* LIBC_SYSCALL_H */
+#define __SC3(n, a, b, c) __sc((n), (long)(a), (long)(b), (long)(c), 0, 0)
+#define __SC1(n, a)       __SC3(n, a, 0, 0)
+
+/* Converts a raw result to the C convention: -1 and errno on error. */
+long __syscall_ret(long r);
+
+#endif

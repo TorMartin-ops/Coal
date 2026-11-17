@@ -1,32 +1,19 @@
-; entry.asm - user program entry point
-;
-; Calls main(argc, argv) and passes its return value to exit() from libc, which
-; runs the atexit handlers and then makes the exit system call.
-; The kernel does not build an argument vector yet, so main always sees
-; argc = 0 and argv = NULL.
+; _start: the kernel enters with esp -> argc, argv[], NULL, envp[], NULL, auxv
+; exactly like Linux i386. __libc_start() never returns.
 
 bits 32
 
 global _start
-extern main
-extern exit
-
-SYS_EXIT equ 1
+extern __libc_start
 
 section .text
 
 _start:
-    xor ebp, ebp        ; mark the outermost stack frame
-    push dword 0        ; argv
-    push dword 0        ; argc
-    call main           ; return value in eax
-
-    push eax            ; exit status
-    call exit
-
-    mov ebx, eax        ; exit() does not return; make the call directly if it does
-    mov eax, SYS_EXIT
-    int 0x80
+    xor ebp, ebp
+    mov eax, esp
+    and esp, -16
+    push eax
+    call __libc_start
 .hang:
     hlt
     jmp .hang

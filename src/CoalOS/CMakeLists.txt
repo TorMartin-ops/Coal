@@ -44,32 +44,39 @@ target_link_libraries(kernel PRIVATE ${LIBGCC})
 # --- User programs ------------------------------------------------------------
 file(GLOB USER_LIBC_SOURCES CONFIGURE_DEPENDS userspace/libc/*.c)
 
-# Same flags as the kernel, but warnings are errors for user programs.
+# User programs are small: -Os, warnings are errors, no libgcc (the libc avoids
+# the helpers it would provide), unused sections are dropped and the result is stripped.
+set(USER_FLAGS
+    -m32 -march=i386 -ffreestanding -nostdinc
+    -fno-stack-protector -fno-pie -fno-pic
+    -mno-mmx -mno-sse -mno-sse2 -mno-red-zone
+    -Os -Wall -Wextra -Werror -Wno-unused-parameter
+    -fno-asynchronous-unwind-tables -fno-tree-loop-distribute-patterns
+    -ffunction-sections -fdata-sections)
+
 function(add_user_program name)
     add_executable(${name} ${ARGN} userspace/entry.asm ${USER_LIBC_SOURCES})
     set_target_properties(${name} PROPERTIES OUTPUT_NAME ${name}.elf)
     target_include_directories(${name} PRIVATE include)
-    target_compile_options(${name} PRIVATE
-        $<$<COMPILE_LANGUAGE:C>:${FREESTANDING_FLAGS}>
-        $<$<COMPILE_LANGUAGE:C>:-Werror>)
+    target_compile_options(${name} PRIVATE $<$<COMPILE_LANGUAGE:C>:${USER_FLAGS}>)
     target_link_options(${name} PRIVATE
-        -m32 -nostdlib -static -no-pie -Wl,--build-id=none -Wl,--no-warn-rwx-segments
-        -T${ARCH_DIR}/user.ld)
-    target_link_libraries(${name} PRIVATE ${LIBGCC})
+        -m32 -nostdlib -static -no-pie -s -Wl,--build-id=none -Wl,--no-warn-rwx-segments
+        -Wl,--gc-sections -T${ARCH_DIR}/user.ld)
 endfunction()
 
+file(GLOB COALBOX_SOURCES CONFIGURE_DEPENDS userspace/coalbox/*.c)
+add_user_program(coalbox ${COALBOX_SOURCES})   # installed as /bin/coalbox
+add_user_program(init userspace/init/init.c)   # installed as /sbin/init
+add_user_program(shell userspace/sh/sh.c)      # installed as /bin/sh
 add_user_program(hello userspace/hello/hello.c)
-file(GLOB SHELL_SOURCES CONFIGURE_DEPENDS userspace/shell/shell_main.c userspace/shell/modules/*.c)
-add_user_program(shell ${SHELL_SOURCES})
 add_user_program(libc_test userspace/tests/libc_test.c)
 add_user_program(syscall_test userspace/tests/syscall_test.c)
+add_user_program(mcpd userspace/mcpd/mcpd.c)
 
 # --- Disk image (FAT16, long file names) with a Linux directory layout ---------
-set(ROOTFS_DIR ${CMAKE_BINARY_DIR}/rootfs)
-file(MAKE_DIRECTORY ${ROOTFS_DIR})
-file(WRITE ${ROOTFS_DIR}/hostname "coal\n")
-file(WRITE ${ROOTFS_DIR}/motd "Welcome to Coal OS.\n")
-file(WRITE ${ROOTFS_DIR}/passwd "root:x:0:0:root:/root:/bin/sh\n")
+# Static files for the image live in rootfs/ in the source tree.
+set(ROOTFS_DIR ${CMAKE_SOURCE_DIR}/rootfs)
+file(GLOB ROOTFS_ETC CONFIGURE_DEPENDS ${ROOTFS_DIR}/etc/*)
 
 set(DISK_IMAGE ${CMAKE_BINARY_DIR}/disk.img)
 set(IMG -i ${DISK_IMAGE})
@@ -79,13 +86,16 @@ add_custom_command(
     COMMAND mkfs.fat -C -F 16 ${DISK_IMAGE} 32768
     COMMAND mmd ${IMG} ::/bin ::/sbin ::/etc ::/home ::/root ::/tmp ::/dev ::/proc ::/usr ::/usr/bin ::/var
     COMMAND mcopy ${IMG} $<TARGET_FILE:shell> ::/bin/sh
+    COMMAND mcopy ${IMG} $<TARGET_FILE:coalbox> ::/bin/coalbox
+    COMMAND mcopy ${IMG} $<TARGET_FILE:init> ::/sbin/init
+    COMMAND mcopy ${IMG} $<TARGET_FILE:mcpd> ::/sbin/mcpd
     COMMAND mcopy ${IMG} $<TARGET_FILE:shell> ::/bin/shell.elf
     COMMAND mcopy ${IMG} $<TARGET_FILE:hello> ::/hello.elf
     COMMAND mcopy ${IMG} $<TARGET_FILE:hello> ::/usr/bin/hello
     COMMAND mcopy ${IMG} $<TARGET_FILE:libc_test> ::/usr/bin/libc_test
     COMMAND mcopy ${IMG} $<TARGET_FILE:syscall_test> ::/usr/bin/syscall_test
-    COMMAND mcopy ${IMG} ${ROOTFS_DIR}/hostname ${ROOTFS_DIR}/motd ${ROOTFS_DIR}/passwd ::/etc/
-    DEPENDS hello shell libc_test syscall_test
+    COMMAND mcopy ${IMG} ${ROOTFS_ETC} ::/etc/
+    DEPENDS hello shell coalbox init mcpd libc_test syscall_test ${ROOTFS_ETC}
     COMMENT "Creating FAT16 disk image"
     VERBATIM)
 
