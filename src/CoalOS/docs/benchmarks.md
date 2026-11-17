@@ -417,5 +417,12 @@ because slirp does not offer it, so it would never be used in the test setup.
 | wget | 2% | 9.06 s | 6.05 s |
 | upload (guest sends) | 5% | 10.5 s | 1.4 s |
 
+After merging main (timer wheel, tickless idle, EEVDF), same harness, 3 seeds each, medians: download 0% 0.14 s,
+1% 1.71 s, 2% 8.3 s (mean 9.3), 5% 44.7 s; upload 0% 0.50 s, 1% 0.55 s, 2% 0.92 s, 5% 1.52 s (before: 3.0 s at 2%,
+10.5 s at 5%). The downloads are slirp-bound and vary a lot from run to run on a loaded host, so the 2% figure
+sits between the earlier before and after values; the uploads are stable. Loopback (icount) on the merged tree:
+tcp_latency 13.8 us, tcp_bw 254 MB/s; latency is higher than before the merge because each round trip now
+costs two EEVDF context switches (ctx_2 went from 0.9 to 3.0 us in the same run), the TCP path itself is unchanged.
+
 Downloads are limited by slirp's own sender (BSD stack, RTO of about 1.5 s whenever fewer than three duplicate ACKs
 follow a loss); the guest can only keep its window open.
