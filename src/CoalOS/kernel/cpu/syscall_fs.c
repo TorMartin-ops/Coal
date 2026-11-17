@@ -199,6 +199,29 @@ static long iov_transfer(uint32_t fd, uintptr_t iov, unsigned long cnt, bool is_
 long sc_readv(uint32_t fd, uintptr_t iov, unsigned long cnt)  { return iov_transfer(fd, iov, cnt, false); }
 long sc_writev(uint32_t fd, uintptr_t iov, unsigned long cnt) { return iov_transfer(fd, iov, cnt, true); }
 
+/* pread64/pwrite64: the transfer runs at `pos` and leaves the file offset alone. */
+static long positional(uint32_t fd, uintptr_t ubuf, size_t count, int64_t pos, bool is_write) {
+    sys_file_t *sf = sys_file_get(fd);
+    long r;
+
+    if (!sf) return -EBADF;
+    file_t *f = sf->vfs_file;
+    if (!S_ISREG(f->vnode->type)) r = -ESPIPE;
+    else if (pos < 0) r = -EINVAL;
+    else {
+        off_t saved = f->offset;
+
+        f->offset = pos;
+        r = transfer(fd, ubuf, count, is_write);
+        f->offset = saved;
+    }
+    sys_file_put(sf);
+    return r;
+}
+
+long sc_pread64(uint32_t fd, uintptr_t buf, size_t count, int64_t pos)  { return positional(fd, buf, count, pos, false); }
+long sc_pwrite64(uint32_t fd, uintptr_t buf, size_t count, int64_t pos) { return positional(fd, buf, count, pos, true); }
+
 long sc_lseek(uint32_t fd, int64_t off, uint32_t whence) {
     return sys_lseek(fd, off, whence);
 }

@@ -13,12 +13,12 @@
 #include <kernel/lib/string.h>
 
 sys_file_t *sys_file_ref(sys_file_t *sf) {
-    sf->dups++;
+    __atomic_fetch_add(&sf->dups, 1, __ATOMIC_ACQ_REL);      /* a timer tick may switch tasks between a load and a store */
     return sf;
 }
 
 int sys_file_put(sys_file_t *sf) {
-    if (sf->dups > 0) { sf->dups--; return 0; }
+    if (__atomic_fetch_sub(&sf->dups, 1, __ATOMIC_ACQ_REL) > 0) return 0;
     int rc = vfs_close(sf->vfs_file);
     kfree(sf);
     return rc;

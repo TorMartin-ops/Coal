@@ -14,6 +14,7 @@
 #include <libc/sys/stat.h>
 #include <libc/sys/wait.h>
 #include <libc/sys/utsname.h>
+#include <libc/syscall.h>
 #include "check.h"
 
 #define FILE_PATH "/tmp/coal_sc_test"
@@ -42,6 +43,11 @@ static void test_file_io(void) {
     CHECK(lseek(fd, 6, SEEK_SET) == 6);
     CHECK(read(fd, buf, 5) == 5 && memcmp(buf, "world", 5) == 0);
     CHECK(fstat(fd, &st) == 0 && st.st_size == 11 && S_ISREG(st.st_mode));
+    CHECK(__sc(SYS_PREAD64, fd, (long)buf, 5, 0, 0) == 5 && memcmp(buf, "hello", 5) == 0);   /* at 0, offset kept */
+    CHECK(lseek(fd, 0, SEEK_CUR) == 11);
+    CHECK(__sc(SYS_PWRITE64, fd, (long)"J", 1, 6, 0) == 1 && lseek(fd, 6, SEEK_SET) == 6);
+    CHECK(read(fd, buf, 5) == 5 && memcmp(buf, "Jorld", 5) == 0);
+    CHECK(__sc(SYS_PREAD64, fd, (long)buf, 1, -1, 0) == -EINVAL);
     CHECK(close(fd) == 0);
     CHECK(close(fd) < 0 && errno == EBADF);
     CHECK(stat(FILE_PATH, &st) == 0 && st.st_size == 11);
