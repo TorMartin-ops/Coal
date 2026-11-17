@@ -303,10 +303,11 @@ void net_lo_drain(void) {
 void net_tick(void) {
     static uint32_t ms;
     net_lo_drain();
-    if (++ms % 10) return;
+    ms++;
+    if (ms % TCP_TICK_MS == 0) tcp_tick();
+    if (ms % 10) return;
     if (net_if.present) e1000_poll();   /* picks up frames when the interrupt line is not wired */
     dhcp_tick();
-    tcp_tick();
 }
 
 void net_init(void) {

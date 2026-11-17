@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Time a guest wget of a host file over a link that drops and reorders frames.
+"""Time a guest wget of a host file (or, with --upload, a guest nc sending a file to the host) over a link that drops and reorders frames.
 
-    netbench.py BUILD [BUILD ...] [--loss 0,1,5] [--reorder PCT] [--size-mib 2] [--runs 3] [--out FILE.json]
+    netbench.py BUILD [BUILD ...] [--upload] [--loss 0,1,5] [--reorder PCT] [--size-mib 2] [--runs 3] [--out FILE.json]
 
 BUILD is a CMake build directory, or REPO:BUILD to boot it with the coal-mcp server of
 another checkout. With several builds the runs alternate between them, so a busy host
@@ -91,7 +91,18 @@ class Link:
         self.rng = random.Random(seed)
 
 
-def one_run(build, loss, reorder, seed, size_mib, memory):
+def sink(sock, received):
+    """Accepts one connection and reads it to the end; received[0] is the byte count."""
+    conn, _ = sock.accept()
+    while True:
+        chunk = conn.recv(65536)
+        if not chunk:
+            break
+        received[0] += len(chunk)
+    conn.close()
+
+
+def one_run(build, loss, reorder, seed, size_mib, memory, upload=False):
     repo, _, build_dir = build.rpartition(":")
     bench.SERVER = Path(repo or bench.REPO) / "tools" / "coal-mcp" / "server.py"
     tmp = tempfile.mkdtemp(prefix="netbench-")
@@ -99,7 +110,7 @@ def one_run(build, loss, reorder, seed, size_mib, memory):
         f.write(random.Random(1).randbytes(size_mib << 20))
     http = subprocess.Popen([sys.executable, "-m", "http.server", str(PORT), "--bind", "127.0.0.1", "-d", tmp],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    link = Link(loss, reorder, seed)
+    link = Link(0 if upload else loss, reorder, seed)
     relays = [Relay(os.path.join(tmp, d), link) for d in ("tx", "rx")]
     qargs = " ".join("-chardev socket,id=%so,path=%s/%so -chardev socket,id=%si,path=%s/%si "
                      "-object filter-redirector,id=f%s,netdev=u0,queue=%s,indev=%si,outdev=%so" % (d, tmp, d, d, tmp, d, d, d, d, d)
@@ -111,10 +122,21 @@ def one_run(build, loss, reorder, seed, size_mib, memory):
     try:
         mcp.tool("coal_boot", timeout_s=120)
         time.sleep(1.5)                                 # DHCP
+        if upload:                                      # the guest generates the data, so no disk is involved
+            srv = socket.socket()
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", PORT + 1))
+            srv.listen(1)
+            received = [0]
+            threading.Thread(target=sink, args=(srv, received), daemon=True).start()
+            link.loss = loss
+            cmd = "yes | head -n %d | nc 10.0.2.2 %d" % (size_mib << 19, PORT + 1)
+        else:
+            cmd = "wget -O /dev/null http://10.0.2.2:%d/f" % PORT
         t = time.monotonic()
-        text = mcp.tool("coal_run", timeout=900, command="wget -O /dev/null http://10.0.2.2:%d/f" % PORT, timeout_ms=600000)
+        text = mcp.tool("coal_run", timeout=900, command=cmd, timeout_ms=600000)
         dt = time.monotonic() - t
-        ok = "exit code: 0" in text
+        ok = "exit code: 0" in text and (not upload or received[0] == size_mib << 20)
         if os.environ.get("NETBENCH_DEBUG"): print(text)
         return dt if ok else None, relays[0].dropped + relays[1].dropped
     finally:
@@ -127,6 +149,7 @@ def main():
     ap.add_argument("builds", nargs="+")
     ap.add_argument("--loss", default="0,1,5", help="comma separated loss percentages")
     ap.add_argument("--reorder", type=float, default=0, help="reorder percentage")
+    ap.add_argument("--upload", action="store_true", help="time the guest sending the file instead of receiving it")
     ap.add_argument("--size-mib", type=int, default=2)
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--memory", type=int, default=128)
@@ -137,7 +160,7 @@ def main():
         times = {b: [] for b in a.builds}
         for r in range(a.runs):
             for b in a.builds:
-                dt, dropped = one_run(b, loss / 100, a.reorder / 100, 1000 + r, a.size_mib, a.memory)
+                dt, dropped = one_run(b, loss / 100, a.reorder / 100, 1000 + r, a.size_mib, a.memory, a.upload)
                 print("loss %.1f%% run %d %s: %s (dropped %d frames)" % (loss, r, b, "FAILED" if dt is None else "%.2f s" % dt, dropped), flush=True)
                 times[b].append(dt)
         for b, t in times.items():

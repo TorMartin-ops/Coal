@@ -19,6 +19,7 @@
 #define IP_HLEN         20
 #define NET_MTU         1500
 #define IP_PAYLOAD_MAX  (NET_MTU - IP_HLEN)
+#define TCP_TICK_MS     2           /* tcp_tick() period */
 
 #define IPPROTO_ICMP    1
 #define IPPROTO_TCP     6
@@ -75,7 +76,7 @@ int net_ip_send(uint8_t proto, uint32_t src, uint32_t dst, size_t len);
 /** Called by the NIC driver for every received frame (interrupt context). */
 void net_rx_frame(const uint8_t *frame, size_t len);
 
-/** Per-millisecond timer entry: drains the loopback queue, and runs the NIC poll and protocol timers every 10 ms. */
+/** Per-millisecond timer entry: drains the loopback queue, runs the TCP timers every TCP_TICK_MS and the NIC poll and DHCP every 10 ms. */
 void net_tick(void);
 
 /** Sends one UDP datagram (payload up to IP_PAYLOAD_MAX - 8 bytes) from sport. src 0 = the interface address. */

@@ -48,3 +48,28 @@ The wall-clock wget numbers move with host load, so the builds under comparison 
 |--------------|-----------:|----------:|
 | tcp_latency  | 1999994 ns |   8660 ns |
 | tcp_bw       | 0.16 MB/s  | 52.4 MB/s |
+
+### E2. RACK-TLP loss recovery and RFC 6298 timers
+
+- Every data segment in flight has a record (sequence, length, transmit time of the latest copy, retransmitted, lost).
+  Loss is inferred from time, not only from three duplicate ACKs (RFC 8985, Cheng et al.): a segment is lost once a
+  segment sent after it was delivered and a reordering window (a quarter of the minimum RTT) plus one RTT has
+  passed. The stack has no SACK, so duplicate ACKs stand in for it: the n-th duplicate ACK means n later segments
+  arrived, which bounds the newest delivered transmit time. The classic third-duplicate-ACK rule stays as well.
+- Tail loss probe: about 2 * SRTT after the last transmission (plus 40 ms when one segment is outstanding, RFC 8985
+  section 7.2) the newest segment is sent again, or one new segment if there is data and window. A lost tail is
+  found in about 10 ms instead of the 200 ms RTO minimum plus backoff.
+- Retransmission timeout as in RFC 6298 (SRTT, RTTVAR, `RTO = SRTT + max(G, 4 * RTTVAR)`, Karn's rule through the
+  per-segment records, a sample from the handshake); after a timeout every segment in flight is marked lost and
+  resent as the window allows (go-back-N, not one segment per RTO). One window reduction per recovery (RFC 5681
+  equation 4). Slow start counts ACKed bytes up to 2 * MSS per ACK (RFC 3465).
+- TCP timers run every 2 ms (`TCP_TICK_MS`) instead of every 10 ms.
+
+2 MiB sent by the guest (`netbench.py --upload`, `yes | head | nc`, median of 4; the generator costs about 0.4 s):
+
+| loss | before | after |
+|-----:|-------:|------:|
+|   0% |  0.55 s | 0.45 s |
+|   1% |  0.71 s | 0.51 s |
+|   2% |  2.99 s | 0.85 s |
+|   5% | 10.53 s | 1.41 s |
