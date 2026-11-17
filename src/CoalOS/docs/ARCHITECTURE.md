@@ -94,6 +94,11 @@ PIO with LBA48 (`block_device.c`). PCI bus 0 scan (`pci.c`) and an Intel e1000
 (82540EM) NIC with MMIO at `KERNEL_MMIO_VADDR_START`, 32 RX and 16 TX
 descriptors, interrupt-driven RX with a 10 ms poll fallback (`net/e1000.c`).
 
+virtio (`kernel/drivers/virtio/`, details in `docs/agent-vm/virtio.md`): a core with modern-only feature
+negotiation, split virtqueues, PCI and MMIO (`virtio_mmio.device=` on the command line) transports, and
+block (`vda`, selectable with `root=`), console (`/dev/hvc0`), rng and vsock drivers. `AF_VSOCK` stream
+sockets live in `kernel/net/vsock.c`. DMA memory and MMIO mappings come from `memory/dma.c`.
+
 ## Network
 
 `kernel/net`: Ethernet, ARP cache, IPv4 (fragments dropped), ICMP echo and port unreachable,
