@@ -370,6 +370,7 @@ ssize_t sock_send(struct sock *s, const void *buf, size_t len, int flags, const 
     } else {
         memcpy(net_tx_payload(), buf, len);
         rc = net_ip_send(IPPROTO_ICMP, 0, dst, len);
+        net_lo_drain();
     }
     local_irq_restore(irq);
     return rc < 0 ? rc : (ssize_t)len;

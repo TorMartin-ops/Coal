@@ -25,3 +25,26 @@
 | tcp_bw               | MB/s |               n/a |                        |           n/a |
 | memcpy_bw            | MB/s |             29.99 |         23.82 .. 32.09 |        999.53 |
 No loopback interface exists yet, so the TCP tests print `n/a`.
+
+## Network
+
+Measured with `-icount shift=0,sleep=off` (loopback) and with `tools/bench/netbench.py` (wget of 2 MiB from a
+host `http.server` through QEMU user networking and a frame filter that drops TCP frames at random, seeded).
+The wall-clock wget numbers move with host load, so the builds under comparison run interleaved.
+
+### E1. Loopback is delivered synchronously, frames are cheaper
+
+- Looped-back packets used to wait for the next 1 ms timer tick (two ticks per round trip) and the 16-slot queue
+  silently dropped what did not fit, so a 16 KiB window overflowed it and TCP sat in RTO backoff. The transport
+  now calls `net_lo_drain()` when it has finished building packets, like a softirq (Linux runs loopback through
+  the backlog softirq the same way); a full queue returns `-ENOBUFS` and the sender stops instead of losing data.
+- Loopback segments carry no TCP checksum and it is not checked (`net_rx_trusted`); Linux skips it on `lo` too.
+- `net_csum_add` adds 32-bit words (RFC 1071 section 2(B): the sum does not depend on byte order).
+- e1000: frames are built in the next free TX buffer and sent in place (no copy); the RX tail register is written
+  once per batch instead of per frame; 64 RX and 64 TX descriptors (a burst of a full congestion window used to
+  overflow 16 TX descriptors and lose frames); interrupt throttle (ITR) of about 100 us.
+
+| test         | before     | after     |
+|--------------|-----------:|----------:|
+| tcp_latency  | 1999994 ns |   8660 ns |
+| tcp_bw       | 0.16 MB/s  | 52.4 MB/s |

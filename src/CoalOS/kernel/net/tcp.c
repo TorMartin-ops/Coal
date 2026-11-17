@@ -3,6 +3,9 @@
  * @brief TCP: active and passive open, in-order receive, retransmission with
  *        exponential backoff, slow start and congestion avoidance, FIN/RST.
  *
+ * Looped-back segments are delivered right after each entry into the stack
+ * (net_lo_drain) and carry no checksum.
+ *
  * Deliberately small: out-of-order data is kept in the receive ring (at most
  * OOO_MAX ranges) and merged when the gap fills, there are no window scaling,
  * timestamps or SACK, and every received segment is acknowledged immediately.
@@ -135,7 +138,7 @@ static int emit(const struct tcp_conn *c, uint32_t src, uint32_t dst, uint16_t s
     }
     h->off = (uint8_t)(hl / 4 << 4);
     if (dlen) ring_get(c->tx, c->tx_start + off, p + hl, dlen);
-    h->csum = net_l4_csum(src, dst, IPPROTO_TCP, p, hl + dlen);
+    h->csum = net_is_local(dst) ? 0 : net_l4_csum(src, dst, IPPROTO_TCP, p, hl + dlen);
     return net_ip_send(IPPROTO_TCP, src, dst, hl + dlen);
 }
 
@@ -236,6 +239,7 @@ void tcp_tick(void) {
         retransmit(c);
         arm(c, c->rto);
     }
+    net_lo_drain();
 }
 
 /* ---- input ------------------------------------------------------------------- */
@@ -400,7 +404,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len) {
     size_t hl;
     struct tcp_conn *c = NULL;
 
-    if (len < sizeof(*h) || net_l4_csum(src, dst, IPPROTO_TCP, seg, len) != 0) return;
+    if (len < sizeof(*h) || (!net_rx_trusted && net_l4_csum(src, dst, IPPROTO_TCP, seg, len) != 0)) return;
     hl = (size_t)(h->off >> 4) * 4;
     if (hl < sizeof(*h) || hl > len) return;
 
@@ -546,6 +550,7 @@ int tcp_connect(struct tcp_conn *c, uint32_t addr, uint16_t port, uint16_t lport
     int rc = send_seg(c, SYN, c->iss, 0, 0);
     if (rc < 0) { c->state = TCP_CLOSED; return rc; }
     arm(c, c->rto);
+    net_lo_drain();
     return 0;
 }
 
@@ -572,18 +577,21 @@ void tcp_close(struct tcp_conn *c) {
     } else if (c->state == TCP_FIN_WAIT2) {
         arm(c, FIN_WAIT2_MS);
     }
+    net_lo_drain();
 }
 
 void tcp_drop_children(struct sock *l) {
     for (int i = 0; i < MAX_CONNS; i++)
         if (conns[i].used && conns[i].parent == l) abort_conn(&conns[i]);
     l->acc_n = 0;
+    net_lo_drain();
 }
 
 int tcp_shutdown_wr(struct tcp_conn *c) {
     if (c->state != TCP_ESTABLISHED && c->state != TCP_CLOSE_WAIT) return -ENOTCONN;
     c->fin_queued = true;
     output(c);
+    net_lo_drain();
     return 0;
 }
 
@@ -596,6 +604,7 @@ int tcp_write(struct tcp_conn *c, const void *buf, size_t len) {
         ring_put(c->tx, c->tx_start + c->tx_len, buf, n);
         c->tx_len += (uint32_t)n;
         output(c);
+        net_lo_drain();
     }
     return (int)n;
 }
@@ -611,6 +620,7 @@ int tcp_read(struct tcp_conn *c, void *buf, size_t len, bool peek) {
             if ((int32_t)(window(c) - c->adv_wnd) >= (int32_t)half && c->state != TCP_CLOSED) {
                 c->ack_now = true;                              /* the window reopened: tell the sender */
                 output(c);
+                net_lo_drain();
             }
         }
         return (int)n;

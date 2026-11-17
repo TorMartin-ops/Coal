@@ -55,20 +55,27 @@ uint16_t net_l4_csum(uint32_t src, uint32_t dst, uint8_t proto, const void *seg,
 
 /** True for 127.0.0.0/8. Packets to it, and to our own address, are looped back inside the stack. */
 bool net_is_loopback(uint32_t ip);
+/** True for loopback addresses and our own address: the packet never leaves the machine. */
+bool net_is_local(uint32_t ip);
+/** True while a packet from the loopback queue is being processed: its checksum is not computed or checked. */
+extern bool net_rx_trusted;
+/** Delivers queued loopback packets and the replies they cause. Call it at the end of an
+ *  entry into the stack (never while a packet is being built). */
+void net_lo_drain(void);
 /** The source address a packet to dst leaves with: dst itself for loopback, else the interface address. */
 uint32_t net_src_for(uint32_t dst);
 
-/** The IP payload area of the shared transmit frame. Fill up to IP_PAYLOAD_MAX bytes, then net_ip_send(). */
+/** The IP payload area of the transmit frame (the NIC's next free buffer, so it is not copied later). Fill up to IP_PAYLOAD_MAX bytes, then net_ip_send(). */
 uint8_t *net_tx_payload(void);
 
 /** Sends the payload in net_tx_payload() to dst (src 0 means net_src_for(dst)).
- *  Returns 0, or -ENETDOWN / -ENETUNREACH. A packet waiting for ARP is sent once the peer answers. */
+ *  Returns 0, or -ENETDOWN / -ENETUNREACH / -ENOBUFS (transmit ring or loopback queue full). A packet waiting for ARP is sent once the peer answers. */
 int net_ip_send(uint8_t proto, uint32_t src, uint32_t dst, size_t len);
 
 /** Called by the NIC driver for every received frame (interrupt context). */
 void net_rx_frame(const uint8_t *frame, size_t len);
 
-/** Per-millisecond timer entry: delivers loopback packets, and runs the NIC poll and protocol timers every 10 ms. */
+/** Per-millisecond timer entry: drains the loopback queue, and runs the NIC poll and protocol timers every 10 ms. */
 void net_tick(void);
 
 /** Sends one UDP datagram (payload up to IP_PAYLOAD_MAX - 8 bytes) from sport. src 0 = the interface address. */
