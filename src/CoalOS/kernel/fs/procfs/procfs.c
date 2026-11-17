@@ -61,7 +61,7 @@ __attribute__((weak)) int proc_info_list(uint32_t *pids, int max) {
 
 static size_t render(const struct node *n, char *out) {
     proc_info_t pi;
-    uint32_t ms = get_pit_ticks();
+    uint32_t ms = (uint32_t)timer_uptime_ms();
     switch (n->kind) {
     case K_MEMINFO: {
         size_t total_pages, free_pages;

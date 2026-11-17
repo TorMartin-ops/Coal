@@ -1,18 +1,40 @@
+/**
+ * @file serial.h
+ * @brief 16550 UART driver: COM1 is the kernel log, COM2 is for the MCP daemon.
+ *
+ * Kernel log (COM1): serial_putchar/serial_write/serial_printf, synchronous,
+ * '\n' is sent as "\r\n".
+ *
+ * Port API (any port): interrupt-driven RX and TX ring buffers, raw bytes.
+ * The first call to serial_port_read/serial_port_write on a port installs its
+ * IRQ handler, so it must happen after idt_init().
+ */
 #ifndef SERIAL_H
 #define SERIAL_H
 
 #include <kernel/core/types.h>
 #include <libc/stdarg.h>
 
-// COM1 Port Base
-#define SERIAL_COM1_BASE 0x3F8
+#define SERIAL_COM1 0
+#define SERIAL_COM2 1
 
-// Function prototypes
-void serial_init(); // Optional initialization
+/** Programs the UART for 115200 8N1 with FIFOs. Polled output works right away. */
+void serial_init(int port);
+
+/** Queues up to len bytes for transmission. Never blocks; returns bytes accepted. */
+size_t serial_port_write(int port, const void *buf, size_t len);
+
+/** Blocks until at least one byte has arrived, then returns up to len bytes. */
+size_t serial_port_read(int port, void *buf, size_t len);
+
+/** Number of received bytes waiting in the RX ring. */
+size_t serial_port_rx_available(int port);
+
+/* Kernel log on COM1 */
 void serial_putchar(char c);
 void serial_write(const char *str);
-void serial_print_hex(uint32_t n); // Print hex value
-void serial_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2))); // Printf-style serial output
-void serial_vprintf(const char *fmt, va_list args); // Printf-style with va_list
+void serial_print_hex(uint32_t n);
+void serial_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void serial_vprintf(const char *fmt, va_list args);
 
-#endif // SERIAL_H
+#endif /* SERIAL_H */

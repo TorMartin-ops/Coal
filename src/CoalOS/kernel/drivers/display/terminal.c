@@ -1,942 +1,337 @@
 /**
  * @file terminal.c
- * @brief VGA text-mode driver for a 32-bit x86 OS.
- * @author Tor Martin Kohle
+ * @brief VGA text console: character cells, scrolling and a VT100/ANSI subset
+ *        (cursor movement, erase, insert/delete, SGR colours).
+ *
+ * Input and line editing live in tty.c.
  */
+#include <kernel/drivers/display/terminal.h>
+#include <kernel/drivers/display/vga_hardware.h>
+#include <kernel/drivers/display/serial.h>
+#include <kernel/lib/port_io.h>
+#include <kernel/lib/string.h>
+#include <kernel/sync/spinlock.h>
 
- #include <kernel/drivers/display/terminal.h>
- #include <kernel/drivers/display/vga_hardware.h>
-   #include <kernel/lib/port_io.h>
- #include <kernel/drivers/input/keyboard.h>       // For KeyEvent, KeyCode, and apply_modifiers_extended declaration
- #include <kernel/core/types.h>          // For pid_t, ssize_t, etc.
- #include <kernel/sync/spinlock.h>
- #include <kernel/drivers/display/serial.h>         // For serial_write, serial_print_hex, serial_putchar
- #include <kernel/lib/assert.h>
- #include <kernel/process/scheduler.h>      // For get_current_task, schedule, tcb_t, TASK_BLOCKED, TASK_READY, scheduler_unblock_task
- #include <kernel/fs/vfs/fs_errno.h>       // For error codes like -EINTR if interrupting sleep
- 
- #include <libc/stdarg.h>
- #include <libc/stdbool.h>
- #include <libc/stddef.h>
- #include <libc/stdint.h>
- #include <kernel/lib/string.h>         // Kernel's string functions
- 
- /* ------------------------------------------------------------------------- */
- /* Compile-time configuration                                                */
- /* ------------------------------------------------------------------------- */
- #define TAB_WIDTH           4
- #define PRINTF_BUFFER_SIZE 256
- #define MAX_INPUT_LINES     64
- /* MAX_INPUT_LENGTH comes from terminal.h */
- 
- /* ------------------------------------------------------------------------- */
- /* ANSI escape-code state machine                                            */
- /* ------------------------------------------------------------------------- */
- typedef enum {
-     ANSI_STATE_NORMAL,
-     ANSI_STATE_ESC,
-     ANSI_STATE_BRACKET,
-     ANSI_STATE_PARAM
- } AnsiState;
- 
- /* ------------------------------------------------------------------------- */
- /* Terminal global state                                                     */
- /* ------------------------------------------------------------------------- */
- static spinlock_t terminal_lock;
- static uint8_t    terminal_color = VGA_RGB(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
- static volatile uint16_t * const vga_buffer = (volatile uint16_t *)VGA_ADDRESS; 
- static int        cursor_x = 0;
- static int        cursor_y = 0;
- static uint8_t    cursor_visible = 1; 
- static AnsiState  ansi_state = ANSI_STATE_NORMAL;
- static bool       ansi_private = false;
- static int        ansi_params[4]; 
- static int        ansi_param_count = 0;
- 
- /* ------------------------------------------------------------------------- */
- /* Single-Line Input Buffer for SYS_READ_TERMINAL                            */
- /* ------------------------------------------------------------------------- */
- static char       s_line_buffer[MAX_INPUT_LENGTH];
- static volatile size_t s_line_buffer_len = 0;
- static volatile bool s_line_ready_for_read = false;
- static volatile tcb_t *s_waiting_task = NULL; 
- static spinlock_t s_line_buffer_lock;
- 
- /* ------------------------------------------------------------------------- */
- /* Interactive multi-line input (Separate from single-line syscall input)    */
- /* ------------------------------------------------------------------------- */
- typedef struct {
-     char  lines[MAX_INPUT_LINES][MAX_INPUT_LENGTH];
-     int   line_lengths[MAX_INPUT_LINES];
-     int   current_line;    
-     int   total_lines;     
-     int   input_cursor;    
-     int   start_row;       
-     int   desired_column;  
-     bool  is_active;       
- } terminal_input_state_t;
- 
- static terminal_input_state_t input_state; 
- 
- // --- Static Helper Function: itoa_simple --- (UNUSED)
-#if 0
- static int itoa_simple(size_t val, char *buf, int base) {
-     char *p = buf;
-     char *p1, *p2;
-     uint32_t ud = val; 
-     int digits = 0;
- 
-     if (base != 10) { 
-         if (buf) {
-             buf[0] = '?'; 
-             buf[1] = '\0';
-         }
-         return 1;
-     }
- 
-     if (val == 0) {
-         if (buf) {
-             buf[0] = '0';
-             buf[1] = '\0';
-         }
-         return 1;
-     }
- 
-     do {
-         if (p - buf >= 11) break; 
-         *p++ = (ud % base) + '0';
-         digits++;
-     } while (ud /= base);
- 
-     *p = '\0'; 
- 
-     p1 = buf;
-     p2 = p - 1;
-     while (p1 < p2) {
-         char tmp = *p1;
-         *p1 = *p2;
-         *p2 = tmp;
-         p1++;
-         p2--;
-     }
-     return digits;
- }
-#endif // 0 - End of unused itoa_simple
- 
- /* ------------------------------------------------------------------------- */
- /* Forward declarations for other static functions                           */
- /* ------------------------------------------------------------------------- */
- static void update_hardware_cursor(void);
- static void enable_hardware_cursor(void);
- static void disable_hardware_cursor(void);
- static void put_char_at(char c, uint8_t color, int x, int y);
- static void clear_row(int row, uint8_t color);
- static void scroll_terminal(void);
- static void __attribute__((unused)) redraw_input(void); 
- static void __attribute__((unused)) update_desired_column(void); 
- static void __attribute__((unused)) insert_character(char c);
- static void __attribute__((unused)) erase_character(void);
- static void process_ansi_code(char c);
- static void terminal_putchar_internal(char c); 
- static void terminal_clear_internal(void); 
- 
-  
- /* ------------------------------------------------------------------------- */
- /* Helpers                                                                   */
- /* ------------------------------------------------------------------------- */
- static inline uint16_t vga_entry(char ch, uint8_t color) {
-     return (uint16_t)ch | (uint16_t)color << 8;
- }
- 
- /* ------------------------------------------------------------------------- */
- /* Hardware cursor                                                           */
- /* ------------------------------------------------------------------------- */
- static void enable_hardware_cursor(void) {
-     outb(VGA_CMD_PORT, VGA_REG_CURSOR_START); 
-     outb(VGA_DATA_PORT, (inb(VGA_DATA_PORT) & 0xC0) | CURSOR_SCANLINE_START); 
-     outb(VGA_CMD_PORT, VGA_REG_CURSOR_END);   
-     outb(VGA_DATA_PORT, (inb(VGA_DATA_PORT) & 0xE0) | CURSOR_SCANLINE_END);   
- }
- 
- static void disable_hardware_cursor(void) {
-     outb(VGA_CMD_PORT, VGA_REG_CURSOR_START);
-     outb(VGA_DATA_PORT, 0x20); 
- }
- 
- static void update_hardware_cursor(void) {
-     int local_cursor_x = cursor_x;
-     int local_cursor_y = cursor_y;
- 
-     if (local_cursor_x < 0)            { local_cursor_x = 0; }
-     if (local_cursor_y < 0)            { local_cursor_y = 0; }
-     if (local_cursor_x >= VGA_COLS)    { local_cursor_x = VGA_COLS - 1; }
-     if (local_cursor_y >= VGA_ROWS)    { local_cursor_y = VGA_ROWS - 1; }
-     
-     uint16_t pos = (uint16_t)(local_cursor_y * VGA_COLS + local_cursor_x);
-     outb(VGA_CMD_PORT, VGA_REG_CURSOR_LO); outb(VGA_DATA_PORT, (uint8_t)(pos & 0xFF));
-     outb(VGA_CMD_PORT, VGA_REG_CURSOR_HI); outb(VGA_DATA_PORT, (uint8_t)((pos >> 8) & 0xFF));
- 
-     if (cursor_visible && !input_state.is_active) { 
-         enable_hardware_cursor();
-     } else {
-         disable_hardware_cursor();
-     }
- }
- 
- /* ------------------------------------------------------------------------- */
- /* Low-level VGA buffer access                                               */
- /* ------------------------------------------------------------------------- */
- static void put_char_at(char c, uint8_t color, int x, int y) {
-     if (x < 0 || x >= VGA_COLS || y < 0 || y >= VGA_ROWS) {
-         return;
-     }
-     vga_buffer[y * VGA_COLS + x] = vga_entry(c, color);
- }
- 
- static void clear_row(int row, uint8_t color) {
-     if (row < 0 || row >= VGA_ROWS) { return; }
-     uint16_t entry = vga_entry(' ', color);
-     size_t idx = (size_t)row * VGA_COLS;
-     for (int col = 0; col < VGA_COLS; ++col) { vga_buffer[idx + col] = entry; }
- }
- 
- static void scroll_terminal(void) {
-     memmove((void*)vga_buffer, (const void*)(vga_buffer + VGA_COLS), (VGA_ROWS - 1) * VGA_COLS * sizeof(uint16_t));
-     clear_row(VGA_ROWS - 1, terminal_color); 
-     if (cursor_y > 0) cursor_y--; 
-     
-     if (input_state.is_active && input_state.start_row > 0) {
-         input_state.start_row--;
-     }
- }
- 
- /* ------------------------------------------------------------------------- */
- /* ANSI escape parser                                                        */
- /* ------------------------------------------------------------------------- */
- static void reset_ansi_state(void) {
-     ansi_state       = ANSI_STATE_NORMAL;
-     ansi_private     = false;
-     ansi_param_count = 0;
-     for (int i = 0; i < 4; ++i) { ansi_params[i] = -1; } 
- }
- 
- static void process_ansi_code(char c) {
-     switch (ansi_state) {
-     case ANSI_STATE_NORMAL:
-         if (c == '\033') { 
-             ansi_state = ANSI_STATE_ESC;
-         }
-         break;
- 
-     case ANSI_STATE_ESC:
-         if (c == '[') { 
-             ansi_state = ANSI_STATE_BRACKET;
-             ansi_private = false;
-             ansi_param_count = 0;
-             for (int i = 0; i < 4; ++i) { ansi_params[i] = -1; }
-         } else { 
-             reset_ansi_state();
-         }
-         break;
- 
-     case ANSI_STATE_BRACKET:
-         if (c == '?') {
-             ansi_private = true;
-         } else if (c >= '0' && c <= '9') {
-             ansi_state = ANSI_STATE_PARAM;
-             ansi_params[ansi_param_count] = c - '0'; 
-         } else if (c == 'J') { 
-             terminal_clear_internal(); 
-             reset_ansi_state();
-         } else if (c == 'm') { 
-             terminal_color = VGA_RGB(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
-             reset_ansi_state();
-         }
-         else { 
-             reset_ansi_state();
-         }
-         break;
- 
-     case ANSI_STATE_PARAM:
-         if (c >= '0' && c <= '9') {
-             int *cur = &ansi_params[ansi_param_count];
-             if (*cur == -1) { *cur = 0; } 
-             if (*cur > (INT32_MAX / 10) - (c - '0')) { *cur = INT32_MAX; } 
-             else { *cur = (*cur * 10) + (c - '0'); }
-         } else if (c == ';') {
-             if (ansi_param_count < 3) { 
-                 ansi_param_count++;
-                 ansi_params[ansi_param_count] = -1; 
-             } else { 
-                 reset_ansi_state();
-             }
-         } else { 
-             for(int i=0; i <= ansi_param_count; ++i) {
-                 if(ansi_params[i] == -1) ansi_params[i] = 0; // Default til 0 for uspesifiserte params
-             }
- 
-             int p0 = ansi_params[0];
-             
-             switch (c) {
-                 case 'm': 
-                     for (int i = 0; i <= ansi_param_count; ++i) {
-                         int p = ansi_params[i];
-                         if (p == 0) { terminal_color = VGA_RGB(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK); } 
-                         else if (p >= 30 && p <= 37) { terminal_color = (terminal_color & 0xF0) | (p - 30); } 
-                         else if (p >= 40 && p <= 47) { terminal_color = ((p - 40) << 4) | (terminal_color & 0x0F); } 
-                         else if (p >= 90 && p <= 97) { terminal_color = (terminal_color & 0xF0) | ((p - 90) + 8); } 
-                         else if (p >= 100 && p <= 107){ terminal_color = (((p - 100) + 8) << 4) | (terminal_color & 0x0F); } 
-                     }
-                     break;
-                 case 'J': 
-                     if (p0 == 2 || p0 == 0) { terminal_clear_internal(); } 
-                     break;
-                 case 'H': // Cursor Position
-                 case 'f': // Også Cursor Position
-                    {
-                        int row = (ansi_params[0] > 0) ? ansi_params[0] - 1 : 0; // 1-basert til 0-basert
-                        int col = (ansi_params[1] > 0) ? ansi_params[1] - 1 : 0;
-                        if (row >= VGA_ROWS) row = VGA_ROWS - 1;
-                        if (col >= VGA_COLS) col = VGA_COLS - 1;
-                        cursor_x = col;
-                        cursor_y = row;
-                    }
-                    break;
-                 case 'h': 
-                 case 'l': 
-                     if (ansi_private && p0 == 25) { 
-                         cursor_visible = (c == 'h');
-                     }
-                     break;
-             }
-             reset_ansi_state(); 
-         }
-         break;
-     }
- }
- 
- /* ------------------------------------------------------------------------- */
- /* Core output - intern, antar lås holdes                                     */
- /* ------------------------------------------------------------------------- */
- static void terminal_putchar_internal(char c) {
-     if (ansi_state != ANSI_STATE_NORMAL || c == '\033') {
-         process_ansi_code(c);
-         if (ansi_state != ANSI_STATE_NORMAL || c == '\033') {
-             return;
-         }
-     }
- 
-     switch (c) {
-         case '\n':
-             cursor_x = 0;
-             cursor_y++;
-             break;
-         case '\r':
-             cursor_x = 0;
-             break;
-         case '\b': 
-             if (cursor_x > 0) {
-                 cursor_x--;
-             } else if (cursor_y > 0) { 
-                 cursor_y--;
-                 cursor_x = VGA_COLS - 1;
-             }
-             break;
-         case '\t': {
-             int next_tab_stop = (cursor_x / TAB_WIDTH + 1) * TAB_WIDTH;
-             int spaces_to_add = MIN(next_tab_stop, VGA_COLS) - cursor_x;
-             for (int i = 0; i < spaces_to_add; ++i) {
-                 if (cursor_x < VGA_COLS) { 
-                     put_char_at(' ', terminal_color, cursor_x, cursor_y);
-                     cursor_x++;
-                 } else { break; } 
-             }
-             break;
-         }
-         default: 
-             if (c >= ' ' && c <= '~') { 
-                 put_char_at(c, terminal_color, cursor_x, cursor_y);
-                 cursor_x++;
-             }
-             break;
-     }
- 
-     if (cursor_x >= VGA_COLS) {
-         cursor_x = 0;
-         cursor_y++;
-     }
-     while (cursor_y >= VGA_ROWS) { 
-         scroll_terminal();
-     }
-     serial_putchar(c);
- }
- 
- /* ------------------------------------------------------------------------- */
- /* Public Output Wrappers (tar lås)                                          */
- /* ------------------------------------------------------------------------- */
- 
- void terminal_putchar(char c) {
-     uintptr_t flags = spinlock_acquire_irqsave(&terminal_lock);
-     terminal_putchar_internal(c);
-     update_hardware_cursor(); 
-     spinlock_release_irqrestore(&terminal_lock, flags);
- }
- 
- void terminal_write(const char *str) {
-     if (!str) { return; }
-     uintptr_t flags = spinlock_acquire_irqsave(&terminal_lock);
-     for (size_t i = 0; str[i]; ++i) {
-         terminal_putchar_internal(str[i]);
-     }
-     update_hardware_cursor();
-     spinlock_release_irqrestore(&terminal_lock, flags);
- }
- 
- void terminal_write_len(const char *data, size_t size) {
-     if (!data || !size) { return; }
-     uintptr_t flags = spinlock_acquire_irqsave(&terminal_lock);
-     for (size_t i = 0; i < size; ++i) {
-         terminal_putchar_internal(data[i]);
-     }
-     update_hardware_cursor();
-     spinlock_release_irqrestore(&terminal_lock, flags);
- }
- 
- /* ------------------------------------------------------------------------- */
- /* printf implementasjon                                                     */
- /* ------------------------------------------------------------------------- */
- 
- /* Divides *v by a small base in place and returns the remainder. Done with
- * divl because the kernel is not linked against libgcc (no __udivdi3). */
- static uint32_t _divmod_small(unsigned long long *v, uint32_t base) {
-     uint32_t hi = (uint32_t)(*v >> 32);
-     uint32_t lo = (uint32_t)*v;
-     uint32_t qhi = hi / base;
-     uint32_t rem = hi % base;
-     uint32_t qlo;
-     __asm__("divl %4" : "=a"(qlo), "=d"(rem) : "a"(lo), "d"(rem), "rm"(base));
-     *v = ((unsigned long long)qhi << 32) | qlo;
-     return rem;
- }
+/* Mirror kernel messages / user console output to COM1 (outside the lock). */
+#ifndef TERMINAL_MIRROR_KERNEL
+#define TERMINAL_MIRROR_KERNEL 1
+#endif
+#ifndef TERMINAL_MIRROR_CONSOLE
+#define TERMINAL_MIRROR_CONSOLE 0
+#endif
 
- /* Formats val in the given base. */
- static int _format_number(unsigned long long val_ul, bool is_negative, int base, bool upper,
-                           int min_width, bool zero_pad, char *buf, int buf_sz) {
-     if (buf_sz < 2) { return 0; } 
-     char tmp_buf[65]; // Max for 64-bit binary + null
-     int i = 0;
-     const char *digits_map = upper ? "0123456789ABCDEF" : "0123456789abcdef";
- 
-     if (base < 2 || base > 16) base = 10; 
- 
-     if (val_ul == 0) {
-         tmp_buf[i++] = '0';
-     } else {
-         while (val_ul > 0 && i < (int)sizeof(tmp_buf) -1) {
-             tmp_buf[i++] = digits_map[_divmod_small(&val_ul, (uint32_t)base)];
-         }
-     }
-     int num_digits = i;
-     int sign_len = (is_negative && base == 10) ? 1 : 0;
-     int total_content_len = num_digits + sign_len;
-     int padding_len = (min_width > total_content_len) ? (min_width - total_content_len) : 0;
- 
-     if (total_content_len + padding_len >= buf_sz) { 
-         if (buf_sz > 5) { strncpy(buf, "[OVF]", (size_t)buf_sz); buf[buf_sz-1] = '\0'; return buf_sz-1; }
-         else { buf[0] = '\0'; return 0; }
-     }
- 
-     int current_pos = 0;
-     char pad_char = ' ';
-     if (zero_pad && !is_negative) { 
-         pad_char = '0';
-     }
-      if (zero_pad && is_negative && base == 10) { 
-         buf[current_pos++] = '-';
-         sign_len = 0; 
-     }
- 
-     for (int k = 0; k < padding_len; ++k) buf[current_pos++] = pad_char;
-     if (sign_len) buf[current_pos++] = '-';
-     while (i > 0) buf[current_pos++] = tmp_buf[--i];
- 
-     buf[current_pos] = '\0';
-     return current_pos;
- }
- 
- /* Supports %s %c %d %i %u %x %X %o %p %%, flags 0 # and -, width, string
- * precision (.N and .*), and the h, l, ll and z length modifiers. */
- int _vsnprintf(char *str, size_t size, const char *fmt, va_list args) {
-     if (!str || !size) { if (size == 1 && str) str[0] = '\0'; return 0; }
- 
-     size_t written_chars = 0;
-     char temp_num_buf[68];
- 
-     while (*fmt && written_chars < size - 1) {
-         if (*fmt != '%') {
-             str[written_chars++] = *fmt++;
-             continue;
-         }
-         fmt++; 
- 
-         bool zero_pad = false;
-         bool left_justify = false;
-         int min_width = 0;
-         int precision = -1;
-         bool is_long = false;     // l: same width as int on i386
-         bool is_long_long = false;
-         bool alt_form = false;
+#define TAB_WIDTH       8
+#define PRINTF_BUF_SIZE 256
+#define MAX_PARAMS      4
+#define DEFAULT_FG      VGA_COLOR_LIGHT_GREY
+#define DEFAULT_BG      VGA_COLOR_BLACK
 
-         for (;; fmt++) {
-             if (*fmt == '0') zero_pad = true;
-             else if (*fmt == '#') alt_form = true;
-             else if (*fmt == '-') left_justify = true;
-             else break;
-         }
+static volatile uint16_t *const vga = (volatile uint16_t *)VGA_ADDRESS;
 
-         if (*fmt == '*') { min_width = va_arg(args, int); fmt++; }
-         while (*fmt >= '0' && *fmt <= '9') {
-             min_width = min_width * 10 + (*fmt - '0');
-             fmt++;
-         }
-         if (*fmt == '.') {
-             fmt++;
-             precision = 0;
-             if (*fmt == '*') { precision = va_arg(args, int); fmt++; }
-             while (*fmt >= '0' && *fmt <= '9') {
-                 precision = precision * 10 + (*fmt - '0');
-                 fmt++;
-             }
-         }
+typedef enum { ST_NORMAL, ST_ESC, ST_CSI } vt_state_t;
 
-         while (*fmt == 'h') fmt++;    // h/hh: promoted to int by varargs
-         if (*fmt == 'z') {            // size_t is unsigned int on i386
-             fmt++;
-         } else if (*fmt == 'l') {
-             is_long = true; fmt++;
-             if (*fmt == 'l') { is_long_long = true; fmt++; }
-         }
+static struct {
+    int x, y;
+    int saved_x, saved_y;
+    uint8_t fg, bg;
+    bool bold, reverse, cursor_visible;
+    uint8_t attr;
+    vt_state_t state;
+    int params[MAX_PARAMS];
+    int nparams;
+    bool private_mode;
+    int hw_pos; /* last cursor position written to the CRTC, -1 = unknown */
+} t = { .fg = DEFAULT_FG, .bg = DEFAULT_BG, .cursor_visible = true, .hw_pos = -1 };
 
-         const char *s_val;
-         int len_s;
-         unsigned long long ul_val;
-         long long l_val;
-         bool neg;
- 
-         switch (*fmt) {
-             case 's':
-                 s_val = va_arg(args, const char *);
-                 if (!s_val) s_val = "(null)";
-                 len_s = 0;
-                 while (s_val[len_s] && (precision < 0 || len_s < precision)) len_s++;
-                 if (!left_justify) {
-                     for (int k = 0; k < (min_width - len_s) && written_chars < size - 1; ++k) str[written_chars++] = ' ';
-                 }
-                 for (int k=0; k<len_s && written_chars < size -1; ++k) str[written_chars++] = s_val[k];
-                 if (left_justify) {
-                     for (int k = 0; k < (min_width - len_s) && written_chars < size - 1; ++k) str[written_chars++] = ' ';
-                 }
-                 break;
-             case 'c': str[written_chars++] = (char)va_arg(args, int); break;
-             case 'd': case 'i':
-                 if (is_long_long) { l_val = va_arg(args, long long); }
-                 else if (is_long) { l_val = va_arg(args, long); }
-                 else { l_val = va_arg(args, int); }
-                 neg = l_val < 0;
-                 ul_val = neg ? (0ULL - (unsigned long long)l_val) : (unsigned long long)l_val;
-                 len_s = _format_number(ul_val, neg, 10, false, min_width, zero_pad, temp_num_buf, sizeof(temp_num_buf));
-                 for (int k=0; k<len_s && written_chars < size -1; ++k) str[written_chars++] = temp_num_buf[k];
-                 break;
-             case 'u': case 'x': case 'X': case 'o':
-                 if (is_long_long) { ul_val = va_arg(args, unsigned long long); }
-                 else if (is_long) { ul_val = va_arg(args, unsigned long); }
-                 else { ul_val = va_arg(args, unsigned int); }
-                 
-                 int base = (*fmt == 'u') ? 10 : ((*fmt == 'o') ? 8 : 16);
-                 bool upper = (*fmt == 'X');
-                 if (alt_form && ul_val != 0 && written_chars < size - 1) {
-                     if (base == 16 && written_chars < size -2) {
-                         str[written_chars++] = '0'; str[written_chars++] = upper ? 'X' : 'x';
-                         if (min_width > 2) min_width -= 2;   // the prefix counts toward the width
-                     }
-                     else if (base == 8 && written_chars < size -1) { str[written_chars++] = '0';}
-                 }
-                 len_s = _format_number(ul_val, false, base, upper, min_width, zero_pad, temp_num_buf, sizeof(temp_num_buf));
-                 for (int k=0; k<len_s && written_chars < size -1; ++k) str[written_chars++] = temp_num_buf[k];
-                 break;
-             case 'p': // Pointer
-                 ul_val = (uintptr_t)va_arg(args, void *);
-                 if (written_chars < size -1) str[written_chars++] = '0';
-                 if (written_chars < size -1) str[written_chars++] = 'x';
-                 int ptr_w = sizeof(void*) * 2; 
-                                  len_s = _format_number(ul_val, false, 16, false, ptr_w, true, temp_num_buf, sizeof(temp_num_buf)); // Pointers zero-padded
-                 for (int k=0; k<len_s && written_chars < size -1; ++k) str[written_chars++] = temp_num_buf[k];
-                 break;
-             case '%': str[written_chars++] = '%'; break;
-             default: if(written_chars < size -1) str[written_chars++] = '%'; if(*fmt && written_chars < size -1) str[written_chars++] = *fmt; break;
-         }
-         if(*fmt) fmt++; 
-     }
-     str[written_chars] = '\0';
-     return (int)written_chars;
- }
- 
- void terminal_printf(const char *fmt, ...) {
-     char buf[PRINTF_BUFFER_SIZE];
-     va_list args;
-     va_start(args, fmt);
-     int len = _vsnprintf(buf, sizeof(buf), fmt, args);
-     va_end(args);
- 
-     uintptr_t irq_flags = spinlock_acquire_irqsave(&terminal_lock);
-     for (int i = 0; i < len; ++i) {
-         terminal_putchar_internal(buf[i]);
-     }
-     update_hardware_cursor();
-     spinlock_release_irqrestore(&terminal_lock, irq_flags);
- }
+static spinlock_t g_lock;
 
- void terminal_vprintf(const char *fmt, va_list args) {
-     char buf[PRINTF_BUFFER_SIZE];
-     int len = _vsnprintf(buf, sizeof(buf), fmt, args);
- 
-     uintptr_t irq_flags = spinlock_acquire_irqsave(&terminal_lock);
-     for (int i = 0; i < len; ++i) {
-         terminal_putchar_internal(buf[i]);
-     }
-     update_hardware_cursor();
-     spinlock_release_irqrestore(&terminal_lock, irq_flags);
- }
- 
- /* ------------------------------------------------------------------------- */
- /* Terminal control                                                          */
- /* ------------------------------------------------------------------------- */
- static void terminal_clear_internal(void) { 
-     for (int y = 0; y < VGA_ROWS; ++y) {
-         clear_row(y, terminal_color);
-     }
-     cursor_x = 0;
-     cursor_y = 0;
-     reset_ansi_state();
- }
- 
- void terminal_clear(void) {
-     uintptr_t flags = spinlock_acquire_irqsave(&terminal_lock);
-     terminal_clear_internal();
-     update_hardware_cursor();
-     spinlock_release_irqrestore(&terminal_lock, flags);
- }
- 
- void terminal_set_color(uint8_t color) {
-     uintptr_t flags = spinlock_acquire_irqsave(&terminal_lock);
-     terminal_color = color;
-     spinlock_release_irqrestore(&terminal_lock, flags);
- }
- 
- void terminal_set_cursor_pos(int x, int y) {
-     uintptr_t flags = spinlock_acquire_irqsave(&terminal_lock);
-     cursor_x = x;
-     cursor_y = y;
-     if (cursor_x < 0) cursor_x = 0; else if (cursor_x >= VGA_COLS) cursor_x = VGA_COLS -1;
-     if (cursor_y < 0) cursor_y = 0; else if (cursor_y >= VGA_ROWS) cursor_y = VGA_ROWS -1;
-     update_hardware_cursor();
-     spinlock_release_irqrestore(&terminal_lock, flags);
- }
- 
- void terminal_get_cursor_pos(int *x, int *y) {
-     uintptr_t flags = spinlock_acquire_irqsave(&terminal_lock);
-     if (x) { *x = cursor_x; }
-     if (y) { *y = cursor_y; }
-     spinlock_release_irqrestore(&terminal_lock, flags);
- }
- 
- void terminal_set_cursor_visibility(uint8_t visible) {
-     uintptr_t flags = spinlock_acquire_irqsave(&terminal_lock);
-     cursor_visible = !!visible; 
-     update_hardware_cursor();
-     spinlock_release_irqrestore(&terminal_lock, flags);
- }
- 
- /* ------------------------------------------------------------------------- */
- /* Initialization                                                            */
- /* ------------------------------------------------------------------------- */
- void terminal_init(void) {
-     spinlock_init(&terminal_lock);
-     spinlock_init(&s_line_buffer_lock); 
-     s_line_buffer_len = 0;
-     s_line_ready_for_read = false;
-     s_waiting_task = NULL;
-     memset(s_line_buffer, 0, MAX_INPUT_LENGTH);
- 
-     terminal_clear_internal(); 
-     input_state.is_active = false; 
-     update_hardware_cursor();   
-     serial_write("[Terminal] Initialized (VGA + Serial + Single-line input buffer)\n");
- }
- 
- /* ------------------------------------------------------------------------- */
- /* Interactive Input - Keyboard Event Handler                                */
- /* ------------------------------------------------------------------------- */
- void terminal_handle_key_event(const KeyEvent event) {
-    if (event.action != KEY_PRESS) { // Only process key presses for line input
-        return;
-    }
+/* Latin-1 0xA0..0xFF to the VGA code page (CP437). Letters CP437 lacks fall back to the
+ * nearest look-alike; 0x80..0x9F are control codes and show as '?'. */
+static const uint8_t latin1_to_cp437[96] = {
+    0x20,0xAD,0x9B,0x9C,0x0F,0x9D,0x7C,0x15,0x22,'C',0xA6,0xAE,0xAA,'-','R','-',
+    0xF8,0xF1,0xFD,'3',0x27,0xE6,0x14,0xFA,',','1',0xA7,0xAF,0xAC,0xAB,'?',0xA8,
+    'A','A','A','A',0x8E,0x8F,0x92,0x80,'E',0x90,'E','E','I','I','I','I',
+    'D',0xA5,'O','O','O','O',0x99,'x',0xE8,'U','U','U',0x9A,'Y','P',0xE1,
+    0x85,0xA0,0x83,'a',0x84,0x86,0x91,0x87,0x8A,0x82,0x88,0x89,0x8D,0xA1,0x8C,0x8B,
+    'd',0xA4,'o',0xA2,0x93,'o',0x94,0xF6,0xED,0x97,0xA3,0x96,0x81,'y','p',0x98,
+};
 
-    // This outer lock protects s_line_buffer, s_line_buffer_len, 
-    // s_line_ready_for_read, and s_waiting_task.
-    uintptr_t line_buf_irq_flags = spinlock_acquire_irqsave(&s_line_buffer_lock);
+static inline uint16_t cell(uint8_t glyph, uint8_t attr) {
+    return (uint16_t)(glyph | (attr << 8));
+}
 
-    char char_to_add = 0;
-    bool is_newline = false;
+static uint8_t glyph_for(uint8_t c) {
+    if (c < 0x7F) return c;
+    if (c >= 0xA0) return latin1_to_cp437[c - 0xA0];
+    return '?';
+}
 
-    // Determine the character to process, converting KeyCode to char if applicable
-    // and handling special keys like Enter and Backspace.
-    if (event.code == KEY_ENTER || event.code == '\n') { // Check for KEY_ENTER or if keymap produces '\n'
-        char_to_add = '\n';
-        is_newline = true;
-    } else if (event.code == KEY_BACKSPACE) {
-        char_to_add = '\b';
-    } else if (event.code > 0 && event.code < 0x80) { // Printable ASCII range from keymap
-        char_to_add = apply_modifiers_extended((char)event.code, event.modifiers);
-        // Check if the modified character itself is a newline (e.g., Ctrl+J if mapped)
-        if (char_to_add == '\n') {
-            is_newline = true;
-        }
-    }
-    // Note: apply_modifiers_extended should handle shift, caps etc. for printable characters.
-    // If KEY_ENTER or KEY_BACKSPACE are > 0x80, this logic is fine.
-    // If they are mapped to '\n' and '\b' directly by the keymap, the first condition handles it.
+/* ---- Cursor and attributes ------------------------------------------- */
 
-    // If a character was processed (printable, newline, or backspace)
-    if (char_to_add != 0) {
-        
-        // Serial logging for debug (uncomment and adapt as needed)
-        /*
-        serial_write("[Terminal KeyEvt] Char='");
-        if (is_newline) { serial_write("\\n"); }
-        else if (char_to_add == '\b') { serial_write("\\b"); }
-        else if (char_to_add >= ' ' && char_to_add <= '~') { serial_putchar(char_to_add); }
-        else { serial_print_hex((uint8_t)char_to_add); }
-        serial_write("', Mod=0x"); serial_print_hex(event.modifiers); serial_write("\n");
-        */
+static void update_attr(void) {
+    uint8_t fg = t.fg | (t.bold ? 8 : 0);
+    t.attr = t.reverse ? VGA_RGB(t.bg, fg) : VGA_RGB(fg, t.bg);
+}
 
-        if (is_newline) {
-            s_line_buffer[s_line_buffer_len] = '\0'; // Null-terminate the completed line
-            s_line_ready_for_read = true;            // Signal that the line is ready
-            
-            // serial_write("[Terminal] Newline. Buffer: '"); serial_write(s_line_buffer);
-            // serial_write("', Len: "); 
-            // char len_str[12]; itoa_simple(s_line_buffer_len, len_str, 10); serial_write(len_str); 
-            // serial_write("\n");
+static void hw_cursor_update(void) {
+    int pos = t.cursor_visible ? t.y * VGA_COLS + t.x : VGA_ROWS * VGA_COLS; /* off-screen hides it */
+    if (pos == t.hw_pos) return;
+    t.hw_pos = pos;
+    outb(VGA_CMD_PORT, VGA_REG_CURSOR_LO); outb(VGA_DATA_PORT, (uint8_t)pos);
+    outb(VGA_CMD_PORT, VGA_REG_CURSOR_HI); outb(VGA_DATA_PORT, (uint8_t)(pos >> 8));
+}
 
-            tcb_t* task_to_unblock = (tcb_t*)s_waiting_task; // Copy before potentially clearing
-            
-            if (task_to_unblock) {
-                s_waiting_task = NULL; // Clear s_waiting_task *while still holding the lock*
-                                       // to prevent races if the unblocked task re-enters read quickly.
-            }
-            
-            // Release the line buffer lock BEFORE calling the scheduler or terminal output functions
-            spinlock_release_irqrestore(&s_line_buffer_lock, line_buf_irq_flags);
-            
-            if (task_to_unblock) {
-                // serial_write("[Terminal] Unblocking waiting task PID: ");
-                // if (task_to_unblock->process) serial_print_hex(task_to_unblock->process->pid); else serial_write("UNKNOWN");
-                // serial_write("\n");
-                scheduler_unblock_task(task_to_unblock); // This might yield/schedule
-            } else {
-                // serial_write("[Terminal] Line ready, but no task was waiting.\n");
-            }
+static void hw_cursor_init(void) {
+    outb(VGA_CMD_PORT, VGA_REG_CURSOR_START); outb(VGA_DATA_PORT, 14); /* underline, on */
+    outb(VGA_CMD_PORT, VGA_REG_CURSOR_END);   outb(VGA_DATA_PORT, 15);
+}
 
-            // Echo newline to terminal (needs terminal_lock, acquired separately)
-            uintptr_t term_out_irq_flags = spinlock_acquire_irqsave(&terminal_lock);
-            terminal_putchar_internal('\n'); 
-            update_hardware_cursor();
-            spinlock_release_irqrestore(&terminal_lock, term_out_irq_flags);
+/* ---- Screen operations ------------------------------------------------ */
 
-            return; // Exit after handling newline
+static void fill_cells(int from, int count, uint16_t value) {
+    for (int i = 0; i < count; i++) vga[from + i] = value;
+}
 
-        } else if (char_to_add == '\b') { // Backspace
-            if (s_line_buffer_len > 0) {
-                s_line_buffer_len--;
-                s_line_buffer[s_line_buffer_len] = '\0'; // Null-terminate the shortened string
-                
-                // Release line buffer lock BEFORE terminal output
-                spinlock_release_irqrestore(&s_line_buffer_lock, line_buf_irq_flags);
+static void scroll_up(void) {
+    memmove((void *)vga, (const void *)(vga + VGA_COLS), (VGA_ROWS - 1) * VGA_COLS * sizeof(uint16_t));
+    fill_cells((VGA_ROWS - 1) * VGA_COLS, VGA_COLS, cell(' ', t.attr));
+}
 
-                // Echo backspace, space, backspace to terminal
-                uintptr_t term_out_irq_flags = spinlock_acquire_irqsave(&terminal_lock);
-                terminal_putchar_internal('\b'); 
-                terminal_putchar_internal(' ');  
-                terminal_putchar_internal('\b'); 
-                update_hardware_cursor();
-                spinlock_release_irqrestore(&terminal_lock, term_out_irq_flags);
-                
-                // serial_write("[Terminal] Backspace. Buffer len: "); 
-                // char len_str[12]; itoa_simple(s_line_buffer_len, len_str, 10); serial_write(len_str);
-                // serial_write("\n");
-                return; // Exit after handling backspace
-            }
-            // If buffer is empty, nothing to backspace. Just release lock.
-            spinlock_release_irqrestore(&s_line_buffer_lock, line_buf_irq_flags);
-            return;
-
-        } else { // Regular character (printable)
-            if (s_line_buffer_len < MAX_INPUT_LENGTH - 1) {
-                s_line_buffer[s_line_buffer_len++] = char_to_add;
-                // Optionally keep s_line_buffer null-terminated during input for easier debugging,
-                // but terminal_read_line_blocking is responsible for final null termination
-                // before copying to user.
-                // s_line_buffer[s_line_buffer_len] = '\0'; 
-                
-                // Release line buffer lock BEFORE terminal output
-                spinlock_release_irqrestore(&s_line_buffer_lock, line_buf_irq_flags);
-                
-                // Echo character to terminal output
-                uintptr_t term_out_irq_flags = spinlock_acquire_irqsave(&terminal_lock);
-                terminal_putchar_internal(char_to_add); 
-                update_hardware_cursor(); 
-                spinlock_release_irqrestore(&terminal_lock, term_out_irq_flags);
-                
-                return; // Exit after handling character
-            } else {
-                // serial_write("[Terminal WARNING] Single-line input buffer full. Char discarded.\n");
-                // Buffer full, just release lock
-                spinlock_release_irqrestore(&s_line_buffer_lock, line_buf_irq_flags);
-                return;
-            }
-        }
-    } else {
-        // char_to_add was 0 (e.g., a modifier key press like Shift alone, or unhandled special key)
-        // No action needed for the line buffer.
-        spinlock_release_irqrestore(&s_line_buffer_lock, line_buf_irq_flags);
+static void line_feed(void) {
+    if (++t.y >= VGA_ROWS) {
+        scroll_up();
+        t.y = VGA_ROWS - 1;
     }
 }
- 
- /* ------------------------------------------------------------------------- */
- /* Blocking Terminal Read for Syscall                                        */
- /* ------------------------------------------------------------------------- */
- ssize_t terminal_read_line_blocking(char *kbuf, size_t len) {
-     if (!kbuf || len == 0) {
-         return -EINVAL; 
-     }
- 
-     serial_write("[Terminal] terminal_read_line_blocking: Enter\n");
-     ssize_t bytes_copied = 0;
- 
-     while (true) {
-         uintptr_t line_buf_irq_flags = spinlock_acquire_irqsave(&s_line_buffer_lock);
- 
-         if (s_line_ready_for_read) {
-             serial_write("[Terminal] terminal_read_line_blocking: Line is ready.\n");
-             size_t copy_len = MIN(s_line_buffer_len, len - 1); 
-             memcpy(kbuf, s_line_buffer, copy_len);
-             kbuf[copy_len] = '\0'; 
-             bytes_copied = (ssize_t)copy_len; 
- 
-             s_line_ready_for_read = false;
-             s_line_buffer_len = 0;
-             memset(s_line_buffer, 0, MAX_INPUT_LENGTH); 
- 
-             spinlock_release_irqrestore(&s_line_buffer_lock, line_buf_irq_flags);
-             
-             serial_write("[Terminal] terminal_read_line_blocking: Copied bytes: '");
-             serial_write(kbuf); 
-             serial_write("'\n");
-             return bytes_copied; 
-         } else {
-             serial_write("[Terminal] terminal_read_line_blocking: Line not ready, blocking task.\n");
-             tcb_t *current_task_non_volatile = (tcb_t*)get_current_task(); 
-             if (!current_task_non_volatile) {
-                 spinlock_release_irqrestore(&s_line_buffer_lock, line_buf_irq_flags);
-                 serial_write("[Terminal] terminal_read_line_blocking: ERROR - No current task to block!\n");
-                 return -EFAULT; 
-             }
- 
-             if (s_waiting_task != NULL && s_waiting_task != current_task_non_volatile) {
-                 spinlock_release_irqrestore(&s_line_buffer_lock, line_buf_irq_flags);
-                 serial_write("[Terminal] terminal_read_line_blocking: ERROR - Another task is already waiting!\n");
-                 return -EBUSY; 
-             }
- 
-             s_waiting_task = current_task_non_volatile; 
-             current_task_non_volatile->state = TASK_BLOCKED; 
- 
-             spinlock_release_irqrestore(&s_line_buffer_lock, line_buf_irq_flags);
- 
-             serial_write("[Terminal] terminal_read_line_blocking: Calling schedule().\n");
-             schedule(); 
-             serial_write("[Terminal] terminal_read_line_blocking: Woke up from schedule(). Re-checking line.\n");
-         }
-     }
-     return -EIO; 
- }
- 
- /* ------------------------------------------------------------------------- */
- /* Multi-line input editor (Stubs - ikke fullt implementert)                 */
- /* ------------------------------------------------------------------------- */
- static void __attribute__((unused)) redraw_input(void) { /* Placeholder */ }
- static void __attribute__((unused)) update_desired_column(void) { /* Placeholder */ }
- static void __attribute__((unused)) insert_character(char c) { (void)c; /* Placeholder */ }
- static void __attribute__((unused)) erase_character(void) { /* Placeholder */ }
- 
- void terminal_start_input(const char* prompt) {
-     uintptr_t flags = spinlock_acquire_irqsave(&terminal_lock);
-     if (input_state.is_active) { terminal_complete_input(); } 
-     if (prompt) { terminal_write(prompt); } 
-     input_state.is_active = true;
-     memset(&input_state, 0, sizeof(input_state)); 
-     input_state.is_active = true; 
-     input_state.start_row = cursor_y;
-     input_state.desired_column = cursor_x; 
-     update_hardware_cursor(); 
-     spinlock_release_irqrestore(&terminal_lock, flags);
- }
- 
- int terminal_get_input(char* buffer, size_t size) {
-     if (!input_state.is_active || !buffer || size == 0) { return -1; }
-     return -1; 
- }
- 
- void terminal_complete_input(void) {
-     uintptr_t flags = spinlock_acquire_irqsave(&terminal_lock);
-     if (!input_state.is_active) { spinlock_release_irqrestore(&terminal_lock, flags); return; }
-     input_state.is_active = false;
-     update_hardware_cursor(); 
-     spinlock_release_irqrestore(&terminal_lock, flags);
- }
- 
- /* ------------------------------------------------------------------------- */
- /* Legacy/Misc                                                               */
- /* ------------------------------------------------------------------------- */
- void terminal_write_char(char c) { terminal_putchar(c); } 
- 
- void terminal_backspace(void) { 
-     uintptr_t flags = spinlock_acquire_irqsave(&terminal_lock);
-     if (cursor_x > 0) {
-         cursor_x--;
-     } else if (cursor_y > 0) { 
-         cursor_y--;
-         cursor_x = VGA_COLS - 1;
-     } else {
-         spinlock_release_irqrestore(&terminal_lock, flags);
-         return;
-     }
-     put_char_at(' ', terminal_color, cursor_x, cursor_y); 
-     update_hardware_cursor();
-     spinlock_release_irqrestore(&terminal_lock, flags);
- }
- 
- void terminal_write_bytes(const char* data, size_t size) {
-     if (!data || size == 0) { return; }
-     uintptr_t flags = spinlock_acquire_irqsave(&terminal_lock);
-     for (size_t i = 0; i < size; ++i) {
-         terminal_putchar_internal(data[i]);
-     }
-     update_hardware_cursor(); 
-     spinlock_release_irqrestore(&terminal_lock, flags);
- }
- 
- /* ------------------------------------------------------------------------- */
- /* End of file                                                               */
- /* ------------------------------------------------------------------------- */
+
+static int clamp(int v, int lo, int hi) {
+    return v < lo ? lo : v > hi ? hi : v;
+}
+
+static void move_to(int x, int y) {
+    t.x = clamp(x, 0, VGA_COLS - 1);
+    t.y = clamp(y, 0, VGA_ROWS - 1);
+}
+
+static void clear_screen_region(int mode) {
+    int cur = t.y * VGA_COLS + t.x, all = VGA_ROWS * VGA_COLS;
+    uint16_t blank = cell(' ', t.attr);
+    if (mode == 0)      fill_cells(cur, all - cur, blank);
+    else if (mode == 1) fill_cells(0, cur + 1, blank);
+    else                fill_cells(0, all, blank);
+}
+
+static void clear_line_region(int mode) {
+    int row = t.y * VGA_COLS;
+    uint16_t blank = cell(' ', t.attr);
+    if (mode == 0)      fill_cells(row + t.x, VGA_COLS - t.x, blank);
+    else if (mode == 1) fill_cells(row, t.x + 1, blank);
+    else                fill_cells(row, VGA_COLS, blank);
+}
+
+/* Inserts (n > 0) or deletes (n < 0) lines at the cursor row. */
+static void shift_lines(int n) {
+    int rows_below = VGA_ROWS - t.y;
+    int cnt = clamp(n < 0 ? -n : n, 0, rows_below);
+    int row = t.y * VGA_COLS;
+    if (n > 0) {
+        memmove((void *)(vga + row + cnt * VGA_COLS), (const void *)(vga + row),
+                (rows_below - cnt) * VGA_COLS * sizeof(uint16_t));
+        fill_cells(row, cnt * VGA_COLS, cell(' ', t.attr));
+    } else {
+        memmove((void *)(vga + row), (const void *)(vga + row + cnt * VGA_COLS),
+                (rows_below - cnt) * VGA_COLS * sizeof(uint16_t));
+        fill_cells((VGA_ROWS - cnt) * VGA_COLS, cnt * VGA_COLS, cell(' ', t.attr));
+    }
+}
+
+/* Inserts (n > 0) or deletes (n < 0) characters at the cursor, within the line. */
+static void shift_chars(int n) {
+    int cnt = clamp(n < 0 ? -n : n, 0, VGA_COLS - t.x);
+    volatile uint16_t *p = vga + t.y * VGA_COLS + t.x;
+    int rest = VGA_COLS - t.x - cnt;
+    if (n > 0) {
+        memmove((void *)(p + cnt), (const void *)p, rest * sizeof(uint16_t));
+        fill_cells(t.y * VGA_COLS + t.x, cnt, cell(' ', t.attr));
+    } else {
+        memmove((void *)p, (const void *)(p + cnt), rest * sizeof(uint16_t));
+        fill_cells(t.y * VGA_COLS + VGA_COLS - cnt, cnt, cell(' ', t.attr));
+    }
+}
+
+/* ---- VT100 parser ----------------------------------------------------- */
+
+static const uint8_t ansi_to_vga[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+
+static void sgr(int p) {
+    if (p == 0)                { t.fg = DEFAULT_FG; t.bg = DEFAULT_BG; t.bold = t.reverse = false; }
+    else if (p == 1)           t.bold = true;
+    else if (p == 22)          t.bold = false;
+    else if (p == 7)           t.reverse = true;
+    else if (p == 27)          t.reverse = false;
+    else if (p >= 30 && p <= 37)   t.fg = ansi_to_vga[p - 30];
+    else if (p == 39)          t.fg = DEFAULT_FG;
+    else if (p >= 40 && p <= 47)   t.bg = ansi_to_vga[p - 40];
+    else if (p == 49)          t.bg = DEFAULT_BG;
+    else if (p >= 90 && p <= 97)   t.fg = ansi_to_vga[p - 90] | 8;
+    else if (p >= 100 && p <= 107) t.bg = ansi_to_vga[p - 100] | 8;
+}
+
+/* Parameter i, or def when absent or zero. */
+static int param(int i, int def) {
+    return (i < t.nparams && t.params[i] > 0) ? t.params[i] : def;
+}
+
+static void csi_dispatch(uint8_t final) {
+    switch (final) {
+    case 'A': move_to(t.x, t.y - param(0, 1)); break;
+    case 'B': move_to(t.x, t.y + param(0, 1)); break;
+    case 'C': move_to(t.x + param(0, 1), t.y); break;
+    case 'D': move_to(t.x - param(0, 1), t.y); break;
+    case 'E': move_to(0, t.y + param(0, 1)); break;
+    case 'F': move_to(0, t.y - param(0, 1)); break;
+    case 'G': move_to(param(0, 1) - 1, t.y); break;
+    case 'd': move_to(t.x, param(0, 1) - 1); break;
+    case 'H': case 'f': move_to(param(1, 1) - 1, param(0, 1) - 1); break;
+    case 'J': clear_screen_region(t.nparams ? t.params[0] : 0); break;
+    case 'K': clear_line_region(t.nparams ? t.params[0] : 0); break;
+    case 'L': shift_lines(param(0, 1)); break;
+    case 'M': shift_lines(-param(0, 1)); break;
+    case '@': shift_chars(param(0, 1)); break;
+    case 'P': shift_chars(-param(0, 1)); break;
+    case 'X': {
+        int cnt = clamp(param(0, 1), 0, VGA_COLS - t.x);
+        fill_cells(t.y * VGA_COLS + t.x, cnt, cell(' ', t.attr));
+        break;
+    }
+    case 'm':
+        if (t.nparams == 0) sgr(0);
+        for (int i = 0; i < t.nparams; i++) sgr(t.params[i]);
+        update_attr();
+        break;
+    case 's': t.saved_x = t.x; t.saved_y = t.y; break;
+    case 'u': move_to(t.saved_x, t.saved_y); break;
+    case 'h': case 'l':
+        if (t.private_mode && t.nparams && t.params[0] == 25) t.cursor_visible = (final == 'h');
+        break;
+    default: break; /* unsupported sequences are ignored */
+    }
+}
+
+static void esc_input(uint8_t c) {
+    if (t.state == ST_ESC) {
+        t.state = ST_NORMAL;
+        switch (c) {
+        case '[': t.state = ST_CSI; t.nparams = 0; t.private_mode = false;
+                  for (int i = 0; i < MAX_PARAMS; i++) t.params[i] = 0;
+                  break;
+        case '7': t.saved_x = t.x; t.saved_y = t.y; break;
+        case '8': move_to(t.saved_x, t.saved_y); break;
+        case 'c': t.fg = DEFAULT_FG; t.bg = DEFAULT_BG; t.bold = t.reverse = false;
+                  t.cursor_visible = true; update_attr();
+                  clear_screen_region(2); move_to(0, 0); break;
+        default: break;
+        }
+        return;
+    }
+    /* ST_CSI */
+    if (c == '?') {
+        t.private_mode = true;
+    } else if (c >= '0' && c <= '9') {
+        if (t.nparams == 0) t.nparams = 1;
+        int *p = &t.params[t.nparams - 1];
+        if (*p < 10000) *p = *p * 10 + (c - '0');
+    } else if (c == ';') {
+        if (t.nparams == 0) t.nparams = 1; /* empty first parameter */
+        if (t.nparams < MAX_PARAMS) t.nparams++;
+    } else if (c >= 0x40 && c <= 0x7E) {
+        t.state = ST_NORMAL;
+        csi_dispatch(c);
+    } else if (c < 0x20 || c > 0x7E) {
+        t.state = ST_NORMAL; /* malformed: abort the sequence */
+    }
+}
+
+static void vt_write(const uint8_t *s, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        uint8_t c = s[i];
+        if (t.state != ST_NORMAL) { esc_input(c); continue; }
+
+        if (c >= 0x20 && c != 0x7F) {
+            vga[t.y * VGA_COLS + t.x] = cell(glyph_for(c), t.attr);
+            if (++t.x >= VGA_COLS) { t.x = 0; line_feed(); }
+            continue;
+        }
+        switch (c) {
+        case '\n': case '\v': case '\f': t.x = 0; line_feed(); break;
+        case '\r': t.x = 0; break;
+        case '\b': if (t.x > 0) t.x--; break;
+        case '\t': t.x = clamp((t.x / TAB_WIDTH + 1) * TAB_WIDTH, 0, VGA_COLS - 1); break;
+        case 0x1B: t.state = ST_ESC; break;
+        default: break;
+        }
+    }
+}
+
+/* ---- Public API ------------------------------------------------------- */
+
+static void write_locked(const char *data, size_t n) {
+    uintptr_t flags = spinlock_acquire_irqsave(&g_lock);
+    vt_write((const uint8_t *)data, n);
+    hw_cursor_update();
+    spinlock_release_irqrestore(&g_lock, flags);
+}
+
+void terminal_write_bytes(const char *data, size_t size) {
+    if (!data || !size) return;
+    write_locked(data, size);
+#if TERMINAL_MIRROR_CONSOLE
+    for (size_t i = 0; i < size; i++) serial_putchar(data[i]);
+#endif
+}
+
+void terminal_write(const char *str) {
+    if (!str) return;
+    write_locked(str, strlen(str));
+#if TERMINAL_MIRROR_KERNEL
+    serial_write(str);
+#endif
+}
+
+void terminal_putchar(char c) {
+    write_locked(&c, 1);
+#if TERMINAL_MIRROR_KERNEL
+    serial_putchar(c);
+#endif
+}
+
+void terminal_vprintf(const char *fmt, va_list args) {
+    char buf[PRINTF_BUF_SIZE];
+    int len = _vsnprintf(buf, sizeof(buf), fmt, args);
+    write_locked(buf, (size_t)len);
+#if TERMINAL_MIRROR_KERNEL
+    serial_write(buf);
+#endif
+}
+
+void terminal_printf(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    terminal_vprintf(fmt, args);
+    va_end(args);
+}
+
+static void clear_all(void) {
+    uintptr_t flags = spinlock_acquire_irqsave(&g_lock);
+    clear_screen_region(2);
+    move_to(0, 0);
+    hw_cursor_update();
+    spinlock_release_irqrestore(&g_lock, flags);
+}
+
+void terminal_init(void) {
+    spinlock_init(&g_lock);
+    update_attr();
+    hw_cursor_init();
+    clear_all();
+}

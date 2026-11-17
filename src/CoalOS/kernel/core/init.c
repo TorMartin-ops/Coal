@@ -141,7 +141,8 @@ init_result_t init_validate_multiboot(uint32_t magic, uint32_t mb_info_phys_addr
 init_result_t init_basic_io(void)
 {
     // Initialize serial communication first
-    serial_init();
+    serial_init(SERIAL_COM1);
+    serial_init(SERIAL_COM2);
     
     // Initialize terminal for user output
     terminal_init();

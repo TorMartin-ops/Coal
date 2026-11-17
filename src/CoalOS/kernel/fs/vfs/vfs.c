@@ -33,7 +33,7 @@ static vfs_driver_t *drivers[MAX_DRIVERS];
 static mount_t mounts[MAX_MOUNTS];
 static spinlock_t mount_lock;
 
-uint32_t vfs_time(void) { return BOOT_EPOCH + get_pit_ticks() / 1000; }
+uint32_t vfs_time(void) { return BOOT_EPOCH + (uint32_t)timer_uptime_ms() / 1000; }
 
 void vfs_init(void) {
     spinlock_init(&mount_lock);
