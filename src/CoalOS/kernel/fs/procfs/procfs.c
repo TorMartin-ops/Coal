@@ -17,7 +17,7 @@
 #define SNAPSHOT_MAX 640
 
 
-enum kind { K_ROOT, K_PIDDIR, K_MEMINFO, K_UPTIME, K_VERSION, K_STATUS, K_CMDLINE };
+enum kind { K_ROOT, K_PIDDIR, K_MEMINFO, K_UPTIME, K_VERSION, K_MOUNTS, K_STATUS, K_CMDLINE };
 
 struct node {
     enum kind kind;
@@ -74,6 +74,17 @@ static size_t render(const struct node *n, char *out) {
         return (size_t)pf(out, SNAPSHOT_MAX, "%u.%u%u %u.00\n", ms / 1000, ms / 100 % 10, ms / 10 % 10, ms / 1000);
     case K_VERSION:
         return (size_t)pf(out, SNAPSHOT_MAX, "Coal OS version %s (i386)\n", COAL_VERSION);
+    case K_MOUNTS: {                                /* Linux format: device mountpoint type options dump pass */
+        const char *path, *dev, *fs;
+        size_t len = 0;
+        for (unsigned cur = 0; len < SNAPSHOT_MAX && vfs_mount_next(&cur, &path, &dev, &fs);) {
+            const char *type = !strcmp(fs, "fat") ? "vfat" : !strcmp(fs, "procfs") ? "proc" : fs;
+            char devname[16];
+            pf(devname, sizeof(devname), dev[0] ? "/dev/%s" : "%s", dev[0] ? dev : type);
+            len += (size_t)pf(out + len, SNAPSHOT_MAX - len, "%s %s %s rw 0 0\n", devname, path, type);
+        }
+        return len < SNAPSHOT_MAX ? len : SNAPSHOT_MAX - 1;
+    }
     case K_STATUS:
         if (proc_info_get(n->pid, &pi) < 0) return 0;
         return (size_t)pf(out, SNAPSHOT_MAX, "Name:\t%s\nState:\t%c\nPid:\t%u\nPPid:\t%u\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n",
@@ -124,6 +135,7 @@ static int procfs_open(void *fs, const char *path, int flags, mode_t mode, vnode
         if (nc == 1 && cl[0] == 7 && !strncmp(c[0], "meminfo", 7)) kind = K_MEMINFO;
         else if (nc == 1 && cl[0] == 6 && !strncmp(c[0], "uptime", 6)) kind = K_UPTIME;
         else if (nc == 1 && cl[0] == 7 && !strncmp(c[0], "version", 7)) kind = K_VERSION;
+        else if (nc == 1 && cl[0] == 6 && !strncmp(c[0], "mounts", 6)) kind = K_MOUNTS;
         else {
             if (cl[0] == 4 && !strncmp(c[0], "self", 4)) {
                 pcb_t *cur = get_current_process();
@@ -175,7 +187,7 @@ static ssize_t procfs_read(vnode_t *v, off_t pos, void *buf, size_t len) {
 }
 
 static int procfs_readdir(vnode_t *v, off_t *pos, struct vfs_dirent *out) {
-    static const char *const root_names[] = { "meminfo", "uptime", "version", "self" };
+    static const char *const root_names[] = { "meminfo", "uptime", "version", "mounts", "self" };
     static const char *const pid_names[] = { "status", "cmdline" };
     struct node *n = v->data;
     uint32_t i = (uint32_t)*pos;
@@ -189,13 +201,13 @@ static int procfs_readdir(vnode_t *v, off_t *pos, struct vfs_dirent *out) {
         strcpy(out->name, pid_names[i - 2]);
         out->type = DT_REG;
         out->ino = 100 + i;
-    } else if (i - 2 < 4) {
+    } else if (i - 2 < 5) {
         strcpy(out->name, root_names[i - 2]);
-        out->type = i - 2 == 3 ? DT_DIR : DT_REG;
+        out->type = i - 2 == 4 ? DT_DIR : DT_REG;
         out->ino = 10 + i;
     } else {
         uint32_t pids[MAX_PIDS];
-        uint32_t k = i - 6;
+        uint32_t k = i - 7;
         int cnt = proc_info_list(pids, MAX_PIDS);
         if ((int)k >= cnt) return 0;
         pf(out->name, sizeof(out->name), "%u", pids[k]);

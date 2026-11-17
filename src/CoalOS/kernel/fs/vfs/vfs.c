@@ -33,6 +33,19 @@ static vfs_driver_t *drivers[MAX_DRIVERS];
 static mount_t mounts[MAX_MOUNTS];
 static spinlock_t mount_lock;
 
+bool vfs_mount_next(unsigned *cursor, const char **path, const char **dev, const char **fs_name) {
+    for (; *cursor < MAX_MOUNTS; (*cursor)++) {
+        const mount_t *m = &mounts[*cursor];
+        if (!m->used || m->dying) continue;
+        *path = m->path;
+        *dev = m->dev;
+        *fs_name = m->drv->fs_name;
+        (*cursor)++;
+        return true;
+    }
+    return false;
+}
+
 uint32_t vfs_time(void) { return wall_seconds(); }
 
 void vfs_init(void) {

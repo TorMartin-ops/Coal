@@ -158,6 +158,8 @@ int  vfs_register_driver(vfs_driver_t *drv);
 int  vfs_mount(const char *target, const char *fs_name, const char *device);
 int  vfs_umount(const char *target);
 void vfs_sync(void);
+/** Next live mount at or after *cursor (advanced past it); false when there are no more. For /proc/mounts. */
+bool vfs_mount_next(unsigned *cursor, const char **path, const char **dev, const char **fs_name);
 void vfs_shutdown(void);
 
 /* Paths */
