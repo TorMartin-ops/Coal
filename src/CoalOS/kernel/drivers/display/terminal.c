@@ -465,8 +465,8 @@
      return current_pos;
  }
  
- /* Supports %s %c %d %i %u %x %X %o %p %%, flags 0 and #, a width, and the
- * l, ll and z length modifiers. */
+ /* Supports %s %c %d %i %u %x %X %o %p %%, flags 0 # and -, width, string
+ * precision (.N and .*), and the h, l, ll and z length modifiers. */
  int _vsnprintf(char *str, size_t size, const char *fmt, va_list args) {
      if (!str || !size) { if (size == 1 && str) str[0] = '\0'; return 0; }
  
@@ -481,26 +481,43 @@
          fmt++; 
  
          bool zero_pad = false;
+         bool left_justify = false;
          int min_width = 0;
+         int precision = -1;
          bool is_long = false;     // l: same width as int on i386
          bool is_long_long = false;
-         bool alt_form = false; 
- 
-         if (*fmt == '0') { zero_pad = true; fmt++; }
-         if (*fmt == '#') { alt_form = true; fmt++; }
- 
+         bool alt_form = false;
+
+         for (;; fmt++) {
+             if (*fmt == '0') zero_pad = true;
+             else if (*fmt == '#') alt_form = true;
+             else if (*fmt == '-') left_justify = true;
+             else break;
+         }
+
+         if (*fmt == '*') { min_width = va_arg(args, int); fmt++; }
          while (*fmt >= '0' && *fmt <= '9') {
              min_width = min_width * 10 + (*fmt - '0');
              fmt++;
          }
- 
+         if (*fmt == '.') {
+             fmt++;
+             precision = 0;
+             if (*fmt == '*') { precision = va_arg(args, int); fmt++; }
+             while (*fmt >= '0' && *fmt <= '9') {
+                 precision = precision * 10 + (*fmt - '0');
+                 fmt++;
+             }
+         }
+
+         while (*fmt == 'h') fmt++;    // h/hh: promoted to int by varargs
          if (*fmt == 'z') {            // size_t is unsigned int on i386
              fmt++;
          } else if (*fmt == 'l') {
              is_long = true; fmt++;
              if (*fmt == 'l') { is_long_long = true; fmt++; }
          }
- 
+
          const char *s_val;
          int len_s;
          unsigned long long ul_val;
@@ -511,12 +528,15 @@
              case 's':
                  s_val = va_arg(args, const char *);
                  if (!s_val) s_val = "(null)";
-                 len_s = strlen(s_val);
-                 // Padding for string (left-pad with spaces)
-                 if(min_width > len_s) {
-                     for(int k=0; k < (min_width - len_s) && written_chars < size -1; ++k) str[written_chars++] = ' ';
+                 len_s = 0;
+                 while (s_val[len_s] && (precision < 0 || len_s < precision)) len_s++;
+                 if (!left_justify) {
+                     for (int k = 0; k < (min_width - len_s) && written_chars < size - 1; ++k) str[written_chars++] = ' ';
                  }
                  for (int k=0; k<len_s && written_chars < size -1; ++k) str[written_chars++] = s_val[k];
+                 if (left_justify) {
+                     for (int k = 0; k < (min_width - len_s) && written_chars < size - 1; ++k) str[written_chars++] = ' ';
+                 }
                  break;
              case 'c': str[written_chars++] = (char)va_arg(args, int); break;
              case 'd': case 'i':
@@ -536,7 +556,10 @@
                  int base = (*fmt == 'u') ? 10 : ((*fmt == 'o') ? 8 : 16);
                  bool upper = (*fmt == 'X');
                  if (alt_form && ul_val != 0 && written_chars < size - 1) {
-                     if (base == 16 && written_chars < size -2) { str[written_chars++] = '0'; str[written_chars++] = upper ? 'X' : 'x';}
+                     if (base == 16 && written_chars < size -2) {
+                         str[written_chars++] = '0'; str[written_chars++] = upper ? 'X' : 'x';
+                         if (min_width > 2) min_width -= 2;   // the prefix counts toward the width
+                     }
                      else if (base == 8 && written_chars < size -1) { str[written_chars++] = '0';}
                  }
                  len_s = _format_number(ul_val, false, base, upper, min_width, zero_pad, temp_num_buf, sizeof(temp_num_buf));
