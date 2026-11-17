@@ -6,7 +6,8 @@
 #include <kernel/fs/vfs/vfs.h>
 #include <kernel/drivers/display/terminal.h>
 #include <kernel/drivers/timer/pit.h>
-#include <kernel/memory/buddy.h>
+#include <kernel/memory/frame.h>
+#include <kernel/memory/paging.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/process/process.h>
 #include <kernel/process/process_manager.h>
@@ -63,7 +64,9 @@ static size_t render(const struct node *n, char *out) {
     uint32_t ms = get_pit_ticks();
     switch (n->kind) {
     case K_MEMINFO: {
-        uint32_t total = (uint32_t)(buddy_total_space() / 1024), free = (uint32_t)(buddy_free_space() / 1024);
+        size_t total_pages, free_pages;
+        frame_stats(&total_pages, &free_pages);
+        uint32_t total = (uint32_t)total_pages * (PAGE_SIZE / 1024), free = (uint32_t)free_pages * (PAGE_SIZE / 1024);
         return (size_t)pf(out, SNAPSHOT_MAX, "MemTotal:    %8u kB\nMemFree:     %8u kB\nMemAvailable:%8u kB\n",
                           total, free, free);
     }
