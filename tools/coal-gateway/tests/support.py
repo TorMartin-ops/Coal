@@ -49,6 +49,8 @@ def bridge(sock_path, master):
 class HostAgent:
     """agentd running on this machine's kernel, reachable through a unix socket."""
 
+    reports_rlimits = False      # the Linux kernel has no RlimitHits line in /proc/<pid>/status
+
     def __init__(self):
         if not shutil.which("gcc"):
             raise unittest.SkipTest("gcc not available")
@@ -76,6 +78,8 @@ class HostAgent:
 
 class QemuAgent:
     """The real kernel and agentd under QEMU (TCG, headless), COM2 on a unix socket. Disk writes are discarded."""
+
+    reports_rlimits = True
 
     def __init__(self):
         if not shutil.which("qemu-system-i386"):
