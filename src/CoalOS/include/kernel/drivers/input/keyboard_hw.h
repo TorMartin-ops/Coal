@@ -27,6 +27,10 @@
 #define KBC_CFG_DISABLE_KB  0x10
 #define KBC_CFG_TRANSLATION 0x40 /* controller converts set 2 to set 1 */
 
+#define KB_CMD_SET_LEDS    0xED
+#define KB_LED_SCROLL      0x01
+#define KB_LED_NUM         0x02
+#define KB_LED_CAPS        0x04
 #define KB_CMD_ENABLE_SCAN 0xF4
 #define KB_CMD_RESET       0xFF
 #define KB_RESP_ACK        0xFA

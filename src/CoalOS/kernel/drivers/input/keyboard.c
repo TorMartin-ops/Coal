@@ -20,7 +20,8 @@
 
 static keyboard_handler_t g_handler;
 static uint8_t g_held;
-static uint8_t g_locks;      /* MOD_CAPS | MOD_NUM */
+static uint8_t g_locks;      /* MOD_CAPS | MOD_NUM | MOD_SCROLL */
+static uint8_t g_acks;       /* ACK bytes still to come for an LED update */
 static bool    g_extended;   /* previous byte was 0xE0 */
 static uint8_t g_skip;       /* bytes of an 0xE1 sequence (Pause) still to ignore */
 
@@ -56,6 +57,16 @@ static void kbc_flush(void) {
         (void)inb(KBC_DATA_PORT);
         io_wait();
     }
+}
+
+/* Mirrors the lock keys on the keyboard LEDs. The keyboard answers each of the two bytes with an ACK, which decode() skips. */
+static void update_leds(void) {
+    uint8_t leds = (uint8_t)(((g_locks & MOD_SCROLL) ? KB_LED_SCROLL : 0) | ((g_locks & MOD_NUM) ? KB_LED_NUM : 0) |
+                             ((g_locks & MOD_CAPS) ? KB_LED_CAPS : 0));
+
+    g_acks = 2;
+    kbc_write_data(KB_CMD_SET_LEDS);
+    kbc_write_data(leds);
 }
 
 /* ---- Scancode decoding ----------------------------------------------- */
@@ -115,6 +126,7 @@ static void deliver(uint8_t sc, bool ext, uint8_t mods) {
 }
 
 static void decode(uint8_t byte) {
+    if (g_acks && byte == KB_RESP_ACK) { g_acks--; return; }
     if (g_skip) { g_skip--; return; }
     if (byte == SCANCODE_PAUSE_PREFIX)    { g_skip = 5; return; }  /* Pause: E1 1D 45 E1 9D C5 */
     if (byte == SCANCODE_EXTENDED_PREFIX) { g_extended = true; return; }
@@ -131,9 +143,13 @@ static void decode(uint8_t byte) {
     case 0x36: if (!ext) { set_held(HELD_RSHIFT, down); return; } break;
     case 0x1D: set_held(ext ? HELD_RCTRL : HELD_LCTRL, down); return;
     case 0x38: set_held(ext ? HELD_ALTGR : HELD_ALT, down); return;
-    case 0x3A: if (!ext) { if (down) g_locks ^= MOD_CAPS; return; } break;
-    case 0x45: if (!ext) { if (down) g_locks ^= MOD_NUM;  return; } break;
-    case 0x46: return; /* Scroll Lock */
+    case 0x3A: case 0x45: case 0x46:                    /* Caps, Num and Scroll Lock toggle on press */
+        if (ext) break;
+        if (down) {
+            g_locks ^= sc == 0x3A ? MOD_CAPS : sc == 0x45 ? MOD_NUM : MOD_SCROLL;
+            update_leds();
+        }
+        return;
     }
     if (down) deliver(sc, ext, current_modifiers());
 }
@@ -180,6 +196,7 @@ void keyboard_init(void) {
     kbc_write_data(KB_CMD_ENABLE_SCAN);
     kbc_read(&resp);
     kbc_flush();
+    update_leds();                                      /* all off until a lock key is pressed */
 
     register_int_handler(IRQ1_VECTOR, keyboard_irq, NULL);
 }

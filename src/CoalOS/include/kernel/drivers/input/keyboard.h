@@ -24,6 +24,7 @@ typedef enum {
 #define MOD_ALTGR 0x08
 #define MOD_CAPS  0x10
 #define MOD_NUM   0x20
+#define MOD_SCROLL 0x40
 
 typedef struct {
     KeyCode key;       /* non-character key, or KEY_NONE */

@@ -160,6 +160,7 @@ static const char *const key_sequences[] = {
 
 static void on_key(const KeyEvent *ev) {
     /* IRQ context: IRQs are already off. */
+    if ((ev->modifiers & MOD_ALT) && (ev->ch || ev->key)) receive(0x1B);    /* Alt (Meta) prefixes ESC, like xterm */
     if (ev->ch) {
         receive(ev->ch);
     } else if (ev->key < sizeof(key_sequences) / sizeof(key_sequences[0]) && key_sequences[ev->key]) {

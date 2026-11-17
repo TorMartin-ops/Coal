@@ -19,6 +19,14 @@
 #define VGA_REG_CURSOR_HI    0x0E
 #define VGA_REG_CURSOR_LO    0x0F
 
+#define VGA_SEQ_INDEX        0x3C4
+#define VGA_SEQ_DATA         0x3C5
+#define VGA_GC_INDEX         0x3CE
+#define VGA_GC_DATA          0x3CF
+#define VGA_FONT_MEM         0xA0000
+#define VGA_FONT_STRIDE      32        /* bytes per glyph in font plane 2 */
+#define VGA_FONT_HEIGHT      16
+
 #define VGA_COLOR_BLACK       0
 #define VGA_COLOR_LIGHT_GREY  7
 #define VGA_COLOR_WHITE       15

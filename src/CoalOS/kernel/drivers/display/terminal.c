@@ -247,6 +247,11 @@ static void vt_write(const uint8_t *s, size_t n) {
         uint8_t c = s[i];
         if (t.state != ST_NORMAL) { esc_input(c); continue; }
 
+        /* UTF-8 encoded U+0080..U+00FF (FAT long names, text files) maps onto Latin-1 */
+        if ((c == 0xC2 || c == 0xC3) && i + 1 < n && (s[i + 1] & 0xC0) == 0x80) {
+            c = (uint8_t)(((c & 0x03) << 6) | (s[++i] & 0x3F));
+        }
+
         if (c >= 0x20 && c != 0x7F) {
             vga[t.y * VGA_COLS + t.x] = cell(glyph_for(c), t.attr);
             if (++t.x >= VGA_COLS) { t.x = 0; line_feed(); }
@@ -285,8 +290,53 @@ static void clear_all(void) {
     spinlock_release_irqrestore(&g_lock, flags);
 }
 
+/* CP437 has no o-slash. Derive it from 'o'/'O' plus a diagonal stroke and store it in the
+ * slots of the look-alike glyphs that latin1_to_cp437[] points to. */
+static uint8_t vga_reg_swap(uint16_t index_port, uint8_t reg, int new_val) {
+    uint8_t old;
+
+    outb(index_port, reg);
+    old = inb(index_port + 1);
+    if (new_val >= 0) outb(index_port + 1, (uint8_t)new_val);
+    return old;
+}
+
+static void make_slashed(volatile uint8_t *font, uint8_t base, uint8_t slot) {
+    uint8_t g[VGA_FONT_HEIGHT];
+    int first = -1, last = 0;
+
+    for (int r = 0; r < VGA_FONT_HEIGHT; r++) {
+        g[r] = font[base * VGA_FONT_STRIDE + r];
+        if (g[r]) { if (first < 0) first = r; last = r; }
+    }
+    if (first < 0) return;
+    for (int r = first; r <= last; r++)             /* bottom-left to top-right */
+        g[r] |= (uint8_t)(0x80 >> (1 + (last - r) * 5 / (last - first ? last - first : 1)));
+    for (int r = 0; r < VGA_FONT_HEIGHT; r++)
+        font[slot * VGA_FONT_STRIDE + r] = g[r];
+}
+
+static void font_upload_slashed_o(void) {
+    volatile uint8_t *font = (volatile uint8_t *)VGA_FONT_MEM;
+    uint8_t seq2 = vga_reg_swap(VGA_SEQ_INDEX, 2, 0x04);   /* write plane 2 only */
+    uint8_t seq4 = vga_reg_swap(VGA_SEQ_INDEX, 4, 0x07);   /* sequential, no odd/even */
+    uint8_t gc4  = vga_reg_swap(VGA_GC_INDEX, 4, 0x02);    /* read plane 2 */
+    uint8_t gc5  = vga_reg_swap(VGA_GC_INDEX, 5, 0x00);
+    uint8_t gc6  = vga_reg_swap(VGA_GC_INDEX, 6, 0x00);    /* map A0000, 128 KiB */
+
+    make_slashed(font, 'o', 0xED);
+    make_slashed(font, 'O', 0xE8);
+
+    vga_reg_swap(VGA_GC_INDEX, 6, gc6);
+    vga_reg_swap(VGA_GC_INDEX, 5, gc5);
+    vga_reg_swap(VGA_GC_INDEX, 4, gc4);
+    vga_reg_swap(VGA_SEQ_INDEX, 4, seq4);
+    vga_reg_swap(VGA_SEQ_INDEX, 2, seq2);
+}
+
 void terminal_init(void) {
     spinlock_init(&g_lock);
+    font_upload_slashed_o();
     update_attr();
     hw_cursor_init();
     clear_all();
