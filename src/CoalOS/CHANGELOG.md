@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- mcpd: every command runs in its own session and is killed as a group on timeout; `coal_run`
+  returns when the shell exits (background jobs no longer hold it); unlimited output is drained and
+  flagged as truncated; errors carry errno text; numbers are range-checked instead of clamped.
+- File transfer: large `coal_write_file` requests were corrupted because the guest's COM2 receive
+  ring (2 KiB) drops bytes; writes now use small requests verified against mcpd's byte count, and
+  `coal_read_file` with `save_to` fetches the whole file.
+- sh: variables (`$?`, `$VAR`) are expanded when each command runs, so `false; echo $?` prints 1.
+- coal-mcp: a bug inside a tool is a tool error, not "Method not found"; Python 3.9+ everywhere;
+  the server version is read from `VERSION`; guide and docs describe 512 MiB defaults and the network.
+- CI: read-only token permissions, `actions/checkout` pinned by commit SHA, concurrency group.
+
 ## 0.2.0 - 2026-11-17
 
 Coal OS is now a Linux i386 ABI compatible system that boots to a shell.

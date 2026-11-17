@@ -57,14 +57,16 @@ GUIDE = """Coal OS system guide
 
 WHAT IT IS
 A small Linux-ABI-compatible i386 kernel (static ELF32 Linux binaries run), single CPU, an e1000 NIC on
-QEMU user networking (DHCP), no SMP, no users (everything is root). Boot to prompt takes about one second.
+QEMU user networking (DHCP), no SMP, no users (everything is root). Boot to mcpd takes about half a second;
+512 MiB RAM by default, about 1.7 MB in use after boot.
 
 FILE SYSTEM (FAT16 disk image, persistent; long file names, no symlinks, no permissions enforcement)
   /bin/coalbox   one multi-call binary; applets: basename cat clear cp date dirname dmesg echo env false free
                  grep halt head hexdump ifconfig kill ls mkdir mount mv nc nslookup ping poweroff ps pwd reboot rm rmdir
                  sleep sort sync tail touch true umount uname uptime wc wget which yes
-  /bin/sh        the shell: pipes, redirection, && || ;, & (background), quotes, $VAR, cd/export/exit builtins.
-                 No job control, no subshells ( ), no $!, no command substitution
+  /bin/sh        the shell: pipes, redirection, && || ;, & (background), quotes, $VAR and $? (expanded when each
+                 command runs), cd/export/exit builtins. No job control, no subshells ( ), no $!, no command
+                 substitution
   /sbin/init     PID 1: starts mcpd and a login shell
   /sbin/mcpd     the agent that serves this MCP server over COM2
   /usr/bin       test programs: hello, libc_test, syscall_test, abi_test
@@ -88,7 +90,11 @@ No IPv6, no loopback interface, no fragment reassembly, TCP drops out-of-order s
 
 LIMITS
 FAT16 volume (32 MiB image). 32 descriptors per process. Output of coal_run is capped at 64 KiB per
-stream and each command has a timeout (default 10 s). Files move in 64 KiB chunks.
+stream (more is discarded and flagged "output truncated"). Each command has a timeout (default 10 s,
+max 600 s); on timeout the whole process group is killed. coal_run returns when the shell exits: a
+background job (cmd &) keeps running but loses its output pipe. Files move in small checked requests
+(a 3 MiB file takes about 20 s to write and 7 s to read); coal_read_file with save_to fetches the whole
+file, without it the default is 64 KiB (max 4 MiB).
 
 SAFE: ls cat ps free uptime uname dmesg, writing under /tmp /home /root, coal_kernel_log, coal_screen.
 DESTRUCTIVE: rm/mv/cp over existing files, coal_write_file over any existing file, writing /sbin/init,
@@ -776,7 +782,7 @@ TOOLS = [
     ("coal_run", "Run a shell command inside Coal OS (/bin/sh -c) and return exit code, stdout and stderr. "
      "Runs as root with full access; changes persist on the disk image. rm, mv, redirections (>), mount and "
      "writes to /sbin/init, /sbin/mcpd or /bin/sh are destructive; poweroff/halt/reboot end the session. "
-     "No job control or network. Output is capped at 64 KiB per stream; the command is killed after timeout_ms.",
+     "No job control. Output is capped at 64 KiB per stream; after timeout_ms the command and its whole process group are killed.",
      schema({"command": {**S, "description": "Shell command line."},
              "timeout_ms": {"type": "integer", "description": "Kill after this many ms (default 10000, max 600000)."}},
             ["command"]), ann("Run command in Coal OS"), tool_run),

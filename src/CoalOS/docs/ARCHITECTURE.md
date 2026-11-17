@@ -1,7 +1,8 @@
 # Architecture
 
 Coal OS is a small monolithic kernel for 32-bit x86 that runs static Linux i386
-binaries. One CPU, no SMP, no network. About 9,000 lines of kernel code.
+binaries. One CPU, no SMP. About 11,000 lines of kernel C (15,000 with headers and assembly),
+including an IPv4 stack.
 
 ## Boot
 
@@ -99,7 +100,8 @@ screen, COM1 and a 16 KiB ring read by `syslog(2)` (`dmesg`). Levels below
 
 `tools/coal-mcp/server.py` (host) boots the image in QEMU and talks JSON lines
 over COM2 to `/sbin/mcpd`, which runs commands and transfers files. See
-`tools/coal-mcp/README.md`.
+`tools/coal-mcp/README.md`. The UART receive ring is 2 KiB and drops bytes when full (no flow
+control), so the host keeps each request line below that size.
 
 ## Source layout
 
