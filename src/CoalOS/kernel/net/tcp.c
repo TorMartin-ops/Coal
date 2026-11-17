@@ -15,10 +15,14 @@
  * Looped-back segments are delivered right after each entry into the stack
  * (net_lo_drain) and carry no checksum.
  *
+ * Acknowledgements are delayed (RFC 1122 4.2.3.2, RFC 5681 4.2): one per two
+ * full segments or after DACK_MS, at once for out-of-order data, a filled gap or
+ * a FIN. Small writes are held while earlier data is unacknowledged (Nagle, RFC
+ * 896) unless TCP_NODELAY is set.
+ *
  * Deliberately small: out-of-order data is kept in the receive ring (at most
- * OOO_MAX ranges) and merged when the gap fills, there are no window scaling,
- * timestamps or SACK, and every received segment is acknowledged immediately.
- * MSS is negotiated and clamped to [536, MSS_MAX].
+ * OOO_MAX ranges) and merged when the gap fills; there are no window scaling,
+ * timestamps or SACK. MSS is negotiated and clamped to [536, MSS_MAX].
  */
 #include <kernel/net/net.h>
 #include <kernel/net/tcp.h>
@@ -30,7 +34,10 @@
 
 #define MAX_CONNS       64
 #define OOO_MAX         4                   /* out-of-order ranges kept per connection */
-#define BUF_SIZE        16384u              /* per direction; power of two */
+#define BUF_SIZE        16384u              /* send buffer, and the receive buffer a connection starts with; power of two */
+#define RX_MAX          65536u              /* the receive buffer grows to this much (power of two) */
+#define RX_EXTRA_MAX    (1u << 20)          /* growth allowed over all connections together */
+#define WIN_MAX         65535u
 #define MSS_MAX         (NET_MTU - IP_HLEN - 20)
 #define MSS_DEFAULT     536u
 #define SEG_MAX         32                  /* data segments in flight per connection; power of two */
@@ -39,7 +46,9 @@
 #define RTO_MAX         16000u
 #define CLOCK_G         TCP_TICK_MS         /* timer granularity in the RTO formula */
 #define PTO_MIN         10u                 /* tail loss probe floor, ms */
-#define PTO_ACK_DELAY   40u                 /* receiver's worst-case ACK delay, added when one segment is in flight */
+#define DACK_MS         40u                 /* longest an ACK is delayed */
+#define QUICK_ACKS      16                  /* segments acknowledged at once after a gap or at the start, so slow start is not slowed */
+#define PTO_ACK_DELAY   DACK_MS             /* receiver's worst-case ACK delay, added when one segment is in flight */
 #define MAX_RETRIES     6
 #define TIME_WAIT_MS    4000u
 #define FIN_WAIT2_MS    30000u
@@ -73,8 +82,8 @@ struct tcp_conn {
     bool     used;
     uint8_t  state;
     bool     fin_queued, fin_sent, fin_rcvd, ack_now, rtx_on;
-    bool     in_recovery, tlp_done, rack_valid, reo_on;
-    uint8_t  retries, dupacks, rtx_kind;
+    bool     in_recovery, tlp_done, rack_valid, reo_on, nodelay, dack_on;
+    uint8_t  retries, dupacks, rtx_kind, quick_acks;
     int      err;
     struct sock *sock;                  /* owner; NULL once orphaned */
     struct sock *parent;                /* listener until accepted */
@@ -84,13 +93,15 @@ struct tcp_conn {
     uint32_t cwnd, ssthresh, adv_wnd;
     uint32_t rto, srtt, rttvar, min_rtt, rtx_at, born;
     uint32_t recover;                   /* snd_nxt when the current loss recovery began */
+    uint32_t dack_at, unacked;          /* delayed ACK deadline; bytes received since the last ACK we sent */
     uint32_t rack_ts, rack_end, rack_rtt, reo_due;   /* newest delivered segment: transmit time, end; RTT of the latest sample */
     struct seg *segs;                   /* ring of SEG_MAX records, oldest first */
     uint8_t  seg_head, seg_n;
     struct { uint32_t seq, len; } ooo[OOO_MAX];  /* ranges past rcv_nxt, already stored in rx */
     uint8_t  ooo_n;
     uint8_t *tx, *rx;
-    uint32_t tx_start, tx_len, rx_start, rx_len;
+    uint32_t tx_start, tx_len, rx_start, rx_len, rx_size;
+    bool     rx_read;                   /* the application has read since the buffer last grew */
 };
 
 static struct tcp_conn conns[MAX_CONNS];
@@ -98,14 +109,14 @@ static uint32_t iss_counter;
 
 /* ---- helpers ---------------------------------------------------------------- */
 
-static void ring_put(uint8_t *ring, uint32_t pos, const uint8_t *src, size_t n) {
-    uint32_t i = pos & (BUF_SIZE - 1), first = BUF_SIZE - i < n ? BUF_SIZE - i : (uint32_t)n;
+static void ring_put(uint8_t *ring, uint32_t size, uint32_t pos, const uint8_t *src, size_t n) {
+    uint32_t i = pos & (size - 1), first = size - i < n ? size - i : (uint32_t)n;
     memcpy(ring + i, src, first);
     memcpy(ring, src + first, n - first);
 }
 
-static void ring_get(const uint8_t *ring, uint32_t pos, uint8_t *dst, size_t n) {
-    uint32_t i = pos & (BUF_SIZE - 1), first = BUF_SIZE - i < n ? BUF_SIZE - i : (uint32_t)n;
+static void ring_get(const uint8_t *ring, uint32_t size, uint32_t pos, uint8_t *dst, size_t n) {
+    uint32_t i = pos & (size - 1), first = size - i < n ? size - i : (uint32_t)n;
     memcpy(dst, ring + i, first);
     memcpy(dst + first, ring, n - first);
 }
@@ -117,7 +128,10 @@ static void wake_owner(const struct tcp_conn *c) {
     if (c->parent) sock_wake(c->parent);
 }
 
+static uint32_t rx_extra;                               /* receive buffer bytes above BUF_SIZE, all connections */
+
 static void release(struct tcp_conn *c) {
+    if (c->rx) rx_extra -= c->rx_size - BUF_SIZE;
     kfree(c->tx);
     kfree(c->rx);
     kfree(c->segs);
@@ -147,7 +161,7 @@ static void arm(struct tcp_conn *c, uint32_t ms) {
 
 static struct seg *seg_at(const struct tcp_conn *c, unsigned i) { return &c->segs[(c->seg_head + i) % SEG_MAX]; }
 
-static uint32_t window(const struct tcp_conn *c) { return BUF_SIZE - c->rx_len; }
+static uint32_t window(const struct tcp_conn *c) { return c->rx_size - c->rx_len; }
 
 /* Builds and sends one segment. Data comes from the send ring at offset off past snd_una. */
 static int emit(const struct tcp_conn *c, uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
@@ -168,14 +182,19 @@ static int emit(const struct tcp_conn *c, uint32_t src, uint32_t dst, uint16_t s
         p[hl++] = 2; p[hl++] = 4; p[hl++] = MSS_MAX >> 8; p[hl++] = MSS_MAX & 0xFF;
     }
     h->off = (uint8_t)(hl / 4 << 4);
-    if (dlen) ring_get(c->tx, c->tx_start + off, p + hl, dlen);
+    if (dlen) ring_get(c->tx, BUF_SIZE, c->tx_start + off, p + hl, dlen);
     h->csum = net_is_local(dst) ? 0 : net_l4_csum(src, dst, IPPROTO_TCP, p, hl + dlen);
     return net_ip_send(IPPROTO_TCP, src, dst, hl + dlen);
 }
 
 static int send_seg(struct tcp_conn *c, uint8_t flags, uint32_t seq, uint32_t off, size_t dlen) {
-    c->adv_wnd = window(c);
+    /* While a hole is open the window must not grow: a changed window makes the ACK a window update
+     * instead of a duplicate (RFC 5681 section 2), and the sender would not count it. */
+    uint32_t w = window(c);
+    if (w > WIN_MAX) w = WIN_MAX;                       /* no window scaling: the field is 16 bits */
+    c->adv_wnd = w;
     c->ack_now = false;
+    if (flags & ACK) { c->dack_on = false; c->unacked = 0; }
     return emit(c, c->laddr, c->rip, c->lport, c->rport, seq, (flags & ACK) ? c->rcv_nxt : 0, flags, c->adv_wnd, off, dlen);
 }
 
@@ -269,6 +288,7 @@ static void output(struct tcp_conn *c) {
             uint32_t room = room_c < room_w ? room_c : room_w, unsent = c->tx_len - flight;
             uint32_t n = unsent < room ? unsent : room;
             if (n > c->mss) n = c->mss;
+            if (n == unsent && n < c->mss && flight && !c->nodelay && !c->fin_queued) break;   /* Nagle */
             if (!n || !send_new(c, n)) break;
             flight += n;
             p += n;
@@ -409,6 +429,10 @@ void tcp_tick(void) {
 
     for (int i = 0; i < MAX_CONNS; i++) {
         struct tcp_conn *c = &conns[i];
+        if (c->used && c->dack_on && (int32_t)(now - c->dack_at) >= 0) {
+            c->ack_now = true;
+            output(c);
+        }
         if (c->used && c->rtx_on && (int32_t)(now - c->rtx_at) >= 0) timeout(c);
     }
     net_lo_drain();
@@ -509,6 +533,7 @@ static void established(struct tcp_conn *c) {
     c->retries = 0;
     c->rtx_on = false;
     c->in_recovery = false;
+    c->quick_acks = QUICK_ACKS;
     c->cwnd = 4u * c->mss;
     c->ssthresh = 65535;
     if (c->parent && c->parent->acc_n < BACKLOG_MAX) c->parent->accq[c->parent->acc_n++] = c;
@@ -600,6 +625,27 @@ static void new_connection(struct sock *l, uint32_t src, uint32_t dst, const str
     arm(c, c->rto);
 }
 
+/* Receive window autotuning: a connection whose application keeps reading but cannot keep up
+ * with the network gets a buffer twice as large, up to RX_MAX and the global limit. Data in the
+ * ring (readable and out of order) moves to the start of the new one. */
+static void rx_grow(struct tcp_conn *c) {
+    uint32_t size = c->rx_size * 2, span = c->rx_len;
+    uint8_t *buf;
+
+    if (size > RX_MAX || rx_extra + c->rx_size > RX_EXTRA_MAX || !(buf = kmalloc(size))) return;
+    for (unsigned i = 0; i < c->ooo_n; i++) {
+        uint32_t end = c->rx_len + (c->ooo[i].seq + c->ooo[i].len - c->rcv_nxt);
+        if (end > span) span = end;
+    }
+    ring_get(c->rx, c->rx_size, c->rx_start, buf, span);
+    kfree(c->rx);
+    c->rx = buf;
+    c->rx_start = 0;
+    rx_extra += c->rx_size;
+    c->rx_size = size;
+    c->rx_read = false;
+}
+
 void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len) {
     const struct tcp_hdr *h = (const struct tcp_hdr *)seg;
     size_t hl;
@@ -671,7 +717,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len) {
     /* Payload and FIN: accept only what continues the stream. */
     if (SEQ_LT(seq, c->rcv_nxt)) {
         uint32_t skip = c->rcv_nxt - seq;
-        if (skip >= seg_len) { c->ack_now = true; output(c); return; }      /* duplicate */
+        if (skip >= seg_len) { c->ack_now = true; c->quick_acks = QUICK_ACKS; output(c); return; }      /* duplicate */
         if (skip > dlen) skip = (uint32_t)dlen;
         data += skip;
         dlen -= skip;
@@ -679,10 +725,11 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len) {
         uint32_t off = seq - c->rcv_nxt;
         if (dlen && !orphan(c) && off <= window(c) && dlen <= window(c) - off &&
             (c->state == TCP_ESTABLISHED || c->state == TCP_FIN_WAIT1 || c->state == TCP_FIN_WAIT2)) {
-            ring_put(c->rx, c->rx_start + c->rx_len + off, data, dlen);
+            ring_put(c->rx, c->rx_size, c->rx_start + c->rx_len + off, data, dlen);
             ooo_add(c, seq, (uint32_t)dlen);
         }
         c->ack_now = true;
+        c->quick_acks = QUICK_ACKS;
         output(c);
         return;
     }
@@ -696,11 +743,20 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len) {
     }
     if (dlen > window(c)) { dlen = window(c); fin = false; }
     if (dlen && receiving) {
-        ring_put(c->rx, c->rx_start + c->rx_len, data, dlen);
+        ring_put(c->rx, c->rx_size, c->rx_start + c->rx_len, data, dlen);
         c->rx_len += (uint32_t)dlen;
         c->rcv_nxt += (uint32_t)dlen;
+        bool gap = c->ooo_n != 0;
         ooo_drain(c);
-        c->ack_now = true;
+        if (c->rx_read && c->rx_len > c->rx_size / 2) rx_grow(c);
+        c->unacked += (uint32_t)dlen;
+        if (gap || c->quick_acks || c->unacked >= 2u * c->mss) {
+            c->ack_now = true;
+            if (c->quick_acks) c->quick_acks--;
+        } else if (!c->dack_on) {
+            c->dack_on = true;
+            c->dack_at = net_now() + DACK_MS;
+        }
     }
     if (fin && receiving && !c->fin_rcvd) {
         c->rcv_nxt++;
@@ -722,6 +778,7 @@ struct tcp_conn *tcp_open(struct sock *owner) {
         if (c->used) continue;
         c->tx = kmalloc(BUF_SIZE);
         c->rx = kmalloc(BUF_SIZE);
+        c->rx_size = BUF_SIZE;
         c->segs = kmalloc(SEG_MAX * sizeof(struct seg));
         if (!c->tx || !c->rx || !c->segs) {
             kfree(c->tx);
@@ -733,6 +790,7 @@ struct tcp_conn *tcp_open(struct sock *owner) {
         }
         c->used = true;
         c->sock = owner;
+        c->nodelay = owner && owner->nodelay;
         c->state = TCP_CLOSED;
         c->mss = MSS_DEFAULT;
         c->rto = RTO_INIT;
@@ -763,6 +821,15 @@ int tcp_connect(struct tcp_conn *c, uint32_t addr, uint16_t port, uint16_t lport
 void tcp_attach(struct tcp_conn *c, struct sock *owner) {
     c->sock = owner;
     c->parent = NULL;
+    c->nodelay = owner->nodelay;
+}
+
+void tcp_set_nodelay(struct tcp_conn *c, bool on) {
+    c->nodelay = on;
+    if (on) {                                           /* send what Nagle was holding */
+        output(c);
+        net_lo_drain();
+    }
 }
 
 static void abort_conn(struct tcp_conn *c) {
@@ -807,7 +874,7 @@ int tcp_write(struct tcp_conn *c, const void *buf, size_t len) {
     size_t n = BUF_SIZE - c->tx_len;
     if (n > len) n = len;
     if (n) {
-        ring_put(c->tx, c->tx_start + c->tx_len, buf, n);
+        ring_put(c->tx, BUF_SIZE, c->tx_start + c->tx_len, buf, n);
         c->tx_len += (uint32_t)n;
         output(c);
         net_lo_drain();
@@ -818,11 +885,12 @@ int tcp_write(struct tcp_conn *c, const void *buf, size_t len) {
 int tcp_read(struct tcp_conn *c, void *buf, size_t len, bool peek) {
     if (c->rx_len) {
         size_t n = c->rx_len < len ? c->rx_len : len;
-        ring_get(c->rx, c->rx_start, buf, n);
+        c->rx_read = true;
+        ring_get(c->rx, c->rx_size, c->rx_start, buf, n);
         if (!peek) {
             c->rx_start += (uint32_t)n;
             c->rx_len -= (uint32_t)n;
-            uint32_t half = c->mss < BUF_SIZE / 2 ? c->mss : BUF_SIZE / 2;
+            uint32_t half = c->mss < c->rx_size / 2 ? c->mss : c->rx_size / 2;
             if ((int32_t)(window(c) - c->adv_wnd) >= (int32_t)half && c->state != TCP_CLOSED) {
                 c->ack_now = true;                              /* the window reopened: tell the sender */
                 output(c);

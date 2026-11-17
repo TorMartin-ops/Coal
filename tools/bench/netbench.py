@@ -38,6 +38,7 @@ class Relay(threading.Thread):
 
     def __init__(self, path, link):
         super().__init__(daemon=True)
+        self.name = os.path.basename(path)
         self.srv = []
         for suffix in ("o", "i"):                       # QEMU writes frames to "o" and reads them back from "i"
             sock = socket.socket(socket.AF_UNIX)
@@ -70,6 +71,11 @@ class Relay(threading.Thread):
     def decide(self, frame, held):
         link = self.link
         tcp = len(frame) > 23 and frame[12:14] == b"\x08\x00" and frame[23] == 6
+        if tcp and link.trace is not None:
+            ihl = (frame[14] & 15) * 4
+            t = frame[14 + ihl:]
+            dlen = struct.unpack(">H", frame[16:18])[0] - ihl - (t[12] >> 4) * 4
+            link.trace.append((time.monotonic(), self.name + (" hdr=%d" % ((t[12] >> 4) * 4)), t[13], struct.unpack(">I", t[4:8])[0], struct.unpack(">I", t[8:12])[0], dlen, struct.unpack(">H", t[14:16])[0]))
         out = []
         for h in held:
             h[0] -= 1
@@ -77,6 +83,8 @@ class Relay(threading.Thread):
         held[:] = [h for h in held if h[0] > 0]
         if tcp and link.rng.random() < link.loss:
             self.dropped += 1
+            if link.trace is not None:
+                link.trace.append((time.monotonic(), self.name + " DROPPED", 0, 0, 0, 0, 0))
         elif tcp and link.rng.random() < link.reorder:
             held.append([link.rng.randint(1, 3), frame])
         else:
@@ -89,6 +97,7 @@ class Link:
     def __init__(self, loss, reorder, seed):
         self.loss, self.reorder = loss, reorder
         self.rng = random.Random(seed)
+        self.trace = [] if os.environ.get("NETBENCH_TRACE") else None
 
 
 def sink(sock, received):
@@ -138,6 +147,10 @@ def one_run(build, loss, reorder, seed, size_mib, memory, upload=False):
         dt = time.monotonic() - t
         ok = "exit code: 0" in text and (not upload or received[0] == size_mib << 20)
         if os.environ.get("NETBENCH_DEBUG"): print(text)
+        if link.trace is not None:
+            with open(os.environ["NETBENCH_TRACE"], "w") as f:
+                for ts, d, fl, seq, ack, n, win in link.trace:
+                    f.write("%.4f %s flags=%02x seq=%u ack=%u len=%d win=%d\n" % (ts - link.trace[0][0], d, fl, seq, ack, n, win))
         return dt if ok else None, relays[0].dropped + relays[1].dropped
     finally:
         mcp.close()
@@ -166,7 +179,7 @@ def main():
         for b, t in times.items():
             good = [x for x in t if x is not None]
             res["%s loss_%g" % (b, loss)] = {"median_s": statistics.median(good) if good else None, "runs": t}
-        print("loss %.1f%% medians: %s" % (loss, "  ".join("%s %.2f s" % (b, statistics.median([x for x in t if x is not None] or [float("nan")])) for b, t in times.items())), flush=True)
+        print("loss %.1f%% medians: %s" % (loss, "  ".join("%s median %.2f mean %.2f s" % (b, statistics.median([x for x in t if x is not None] or [float("nan")]), statistics.mean([x for x in t if x is not None] or [float("nan")])) for b, t in times.items())), flush=True)
     print(json.dumps(res, indent=1))
     if a.out:
         Path(a.out).write_text(json.dumps(res, indent=1))

@@ -65,7 +65,7 @@ struct tcp_conn;
 struct sock {
     uint8_t  type, proto;
     bool     nonblock, listening, connected, reuse;
-    bool     shut_rd;
+    bool     shut_rd, nodelay;
     int      err;                           /* pending error, positive errno, reported once */
     uint32_t laddr, raddr;                  /* host order; laddr 0 = any */
     uint16_t lport, rport;
