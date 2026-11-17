@@ -91,3 +91,20 @@ New benchmark `page_fault_idle`: 16 first-touch faults right after a 10 ms sleep
 
 A throughput loop never idles, so `page_fault` itself cannot gain; the pool pays off for bursts that follow idle
 time (shell commands, program start-up).
+
+### libc malloc: size classes and per-page free lists
+
+The first-fit list with a linear scan (and coalescing on every pass) is replaced by the same scheme as the
+kernel slab: 22 size classes up to 2032 bytes (16-byte steps to 128, then four per doubling), 4 KiB pages
+from brk each serving one class with `free`/`local_free` lists and bump allocation, empty pages kept in a pool
+every class can reuse, larger blocks mapped on their own and unmapped on `free`. The header sits at the start of
+the page, so `free` and `realloc` need no per-block header and blocks stay 16-byte aligned.
+Alloc/free ping-pong on one page merges the lists inline instead of taking the slow path.
+Cost: one 4 KiB page per size class in use (a running `cat` holds 28 kB more than before).
+New benchmarks `malloc_free_64` (malloc+free of 64 bytes) and `malloc_churn` (128 live blocks of 8 sizes, freed
+out of order). The libc test that expected a freed 100-byte block to serve a 50-byte request now asks for 100.
+
+| test | before | after |
+|------|--------|-------|
+| malloc_free_64 (ns) | 102.0 | 87.0 |
+| malloc_churn (ns) | 86890 | 12862 |

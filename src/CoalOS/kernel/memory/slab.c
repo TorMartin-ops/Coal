@@ -70,18 +70,28 @@ static struct slab *slab_new(slab_cache_t *c) {
     return s;
 }
 
-/* The current page has no object on `free`: merge, bump, or move to another page. */
+/* Pop an object from the page's lists, merging the two when `free` is empty. */
+static inline void *page_pop(struct slab *s) {
+    void *obj = s->free;
+    if (!obj) {
+        obj = s->local_free;
+        s->local_free = NULL;
+    }
+    if (obj) {
+        s->free = *(void **)obj;
+        s->used++;
+    }
+    return obj;
+}
+
+/* Both lists of the current page are empty: bump, or move to another page. */
 static void *alloc_slow(slab_cache_t *c) {
     for (;;) {
         struct slab *s = c->cur;
         if (s) {
-            void *obj = s->local_free;
-            if (obj) {
-                s->local_free = NULL;
-                s->free = *(void **)obj;
-                s->used++;
+            void *obj = page_pop(s);
+            if (obj)
                 return obj;
-            }
             if (s->bump <= c->limit) {
                 obj = (char *)s + s->bump;
                 s->bump += c->obj_size;
@@ -104,13 +114,9 @@ static void *alloc_slow(slab_cache_t *c) {
 void *slab_alloc(slab_cache_t *c) {
     uintptr_t flags = spinlock_acquire_irqsave(&c->lock);
     struct slab *s = c->cur;
-    void *obj = s ? s->free : NULL;
-    if (obj) {
-        s->free = *(void **)obj;
-        s->used++;
-    } else {
+    void *obj = s ? page_pop(s) : NULL;
+    if (!obj)
         obj = alloc_slow(c);
-    }
     spinlock_release_irqrestore(&c->lock, flags);
     return obj;
 }
