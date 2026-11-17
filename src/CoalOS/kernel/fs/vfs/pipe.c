@@ -41,7 +41,8 @@ static ssize_t pipe_read(vnode_t *v, off_t pos, void *out, size_t len) {
     while (p->count == 0) {
         if (p->writers == 0) { local_irq_restore(fl); return 0; }
         if (e->nonblock) { local_irq_restore(fl); return -EAGAIN; }
-        drv_wait(&p->wait);
+        int rc = drv_wait(&p->wait);
+        if (rc && p->count == 0) { local_irq_restore(fl); return rc; }
     }
     local_irq_restore(fl);
     size_t n = len < p->count ? len : p->count;
@@ -68,8 +69,9 @@ static ssize_t pipe_write(vnode_t *v, off_t pos, const void *in, size_t len) {
         if (room == 0) {
             if (e->nonblock) return done ? (ssize_t)done : -EAGAIN;
             uintptr_t fl = local_irq_save();
-            if (p->count == PIPE_SIZE && p->readers) drv_wait(&p->wait);
+            int rc = p->count == PIPE_SIZE && p->readers ? drv_wait(&p->wait) : 0;
             local_irq_restore(fl);
+            if (rc) return done ? (ssize_t)done : rc;
             continue;
         }
         size_t n = len - done < room ? len - done : room;

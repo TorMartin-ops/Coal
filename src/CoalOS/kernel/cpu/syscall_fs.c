@@ -11,6 +11,7 @@
 #include <kernel/memory/kmalloc.h>
 #include <kernel/process/scheduler.h>
 #include <kernel/lib/string.h>
+#include <kernel/fs/vfs/fs_init.h>
 #include <kernel/drivers/wait.h>
 #include <kernel/drivers/timer/pit.h>
 
@@ -164,13 +165,10 @@ long sc_poll(uint32_t ufds, uint32_t nfds, int32_t timeout_ms) {
         if (!ready && timeout_ms != 0) {
             uint64_t now = timer_uptime_ms();
             if (timeout_ms < 0 || now < deadline) {
-                if (get_current_process()->pending_signals & ~get_current_process()->sig_blocked) {
-                    local_irq_restore(flags);
-                    return -EINTR;
-                }
-                if (timeout_ms < 0) drv_wait(&drv_poll_queue);
-                else drv_wait_timeout(&drv_poll_queue, (uint32_t)(deadline - now));
+                int rc = timeout_ms < 0 ? drv_wait(&drv_poll_queue)
+                                        : drv_wait_timeout(&drv_poll_queue, (uint32_t)(deadline - now));
                 local_irq_restore(flags);
+                if (rc) return rc;
                 continue;
             }
         }
@@ -186,6 +184,14 @@ long sc_poll(uint32_t ufds, uint32_t nfds, int32_t timeout_ms) {
 //============================================================================
 // read / write / seek
 //============================================================================
+
+static bool regular_file(uint32_t fd) {
+    sys_file_t *sf = sys_file_get(fd);
+    bool reg = sf && S_ISREG(sf->vfs_file->vnode->type);
+
+    if (sf) sys_file_put(sf);
+    return reg;
+}
 
 /* One read or write of up to count bytes through a bounce buffer. */
 static long transfer(uint32_t fd, uint32_t ubuf, uint32_t count, bool is_write) {
@@ -211,6 +217,7 @@ static long transfer(uint32_t fd, uint32_t ubuf, uint32_t count, bool is_write) 
         if (r < 0) { if (!total) total = r; break; }
         total += r;
         if ((size_t)r < n) break;                   /* short transfer: EOF, line, or full pipe */
+        if (!is_write && (uint32_t)total < count && !regular_file(fd)) break;   /* pipes, ttys, sockets: no refill */
     }
     kfree(kbuf);
     return total;
@@ -270,11 +277,17 @@ long sc_mkdir(uint32_t path, uint32_t mode) {
     return err ? err : vfs_mkdir(kpath, mode & 07777);
 }
 
+/* Two path buffers on the heap: PATH_MAX is too large for two on the kernel stack. */
 long sc_rename(uint32_t from, uint32_t to) {
-    char a[PATH_MAX_SYS], b[PATH_MAX_SYS];
-    int err = user_path(from, a, sizeof(a));
-    if (!err) err = user_path(to, b, sizeof(b));
-    return err ? err : vfs_rename(a, b);
+    char *a = kmalloc(2 * PATH_MAX_SYS), *b = a + PATH_MAX_SYS;
+    int err;
+
+    if (!a) return -ENOMEM;
+    err = user_path(from, a, PATH_MAX_SYS);
+    if (!err) err = user_path(to, b, PATH_MAX_SYS);
+    if (!err) err = vfs_rename(a, b);
+    kfree(a);
+    return err;
 }
 
 long sc_utime(uint32_t path, uint32_t utimes) {
@@ -296,13 +309,39 @@ long sc_sync(void) {
     return 0;
 }
 
-long sc_mount(uint32_t source, uint32_t target, uint32_t fstype) {
-    char dev[PATH_MAX_SYS], dir[PATH_MAX_SYS], fs[32];
-    int err = user_path(source, dev, sizeof(dev));
+/* mount(source, target, fstype): "fat" mounts an ATA disk given as "hdb" or "/dev/hdb";
+ * the root disk is already mounted (-EBUSY). devfs and procfs take no device. */
+long sc_fsync(uint32_t fd) {
+    sys_file_t *sf = sys_file_get(fd);
+    if (!sf) return -EBADF;
+    long rc = vfs_fsync(sf->vfs_file);
+    sys_file_put(sf);
+    return rc;
+}
 
-    if (!err) err = user_path(target, dir, sizeof(dir));
+long sc_mount(uint32_t source, uint32_t target, uint32_t fstype) {
+    char dev[16], fs[16];
+    const char *name = NULL;
+    char *dir = kmalloc(PATH_MAX_SYS);
+    int err;
+
+    if (!dir) return -ENOMEM;
+    err = fstype ? 0 : -EINVAL;
     if (!err) err = copy_path_from_user((const char *)fstype, fs, sizeof(fs));
-    return err ? err : vfs_mount(dir, fs, dev);
+    if (!err) err = user_path(target, dir, PATH_MAX_SYS);
+    if (!err) {
+        struct kstat64 st;
+        err = vfs_stat(dir, &st);
+        if (!err && !S_ISDIR(st.st_mode)) err = -ENOTDIR;
+    }
+    if (!err && strcmp(fs, "fat") == 0) {
+        err = copy_path_from_user((const char *)source, dev, sizeof(dev));
+        name = strncmp(dev, "/dev/", 5) == 0 ? dev + 5 : dev;
+        if (!err) err = fs_attach_disk(name);
+    }
+    if (!err) err = vfs_mount(dir, fs, name);
+    kfree(dir);
+    return err;
 }
 
 long sc_umount2(uint32_t target, uint32_t flags) {

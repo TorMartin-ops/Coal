@@ -57,17 +57,12 @@ static void waiter_init(struct waiter *w, uint32_t ms) {
 
 /* Sleeps until the socket changes. Interrupts are off. -EINTR for a signal, -EAGAIN at the deadline. */
 static int wait_event(struct sock *s, const struct waiter *w) {
-    pcb_t *p = get_current_process();
-
-    if (p && (p->pending_signals & ~p->sig_blocked)) return -EINTR;
     if (w->timed) {
         int32_t left = (int32_t)(w->end - net_now());
         if (left <= 0) return -EAGAIN;
-        drv_wait_timeout(&s->wq, (uint32_t)left);
-    } else {
-        drv_wait(&s->wq);
+        return drv_wait_timeout(&s->wq, (uint32_t)left);
     }
-    return 0;
+    return drv_wait(&s->wq);
 }
 
 void sock_wake(struct sock *s) { drv_wake_all(&s->wq); }

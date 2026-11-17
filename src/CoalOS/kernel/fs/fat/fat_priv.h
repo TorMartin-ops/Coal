@@ -2,8 +2,8 @@
  * @file fat_priv.h
  * @brief Internal structures and helpers shared by the FAT driver files.
  *
- * Locking: one busy flag per mounted volume, taken around every driver entry
- * point. It never disables interrupts, so disk I/O does not delay IRQs.
+ * Locking: one sleeping mutex per mounted volume, taken around every driver
+ * entry point. Waiters sleep, so a holder blocked in disk I/O can be preempted.
  */
 #ifndef FAT_PRIV_H
 #define FAT_PRIV_H
@@ -11,6 +11,7 @@
 #include <kernel/core/types.h>
 #include <kernel/fs/vfs/vfs.h>
 #include <kernel/drivers/storage/buffer_cache.h>
+#include <kernel/sync/mutex.h>
 
 #define FAT_ATTR_RO     0x01
 #define FAT_ATTR_VOLID  0x08
@@ -20,6 +21,7 @@
 
 #define FAT_ENT_SIZE    32u
 #define FAT_NODE_ROOT_LBA 0u    /* ent_lba of the root pseudo entry */
+#define FAT_NODE_UNLINKED 0xFFFFFFFFu   /* ent_lba of an open file whose name was removed */
 
 /** 8.3 directory entry. */
 typedef struct __attribute__((packed)) {
@@ -52,7 +54,8 @@ typedef struct fat_fs {
     uint8_t *fat;               /* in-memory copy of FAT 1 */
     uint32_t dirty_lo, dirty_hi;/* dirty FAT sector range, lo > hi when clean */
     struct fat_node *nodes;     /* open files and directories */
-    volatile int busy;
+    mutex_t lock;
+    bool unsynced;              /* changes sit in the buffer cache, not yet on the disk */
 } fat_fs_t;
 
 /** In-memory state of an open file or directory, shared by all openers. */
@@ -91,10 +94,8 @@ typedef struct {
     bool grow;                  /* extend the chain when running off the end */
 } fat_dir_t;
 
-static inline void fat_lock(fat_fs_t *fs) {
-    while (__atomic_exchange_n(&fs->busy, 1, __ATOMIC_ACQUIRE)) asm volatile("pause");
-}
-static inline void fat_unlock(fat_fs_t *fs) { __atomic_store_n(&fs->busy, 0, __ATOMIC_RELEASE); }
+static inline void fat_lock(fat_fs_t *fs) { mutex_lock(&fs->lock); }
+static inline void fat_unlock(fat_fs_t *fs) { mutex_unlock(&fs->lock); }
 static inline uint32_t fat_root(const fat_fs_t *fs) { return fs->type == 32 ? fs->root_cluster : 0; }
 
 /* fat.c: volume, FAT table, cluster allocation */
@@ -109,6 +110,7 @@ int      fat_alloc(fat_fs_t *fs, uint32_t prev);
 void     fat_set_eoc(fat_fs_t *fs, uint32_t cluster);
 void     fat_free_chain(fat_fs_t *fs, uint32_t first);
 int      fat_commit(fat_fs_t *fs);
+int      fat_flush(fat_fs_t *fs);
 void     fat_unix_to_dos(uint32_t t, uint16_t *date, uint16_t *time);
 uint32_t fat_dos_to_unix(uint16_t date, uint16_t time);
 

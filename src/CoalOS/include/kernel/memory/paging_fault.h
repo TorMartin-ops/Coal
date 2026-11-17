@@ -4,7 +4,7 @@
  *
  * User faults are resolved by mm_fault() (demand paging, stack growth,
  * copy-on-write). A fault that cannot be resolved never panics the kernel: the
- * offending process is terminated by vm_fault_kill_current().
+ * offending process gets SIGSEGV (SIGKILL when out of memory).
  */
 #ifndef PAGING_FAULT_H
 #define PAGING_FAULT_H
@@ -25,9 +25,5 @@ struct registers;
 
 /** Entry point from the page-fault ISR (user-mode faults). */
 void page_fault_handler(struct registers *regs);
-
-/** Terminate the current process after an unresolvable fault; does not return.
- *  This is the single place to change when real signal delivery exists. */
-void vm_fault_kill_current(uintptr_t fault_addr, uintptr_t fault_eip, int vm_fault_result);
 
 #endif /* PAGING_FAULT_H */

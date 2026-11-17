@@ -1,26 +1,37 @@
-/* user.ld - Simple linker script for i386 user-space programs */
-ENTRY(_start) /* Entry point symbol from entry.asm */
+/* Linker script for static i386 user programs: code and read-only data in one
+ * R-X segment, data and bss in one RW- segment on their own pages, so no page
+ * is both writable and executable. */
+ENTRY(_start)
+
+PHDRS {
+    text  PT_LOAD FLAGS(5);     /* R-X */
+    data  PT_LOAD FLAGS(6);     /* RW- */
+    stack PT_GNU_STACK FLAGS(6);
+}
 
 SECTIONS {
-    /* Start at a common user-space address, e.g., 0x08048000 */
     . = 0x08048000;
 
     .text : {
         *(.text .text.* .gnu.linkonce.t.*)
-    }
+    } :text
 
     .rodata : {
         *(.rodata .rodata.* .gnu.linkonce.r.*)
-    }
+    } :text
+
+    /* A fresh virtual page for the data, at the same offset into its page as
+     * in the file: the file needs no padding. */
+    . = ALIGN(0x1000) + (. & 0xfff);
 
     .data : {
         *(.data .data.* .gnu.linkonce.d.*)
-    }
+    } :data
 
     .bss : {
         *(.bss .bss.*)
         *(COMMON)
-    }
+    } :data
 
-    /DISCARD/ : { *(.comment) *(.note*) }
+    /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame) }
 }

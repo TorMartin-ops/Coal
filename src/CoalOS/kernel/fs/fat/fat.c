@@ -3,8 +3,11 @@
  * @brief FAT16/FAT32 volume: mount, FAT table, cluster chains and allocation.
  *
  * The whole first FAT is cached in memory. Changes are tracked as a dirty
- * sector range and written to every FAT copy by fat_commit(), which the
- * higher layers call after each metadata change, on close and on sync.
+ * sector range and copied into the buffer cache (every FAT copy) by
+ * fat_commit(), which the higher layers call after each metadata change.
+ * Nothing is forced to disk there: fat_flush() does that on sync, fsync,
+ * unmount and from the periodic flusher (fs_init.c), so a burst of creates
+ * costs memory copies, not disk writes.
  */
 #define LOG_MODULE "fat"
 #include <kernel/core/log.h>
@@ -104,7 +107,7 @@ void fat_free_chain(fat_fs_t *fs, uint32_t c) {
     }
 }
 
-/* Write the dirty FAT range to every copy, then flush the buffer cache. */
+/* Copy the dirty FAT range into every FAT copy in the buffer cache. */
 int fat_commit(fat_fs_t *fs) {
     int rc = 0;
     for (uint32_t s = fs->dirty_lo; s <= fs->dirty_hi; s++) {
@@ -118,8 +121,16 @@ int fat_commit(fat_fs_t *fs) {
     }
     fs->dirty_lo = ~0u;
     fs->dirty_hi = 0;
-    buffer_cache_sync();
+    fs->unsynced = true;
     return rc;
+}
+
+/* Commit, then write every dirty buffer to the disk. */
+int fat_flush(fat_fs_t *fs) {
+    int rc = fat_commit(fs);
+    int sync = buffer_cache_sync();
+    fs->unsynced = false;
+    return rc ? rc : sync;
 }
 
 /* ---- Timestamps ----------------------------------------------------------- */
@@ -227,7 +238,7 @@ int fat_unmount(void *ctx) {
     fat_fs_t *fs = ctx;
     fat_lock(fs);
     if (fs->nodes) { fat_unlock(fs); return -EBUSY; }
-    int rc = fat_commit(fs);
+    int rc = fat_flush(fs);
     fat_unlock(fs);
     kfree(fs->fat);
     kfree(fs);
@@ -237,7 +248,7 @@ int fat_unmount(void *ctx) {
 int fat_sync(void *ctx) {
     fat_fs_t *fs = ctx;
     fat_lock(fs);
-    int rc = fat_commit(fs);
+    int rc = fs->unsynced || fs->dirty_lo <= fs->dirty_hi ? fat_flush(fs) : 0;
     fat_unlock(fs);
     return rc;
 }

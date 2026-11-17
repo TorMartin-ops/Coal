@@ -4,6 +4,10 @@
  */
 #define LOG_MODULE "fs"
 #include <kernel/core/log.h>
+#include <kernel/process/process.h>
+#include <kernel/process/scheduler.h>
+#include <kernel/fs/vfs/fs_errno.h>
+#include <kernel/lib/string.h>
 #include <kernel/fs/vfs/fs_init.h>
 #include <kernel/fs/vfs/vfs.h>
 #include <kernel/fs/fat/fat.h>
@@ -15,6 +19,35 @@
 #define ROOT_DEVICE "hda"
 
 static disk_t root_disk;
+
+static disk_t extra_disks[3];
+static const char *const extra_names[3] = { "hdb", "hdc", "hdd" };   /* the disk keeps the name pointer */
+
+int fs_attach_disk(const char *name) {
+    if (strcmp(name, ROOT_DEVICE) == 0) return 0;
+    for (int i = 0; i < 3; i++) {
+        if (strcmp(name, extra_names[i]) != 0) continue;
+        if (!extra_disks[i].initialized &&
+            (disk_init(&extra_disks[i], extra_names[i]) != 0 || buffer_register_disk(&extra_disks[i]) != 0))
+            return -ENODEV;
+        return 0;
+    }
+    return -ENODEV;
+}
+
+/* Writes cached changes to the disk every few seconds, so a crash loses only a short window. */
+#define FLUSH_INTERVAL_MS 5000
+
+static void flusher(void) {
+    for (;;) {
+        sleep_ms(FLUSH_INTERVAL_MS);
+        vfs_sync();
+    }
+}
+
+void fs_start_flusher(void) {
+    if (!process_spawn_kernel("flush", flusher)) LOG_WARN("no flusher thread");
+}
 
 int fs_init(void) {
     vfs_init();

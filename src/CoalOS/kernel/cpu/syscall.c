@@ -78,6 +78,8 @@ static const syscall_fn_t syscall_table[NR_SYSCALLS] = {
     [SYS_MOUNT]           = SC(sc_mount),
     [SYS_UTIME]           = SC(sc_utime),
     [SYS_SYNC]            = SC(sc_sync),
+    [SYS_FSYNC]           = SC(sc_fsync),
+    [SYS_FDATASYNC]       = SC(sc_fsync),
     [SYS_RENAME]          = SC(sc_rename),
     [SYS_UMOUNT2]         = SC(sc_umount2),
     [SYS_REBOOT]          = SC(sc_reboot),
@@ -107,5 +109,5 @@ void syscall_dispatch(isr_frame_t *r) {
     syscall_fn_t fn = nr < NR_SYSCALLS ? syscall_table[nr] : NULL;
 
     r->eax = fn ? (uint32_t)fn(r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp, r) : (uint32_t)-ENOSYS;
-    signal_deliver(r);
+    signal_return_to_user(r);
 }

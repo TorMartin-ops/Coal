@@ -11,7 +11,7 @@
 #include <kernel/core/types.h>
 #include <kernel/fs/vfs/fs_errno.h>
 
-#define VFS_PATH_MAX   256      /* longest accepted absolute path, incl. NUL */
+#define VFS_PATH_MAX   4096     /* longest accepted absolute path, incl. NUL (Linux PATH_MAX) */
 #define VFS_NAME_MAX   255
 
 #define SEEK_SET 0

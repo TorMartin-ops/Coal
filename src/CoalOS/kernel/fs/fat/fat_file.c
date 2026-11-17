@@ -50,7 +50,7 @@ static void fill_root(fat_fs_t *fs, fat_ent_t *e) {
 }
 
 static int node_flush_entry(fat_node_t *n) {
-    if (n->ent_lba == FAT_NODE_ROOT_LBA) return 0;
+    if (n->ent_lba == FAT_NODE_ROOT_LBA || n->ent_lba == FAT_NODE_UNLINKED) return 0;
     return fat_ent_update(n->fs, n->ent_lba, n->ent_off, n->first, n->size, n->mtime);
 }
 
@@ -150,6 +150,7 @@ static ssize_t write_locked(fat_node_t *n, uint32_t pos, const void *buf, uint32
     if (rc > 0 && pos + (uint32_t)rc > n->size) n->size = pos + (uint32_t)rc;
     n->mtime = vfs_time();
     n->dirty = true;
+    n->fs->unsynced = true;
     int e = node_flush_entry(n);
     return rc < 0 ? rc : e < 0 ? e : rc;
 }
@@ -241,7 +242,8 @@ static int fat_close(vnode_t *v) {
     int rc = 0;
     fat_lock(fs);
     if (--n->ref == 0) {
-        if (n->dirty) rc = fat_commit(fs);
+        if (n->ent_lba == FAT_NODE_UNLINKED) fat_free_chain(fs, n->first);    /* last user of a removed file */
+        if (n->dirty || n->ent_lba == FAT_NODE_UNLINKED) rc = fat_commit(fs);
         for (fat_node_t **pp = &fs->nodes; *pp; pp = &(*pp)->next) {
             if (*pp == n) { *pp = n->next; break; }
         }
@@ -273,7 +275,7 @@ static int fat_getattr(vnode_t *v, struct kstat64 *st) {
     st->st_dev = 1;
     st->st_ino = n->ent_lba ? (uint64_t)n->ent_lba * (fs->bps / FAT_ENT_SIZE) + n->ent_off / FAT_ENT_SIZE : 1;
     st->st_mode = dir ? S_IFDIR | 0755 : S_IFREG | ((n->attr & FAT_ATTR_RO) ? 0555 : 0755);
-    st->st_nlink = dir ? 2 : 1;
+    st->st_nlink = dir ? 2 : n->ent_lba == FAT_NODE_UNLINKED ? 0 : 1;
     st->st_size = dir ? 0 : n->size;
     st->st_blksize = 4096;
     st->st_blocks = dir ? 0 : (uint64_t)((n->size + fs->cluster_bytes - 1) / fs->cluster_bytes) * fs->spc * (fs->bps / 512);
@@ -319,6 +321,14 @@ static int lookup(fat_fs_t *fs, const char *path, uint32_t *dir, char *leaf, fat
 
 static bool entry_open(fat_fs_t *fs, const fat_ent_t *e) { return node_find(fs, e->lba, e->off) != NULL; }
 
+/* The directory entry e was removed: free its clusters now, or when the last opener closes the file. */
+static void entry_released(fat_fs_t *fs, const fat_ent_t *e) {
+    fat_node_t *n = node_find(fs, e->lba, e->off);
+
+    if (n) n->ent_lba = FAT_NODE_UNLINKED;
+    else fat_free_chain(fs, e->cluster);
+}
+
 static int fat_unlink(void *ctx, const char *path) {
     fat_fs_t *fs = ctx;
     char leaf[VFS_NAME_MAX + 1];
@@ -328,9 +338,8 @@ static int fat_unlink(void *ctx, const char *path) {
     int rc = lookup(fs, path, &dir, leaf, &e);
     if (rc == -EBUSY) rc = -EISDIR;
     else if (rc == 0 && (e.attr & FAT_ATTR_DIR)) rc = -EISDIR;
-    else if (rc == 0 && entry_open(fs, &e)) rc = -EBUSY;
     if (rc == 0) rc = fat_dir_remove(fs, dir, &e);      /* entry first, then the chain */
-    if (rc == 0) { fat_free_chain(fs, e.cluster); rc = fat_commit(fs); }
+    if (rc == 0) { entry_released(fs, &e); rc = fat_commit(fs); }
     fat_unlock(fs);
     return rc;
 }
@@ -415,7 +424,6 @@ static int rename_locked(fat_fs_t *fs, const char *from, const char *to) {
     fat_ent_t s, d;
     int rc = lookup(fs, from, &sdir, sleaf, &s);
     if (rc < 0) return rc;
-    if (entry_open(fs, &s)) return -EBUSY;
     bool sdirp = s.attr & FAT_ATTR_DIR;
     if (sdirp && path_inside(to, from)) return -EINVAL;
 
@@ -429,7 +437,7 @@ static int rename_locked(fat_fs_t *fs, const char *from, const char *to) {
     } else if (rc == 0) {
         bool ddirp = d.attr & FAT_ATTR_DIR;
         if (ddirp != sdirp) return ddirp ? -EISDIR : -ENOTDIR;
-        if (entry_open(fs, &d)) return -EBUSY;
+        if (ddirp && entry_open(fs, &d)) return -EBUSY;
         if (ddirp) {
             int empty = fat_dir_is_empty(fs, d.cluster);
             if (empty < 0) return empty;
@@ -437,7 +445,7 @@ static int rename_locked(fat_fs_t *fs, const char *from, const char *to) {
         }
         rc = fat_dir_remove(fs, ddir, &d);
         if (rc < 0) return rc;
-        fat_free_chain(fs, d.cluster);
+        entry_released(fs, &d);
     } else if (rc != -ENOENT) {
         return rc;
     }
@@ -445,6 +453,8 @@ static int rename_locked(fat_fs_t *fs, const char *from, const char *to) {
     fat_ent_t n;
     rc = fat_dir_add(fs, ddir, dleaf, s.attr, s.cluster, s.size, s.mtime, &n);
     if (rc < 0) return rc;
+    fat_node_t *open = node_find(fs, s.lba, s.off);     /* an open file follows its entry */
+    if (open) { open->ent_lba = n.lba; open->ent_off = n.off; }
     if (sdirp && sdir != ddir) {                 /* repoint ".." */
         buffer_t *b = fat_buf(fs, fat_cluster_lba(fs, s.cluster));
         if (b) {

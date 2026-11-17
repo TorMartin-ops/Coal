@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.path.join(HERE, "..", "server.py")
@@ -65,7 +66,20 @@ def main():
         check("data" in text and "coalbox" in text, "write, read and list files", text)
         err, text = c.tool("coal_run", command="/usr/bin/syscall_test", timeout_ms=60000)
         check("0 failed" in text, "syscall_test", text)
+        # --- kernel: CPU exceptions in user mode kill only the process ---
+        err, text = c.tool("coal_run", command="/usr/bin/fault_test", timeout_ms=60000)
+        check("0 failed" in text, "fault_test: user-mode exceptions become signals", text)
+        err, text = c.tool("coal_run", command="echo still alive")
+        check("still alive" in text, "kernel survived the faults", text)
+        err, text = c.tool("coal_run", command="/usr/bin/fs_stress quick", timeout_ms=120000)
+        check("0 failed" in text, "fs_stress: file I/O round trip and unlink/rename of open files", text)
+        # --- end kernel ---
         err, text = c.tool("coal_run", command="dmesg")
+        for _ in range(20):                 # DHCP needs about a second after boot
+            if "lease:" in text or "static" in text:
+                break
+            time.sleep(0.5)
+            err, text = c.tool("coal_run", command="dmesg")
         check("vfs: mounted fat on /" in text, "dmesg shows the kernel log", text)
         check("lease:" in text or "static" in text, "network configured (dhcp or static)", text)
         err, text = c.tool("coal_run", command="ping -c 1 10.0.2.2", timeout_ms=15000)

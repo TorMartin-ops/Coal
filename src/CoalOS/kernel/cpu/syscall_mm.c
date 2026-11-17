@@ -26,7 +26,10 @@ long sc_mmap2(uint32_t addr, uint32_t len, uint32_t prot, uint32_t flags, int32_
     if (flags & MAP_FIXED) {                        /* replaces what was mapped there */
         if ((addr & (PAGE_SIZE - 1)) || addr + len < addr || addr + len > KERNEL_SPACE_VIRT_START)
             return -EINVAL;
-        remove_vma_range(mm, addr, PAGE_ALIGN_UP(len));
+        if (addr < USER_SPACE_MIN) return -EINVAL;
+        long rc = remove_vma_range(mm, addr, PAGE_ALIGN_UP(len));
+        if (rc < 0) return rc;
+        return insert_vma(mm, addr, addr + PAGE_ALIGN_UP(len), vm | VM_USER | VM_ANONYMOUS) ? (long)addr : -ENOMEM;
     }
     return mm_mmap_anon(mm, addr, PAGE_ALIGN_UP(len), vm);
 }

@@ -27,20 +27,23 @@ int copy_path_from_user(const char *user, char *kbuf, size_t size) {
 }
 
 int user_path(uint32_t user, char *out, size_t size) {
-    char raw[PATH_MAX_SYS];
-    char full[PATH_MAX_SYS];
-    int err = copy_path_from_user((const char *)user, raw, sizeof(raw));
+    const char *cwd = get_current_process()->cwd;
+    char *full = kmalloc(PATH_MAX_SYS);       /* too big for the kernel stack */
+    char first;
+    size_t off = 0;
+    int err;
 
-    if (err) return err;
-    if (raw[0] == '/') {
-        full[0] = 0;
-    } else {
-        strcpy(full, get_current_process()->cwd);
-        strcat(full, "/");
+    if (!full) return -ENOMEM;
+    err = copy_from_user(&first, (const char *)user, 1) ? -EFAULT : 0;
+    if (!err && first != '/') {
+        off = strlen(cwd);
+        memcpy(full, cwd, off);
+        full[off++] = '/';
     }
-    if (strlen(full) + strlen(raw) >= sizeof(full)) return -ENAMETOOLONG;
-    strcat(full, raw);
-    return vfs_normalize(full, out, size);
+    if (!err) err = copy_path_from_user((const char *)user, full + off, PATH_MAX_SYS - off);
+    if (!err) err = vfs_normalize(full, out, size);
+    kfree(full);
+    return err;
 }
 
 /*

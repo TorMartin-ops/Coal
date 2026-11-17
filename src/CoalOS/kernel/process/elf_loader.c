@@ -121,7 +121,7 @@ int elf_load(mm_struct_t *mm, const void *file, size_t size, elf_info_t *info) {
         if (vma_start < last) {
             uint32_t vf = VM_USER | VM_ANONYMOUS | VM_READ |
                           ((p->p_flags & PF_W) ? VM_WRITE : 0) | ((p->p_flags & PF_X) ? VM_EXEC : 0);
-            if (!insert_vma(mm, vma_start, last, vf, flags, NULL, 0)) return -ENOMEM;
+            if (!insert_vma(mm, vma_start, last, vf)) return -ENOMEM;
         }
         mapped_end = last;
     }

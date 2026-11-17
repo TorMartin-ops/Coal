@@ -124,6 +124,7 @@ void kernel_main_init(uint32_t magic, uint32_t mb_info_phys_addr) {
     pcb_t *init = create_user_process(INIT_PATH);
     if (!init) KERNEL_PANIC_HALT("cannot start " INIT_PATH);
     scheduler_add_task(init);
+    fs_start_flusher();
 
     configure_keyboard_controller();
     LOG_INFO("starting %s", INIT_PATH);

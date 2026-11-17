@@ -4,6 +4,7 @@
  */
 #include <kernel/process/process.h>
 #include <kernel/process/exec.h>
+#include <kernel/process/signal.h>
 #include <kernel/drivers/wait.h>
 #include <kernel/lib/assert.h>
 #include <kernel/cpu/gdt.h>
@@ -229,6 +230,17 @@ pcb_t *create_user_process(const char *path) {
     return p;
 }
 
+pcb_t *process_spawn_kernel(const char *name, void (*entry)(void)) {
+    pcb_t *p = pcb_new();
+
+    if (!p) return NULL;
+    strncpy(p->name, name, sizeof(p->name) - 1);
+    p->task.context = scheduler_make_context(p->kernel_stack_vaddr_top, entry, 0x202);
+    pcb_publish(p, NULL);
+    scheduler_add_task(p);
+    return p;
+}
+
 int process_fork(const isr_frame_t *regs) {
     pcb_t *parent = get_current_process();
     pcb_t *child;
@@ -336,6 +348,10 @@ int process_waitpid(int pid, int *status, int options) {
         if (!have_child || (options & WNOHANG)) {
             local_irq_restore(flags);
             return have_child ? 0 : -ECHILD;
+        }
+        if (signal_pending()) {
+            local_irq_restore(flags);
+            return -EINTR;
         }
         me->wait_blocked = true;
         me->task.state = TASK_BLOCKED;

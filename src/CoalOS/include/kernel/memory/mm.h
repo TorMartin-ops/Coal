@@ -16,7 +16,6 @@
 #include <kernel/core/types.h>
 #include <kernel/memory/paging.h>
 #include <kernel/sync/spinlock.h>
-#include <kernel/fs/vfs/vfs.h>
 #include <kernel/lib/rbtree.h>
 
 #define VM_READ         0x00000001
@@ -40,8 +39,6 @@ typedef struct vma_struct {
     uintptr_t vm_end;           /* exclusive, page aligned */
     uint32_t vm_flags;
     uint32_t page_prot;         /* PTE flags, derived from vm_flags */
-    file_t *vm_file;            /* unused: file-backed VMAs are not implemented */
-    size_t vm_offset;
     struct rb_node rb_node;
     struct mm_struct *vm_mm;
 } vma_struct_t;
@@ -65,11 +62,8 @@ mm_struct_t *create_mm(uint32_t *pgd_phys);
 void destroy_mm(mm_struct_t *mm);
 
 /** Add a VMA. start and end must be page aligned with start < end and lie in
- *  [4 MiB, KERNEL_SPACE_VIRT_START). page_prot is ignored (derived from
- *  vm_flags; kept for source compatibility). NULL on overlap, bad range or OOM. */
-vma_struct_t *insert_vma(mm_struct_t *mm, uintptr_t start, uintptr_t end,
-                         uint32_t vm_flags, uint32_t page_prot,
-                         file_t *file, size_t offset);
+ *  [4 MiB, KERNEL_SPACE_VIRT_START). NULL on overlap, bad range or OOM. */
+vma_struct_t *insert_vma(mm_struct_t *mm, uintptr_t start, uintptr_t end, uint32_t vm_flags);
 
 /** munmap: unmap and free [start, start+length), splitting or trimming VMAs. */
 int remove_vma_range(mm_struct_t *mm, uintptr_t start, size_t length);
