@@ -12,7 +12,6 @@
 
 #include <kernel/memory/buddy_core.h>
 #include <kernel/interfaces/logger.h>
-#include <kernel/interfaces/memory_allocator.h>
 #include <kernel/sync/spinlock.h>
 #include <kernel/lib/assert.h>
 #include <kernel/lib/string.h>

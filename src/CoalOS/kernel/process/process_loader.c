@@ -17,7 +17,6 @@
 #include <kernel/memory/paging.h>
 #include <kernel/memory/frame.h>
 #include <kernel/interfaces/logger.h>
-#include <kernel/interfaces/memory_allocator.h>
 #include <kernel/lib/string.h>
 #include <kernel/lib/assert.h>
 #include <kernel/cpu/gdt.h>
