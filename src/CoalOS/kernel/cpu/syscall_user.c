@@ -8,12 +8,15 @@
 #include <kernel/memory/paging.h>
 #include <kernel/lib/string.h>
 
+#define PATH_CHUNK 128          /* paths are short: do not copy the rest of the page for each one */
+
 int copy_path_from_user(const char *user, char *kbuf, size_t size) {
     size_t len = 0;
 
     while (len < size) {
         /* Never read past the page holding the next byte: the string may end just before an unmapped page. */
         size_t chunk = PAGE_SIZE - (((uintptr_t)user + len) & (PAGE_SIZE - 1));
+        if (chunk > PATH_CHUNK) chunk = PATH_CHUNK;
         if (chunk > size - len) chunk = size - len;
 
         if (copy_from_user(kbuf + len, user + len, chunk) != 0)
