@@ -70,7 +70,8 @@ endfunction()
 file(GLOB COALBOX_SOURCES CONFIGURE_DEPENDS userspace/coalbox/*.c)
 add_user_program(coalbox ${COALBOX_SOURCES})   # installed as /bin/coalbox
 add_user_program(init userspace/init/init.c)   # installed as /sbin/init
-add_user_program(shell userspace/sh/sh.c)      # installed as /bin/sh
+file(GLOB SH_SOURCES CONFIGURE_DEPENDS userspace/sh/*.c)
+add_user_program(shell ${SH_SOURCES} userspace/coalbox/test.c userspace/coalbox/match.c)   # installed as /bin/sh
 add_user_program(hello userspace/hello/hello.c)
 add_user_program(snake userspace/games/snake.c)
 add_user_program(libc_test userspace/tests/libc_test.c)
@@ -116,6 +117,8 @@ add_custom_command(
     COMMAND mcopy ${IMG} $<TARGET_FILE:fs_stress> ::/usr/bin/fs_stress
     COMMAND mcopy ${IMG} $<TARGET_FILE:coalbench> ::/usr/bin/coalbench
     COMMAND mcopy ${IMG} $<TARGET_FILE:coalbench_null> ::/usr/bin/coalbench_null
+    COMMAND mcopy ${IMG} ${CMAKE_CURRENT_SOURCE_DIR}/userspace/tests/sh_test.sh ::/usr/bin/sh_test.sh
+    COMMAND mcopy ${IMG} ${CMAKE_CURRENT_SOURCE_DIR}/userspace/tests/applet_test.sh ::/usr/bin/applet_test.sh
     COMMAND mcopy ${IMG} ${ROOTFS_ETC} ::/etc/
     DEPENDS hello snake shell coalbox init mcpd libc_test syscall_test abi_test memtest fault_test fs_stress coalbench coalbench_null ${ROOTFS_ETC}
     COMMENT "Creating FAT16 disk image"

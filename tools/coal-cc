@@ -1,0 +1,18 @@
+#!/bin/sh
+# Compiles C files into a Coal OS program (static i386 ELF) with Coal's own libc.
+# Usage: coal-cc [-o out] file.c [file.c ...] [gcc options]
+# Needs gcc (32-bit support) and nasm. Install the result with coal_write_file (host_path=out).
+set -e
+src=$(cd "$(dirname "$0")/../src/CoalOS" && pwd)
+out=
+case $1 in -o) out=$2; shift 2 ;; esac
+[ $# -ge 1 ] || { sed -n '2,4p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+[ -n "$out" ] || { out=$(basename "$1" .c); }
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+nasm -f elf32 "$src/userspace/entry.asm" -o "$tmp/entry.o"
+exec gcc -m32 -march=i386 -ffreestanding -nostdinc -fno-stack-protector -fno-pie -fno-pic \
+    -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -Os -Wall -Wextra -Wno-unused-parameter \
+    -fno-asynchronous-unwind-tables -fno-tree-loop-distribute-patterns -ffunction-sections -fdata-sections \
+    -I"$src/include" "$@" "$src"/userspace/libc/*.c "$tmp/entry.o" \
+    -nostdlib -static -no-pie -s -Wl,--build-id=none -Wl,--gc-sections -T"$src/src/arch/i386/user.ld" -o "$out"

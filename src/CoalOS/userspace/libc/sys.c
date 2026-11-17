@@ -13,6 +13,10 @@
 #include <libc/sys/stat.h>
 #include <libc/sys/wait.h>
 #include <libc/sys/utsname.h>
+#include <libc/sys/select.h>
+#include <libc/sys/ioctl.h>
+#include <libc/sys/statfs.h>
+#include <libc/sys/socket.h>
 
 int errno;
 char **environ;
@@ -41,6 +45,26 @@ int chdir(const char *p)                       { RET(__SC1(SYS_CHDIR, p)); }
 int rename(const char *a, const char *b)       { RET(__SC3(SYS_RENAME, a, b, 0)); }
 int mkdir(const char *p, mode_t m)             { RET(__SC3(SYS_MKDIR, p, m, 0)); }
 void sync(void)                                { __SC1(SYS_SYNC, 0); }
+int fsync(int fd)                              { RET(__SC1(SYS_FSYNC, fd)); }
+int link(const char *a, const char *b)         { RET(__SC3(SYS_LINK, a, b, 0)); }
+int symlink(const char *a, const char *b)      { RET(__SC3(SYS_SYMLINK, a, b, 0)); }
+ssize_t readlink(const char *p, char *b, size_t n) { RET(__SC3(SYS_READLINK, p, b, n)); }
+int chmod(const char *p, mode_t m)             { RET(__SC3(SYS_CHMOD, p, m, 0)); }
+int statfs(const char *p, struct statfs *s)    { RET(__SC3(SYS_STATFS, p, s, 0)); }
+int gettimeofday(struct timeval *tv, void *tz) { RET(__SC3(SYS_GETTIMEOFDAY, tv, tz, 0)); }
+int socketpair(int d, int t, int p, int fds[2]) { RET(__sc(SYS_SOCKETPAIR, d, t, p, (long)fds, 0)); }
+
+int select(int n, fd_set *r, fd_set *w, fd_set *e, struct timeval *tv) {
+    RET(__sc(SYS_NEWSELECT, n, (long)r, (long)w, (long)e, (long)tv));
+}
+
+int ioctl(int fd, unsigned long req, ...) {
+    __builtin_va_list ap;
+    __builtin_va_start(ap, req);
+    void *arg = __builtin_va_arg(ap, void *);
+    __builtin_va_end(ap);
+    RET(__SC3(SYS_IOCTL, fd, req, arg));
+}
 
 int open(const char *path, int flags, ...) {
     __builtin_va_list ap;
@@ -123,6 +147,11 @@ int isatty(int fd) {
 unsigned sleep(unsigned sec) {
     struct timespec ts = { (long)sec, 0 };
     return nanosleep(&ts, &ts) ? (unsigned)ts.tv_sec : 0;
+}
+
+int usleep(unsigned usec) {
+    struct timespec ts = { (long)(usec / 1000000), (long)(usec % 1000000) * 1000 };
+    return nanosleep(&ts, NULL);
 }
 
 /* ioctl numbers shared with the kernel's tty driver */

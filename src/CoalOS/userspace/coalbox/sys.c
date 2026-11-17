@@ -8,6 +8,8 @@
 #include <libc/time.h>
 #include <libc/syscall.h>
 #include <libc/sys/utsname.h>
+#include <libc/termios.h>
+#include <libc/poll.h>
 
 int true_main(int argc, char **argv)  { return 0; }
 int false_main(int argc, char **argv) { return 1; }
@@ -257,7 +259,10 @@ int mount_main(int argc, char **argv) {
     }
     if (argc - optind == 0) {
         char buf[2048];
-        if (cb_slurp("/proc/mounts", buf, sizeof buf) < 0) return cb_err(NULL, "/proc/mounts");
+        if (cb_slurp("/proc/mounts", buf, sizeof buf) < 0) {
+            fputs("mount: the mount list is not available on this kernel\n", stderr);
+            return 1;
+        }
         fputs(buf, stdout);
         return 0;
     }
@@ -293,3 +298,33 @@ int reboot_main(int argc, char **argv) {
 
 int halt_main(int argc, char **argv)     { return reboot_main(argc, argv); }
 int poweroff_main(int argc, char **argv) { return reboot_main(argc, argv); }
+
+/* ps, refreshed every second, until q or Ctrl-C. */
+int top_main(int argc, char **argv) {
+    struct termios old, raw;
+    int tty = isatty(0) && isatty(1);
+    if (tty) {
+        tcgetattr(0, &old);
+        raw = old;
+        raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
+        raw.c_cc[VMIN] = 0;
+        raw.c_cc[VTIME] = 0;
+        tcsetattr(0, TCSANOW, &raw);
+    }
+    for (;;) {
+        char up[64] = "", mem[256] = "";
+        cb_slurp("/proc/uptime", up, sizeof up);
+        cb_slurp("/proc/meminfo", mem, sizeof mem);
+        if (tty) fputs("\033[H\033[J", stdout);
+        up[strcspn(up, "\n")] = 0;
+        printf("top - uptime %s s    (q to quit)\n", up);
+        ps_main(0, NULL);
+        fflush(stdout);
+        if (!tty) return 0;
+        struct pollfd pf = { 0, POLLIN, 0 };
+        char c;
+        if (poll(&pf, 1, 1000) > 0 && read(0, &c, 1) == 1 && (c == 'q' || c == 3)) break;
+    }
+    tcsetattr(0, TCSANOW, &old);
+    return 0;
+}

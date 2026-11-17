@@ -30,6 +30,29 @@
 #define SYS_FCNTL64 221
 #endif
 
+/* Linux numbers the kernel may not serve (the wrappers then fail with ENOSYS). */
+#ifndef SYS_LINK
+#define SYS_LINK       9
+#endif
+#ifndef SYS_CHMOD
+#define SYS_CHMOD      15
+#endif
+#ifndef SYS_SYMLINK
+#define SYS_SYMLINK    83
+#endif
+#ifndef SYS_READLINK
+#define SYS_READLINK   85
+#endif
+#ifndef SYS_STATFS
+#define SYS_STATFS     99
+#endif
+#ifndef SYS_NEWSELECT
+#define SYS_NEWSELECT  142
+#endif
+#ifndef SYS_SOCKETPAIR
+#define SYS_SOCKETPAIR 360
+#endif
+
 /* Returns the raw kernel result; -4095..-1 is -errno. */
 static inline long __sc(long n, long a, long b, long c, long d, long e) {
     long r;

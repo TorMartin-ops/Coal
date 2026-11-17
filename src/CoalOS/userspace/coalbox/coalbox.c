@@ -10,7 +10,7 @@ struct applet {
 };
 
 #define ROW(n) { #n, n##_main },
-static const struct applet applets[] = { APPLET_LIST(ROW) };
+static const struct applet applets[] = { APPLET_LIST(ROW) { "[", test_main } };
 
 int main(int argc, char **argv) {
     const char *name = cb_base(argv[0]);

@@ -147,63 +147,147 @@ char *strdup(const char *s) {
     return p ? memcpy(p, s, n) : NULL;
 }
 
-static const struct { unsigned char code; const char *msg; } errors[] = {
-    { EPERM, "Operation not permitted" },
-    { ENOENT, "No such file or directory" },
-    { ESRCH, "No such process" },
-    { EINTR, "Interrupted system call" },
-    { EIO, "Input/output error" },
-    { ENXIO, "No such device or address" },
-    { E2BIG, "Argument list too long" },
-    { ENOEXEC, "Exec format error" },
-    { EBADF, "Bad file descriptor" },
-    { ECHILD, "No child processes" },
-    { EAGAIN, "Resource temporarily unavailable" },
-    { ENOMEM, "Cannot allocate memory" },
-    { EACCES, "Permission denied" },
-    { EFAULT, "Bad address" },
-    { EBUSY, "Device or resource busy" },
-    { EEXIST, "File exists" },
-    { EXDEV, "Invalid cross-device link" },
-    { ENODEV, "No such device" },
-    { ENOTDIR, "Not a directory" },
-    { EISDIR, "Is a directory" },
-    { EINVAL, "Invalid argument" },
-    { ENFILE, "Too many open files in system" },
-    { EMFILE, "Too many open files" },
-    { ENOTTY, "Inappropriate ioctl for device" },
-    { EFBIG, "File too large" },
-    { ENOSPC, "No space left on device" },
-    { ESPIPE, "Illegal seek" },
-    { EROFS, "Read-only file system" },
-    { EMLINK, "Too many links" },
-    { EPIPE, "Broken pipe" },
-    { ERANGE, "Numerical result out of range" },
-    { ENAMETOOLONG, "File name too long" },
-    { ENOSYS, "Function not implemented" },
-    { ENOTEMPTY, "Directory not empty" },
-    { ELOOP, "Too many levels of symbolic links" },
-    { ENOTSOCK, "Socket operation on non-socket" },
-    { EMSGSIZE, "Message too long" },
-    { EPROTONOSUPPORT, "Protocol not supported" },
-    { EAFNOSUPPORT, "Address family not supported" },
-    { EADDRINUSE, "Address already in use" },
-    { EADDRNOTAVAIL, "Cannot assign requested address" },
-    { ENETDOWN, "Network is down" },
-    { ENETUNREACH, "Network is unreachable" },
-    { ECONNABORTED, "Software caused connection abort" },
-    { ECONNRESET, "Connection reset by peer" },
-    { EISCONN, "Transport endpoint is already connected" },
-    { ENOTCONN, "Transport endpoint is not connected" },
-    { ETIMEDOUT, "Connection timed out" },
-    { ECONNREFUSED, "Connection refused" },
-    { EHOSTUNREACH, "No route to host" },
-    { EALREADY, "Operation already in progress" },
-    { EINPROGRESS, "Operation now in progress" },
-};
+/* Messages indexed by errno, glibc wording. */
+static const char messages[] =
+    "Success\0"
+    "Operation not permitted\0"
+    "No such file or directory\0"
+    "No such process\0"
+    "Interrupted system call\0"
+    "Input/output error\0"
+    "No such device or address\0"
+    "Argument list too long\0"
+    "Exec format error\0"
+    "Bad file descriptor\0"
+    "No child processes\0"
+    "Resource temporarily unavailable\0"
+    "Cannot allocate memory\0"
+    "Permission denied\0"
+    "Bad address\0"
+    "Block device required\0"
+    "Device or resource busy\0"
+    "File exists\0"
+    "Invalid cross-device link\0"
+    "No such device\0"
+    "Not a directory\0"
+    "Is a directory\0"
+    "Invalid argument\0"
+    "Too many open files in system\0"
+    "Too many open files\0"
+    "Inappropriate ioctl for device\0"
+    "Text file busy\0"
+    "File too large\0"
+    "No space left on device\0"
+    "Illegal seek\0"
+    "Read-only file system\0"
+    "Too many links\0"
+    "Broken pipe\0"
+    "Numerical argument out of domain\0"
+    "Numerical result out of range\0"
+    "Resource deadlock avoided\0"
+    "File name too long\0"
+    "No locks available\0"
+    "Function not implemented\0"
+    "Directory not empty\0"
+    "Too many levels of symbolic links\0"
+    "Unknown error\0"
+    "No message of desired type\0"
+    "Identifier removed\0"
+    "Channel number out of range\0"
+    "Level 2 not synchronized\0"
+    "Level 3 halted\0"
+    "Level 3 reset\0"
+    "Link number out of range\0"
+    "Protocol driver not attached\0"
+    "No CSI structure available\0"
+    "Level 2 halted\0"
+    "Invalid exchange\0"
+    "Invalid request descriptor\0"
+    "Exchange full\0"
+    "No anode\0"
+    "Invalid request code\0"
+    "Invalid slot\0"
+    "Unknown error\0"
+    "Bad font file format\0"
+    "Device not a stream\0"
+    "No data available\0"
+    "Timer expired\0"
+    "Out of streams resources\0"
+    "Machine is not on the network\0"
+    "Package not installed\0"
+    "Object is remote\0"
+    "Link has been severed\0"
+    "Advertise error\0"
+    "Srmount error\0"
+    "Communication error on send\0"
+    "Protocol error\0"
+    "Multihop attempted\0"
+    "RFS specific error\0"
+    "Bad message\0"
+    "Value too large for defined data type\0"
+    "Name not unique on network\0"
+    "File descriptor in bad state\0"
+    "Remote address changed\0"
+    "Can not access a needed shared library\0"
+    "Accessing a corrupted shared library\0"
+    ".lib section in a.out corrupted\0"
+    "Attempting to link in too many shared libraries\0"
+    "Cannot exec a shared library directly\0"
+    "Invalid or incomplete multibyte or wide character\0"
+    "Interrupted system call should be restarted\0"
+    "Streams pipe error\0"
+    "Too many users\0"
+    "Socket operation on non-socket\0"
+    "Destination address required\0"
+    "Message too long\0"
+    "Protocol wrong type for socket\0"
+    "Protocol not available\0"
+    "Protocol not supported\0"
+    "Socket type not supported\0"
+    "Operation not supported\0"
+    "Protocol family not supported\0"
+    "Address family not supported by protocol\0"
+    "Address already in use\0"
+    "Cannot assign requested address\0"
+    "Network is down\0"
+    "Network is unreachable\0"
+    "Network dropped connection on reset\0"
+    "Software caused connection abort\0"
+    "Connection reset by peer\0"
+    "No buffer space available\0"
+    "Transport endpoint is already connected\0"
+    "Transport endpoint is not connected\0"
+    "Cannot send after transport endpoint shutdown\0"
+    "Too many references: cannot splice\0"
+    "Connection timed out\0"
+    "Connection refused\0"
+    "Host is down\0"
+    "No route to host\0"
+    "Operation already in progress\0"
+    "Operation now in progress\0"
+    "Stale file handle\0"
+    "Structure needs cleaning\0"
+    "Not a XENIX named type file\0"
+    "No XENIX semaphores available\0"
+    "Is a named type file\0"
+    "Remote I/O error\0"
+    "Disk quota exceeded\0"
+    "No medium found\0"
+    "Wrong medium type\0"
+    "Operation canceled\0"
+    "Required key not available\0"
+    "Key has expired\0"
+    "Key has been revoked\0"
+    "Key was rejected by service\0"
+    "Owner died\0"
+    "State not recoverable\0"
+    "Operation not possible due to RF-kill\0"
+    "Memory page has hardware error\0"
+;
 
 char *strerror(int err) {
-    for (unsigned i = 0; i < sizeof errors / sizeof errors[0]; i++)
-        if (errors[i].code == err) return (char *)errors[i].msg;
-    return "Unknown error";
+    if (err < 0 || err > 133) return "Unknown error";
+    const char *m = messages;
+    while (err--) m += strlen(m) + 1;
+    return (char *)m;
 }

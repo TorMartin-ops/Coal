@@ -32,6 +32,12 @@ int     chdir(const char *path);
 char   *getcwd(char *buf, size_t n);
 int     isatty(int fd);
 unsigned sleep(unsigned sec);
+int     usleep(unsigned usec);
+int     fsync(int fd);
+int     link(const char *from, const char *to);
+int     symlink(const char *target, const char *path);
+ssize_t readlink(const char *path, char *buf, size_t n);
+int     chmod(const char *path, mode_t mode);
 void    sync(void);
 
 pid_t   fork(void);

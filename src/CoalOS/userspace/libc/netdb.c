@@ -19,6 +19,19 @@
 
 int h_errno;
 
+/* xorshift32 seeded from the cycle counter, pid and time; not a CSPRNG but unpredictable enough for query ids. */
+static uint32_t random32(void) {
+    static uint32_t x;
+    if (!x) {
+        uint32_t lo, hi;
+        __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+        x = lo ^ hi * 2654435761u ^ (uint32_t)getpid() * 40503u ^ (uint32_t)time(NULL);
+        if (!x) x = 0x9e3779b9u;
+    }
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    return x;
+}
+
 static const struct { const char *name; int port; } services[] = {
     { "ftp", 21 }, { "ssh", 22 }, { "telnet", 23 }, { "smtp", 25 }, { "domain", 53 },
     { "http", 80 }, { "pop3", 110 }, { "ntp", 123 }, { "imap", 143 }, { "https", 443 },
@@ -46,17 +59,24 @@ static char *next_line(char **cursor) {
 }
 
 static int hosts_lookup(const char *name, in_addr_t *out) {
-    char buf[1024], *cur = buf, *line;
+    FILE *f = fopen("/etc/hosts", "r");
+    char *buf = NULL, *cur, *line;
+    size_t cap = 0;
+    int rc = -1;
 
-    if (slurp("/etc/hosts", buf, sizeof buf) < 0) return -1;
-    while ((line = next_line(&cur))) {
+    if (!f) return -1;
+    while (rc && getline(&buf, &cap, f) >= 0) {
+        cur = buf;
+        if (!(line = next_line(&cur))) continue;
         char *save, *addr = strtok_r(line, " \t\r", &save), *host;
         struct in_addr a;
         if (!addr || !inet_aton(addr, &a)) continue;
         while ((host = strtok_r(NULL, " \t\r", &save)))
-            if (!strcasecmp(host, name)) { *out = a.s_addr; return 0; }
+            if (!strcasecmp(host, name)) { *out = a.s_addr; rc = 0; break; }
     }
-    return -1;
+    free(buf);
+    fclose(f);
+    return rc;
 }
 
 static in_addr_t nameserver(void) {
@@ -106,11 +126,14 @@ static int skip_name(const uint8_t *r, int n, int pos) {
     return -1;
 }
 
-/* First A record of a reply to query `id`; 0 and *out set, or -1 (h_errno set). */
-static int parse_reply(const uint8_t *r, int n, uint16_t id, in_addr_t *out) {
-    if (n < 12 || r[0] != (id >> 8) || r[1] != (uint8_t)id || !(r[2] & 0x80)) return -2;   /* not ours */
+/* First A record of a reply to query q; 0 and *out set, or -1 (h_errno set). */
+static int parse_reply(const uint8_t *r, int n, const uint8_t *q, int qlen, in_addr_t *out) {
+    if (n < qlen || r[0] != q[0] || r[1] != q[1] || !(r[2] & 0x80)) return -2;   /* not ours */
+    if (r[4] != 0 || r[5] != 1) return -2;
+    for (int i = 12; i < qlen; i++)                 /* the question must be the one we asked */
+        if (tolower(r[i]) != tolower(q[i])) return -2;
     if ((r[3] & 0x0F) != 0) { h_errno = HOST_NOT_FOUND; return -1; }
-    int pos = 12, qd = r[4] << 8 | r[5], an = r[6] << 8 | r[7];
+    int pos = 12, qd = 1, an = r[6] << 8 | r[7];
     while (qd-- > 0) { if ((pos = skip_name(r, n, pos)) < 0) return -1; pos += 4; }
     while (an-- > 0) {
         if ((pos = skip_name(r, n, pos)) < 0 || pos + 10 > n) break;
@@ -129,18 +152,25 @@ static int dns_lookup(const char *name, in_addr_t *out) {
     int len, fd, rc = -1;
     struct sockaddr_in ns = { AF_INET, htons(DNS_PORT), { nameserver() }, { 0 } };
     struct timeval tv = { DNS_TIMEOUT_S, 0 };
-    uint16_t id = (uint16_t)(getpid() * 31 + (unsigned)time(NULL));
+    uint16_t id = (uint16_t)random32();
 
     h_errno = TRY_AGAIN;
     if ((len = build_query(q, id, name)) < 0) { h_errno = HOST_NOT_FOUND; return -1; }
     if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) return -1;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    for (int i = 0; i < 8; i++) {                   /* random source port; fall back to the kernel's choice */
+        struct sockaddr_in me = { AF_INET, htons((uint16_t)(1024 + random32() % 64512)), { 0 }, { 0 } };
+        if (bind(fd, (struct sockaddr *)&me, sizeof me) == 0) break;
+    }
     for (int attempt = 0; attempt < DNS_TRIES && rc == -1; attempt++) {
         if (sendto(fd, q, (size_t)len, 0, (struct sockaddr *)&ns, sizeof ns) < 0) break;
         for (;;) {
-            int n = (int)recv(fd, r, sizeof r, 0);
+            struct sockaddr_in from;
+            socklen_t fl = sizeof from;
+            int n = (int)recvfrom(fd, r, sizeof r, 0, (struct sockaddr *)&from, &fl);
             if (n < 0) break;                       /* timeout: ask again */
-            int p = parse_reply(r, n, id, out);
+            if (from.sin_addr.s_addr != ns.sin_addr.s_addr || from.sin_port != ns.sin_port) continue;
+            int p = parse_reply(r, n, q, len, out);
             if (p == -2) continue;
             if (p == 0) rc = 0; else rc = -3;       /* -3: definitive "no such name" */
             break;

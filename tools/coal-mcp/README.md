@@ -122,8 +122,10 @@ wrote 3 bytes to /tmp/hello.txt
 
 ```sh
 python3 tools/coal-mcp/tests/test_server.py      # protocol and mcpd end-to-end on a pty
+python3 tools/coal-mcp/tests/test_mcpd_fuzz.py   # malformed, oversized, nested and non-UTF-8 requests against mcpd
 python3 tools/coal-mcp/tests/smoke_test.py DIR   # builds in DIR, boots in QEMU, runs commands, a 3 MiB transfer,
-                                                 # network checks, snapshot/restore
+                                                 # network checks, sh_test.sh and applet_test.sh inside Coal,
+                                                 # snapshot/restore
 ```
 
 Covers the MCP handshakes and tool list (a bug inside a tool is a tool error, only unknown
@@ -134,3 +136,11 @@ bridged to a unix socket in place of COM2.
 The disk image persists between boots and is not rebuilt by `coal_boot`: after changing user-space
 sources (`mcpd`, `sh`, `coalbox`) run `coal_reset` to put the new binaries on a fresh image. The kernel
 is rebuilt on every boot.
+
+## Compiling C for Coal
+
+`tools/coal-cc [-o out] file.c [more.c] [gcc options]` builds a static i386 program against Coal's libc
+(`#include <libc/stdio.h>`), with the same flags and `user.ld` as the in-tree programs. It needs `gcc` with
+32-bit support and `nasm`. Install the result with `coal_write_file` (`host_path`), then `coal_run`. No FPU:
+programs cannot use `float`/`double` arithmetic (`printf("%f")` works on values passed in).
+`coal_guide` repeats the exact gcc command.

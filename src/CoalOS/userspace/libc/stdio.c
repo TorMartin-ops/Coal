@@ -230,6 +230,59 @@ static unsigned divmod64(unsigned long long *v, unsigned base) {
     return r;
 }
 
+/* %f without the FPU: formats the IEEE-754 bits of a double with integer arithmetic. The fraction
+ * lives in a 1088-bit binary register that is multiplied by ten per digit, so every digit is exact
+ * (round to nearest, ties to even). At most 18 decimals; |x| >= 2^64 prints as "(big)". */
+static int format_fixed(unsigned long long bits, int prec, int alt, char *out) {
+    int exp = (int)(bits >> 52 & 0x7ff), n = 0;
+    unsigned long long mant = bits & ((1ULL << 52) - 1), ip = 0;
+    unsigned w[34] = { 0 };                         /* fraction bits, most significant limb first */
+    if (exp == 0x7ff) {
+        memcpy(out, mant ? "nan" : "inf", 3);
+        return 3;
+    }
+    if (exp) {
+        mant |= 1ULL << 52;
+        exp -= 1075;
+        if (exp >= 0) {
+            if (exp > 11) { memcpy(out, "(big)", 5); return 5; }
+            ip = mant << exp;
+        } else {
+            int shift = -exp;
+            ip = shift < 64 ? mant >> shift : 0;
+            for (int b = 0; b < 53 && b < shift; b++)
+                if (mant >> b & 1) w[(shift - b - 1) / 32] |= 0x80000000u >> ((shift - b - 1) % 32);
+        }
+    }
+    if (prec > 18) prec = 18;
+    char dig[18];
+    for (int i = 0; i < prec; i++) {
+        unsigned long long carry = 0;
+        for (int k = 33; k >= 0; k--) {
+            carry += (unsigned long long)w[k] * 10;
+            w[k] = (unsigned)carry;
+            carry >>= 32;
+        }
+        dig[i] = (char)carry;
+    }
+    int rest = 0;
+    for (int k = 1; k < 34; k++) rest |= w[k] != 0;
+    int last = prec ? dig[prec - 1] : (int)(ip & 1);
+    if (w[0] > 0x80000000u || (w[0] == 0x80000000u && (rest || (last & 1)))) {
+        int i = prec - 1;
+        while (i >= 0 && dig[i] == 9) dig[i--] = 0;
+        if (i >= 0) dig[i]++;
+        else ip++;
+    }
+    char num[20];
+    int nd = 0;
+    do num[nd++] = (char)('0' + divmod64(&ip, 10)); while (ip);
+    while (nd) out[n++] = num[--nd];
+    if (prec || alt) out[n++] = '.';
+    for (int i = 0; i < prec; i++) out[n++] = (char)('0' + dig[i]);
+    return n;
+}
+
 static int vformat(struct sink *s, const char *fmt, va_list ap) {
     for (; *fmt; fmt++) {
         if (*fmt != '%') { put(s, *fmt); continue; }
@@ -254,7 +307,7 @@ static int vformat(struct sink *s, const char *fmt, va_list ap) {
             if (*fmt == 'l') lng++;
             fmt++;
         }
-        char tmp[24];
+        char tmp[48];
         const char *str = tmp, *prefix = "";
         int len = 0;
         char c = *fmt;
@@ -289,6 +342,11 @@ static int vformat(struct sink *s, const char *fmt, va_list ap) {
             while (len < prec && e > tmp) { *--e = '0'; len++; }
             str = e;
             if (!len && prec != 0) { str = "0"; len = 1; }
+        } else if (c == 'f' || c == 'F') {
+            unsigned long long bits = va_arg(ap, unsigned long long);    /* a double travels as 8 stack bytes */
+            if (bits >> 63) prefix = "-"; else if (plus) prefix = "+"; else if (space) prefix = " ";
+            len = format_fixed(bits & ~(1ULL << 63), prec < 0 ? 6 : prec, alt, tmp);
+            if (tmp[0] == 'i' || tmp[0] == 'n') zero = 0;
         } else {
             put(s, '%');
             if (c) put(s, c); else break;
