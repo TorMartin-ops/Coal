@@ -44,7 +44,7 @@
 #define RTO_INIT        1000u
 #define RTO_MIN         200u
 #define RTO_MAX         16000u
-#define CLOCK_G         TCP_TICK_MS         /* timer granularity in the RTO formula */
+#define CLOCK_G         2                   /* timer granularity in the RTO formula */
 #define PTO_MIN         10u                 /* tail loss probe floor, ms */
 #define DACK_MS         40u                 /* longest an ACK is delayed */
 #define QUICK_ACKS      16                  /* segments acknowledged at once after a gap or at the start, so slow start is not slowed */
@@ -157,6 +157,7 @@ static void arm(struct tcp_conn *c, uint32_t ms) {
     c->rtx_on = true;
     c->rtx_kind = T_RTO;
     c->rtx_at = net_now() + ms;
+    net_timer_kick(ms);
 }
 
 static struct seg *seg_at(const struct tcp_conn *c, unsigned i) { return &c->segs[(c->seg_head + i) % SEG_MAX]; }
@@ -424,18 +425,31 @@ static void timeout(struct tcp_conn *c) {
     arm(c, c->rto);
 }
 
-void tcp_tick(void) {
-    uint32_t now = net_now();
+/* Runs the due timers. Returns the milliseconds until the next one, 0 if none is pending. */
+uint32_t tcp_tick(void) {
+    uint32_t now = net_now(), next = 0;
 
     for (int i = 0; i < MAX_CONNS; i++) {
         struct tcp_conn *c = &conns[i];
-        if (c->used && c->dack_on && (int32_t)(now - c->dack_at) >= 0) {
-            c->ack_now = true;
-            output(c);
+        if (!c->used) continue;
+        if (c->dack_on) {
+            if ((int32_t)(now - c->dack_at) >= 0) {
+                c->ack_now = true;
+                output(c);
+            } else if (!next || c->dack_at - now < next) {
+                next = c->dack_at - now;
+            }
         }
-        if (c->used && c->rtx_on && (int32_t)(now - c->rtx_at) >= 0) timeout(c);
+        if (!c->used || !c->rtx_on) continue;
+        if ((int32_t)(now - c->rtx_at) >= 0) {
+            timeout(c);
+            if (!c->used || !c->rtx_on) continue;
+        }
+        uint32_t left = (int32_t)(c->rtx_at - now) > 0 ? c->rtx_at - now : 1;
+        if (!next || left < next) next = left;
     }
     net_lo_drain();
+    return next;
 }
 
 /* ---- input ------------------------------------------------------------------- */
@@ -756,6 +770,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len) {
         } else if (!c->dack_on) {
             c->dack_on = true;
             c->dack_at = net_now() + DACK_MS;
+            net_timer_kick(DACK_MS);
         }
     }
     if (fin && receiving && !c->fin_rcvd) {

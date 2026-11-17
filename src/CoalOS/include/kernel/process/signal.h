@@ -29,6 +29,7 @@
 #define SIGTTIN  21
 #define SIGTTOU  22
 #define SIGURG   23
+#define SIGXCPU  24
 #define SIGWINCH 28
 #define NSIG     32
 
@@ -60,6 +61,9 @@ void signal_mask_restore(void);
 
 /** True if a deliverable signal is pending for the current process (blocking calls give up). */
 bool signal_pending(void);
+
+/** Queues sig for p unless it is ignored or the target is a zombie. Safe from interrupt context. */
+void signal_send(struct pcb *p, int sig);
 
 /** Raises a CPU-fault signal on the current process; a blocked or ignored one is reset to the default action. */
 void signal_force(int sig);

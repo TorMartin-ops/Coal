@@ -2,7 +2,7 @@
  * @file e1000.c
  * @brief Intel 82540EM driver: one RX and one TX descriptor ring, interrupt driven receive.
  *
- * Receive is also polled every 10 ms (net_tick), so a missing or misrouted
+ * Receive is also polled every 10 ms (proto timer), so a missing or misrouted
  * interrupt only costs latency. The stack builds outgoing frames directly in the
  * next free TX buffer (e1000_tx_buffer), so sending copies nothing. Interrupts
  * are throttled: one interrupt hands over every frame that arrived meanwhile.
@@ -73,6 +73,7 @@ struct rx_desc { uint64_t addr; uint16_t len, csum; uint8_t status, errors; uint
 struct tx_desc { uint64_t addr; uint16_t len; uint8_t cso, cmd, status, css; uint16_t special; };
 
 static volatile uint8_t *mmio;
+static bool s_polled;               /* the interrupt line is not wired: net.c polls on a timer */
 static volatile struct rx_desc *rx_ring;
 static volatile struct tx_desc *tx_ring;
 static uint8_t *rx_buf[RX_DESCS], *tx_buf[TX_DESCS];
@@ -80,6 +81,10 @@ static unsigned rx_next, tx_tail;
 
 static inline uint32_t rd(uint32_t reg) { return *(volatile uint32_t *)(mmio + reg); }
 static inline void wr(uint32_t reg, uint32_t v) { *(volatile uint32_t *)(mmio + reg) = v; }
+
+bool e1000_polled(void) {
+    return s_polled;
+}
 
 void e1000_poll(void) {
     bool any = false;
@@ -193,12 +198,13 @@ bool e1000_init(uint8_t mac[6]) {
     wr(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC);
 
     unsigned irq = pci_read32(&dev, PCI_IRQ_LINE) & 0xFF;
-    if (irq < 16) {
+    s_polled = irq >= 16;
+    if (!s_polled) {
         register_int_handler((int)(IRQ0_VECTOR + irq), e1000_irq, NULL);
         pic_unmask(irq);
         wr(REG_ITR, ITR_INTERVAL);
         wr(REG_IMS, INT_RXT0 | INT_RXO | INT_RXDMT0);
     }
-    LOG_INFO("irq %u, %s receive", irq, irq < 16 ? "interrupt" : "polled");
+    LOG_INFO("irq %u, %s receive", irq, s_polled ? "polled" : "interrupt");
     return true;
 }

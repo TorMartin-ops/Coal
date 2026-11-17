@@ -12,9 +12,11 @@
 #include <kernel/process/process.h>
 #include <kernel/process/signal.h>
 #include <kernel/memory/mm.h>
+#include <kernel/fs/vfs/page_cache.h>
 #include <kernel/core/log.h>
 
 #define WAIT_MS 10
+#define OOM_CACHE_PAGES 256
 
 /* Killed or exiting: its memory is about to come back. */
 static bool going_away(const pcb_t *p) { return p->exiting || (p->pending_signals & (1u << SIGKILL)); }
@@ -38,6 +40,8 @@ bool oom_make_room(void) {
     pcb_t *me = get_current_process(), *victim = NULL;
     size_t most = 0;
     bool dying = false;
+
+    if (pc_shrink(OOM_CACHE_PAGES)) return true;       /* cached file pages go before any process does */
 
     if (!me || going_away(me)) return false;           /* nothing to wait for if we are doomed */
     uintptr_t irq = local_irq_save();                   /* choose and kill as one step, once for all faulting tasks */

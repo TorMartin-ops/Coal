@@ -1,4 +1,4 @@
-/* Kernel behaviour beyond the plain system call ABI: SA_RESTART, pipe capacity and PIPE_BUF,
+/* Kernel behaviour beyond the plain system call ABI: the vDSO (sysenter, time page), SA_RESTART, pipe capacity and PIPE_BUF,
  * removing open directories, select/pselect6 and socketpair, loopback networking, unreachable UDP ports.
  * Everything runs inside one Coal OS instance, using /tmp only. */
 
@@ -17,6 +17,7 @@
 #include <libc/sys/time.h>
 #include <libc/sys/socket.h>
 #include <libc/netinet/in.h>
+#include <kernel/cpu/vdso_abi.h>
 #include "check.h"
 
 #define SA_RESTART  0x10000000
@@ -57,7 +58,7 @@ static long sc6(long n, long a, long b, long c, long d, long e, long f) {
 
 static long now_ms(void) {
     struct timespec ts;
-    __sc(SYS_CLOCK_GETTIME, 1, (long)&ts, 0, 0, 0);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
@@ -725,6 +726,147 @@ static long free_kb(void) {
     return kb;
 }
 
+/* SIGCHLD reaches a parent that handles it, so a poll() sleeper wakes when a child exits. */
+static void test_sigchld(void) {
+    int fds[2];
+    struct pollfd pfd;
+
+    CHECK(pipe(fds) == 0);
+    pfd.fd = fds[0]; pfd.events = POLLIN;
+    set_handler(SIGCHLD, on_signal, 0);
+    hits = 0;
+    pid_t kid = fork();
+    if (kid == 0) { msleep(100); _exit(3); }
+    long t0 = now_ms();
+    CHECK(poll(&pfd, 1, 5000) < 0 && errno == EINTR && hits == 1 && now_ms() - t0 < 2000);
+    int st = 0;
+    CHECK(waitpid(kid, &st, 0) == kid && WEXITSTATUS(st) == 3);
+    set_handler(SIGCHLD, (void (*)(int))0, 0);
+    close(fds[0]); close(fds[1]);
+}
+
+struct krlimit { unsigned long cur, max; };
+
+#define RLIMIT_CPU   0
+#define RLIMIT_CORE  4
+#define RLIMIT_NPROC 6
+#define RLIMIT_AS    9
+#define MB           (1ul << 20)
+
+static long set_limit(int res, unsigned long cur, unsigned long max) {
+    struct krlimit l = { cur, max };
+    return __sc(SYS_SETRLIMIT, res, (long)&l, 0, 0, 0);
+}
+
+static long get_limit(int res, struct krlimit *l) { return __sc(SYS_UGETRLIMIT, res, (long)l, 0, 0, 0); }
+
+static int count_procs(void) {
+    char buf[1024];
+    int n = 0, fd = open("/proc", O_RDONLY | O_DIRECTORY);
+    for (long r; (r = __sc(SYS_GETDENTS64, fd, (long)buf, sizeof buf, 0, 0)) > 0; )
+        for (long off = 0; off < r; off += *(unsigned short *)(buf + off + 16))
+            n += buf[off + 19] >= '0' && buf[off + 19] <= '9';
+    close(fd);
+    return n;
+}
+
+/* True if /proc/self/status lists the limit among the RlimitHits. */
+static int hit_recorded(const char *what) {
+    char buf[256];
+    int fd = open("/proc/self/status", O_RDONLY);
+    long n = fd < 0 ? 0 : read(fd, buf, sizeof buf - 1);
+    if (fd >= 0) close(fd);
+    buf[n > 0 ? n : 0] = 0;
+    char *h = strstr(buf, "RlimitHits:");
+    return h && strstr(h, what) != NULL;
+}
+
+static int child_ok(pid_t kid) {
+    int st = 0;
+    return waitpid(kid, &st, 0) == kid && WIFEXITED(st) && WEXITSTATUS(st) == 0;
+}
+
+/* setrlimit/ugetrlimit/prlimit64 and the three enforced limits; each case runs in a child so the limits stay put. */
+static void test_rlimit(void) {
+    struct krlimit l;
+    unsigned long long pl[2] = { 0, 0 }, nl[2] = { 50, 60 };
+
+    CHECK(get_limit(RLIMIT_CPU, &l) == 0 && l.cur == ~0ul && l.max == ~0ul);
+    CHECK(get_limit(RLIMIT_CORE, &l) == 0 && l.cur == ~0ul);        /* not enforced: reported as unlimited */
+    CHECK(get_limit(99, &l) == -EINVAL);
+    CHECK(set_limit(RLIMIT_CORE, 0, 0) == -EINVAL);                 /* not enforced: refused, not faked */
+
+    /* cur above max is invalid; raising the hard limit is not permitted; values read back */
+    pid_t kid = fork();
+    if (kid == 0)
+        _exit(set_limit(RLIMIT_AS, 2, 1) == -EINVAL && set_limit(RLIMIT_NPROC, 100, 200) == 0 &&
+              set_limit(RLIMIT_NPROC, 100, 300) == -EPERM && get_limit(RLIMIT_NPROC, &l) == 0 &&
+              l.cur == 100 && l.max == 200 ? 0 : 1);
+    CHECK(child_ok(kid));
+
+    /* prlimit64 sees the same limits with 64-bit values */
+    CHECK(__sc(SYS_PRLIMIT64, 0, RLIMIT_NPROC, 0, (long)pl, 0) == 0 && pl[0] == ~0ull && pl[1] == ~0ull);
+    kid = fork();
+    if (kid == 0) {
+        long ok = __sc(SYS_PRLIMIT64, 0, RLIMIT_NPROC, (long)nl, (long)pl, 0) == 0 && pl[0] == ~0ull;
+        ok = ok && __sc(SYS_PRLIMIT64, 0, RLIMIT_NPROC, 0, (long)pl, 0) == 0 && pl[0] == 50 && pl[1] == 60;
+        _exit(ok ? 0 : 1);
+    }
+    CHECK(child_ok(kid));
+
+    /* RLIMIT_AS: a mapping or brk growth beyond the limit fails with ENOMEM, small ones still work */
+    kid = fork();
+    if (kid == 0) {
+        long cur = __sc(SYS_BRK, 0, 0, 0, 0, 0);
+        set_limit(RLIMIT_AS, 64 * MB, 64 * MB);
+        long big = __sc(SYS_MMAP2, 0, 128 * MB, 3, 0x22, -1);
+        long small = __sc(SYS_MMAP2, 0, 64 << 10, 3, 0x22, -1);
+        long grown = __sc(SYS_BRK, cur + 128 * MB, 0, 0, 0, 0);
+        _exit(big == -ENOMEM && small > 0 && grown == cur && hit_recorded("as") ? 0 : 1);
+    }
+    CHECK(child_ok(kid));
+
+    /* RLIMIT_NPROC: once the system holds that many processes fork fails with EAGAIN */
+    kid = fork();
+    if (kid == 0) {
+        set_limit(RLIMIT_NPROC, count_procs() + 1, ~0ul);
+        pid_t a = fork();
+        if (a == 0) { msleep(300); _exit(0); }
+        pid_t b = fork();
+        int blocked = b < 0 && errno == EAGAIN;
+        if (b == 0) _exit(0);
+        waitpid(a, NULL, 0);
+        _exit(a > 0 && blocked && hit_recorded("nproc") ? 0 : 1);
+    }
+    CHECK(child_ok(kid));
+
+    /* RLIMIT_CPU: SIGXCPU after one second of CPU time; a runaway loop does not outlive it */
+    kid = fork();
+    if (kid == 0) {
+        set_limit(RLIMIT_CPU, 1, 3);
+        for (;;) { }
+    }
+    int st = 0;
+    long t0 = now_ms();
+    CHECK(waitpid(kid, &st, 0) == kid && WIFSIGNALED(st) && WTERMSIG(st) == SIGXCPU);
+    CHECK(now_ms() - t0 < 6000);
+
+    /* a limit hit by a grandchild is visible on the process that waited for it */
+    kid = fork();
+    if (kid == 0) {
+        pid_t g = fork();
+        if (g == 0) {
+            set_limit(RLIMIT_AS, 64 * MB, 64 * MB);
+            __sc(SYS_MMAP2, 0, 128 * MB, 3, 0x22, -1);
+            _exit(0);
+        }
+        int before = hit_recorded("as");
+        waitpid(g, NULL, 0);
+        _exit(!before && hit_recorded("as") ? 0 : 1);
+    }
+    CHECK(child_ok(kid));
+}
+
 /* Two children each fill 60% of the free memory and hold it for a second, so memory runs out. */
 static void test_oom(void) {
     long before = free_kb(), mb = before / 1024 * 6 / 10;
@@ -752,6 +894,110 @@ static void test_oom(void) {
     CHECK(getpid() > 0 && write(1, "", 0) == 0);    /* the parent never noticed */
 }
 
+/* --- vDSO: __kernel_vsyscall (sysenter), the time page and the TF/signal corner cases --- */
+
+#define AT_SYSINFO      32
+#define AT_SYSINFO_EHDR 33
+#define SIGTRAP_NR      5
+#define EFLAGS_TF       0x100
+
+static unsigned long auxv_value(unsigned long type) {
+    char **e = environ;
+    while (*e) e++;
+    for (unsigned long *a = (unsigned long *)(e + 1); a[0]; a += 2)
+        if (a[0] == type) return a[1];
+    return 0;
+}
+
+/* Calls __kernel_vsyscall with the sixth argument in ebp and checks that ecx, edx and ebp survive. */
+static long vsc6(long n, long a, long b, long c, long d, long e, long f, int *regs_kept) {
+    long r, ecx_out, edx_out;
+    unsigned char ebp_kept;
+
+    __asm__ volatile("pushl %[f]\n\t"
+                     "pushl %%ebp\n\t"
+                     "movl 4(%%esp), %%ebp\n\t"
+                     "call *%[entry]\n\t"
+                     "cmpl 4(%%esp), %%ebp\n\t"
+                     "popl %%ebp\n\t"
+                     "leal 4(%%esp), %%esp\n\t"          /* none of these touch the flags */
+                     "sete %[kept]"
+                     : "=a"(r), "=c"(ecx_out), "=d"(edx_out), [kept] "=m"(ebp_kept)
+                     : "0"(n), "b"(a), "1"(b), "2"(c), "S"(d), "D"(e), [f] "m"(f), [entry] "m"(__vsyscall)
+                     : "memory", "cc");
+    *regs_kept = ebp_kept && ecx_out == b && edx_out == c;
+    return r;
+}
+
+static volatile int traps;
+static void on_trap(int sig) { traps++; }
+
+static void test_vdso(void) {
+    unsigned long sysinfo = auxv_value(AT_SYSINFO), ehdr = auxv_value(AT_SYSINFO_EHDR);
+    const unsigned char *elf = (const unsigned char *)ehdr;
+    int kept = 0;
+
+    CHECK(sysinfo && ehdr && sysinfo > ehdr && sysinfo < ehdr + 4096);
+    CHECK(elf && !memcmp(elf, "\177ELF\1", 5) && (unsigned long)__vsyscall == sysinfo);
+
+    long pid = getpid();
+    CHECK(pid > 0 && vsc6(SYS_GETPID, 0, 0x11111111, 0x22222222, 0x33333333, 0x44444444, 0x55555555, &kept) == pid);
+    CHECK(kept);
+    CHECK(sc6(SYS_GETPID, 0, 0, 0, 0, 0, 0) == pid);                   /* int 0x80 still works next to the vDSO */
+
+    /* the sixth argument reaches the kernel: pselect6's sigmask pointer is checked */
+    struct timespec zero = { 0, 0 };
+    CHECK(vsc6(SYS_PSELECT6, 0, 0, 0, 0, (long)&zero, 0, &kept) == 0);
+    CHECK(vsc6(SYS_PSELECT6, 0, 0, 0, 0, (long)&zero, 0x10, &kept) == -EFAULT && kept);
+
+    /* time: nanosecond resolution, monotonic, and the same clock as the system call */
+    struct timespec a, b, c;
+    int sub_ms = 0, backwards = 0;
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    for (int i = 0; i < 2000; i++) {
+        clock_gettime(CLOCK_MONOTONIC, &b);
+        sub_ms |= b.tv_nsec % 1000000 != 0;
+        backwards |= b.tv_sec < a.tv_sec || (b.tv_sec == a.tv_sec && b.tv_nsec < a.tv_nsec);
+        a = b;
+    }
+    CHECK(!backwards && (sub_ms || !((const volatile struct vdso_data *)VVAR_BASE)->mult));   /* ticks only without a TSC */
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    __sc(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)&b, 0, 0, 0);
+    clock_gettime(CLOCK_MONOTONIC, &c);
+    long long ta = a.tv_sec * 1000000000LL + a.tv_nsec, tb = b.tv_sec * 1000000000LL + b.tv_nsec;
+    long long tc = c.tv_sec * 1000000000LL + c.tv_nsec;
+    CHECK(ta <= tb && tb <= tc && tc - ta < 50000000);
+
+    struct timeval tv;
+    struct timespec rt;
+    time_t t = time(NULL);
+    CHECK(gettimeofday(&tv, NULL) == 0 && clock_gettime(CLOCK_REALTIME, &rt) == 0);
+    CHECK(t > 1700000000 && tv.tv_sec >= t && tv.tv_sec - t <= 1 && rt.tv_sec >= tv.tv_sec && tv.tv_usec < 1000000);
+    CHECK(clock_gettime(7777, &rt) == -1 && errno == EINVAL);          /* another clock goes to the kernel */
+
+    /* a program that single-steps through a system call (TF set) is trapped between the instructions,
+     * and the call itself still works: sysenter and sysexit must not trip over TF */
+    set_handler(SIGTRAP_NR, on_trap, 0);
+    long r;
+    traps = 0;
+    __asm__ volatile("pushfl\n\torl $0x100, (%%esp)\n\tpopfl\n\tnop\n\t"
+                     "call *%[entry]\n\t"
+                     "pushfl\n\tandl $~0x100, (%%esp)\n\tpopfl"
+                     : "=a"(r) : "0"(SYS_GETPID), [entry] "m"(__vsyscall) : "memory", "cc");
+    CHECK(r == pid && traps >= 8);
+    set_handler(SIGTRAP_NR, NULL, 0);
+
+    /* NT set in user mode must not reach the kernel's iret (a task return): the signal handler below is
+     * entered on the iret path of the call */
+    set_handler(SIGUSR1, on_signal, 0);
+    hits = 0;
+    __asm__ volatile("pushfl\n\torl $0x4000, (%%esp)\n\tpopfl\n\t"
+                     "call *%[entry]\n\t"
+                     "pushfl\n\tandl $~0x4000, (%%esp)\n\tpopfl"
+                     : "=a"(r) : "0"(SYS_KILL), "b"(pid), "c"(SIGUSR1), [entry] "m"(__vsyscall) : "memory", "cc");
+    CHECK(r == 0 && hits == 1);
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--fpu-clean")) {             /* started by test_fpu: the FPU must be freshly initialised */
         unsigned short cw, sw;
@@ -764,8 +1010,10 @@ int main(int argc, char **argv) {
         { "restart", test_sa_restart, 0 }, { "pipe", test_pipe_capacity, 0 }, { "dir", test_open_directory, 0 },
         { "select", test_select, 0 }, { "socketpair", test_socketpair, 0 },
         { "script", test_exec_script, 0 }, { "statfs", test_statfs_links, 0 },
+        { "sigchld", test_sigchld, 0 }, { "rlimit", test_rlimit, 0 },
         { "fpu", test_fpu, 0 }, { "loopback", test_loopback, 0 }, { "stream", test_loopback_stream, 0 },
         { "smallwrites", test_tcp_small_writes, 0 },
+        { "vdso", test_vdso, 0 },
         { "oom", test_oom, 1 },                     /* needs a small machine: run as "kernel_test oom" */
     };
 

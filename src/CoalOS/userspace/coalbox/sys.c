@@ -147,6 +147,28 @@ int sleep_main(int argc, char **argv) {
     return 0;
 }
 
+int nice_main(int argc, char **argv) {
+    int inc = 10, i = 1;
+
+    if (argc == 1) {
+        printf("%d\n", nice(0));
+        return 0;
+    }
+    if (!strcmp(argv[1], "-n") && argc > 2) {
+        inc = atoi(argv[2]);
+        i = 3;
+    }
+    if (i == argc) {
+        fprintf(stderr, "usage: nice [-n adjustment] command [arg...]\n");
+        return 1;
+    }
+    errno = 0;
+    if (nice(inc) == -1 && errno) fprintf(stderr, "nice: %s\n", strerror(errno));
+    execvp(argv[i], argv + i);
+    fprintf(stderr, "nice: '%s': %s\n", argv[i], strerror(errno));
+    return errno == ENOENT ? 127 : 126;
+}
+
 int env_main(int argc, char **argv) {
     int i = 1;
     for (; i < argc && strchr(argv[i], '='); i++) {

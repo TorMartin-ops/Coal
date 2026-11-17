@@ -10,11 +10,11 @@ including an IPv4 stack.
    and jumps to `_start` in `boot/multiboot2.asm`, which calls `main()`.
 2. `kernel_main_init()` (`kernel/core/init.c`) runs straight through: serial ports,
    VGA terminal, GDT, memory (the largest free Multiboot region becomes the
-   heap), IDT, PIT (1000 Hz), scheduler, keyboard, file systems, then creates
+   heap), IDT, timers (TSC clock, local APIC or PIT clock event), scheduler, keyboard, file systems, then creates
    `/sbin/init`, sets up the keyboard controller, enables interrupts and starts
    the scheduler. A failure before that point panics.
 3. `/sbin/init` (PID 1, `userspace/init`) starts `/bin/sh` on the console and
-   `/sbin/mcpd` (the MCP agent) and restarts them when they exit.
+   `/sbin/agentd` (the host agent) and restarts them when they exit.
 
 ## Memory
 
@@ -35,9 +35,15 @@ including an IPv4 stack.
 - `pcb_t` (`include/kernel/process/process.h`) holds ids, the address space, 32
   descriptors, cwd, close-on-exec bits, signal state and the TLS descriptor.
   Everything per process lives in the PCB; fork copies it, execve resets it.
-- O(1) scheduler (`scheduler.c`): four priority levels with a bitmap of non-empty
-  FIFO queues, 20 ms slices, a sorted sleep list. System calls run with
-  interrupts on, so a task in the kernel can be preempted.
+- EEVDF scheduler (`scheduler.c`): Linux nice weights, eligibility by lag, earliest virtual
+  deadline first, two red-black trees, 3 ms slices (0.75 ms for tasks that sleep a lot). A running
+  task keeps the CPU until its slice ends. System calls run with interrupts on, so a task in the
+  kernel can be preempted.
+- Timers (`drivers/timer/`): `clock_ns()` counts the TSC (calibrated against the PIT). All kernel
+  timers live in one hierarchical timer wheel (`timer.c`, millisecond resolution). One clock event
+  device is armed for the earliest deadline only: TSC-deadline or one-shot local APIC timer
+  (`lapic.c`), else the PIT in one-shot mode, else (no TSC) a 1 kHz periodic PIT. An idle system
+  takes almost no timer interrupts; `/proc/interrupts` shows the counts.
 - Blocking uses wait queues (`drivers/wait.c`): tty, serial, pipes and `poll`/`select`
   sleep until a driver wakes them. `poll` asks each driver for readiness. A restartable call
   interrupted by a `SA_RESTART` handler is restarted by rewinding `eip` over `int 0x80`.
@@ -56,6 +62,14 @@ One table indexed by the Linux i386 number (`kernel/cpu/syscall.c`); handlers ar
 grouped in `syscall_fs.c`, `syscall_proc.c`, `syscall_mm.c`, `syscall_signal.c`,
 `syscall_misc.c`, `syscall_user.c` (user-space path and argument copying).
 [syscalls.md](syscalls.md) lists them.
+
+Two entries share the table: `int 0x80` (returns with `iret`) and `sysenter` from the
+vDSO stub `__kernel_vsyscall` (returns with `sysexit` to a landing pad placed behind an
+`int 0x80`, so a signal restart re-executes through the old entry). Every process maps
+the vDSO and a read-only seqlock time page at the top of user space
+(`kernel/process/vdso.c`, `include/kernel/cpu/vdso_abi.h`); exec announces them through
+AT_SYSINFO and AT_SYSINFO_EHDR. The clock is the TSC calibrated against the PIT
+(`kernel/drivers/timer/clock.c`).
 
 ## File systems
 
@@ -104,14 +118,16 @@ screen, COM1 and a 16 KiB ring read by `syslog(2)` (`dmesg`). Levels below
 - `userspace/coalbox`: BusyBox-style multi-call binary, installed as `/bin/coalbox`;
   `sh` finds the applets (cat, ls, cp, grep, ps, ...) through it.
 - `userspace/sh`: shell with pipes, redirection, `&&`/`||`, background jobs, history.
-- `userspace/init`, `userspace/mcpd`, and tests in `userspace/tests`.
+- `userspace/init`, `userspace/agentd`, and tests in `userspace/tests`.
 
 ## MCP integration
 
-`tools/coal-mcp/server.py` (host) boots the image in QEMU and talks JSON lines
-over COM2 to `/sbin/mcpd`, which runs commands and transfers files. See
-`tools/coal-mcp/README.md`. The UART receive ring is 2 KiB and drops bytes when full (no flow
-control), so the host keeps each request line below that size.
+`tools/coal-gateway` (host) boots the image in QEMU and talks length-prefixed JSON frames over COM2 to
+`/sbin/agentd`, which runs commands, manages background jobs with resource limits and transfers
+files; the MCP front ends are `tools/coal-mcp/server.py` (stdio) and `tools/coal-gateway/gateway.py`
+(stdio or HTTP). The protocol is in `docs/agent-vm/protocol.md`, the gateway in
+`docs/agent-vm/gateway.md`. The UART holds the sender back when the 8 KiB receive ring is full, so the
+link is lossless and frames of up to 256 KiB need no host-side pacing.
 
 ## Source layout
 
@@ -119,7 +135,7 @@ control), so the host keeps each request line below that size.
 boot/            Multiboot2 entry
 kernel/          core cpu drivers fs lib memory process sync
 include/kernel/  kernel headers        include/libc/  headers shared with user space
-userspace/       libc coalbox sh init mcpd tests hello
+userspace/       libc coalbox sh init agentd tests hello
 rootfs/etc/      files copied into the disk image
 scripts/         QEMU launcher, system call number check
 src/arch/i386/   linker scripts

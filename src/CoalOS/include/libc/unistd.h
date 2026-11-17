@@ -33,6 +33,7 @@ char   *getcwd(char *buf, size_t n);
 int     isatty(int fd);
 unsigned sleep(unsigned sec);
 int     usleep(unsigned usec);
+int     nice(int inc);
 int     fsync(int fd);
 int     link(const char *from, const char *to);
 int     symlink(const char *target, const char *path);

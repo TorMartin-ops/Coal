@@ -6,13 +6,17 @@
  * queued (LO_SLOTS packets) and delivered by net_lo_drain(), which the transport
  * calls once it has finished its own work, like a softirq. Delivering from
  * net_ip_send() itself would re-enter the transport while it is still building
- * the packet. The tick drains the queue too, as a fallback. Looped-back segments
+ * the packet. A timer drains the queue too, as a fallback. Looped-back segments
  * carry no checksum: nothing can corrupt them.
+ *
+ * Two kernel timers drive the stack: one delivers loopback packets, the other runs the TCP
+ * and DHCP timers and polls a NIC without interrupts. Neither runs while there is nothing to do.
  */
 #define LOG_MODULE "net"
 
 #include <kernel/net/net.h>
 #include <kernel/drivers/net/e1000.h>
+#include <kernel/drivers/timer/timer.h>
 #include <kernel/cpu/linux_abi.h>
 #include <kernel/core/log.h>
 #include <kernel/fs/vfs/fs_errno.h>
@@ -67,6 +71,7 @@ static uint16_t ip_id;
 static struct { size_t len; uint8_t pkt[NET_MTU]; } lo_q[LO_SLOTS];     /* loopback packets in flight */
 static unsigned lo_head, lo_tail;                                      /* free-running counters */
 bool net_rx_trusted;
+static struct ktimer lo_timer, proto_timer;
 
 bool net_is_loopback(uint32_t ip) { return (ip >> 24) == 127; }
 
@@ -206,6 +211,7 @@ int net_ip_send(uint8_t proto, uint32_t src, uint32_t dst, size_t len) {
         lo_q[lo_tail % LO_SLOTS].len = IP_HLEN + len;
         memcpy(lo_q[lo_tail % LO_SLOTS].pkt, ip, IP_HLEN + len);
         lo_tail++;
+        timer_add_earlier(&lo_timer, 0);
         return 0;
     }
     memcpy(((struct eth_hdr *)tx_frame)->src, net_if.mac, 6);      /* complete the header a held frame keeps */
@@ -300,23 +306,38 @@ void net_lo_drain(void) {
     busy = false;
 }
 
-void net_tick(void) {
-    static uint32_t ms;
+#define NIC_POLL_MS 10u
+
+static void lo_deliver(struct ktimer *t) {
+    (void)t;
     net_lo_drain();
-    ms++;
-    if (ms % TCP_TICK_MS == 0) tcp_tick();
-    if (ms % 10) return;
-    if (net_if.present) e1000_poll();   /* picks up frames when the interrupt line is not wired */
-    dhcp_tick();
+    if (lo_head != lo_tail) timer_add_earlier(&lo_timer, 1);
+}
+
+static void proto_tick(struct ktimer *t) {
+    (void)t;
+    if (net_if.present && e1000_polled()) {
+        e1000_poll();
+        net_timer_kick(NIC_POLL_MS);
+    }
+    uint32_t dhcp = dhcp_tick(), tcp = tcp_tick();
+    if (dhcp) net_timer_kick(dhcp);
+    if (tcp) net_timer_kick(tcp);
+}
+
+void net_timer_kick(uint32_t ms) {
+    timer_add_earlier(&proto_timer, ms);
 }
 
 void net_init(void) {
-    timer_set_hook(net_tick);           /* loopback works without a NIC */
+    lo_timer.fn = lo_deliver;           /* loopback works without a NIC */
+    proto_timer.fn = proto_tick;
     if (!e1000_init(net_if.mac)) {
         LOG_WARN("no network adapter found");
         return;
     }
     net_if.present = true;
+    if (e1000_polled()) net_timer_kick(NIC_POLL_MS);
     LOG_INFO("e1000 %02x:%02x:%02x:%02x:%02x:%02x", net_if.mac[0], net_if.mac[1], net_if.mac[2],
              net_if.mac[3], net_if.mac[4], net_if.mac[5]);
     dhcp_start();

@@ -87,6 +87,9 @@ void idt_init(void);
 void register_int_handler(int num, int_handler_t handler, void* data);
 
 
+/** Number of interrupts taken on a vector (0..63) since boot. */
+uint32_t irq_count(unsigned vector);
+
 // Helper for optional delays (used in PIC init)
 static inline void io_wait(void) {
     // Write to an unused port (often 0x80) as a delay

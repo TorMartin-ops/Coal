@@ -6,6 +6,8 @@
 #include <kernel/process/exec.h>
 #include <kernel/process/elf_loader.h>
 #include <kernel/process/fpu.h>
+#include <kernel/process/vdso.h>
+#include <kernel/cpu/vdso_abi.h>
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/fs/vfs/read_file.h>
 #include <kernel/lib/string.h>
@@ -33,8 +35,10 @@
 #define AT_SECURE 23
 #define AT_RANDOM 25
 #define AT_EXECFN 31
+#define AT_SYSINFO 32
+#define AT_SYSINFO_EHDR 33
 
-#define NAUX        18          /* pairs, including AT_NULL */
+#define NAUX        20          /* pairs, including AT_NULL */
 #define MAX_ARGS    4096
 
 static uint32_t nx_flag(void) {
@@ -129,7 +133,8 @@ static int build_stack(mm_struct_t *mm, const char *path, const char *const *arg
     AUX(AT_PAGESZ, PAGE_SIZE); AUX(AT_BASE, 0); AUX(AT_FLAGS, 0); AUX(AT_ENTRY, ei->entry);
     AUX(AT_UID, 0); AUX(AT_EUID, 0); AUX(AT_GID, 0); AUX(AT_EGID, 0);
     AUX(AT_HWCAP, hwcap); AUX(AT_CLKTCK, 100); AUX(AT_SECURE, 0);
-    AUX(AT_RANDOM, rnd); AUX(AT_PLATFORM, plat); AUX(AT_EXECFN, execfn); AUX(AT_NULL, 0);
+    AUX(AT_RANDOM, rnd); AUX(AT_PLATFORM, plat); AUX(AT_EXECFN, execfn);
+    AUX(AT_SYSINFO, VDSO_VSYSCALL); AUX(AT_SYSINFO_EHDR, VDSO_BASE); AUX(AT_NULL, 0);
 #undef AUX
 
     vo = (off - vecsz) & ~(size_t)15;                     /* argc sits on a 16-byte boundary */
@@ -226,6 +231,7 @@ static int build_image(const char *path, const char *const *argv, const char *co
         goto fail;
     }
     ret = build_stack(mm, path, argv, envp, &ei, &img->sp);
+    if (!ret) ret = vdso_map(mm);
     if (ret) goto fail;
     img->mm = mm;
     img->entry = ei.entry;

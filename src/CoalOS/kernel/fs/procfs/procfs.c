@@ -6,10 +6,14 @@
 #include <kernel/fs/vfs/vfs.h>
 #include <kernel/drivers/display/terminal.h>
 #include <kernel/drivers/timer/pit.h>
+#include <kernel/drivers/timer/lapic.h>
+#include <kernel/cpu/idt.h>
 #include <kernel/memory/buddy.h>
+#include <kernel/memory/frame.h>
 #include <kernel/memory/paging.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/process/process.h>
+#include <kernel/process/rlimit.h>
 #include <kernel/lib/string.h>
 #include <libc/stdarg.h>
 
@@ -17,7 +21,7 @@
 #define SNAPSHOT_MAX 640
 
 
-enum kind { K_ROOT, K_PIDDIR, K_MEMINFO, K_UPTIME, K_VERSION, K_MOUNTS, K_STATUS, K_CMDLINE };
+enum kind { K_ROOT, K_PIDDIR, K_MEMINFO, K_UPTIME, K_VERSION, K_MOUNTS, K_INTERRUPTS, K_STATUS, K_CMDLINE };
 
 struct node {
     enum kind kind;
@@ -62,8 +66,8 @@ static size_t render(const struct node *n, char *out) {
     uint32_t ms = (uint32_t)timer_uptime_ms();
     switch (n->kind) {
     case K_MEMINFO: {
-        uint32_t lt = (uint32_t)buddy_total_pages(ZONE_NORMAL), lf = (uint32_t)buddy_free_pages_count(ZONE_NORMAL);
-        uint32_t ht = (uint32_t)buddy_total_pages(ZONE_HIGH), hf = (uint32_t)buddy_free_pages_count(ZONE_HIGH);
+        uint32_t lt = (uint32_t)buddy_total_pages(ZONE_NORMAL), lf = (uint32_t)(buddy_free_pages_count(ZONE_NORMAL) + frame_pool_pages(ZONE_NORMAL));
+        uint32_t ht = (uint32_t)buddy_total_pages(ZONE_HIGH), hf = (uint32_t)(buddy_free_pages_count(ZONE_HIGH) + frame_pool_pages(ZONE_HIGH));
         const uint32_t kb = PAGE_SIZE / 1024;
         return (size_t)pf(out, SNAPSHOT_MAX,
                           "MemTotal:    %8u kB\nMemFree:     %8u kB\nMemAvailable:%8u kB\n"
@@ -85,10 +89,25 @@ static size_t render(const struct node *n, char *out) {
         }
         return len < SNAPSHOT_MAX ? len : SNAPSHOT_MAX - 1;
     }
+    case K_INTERRUPTS: {                            /* vector, count, source: the PIT is IRQ 0, the APIC timer Local */
+        size_t len = 0;
+        for (unsigned v = IRQ0_VECTOR; v <= LAPIC_SPURIOUS_VECTOR && len < SNAPSHOT_MAX; v++) {
+            const char *name = v == IRQ0_VECTOR ? "timer" : v == IRQ1_VECTOR ? "keyboard" : v == IRQ14_VECTOR ? "ata" :
+                               v == LAPIC_TIMER_VECTOR ? "Local timer" : "irq";
+            if (irq_count(v) || v == IRQ0_VECTOR || v == LAPIC_TIMER_VECTOR)
+                len += (size_t)pf(out + len, SNAPSHOT_MAX - len, "%3u: %10u  %s\n", v, irq_count(v), name);
+        }
+        return len < SNAPSHOT_MAX ? len : SNAPSHOT_MAX - 1;
+    }
     case K_STATUS:
         if (proc_info_get(n->pid, &pi) < 0) return 0;
-        return (size_t)pf(out, SNAPSHOT_MAX, "Name:\t%s\nState:\t%c\nPid:\t%u\nPPid:\t%u\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n",
-                          pi.name, pi.state, pi.pid, pi.ppid);
+        {
+            char hits[24];
+            rlimit_hits_text(pi.rl_hits, hits, sizeof(hits));
+            return (size_t)pf(out, SNAPSHOT_MAX,
+                              "Name:\t%s\nState:\t%c\nPid:\t%u\nPPid:\t%u\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nRlimitHits:\t%s\n",
+                              pi.name, pi.state, pi.pid, pi.ppid, hits);
+        }
     case K_CMDLINE:
         if (proc_info_get(n->pid, &pi) < 0) return 0;
         memcpy(out, pi.cmdline, pi.cmdline_len);
@@ -136,6 +155,7 @@ static int procfs_open(void *fs, const char *path, int flags, mode_t mode, vnode
         else if (nc == 1 && cl[0] == 6 && !strncmp(c[0], "uptime", 6)) kind = K_UPTIME;
         else if (nc == 1 && cl[0] == 7 && !strncmp(c[0], "version", 7)) kind = K_VERSION;
         else if (nc == 1 && cl[0] == 6 && !strncmp(c[0], "mounts", 6)) kind = K_MOUNTS;
+        else if (nc == 1 && cl[0] == 10 && !strncmp(c[0], "interrupts", 10)) kind = K_INTERRUPTS;
         else {
             if (cl[0] == 4 && !strncmp(c[0], "self", 4)) {
                 pcb_t *cur = get_current_process();
@@ -187,7 +207,7 @@ static ssize_t procfs_read(vnode_t *v, off_t pos, void *buf, size_t len) {
 }
 
 static int procfs_readdir(vnode_t *v, off_t *pos, struct vfs_dirent *out) {
-    static const char *const root_names[] = { "meminfo", "uptime", "version", "mounts", "self" };
+    static const char *const root_names[] = { "meminfo", "uptime", "version", "mounts", "interrupts", "self" };
     static const char *const pid_names[] = { "status", "cmdline" };
     struct node *n = v->data;
     uint32_t i = (uint32_t)*pos;
@@ -201,13 +221,13 @@ static int procfs_readdir(vnode_t *v, off_t *pos, struct vfs_dirent *out) {
         strcpy(out->name, pid_names[i - 2]);
         out->type = DT_REG;
         out->ino = 100 + i;
-    } else if (i - 2 < 5) {
+    } else if (i - 2 < 6) {
         strcpy(out->name, root_names[i - 2]);
-        out->type = i - 2 == 4 ? DT_DIR : DT_REG;
+        out->type = i - 2 == 5 ? DT_DIR : DT_REG;
         out->ino = 10 + i;
     } else {
         uint32_t pids[MAX_PIDS];
-        uint32_t k = i - 7;
+        uint32_t k = i - 8;
         int cnt = proc_info_list(pids, MAX_PIDS);
         if ((int)k >= cnt) return 0;
         pf(out->name, sizeof(out->name), "%u", pids[k]);

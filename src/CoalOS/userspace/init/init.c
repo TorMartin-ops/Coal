@@ -21,7 +21,7 @@ struct service {
 
 static struct service services[] = {
     { "/bin/sh", { "-sh", NULL }, 1, 0, 0, 0 },
-    { "/sbin/mcpd", { "mcpd", NULL }, 0, 1, 0, 0 },
+    { "/sbin/agentd", { "agentd", NULL }, 0, 1, 0, 0 },
 };
 
 #define NSERVICES (int)(sizeof services / sizeof services[0])

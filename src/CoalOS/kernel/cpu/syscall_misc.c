@@ -5,6 +5,7 @@
 
 #include "syscall_internal.h"
 #include <kernel/cpu/gdt.h>
+#include <kernel/drivers/timer/clock.h>
 #include <kernel/drivers/timer/pit.h>
 #include <kernel/drivers/timer/rtc.h>
 #include <kernel/process/scheduler.h>
@@ -21,25 +22,21 @@
 #define LIMIT_IN_PAGES 0x10             /* user_desc.flags bit 4 */
 
 //============================================================================
-// Time: wall clock = RTC time at boot + uptime
+// Time: see clock.h
 //============================================================================
 
-static void uptime(uint32_t *sec, uint32_t *msec) {
-    uint32_t ms = (uint32_t)timer_uptime_ms();
-    *sec = ms / 1000;
-    *msec = ms % 1000;
-}
-
 long sc_time(uint32_t tloc) {
-    uint32_t s, ns;
-    wall_time(&s, &ns);
+    uint32_t s = wall_seconds();
+
     if (tloc && copy_to_user((void *)tloc, &s, sizeof(s)) != 0) return -EFAULT;
     return s;
 }
 
 long sc_gettimeofday(uint32_t tv, uint32_t tz) {
     uint32_t s, ns;
-    (void)tz;                           /* obsolete; the zone is UTC */
+    static const int32_t utc[2];
+
+    if (tz && copy_to_user((void *)tz, utc, sizeof(utc)) != 0) return -EFAULT;      /* the zone is UTC */
     if (!tv) return 0;
     wall_time(&s, &ns);
     struct linux_timeval t = { (int32_t)s, (int32_t)(ns / 1000) };
@@ -47,17 +44,13 @@ long sc_gettimeofday(uint32_t tv, uint32_t tz) {
 }
 
 long sc_clock_gettime(uint32_t clk, uint32_t uts) {
-    uint32_t s, ns;
+    uint64_t ns;
+    uint32_t rem;
 
-    if (clk == CLOCK_REALTIME) {
-        wall_time(&s, &ns);
-    } else if (clk == CLOCK_MONOTONIC) {
-        uptime(&s, &ns);
-        ns *= 1000000u;
-    } else {
-        return -EINVAL;
-    }
-    struct linux_timespec ts = { (int32_t)s, (int32_t)ns };
+    if (clk == CLOCK_REALTIME) ns = clock_realtime_ns();
+    else if (clk == CLOCK_MONOTONIC) ns = clock_monotonic_ns();
+    else return -EINVAL;
+    struct linux_timespec ts = { (int32_t)vdso_split_ns(ns, &rem), (int32_t)rem };
     return copy_to_user((void *)uts, &ts, sizeof(ts)) ? -EFAULT : 0;
 }
 

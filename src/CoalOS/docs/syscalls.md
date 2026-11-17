@@ -3,7 +3,10 @@
 Coal OS implements the Linux i386 system call ABI: `int 0x80`, number in EAX,
 arguments in EBX, ECX, EDX, ESI, EDI, EBP, result or `-errno` in EAX, Linux
 numbers and Linux struct layouts (`stat64`, `linux_dirent64`, `timespec`,
-`sigaction`, ...). There is one table, `syscall_table` in
+`sigaction`, ...). Programs can also enter through the vDSO's `__kernel_vsyscall`
+(`sysenter`, AT_SYSINFO); the kernel entry in `kernel/cpu/syscall.asm` builds the
+same frame, so both entries share the table. The vDSO also serves `clock_gettime`,
+`gettimeofday` and `time` without a system call. There is one table, `syscall_table` in
 `kernel/cpu/syscall.c`; any number not listed below returns `-ENOSYS`.
 The table below is generated from it. `scripts/check_syscall_numbers.sh`
 compares `include/libc/syscall_numbers.h` with the Linux headers.
@@ -28,6 +31,7 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 24 | getuid | `sc_zero` |  |
 | 30 | utime | `sc_utime` |  |
 | 33 | access | `sc_access` |  |
+| 34 | nice | `sc_nice` | no permission checks; the level is clamped to -20..19 |
 | 36 | sync | `sc_sync` |  |
 | 37 | kill | `sc_kill` |  |
 | 38 | rename | `sc_rename` |  |
@@ -46,12 +50,15 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 64 | getppid | `sc_getppid` |  |
 | 65 | getpgrp | `sc_getpgrp` |  |
 | 66 | setsid | `sc_setsid` |  |
+| 75 | setrlimit | `sc_setrlimit` | CPU, AS, NPROC only (see below) |
 | 78 | gettimeofday | `sc_gettimeofday` |  |
 | 82 | select | `sc_oldselect` | old argument-block form |
 | 83 | symlink | `sc_symlink` | EPERM on FAT |
 | 85 | readlink | `sc_readlink` | EINVAL: no symbolic links |
 | 88 | reboot | `sc_reboot` |  |
 | 91 | munmap | `sc_munmap` |  |
+| 96 | getpriority | `sc_getpriority` | `PRIO_PROCESS` only; returns 20 - nice like Linux |
+| 97 | setpriority | `sc_setpriority` | `PRIO_PROCESS` only |
 | 99 | statfs | `sc_statfs` |  |
 | 100 | fstatfs | `sc_fstatfs` |  |
 | 102 | socketcall | `sc_socketcall` | multiplexer for the calls below |
@@ -73,6 +80,7 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 174 | rt_sigaction | `sc_rt_sigaction` |  |
 | 175 | rt_sigprocmask | `sc_rt_sigprocmask` |  |
 | 183 | getcwd | `sc_getcwd` |  |
+| 191 | ugetrlimit | `sc_ugetrlimit` | other resources report unlimited |
 | 192 | mmap2 | `sc_mmap2` |  |
 | 195 | stat64 | `sc_stat64` |  |
 | 196 | lstat64 | `sc_stat64` | no symbolic links |
@@ -94,6 +102,7 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 300 | fstatat64 | `sc_fstatat64` |  |
 | 308 | pselect6 | `sc_pselect6` | temporary signal mask, timespec timeout |
 | 331 | pipe2 | `sc_pipe2` |  |
+| 340 | prlimit64 | `sc_prlimit64` | any process; 64-bit values |
 | 359 | socket | `sc_socket` |  |
 | 360 | socketpair | `sc_socketpair` | AF_UNIX, SOCK_STREAM only |
 | 361 | bind | `sc_bind` |  |
@@ -112,6 +121,15 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 
 Behaviour worth knowing:
 
+- Resource limits: `RLIMIT_CPU` (SIGXCPU at the soft limit, repeated every second, SIGKILL at the
+  hard limit; counted per process in timer ticks, children start at zero), `RLIMIT_AS` (`mmap2` and
+  `brk` fail with `ENOMEM`; the stack is not counted) and `RLIMIT_NPROC` (`fork` fails with `EAGAIN`;
+  there is one user, so the limit applies to every process in the system). Other resources read as
+  unlimited and `setrlimit` on them returns `EINVAL`. A hard limit cannot be raised (`EPERM`). Limits
+  that stopped a process are listed in `RlimitHits` of `/proc/<pid>/status` and are merged into the
+  parent when the process exits, so the parent can read them from the zombie before it reaps it.
+- A process whose parent exits sends it `SIGCHLD` (ignored by default). A parent with a handler
+  therefore wakes from `poll` with `EINTR` when a child dies.
 - Single-threaded processes, no users: `getuid` and friends return 0.
 - Signals: handlers, `sa_mask`, `SA_RESETHAND`, `SA_NODEFER`, `SA_RESTORER` and
   `SA_RESTART` work; delivery happens on return from system calls and interrupts.

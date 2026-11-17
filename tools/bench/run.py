@@ -13,7 +13,6 @@ import argparse
 import json
 import os
 import re
-import select
 import shutil
 import statistics
 import subprocess
@@ -22,66 +21,18 @@ import tempfile
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "harness"))
+from mcpclient import McpClient  # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-SERVER = REPO / "tools" / "coal-mcp" / "server.py"
 RESULTS = HERE / "results"
 QEMU_ARGS = "-accel tcg,thread=single"      # one host thread runs the guest: less scheduling noise
 
 
-class Mcp:
-    """Minimal MCP client: JSON-RPC lines over the stdio of coal-mcp/server.py."""
-
+class Mcp(McpClient):
     def __init__(self, build_dir, memory_mb, qemu_args):
-        env = dict(os.environ, COAL_QEMU_ARGS=qemu_args)
-        cmd = [sys.executable, str(SERVER), "--build-dir", build_dir]
-        if memory_mb:
-            cmd += ["--memory", str(memory_mb)]
-        self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env)
-        self.id = 0
-        self.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
-                                 "clientInfo": {"name": "coal-bench", "version": "1"}})
-        self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-
-    def _send(self, msg):
-        self.p.stdin.write(json.dumps(msg) + "\n")
-        self.p.stdin.flush()
-
-    def call(self, method, params, timeout=900):
-        self.id += 1
-        self._send({"jsonrpc": "2.0", "id": self.id, "method": method, "params": params})
-        deadline = time.monotonic() + timeout
-        while True:
-            left = deadline - time.monotonic()
-            if left <= 0 or not select.select([self.p.stdout], [], [], left)[0]:
-                raise TimeoutError("no answer to %s within %ds" % (method, timeout))
-            line = self.p.stdout.readline()
-            if not line:
-                raise RuntimeError("coal-mcp exited")
-            r = json.loads(line)
-            if r.get("id") == self.id:
-                return r
-
-    def tool(self, name, timeout=900, **args):
-        """Returns the text of a tool result; a tool error raises."""
-        r = self.call("tools/call", {"name": name, "arguments": args}, timeout)
-        if "error" in r:
-            raise RuntimeError("%s: %s" % (name, r["error"]))
-        text = "\n".join(c.get("text", "") for c in r["result"]["content"])
-        if r["result"].get("isError"):
-            raise RuntimeError("%s failed:\n%s" % (name, text))
-        return text
-
-    def close(self):
-        try:
-            self.tool("coal_shutdown", timeout=20)
-        except Exception:
-            pass
-        self.p.stdin.close()
-        try:
-            self.p.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self.p.kill()
+        super().__init__(build_dir, memory_mb, {"COAL_QEMU_ARGS": qemu_args}, "coal-bench")
 
 
 def percentile(values, p):
@@ -113,7 +64,7 @@ def kernel_size(build_dir):
 
 
 def measure_boot(mcp, boots):
-    """QEMU start to mcpd ready. The server reports it in 0.1 s steps, so the wall time of
+    """QEMU start to agentd ready. The server reports it in 0.1 s steps, so the wall time of
     coal_boot minus the (no-op) kernel rebuild it does first is used instead."""
     noop = []
     for _ in range(3):
@@ -183,7 +134,7 @@ def metrics(res):
     for k, v in (res.get("kernel") or {}).items():
         m["kernel_" + k] = (v, "bytes", True, v, v)
     for name, t in res["bench"]["tests"].items():
-        m[name] = (t["value"], t["unit"], t["unit"] == "ns", t.get("p10"), t.get("p90"))
+        m[name] = (t["value"], t["unit"], t["unit"] in ("ns", "%", "irq/s"), t.get("p10"), t.get("p90"))
     return m
 
 
