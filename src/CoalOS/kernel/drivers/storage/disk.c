@@ -1,7 +1,6 @@
 /**
  * @file disk.c
  * @brief Logical Disk Layer (Handles MBR Parsing)
- * @version 1.1 - Added KBC debug prints, fixed build errors.
  */
 
  #include <kernel/drivers/storage/disk.h>

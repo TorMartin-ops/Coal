@@ -1,7 +1,6 @@
 /**
  * @file scheduler_main.c
  * @brief Main Scheduler Coordination and Public API
- * @version 6.0
  * 
  * @details Serves as the main coordination point for the modular scheduler
  * components. Provides the public scheduler API and delegates to specialized

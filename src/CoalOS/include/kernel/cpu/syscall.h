@@ -27,7 +27,7 @@
 #define SYS_GETPPID 64  // __NR_getppid
 #define SYS_MMAP    90  // __NR_mmap
 #define SYS_STAT    106 // __NR_stat
-#define SYS_GETDENTS 141 // __NR_getdents (CORRECTED from 89)
+#define SYS_GETDENTS 141 // __NR_getdents
 #define SYS_GETCWD  183 // __NR_getcwd
 #define SYS_UNLINK  10  // __NR_unlink
 

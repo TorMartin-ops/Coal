@@ -1,7 +1,6 @@
 /**
  * @file scheduler_optimization.c
  * @brief Scheduler Optimization Implementation for Coal OS
- * @version 1.0
  * @author Performance optimization
  */
 

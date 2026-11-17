@@ -125,9 +125,7 @@ bool access_ok(int type, const_userptr_t uaddr_user, size_t size) {
 
 size_t copy_from_user(kernelptr_t k_dst, const_userptr_t u_src, size_t n) {
     if (n == 0) return 0;
-    KERNEL_ASSERT(k_dst != NULL, "copy_from_user: k_dst is NULL");
     KERNEL_ASSERT((uintptr_t)k_dst >= KERNEL_SPACE_VIRT_START, "Kernel destination for copy_from_user is in user space!");
-    // u_src NULL check is implicitly handled by access_ok with the nonnull attribute or explicit check
 
     if (!access_ok(VERIFY_READ, u_src, n)) {
         return n;
@@ -138,9 +136,7 @@ size_t copy_from_user(kernelptr_t k_dst, const_userptr_t u_src, size_t n) {
 
 size_t copy_to_user(userptr_t u_dst, const_kernelptr_t k_src, size_t n) {
     if (n == 0) return 0;
-    KERNEL_ASSERT(k_src != NULL, "copy_to_user: k_src is NULL");
     KERNEL_ASSERT((uintptr_t)k_src >= KERNEL_SPACE_VIRT_START, "Kernel source for copy_to_user is in user space!");
-    // u_dst NULL check is implicitly handled by access_ok with the nonnull attribute or explicit check
 
     if (!access_ok(VERIFY_WRITE, u_dst, n)) {
         return n;

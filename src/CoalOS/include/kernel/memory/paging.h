@@ -43,7 +43,7 @@
  // W = PAGE_RW must be set.
  // X = Depends on EFER.NXE. If NXE=1, page is X only if PAGE_NX_BIT is *not* set. If NXE=0, all readable pages are X.
  #define PTE_KERNEL_DATA_FLAGS     (PAGE_PRESENT | PAGE_RW | PAGE_NX_BIT)     // Kernel RW-, NX
- // ---> FIX #4: Removed PAGE_RW from KERNEL_CODE_FLAGS <---
+ // Kernel code is mapped read-only
  #define PTE_KERNEL_CODE_FLAGS     (PAGE_PRESENT)                             // Kernel R-X (NX bit implicitly clear or ignored for kernel)
  // ---> End Fix #4 <---
  #define PTE_KERNEL_READONLY_FLAGS (PAGE_PRESENT | PAGE_NX_BIT)               // Kernel R--, NX
@@ -148,7 +148,7 @@
     uint32_t eip, cs, eflags;
     uint32_t useresp; // User stack pointer
     uint32_t ss;      // User stack segment
-} __attribute__((packed)) registers_t; // <<< ADDED PACKED ATTRIBUTE HERE
+} __attribute__((packed)) registers_t;
 
 
  // --- Global Paging Variables (Defined in paging.c) ---

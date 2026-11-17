@@ -48,7 +48,7 @@
  static vma_struct_t* insert_vma_locked(mm_struct_t *mm, vma_struct_t* new_vma);
  static int remove_vma_range_locked(mm_struct_t *mm, uintptr_t start, size_t length);
  static uint32_t* get_pte_ptr(mm_struct_t *mm, uintptr_t vaddr, bool allocate_pt);
- // <<<--- ADDED FORWARD DECLARATION --->>>
+
  static void destroy_vma_node_callback(vma_struct_t *vma_node, void *data);
  
  
@@ -176,7 +176,6 @@
              terminal_printf("   Warning: paging_unmap_range failed during VMA destroy (code %d) for VMA [%p-%p).\n",
                              ret, (void*)vma_node->vm_start, (void*)vma_node->vm_end);
         }
-        // --- END FIX ---
 
     } else {
          // Log a warning if unmapping cannot be performed

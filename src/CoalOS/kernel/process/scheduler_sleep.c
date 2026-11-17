@@ -1,7 +1,6 @@
 /**
  * @file scheduler_sleep.c
  * @brief Sleep Queue Management and Timer-based Task Wakeup
- * @version 6.0
  * 
  * @details Manages sleeping tasks, wakeup times, and the sleep queue.
  * Handles time-based task suspension and resumption. Focuses purely

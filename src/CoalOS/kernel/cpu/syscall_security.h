@@ -2,7 +2,6 @@
  * @file syscall_security.h
  * @brief Security and Buffer Overflow Protection for System Calls
  * @author Coal OS Kernel Team
- * @version 1.0
  * 
  * @details Provides comprehensive security checks and buffer overflow protection
  * mechanisms for all system call implementations.

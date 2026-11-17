@@ -1,8 +1,6 @@
 /**
  * @file init.h
  * @brief Kernel Initialization Management
- * @author Refactored for SOLID principles
- * @version 1.0
  * 
  * @details Provides modular initialization functions that follow the Single
  * Responsibility Principle. Each initialization phase has a focused purpose

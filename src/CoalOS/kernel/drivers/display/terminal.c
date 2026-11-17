@@ -1,7 +1,6 @@
 /**
  * @file terminal.c
  * @brief VGA text-mode driver for a 32-bit x86 OS.
- * @version 5.8 
  * @author Tor Martin Kohle
  */
 

@@ -1,7 +1,6 @@
 /**
  * @file scheduler_queues.c
  * @brief Queue Management for Scheduler - Run Queues & Task Lists
- * @version 6.0
  * 
  * @details Responsible for managing run queues, task enqueue/dequeue operations,
  * and maintaining the global list of all tasks. Focuses purely on queue

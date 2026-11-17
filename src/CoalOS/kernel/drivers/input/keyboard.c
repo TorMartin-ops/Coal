@@ -1,7 +1,6 @@
 /**
  * @file keyboard.c
  * @brief PS/2 Keyboard Driver for CoalOS
- * @version 6.5.3 - Corrected build errors: KB_RESP_RESEND and kbc_expect_ack return path.
  */
 
 //============================================================================
@@ -302,7 +301,7 @@ void keyboard_init(void) {
     uint8_t current_config_init = kbc_read_data();
     serial_printf("  [KB Init] Read Config = 0x%02x\n", current_config_init);
 
-    // CRITICAL FIX: Use 0x41, NOT 0x61!
+    // 0x41: keyboard interrupt on, translation on (0x61 would also enable the mouse)
     // Bit 4 (0x10) disables keyboard when set, so we must keep it clear!
     uint8_t desired_kbc_config = 0x41; 
     serial_printf("  [KB Init] Desired KBC Config: 0x%02x\n", desired_kbc_config);

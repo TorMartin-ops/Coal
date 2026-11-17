@@ -1,8 +1,6 @@
 /**
  * @file syscall_fileio.c
  * @brief File I/O System Call Implementations
- * @author Refactored for SOLID principles
- * @version 6.0
  * 
  * @details Handles file input/output system calls including read, write, open,
  * close, lseek, and file descriptor duplication. Focuses purely on file I/O

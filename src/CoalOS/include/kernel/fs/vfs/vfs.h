@@ -7,7 +7,7 @@
 #include <libc/stdint.h>    // For uint32_t and friends
 #include <libc/stdbool.h>   // For bool
 #include <kernel/core/types.h>
-#include <kernel/sync/spinlock.h>       // <<< ADDED: Include for spinlock_t
+#include <kernel/sync/spinlock.h>
 #include <sys/stat.h>        // For struct stat
 
 #ifdef __cplusplus
@@ -30,7 +30,7 @@ typedef struct file {
     vnode_t    *vnode;    // Underlying vnode pointer
     uint32_t    flags;    // Open flags
     off_t       offset;   // Current file offset (protected by lock)
-    spinlock_t  lock;     // <<< ADDED: Lock to protect file offset and concurrent driver access
+    spinlock_t  lock;
 } file_t;
 
 /* VFS driver interface */

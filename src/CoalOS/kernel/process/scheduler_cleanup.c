@@ -1,7 +1,6 @@
 /**
  * @file scheduler_cleanup.c
  * @brief Zombie Process Cleanup and Resource Management
- * @version 6.0
  * 
  * @details Handles cleanup of terminated processes, resource deallocation,
  * and zombie process reaping. Focuses purely on cleanup operations

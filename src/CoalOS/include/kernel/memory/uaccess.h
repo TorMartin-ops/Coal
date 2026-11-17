@@ -35,7 +35,7 @@ bool access_ok(int type, const_userptr_t uaddr, size_t size);
  * @param n Number of bytes to copy.
  * @return Number of bytes that could NOT be copied (0 on success).
  */
-size_t copy_from_user(kernelptr_t k_dst, const_userptr_t u_src, size_t n) __attribute__((nonnull (1, 2)));
+size_t copy_from_user(kernelptr_t k_dst, const_userptr_t u_src, size_t n);
 
 
 /**
@@ -45,7 +45,7 @@ size_t copy_from_user(kernelptr_t k_dst, const_userptr_t u_src, size_t n) __attr
  * @param n Number of bytes to copy.
  * @return Number of bytes that could NOT be copied (0 on success).
  */
-size_t copy_to_user(userptr_t u_dst, const_kernelptr_t k_src, size_t n) __attribute__((nonnull (1, 2)));
+size_t copy_to_user(userptr_t u_dst, const_kernelptr_t k_src, size_t n);
 
 
 // --- Assembly Helper Prototypes (Internal Use) ---

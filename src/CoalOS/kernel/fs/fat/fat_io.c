@@ -2,7 +2,6 @@
  * @file fat_io.c
  * @brief File I/O operations implementation for FAT filesystem driver.
  * @author Tor Martin Kohle
- * @version 2.0
  *
  * 
  * - Implemented VFS read and write operations with detailed logging.

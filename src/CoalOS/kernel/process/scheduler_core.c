@@ -1,7 +1,6 @@
 /**
  * @file scheduler_core.c
  * @brief Core Scheduling Logic - Task Selection & Priority Management
- * @version 6.0
  * 
  * @details Contains core scheduling algorithms including task selection,
  * priority-based queuing, and the main schedule() function. Focuses purely

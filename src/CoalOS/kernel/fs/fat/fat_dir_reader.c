@@ -1,8 +1,6 @@
 /**
  * @file fat_dir_reader.c
  * @brief Directory Reading and Iteration for FAT Filesystem
- * @author Refactored for SOLID principles
- * @version 6.0
  * 
  * @details Handles directory reading operations including readdir functionality,
  * LFN reconstruction, and directory entry iteration. Manages directory traversal

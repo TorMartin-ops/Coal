@@ -1,7 +1,6 @@
 /**
  * @file vfs.c
  * @brief Virtual File System Implementation
- * @version 1.3
  *
  * Provides a unified interface over different filesystem drivers.
  * Manages filesystem driver registration and mount points via the mount_table.
@@ -632,7 +631,7 @@
      file->vnode = node;
      file->flags = flags;
      file->offset = 0;
-     spinlock_init(&file->lock); // <<< INITIALIZE LOCK >>>
+     spinlock_init(&file->lock);
 
      serial_write("[vfs_open] Success. file="); serial_print_hex((uintptr_t)file); /* ... */ serial_write("\n");
      return file;

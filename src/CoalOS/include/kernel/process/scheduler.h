@@ -44,7 +44,7 @@ typedef struct tcb {
 
     // State & Scheduling Parameters
     task_state_e   state;        // Current state
-    bool           in_run_queue; // <<< ADDED: True if task is currently in a run queue
+    bool           in_run_queue;
     bool           has_run;      // True if task has executed at least once
     uint8_t        priority;     // Task priority (0=highest)
     uint32_t       time_slice_ticks; // Current time slice allocation in ticks

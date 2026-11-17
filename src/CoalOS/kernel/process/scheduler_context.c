@@ -1,7 +1,6 @@
 /**
  * @file scheduler_context.c
  * @brief Context Switching and CPU State Management
- * @version 6.0
  * 
  * @details Handles low-level context switching between tasks, idle mode
  * management, and CPU state transitions. Focuses purely on the mechanics

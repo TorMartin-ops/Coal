@@ -2,7 +2,6 @@
  * @file dirent.h
  * @brief Directory entry structures and definitions
  * @author Coal OS Kernel Team
- * @version 1.0
  */
 
 #ifndef DIRENT_H
