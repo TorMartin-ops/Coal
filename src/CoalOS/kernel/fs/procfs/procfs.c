@@ -15,13 +15,14 @@
 #include <kernel/process/process.h>
 #include <kernel/process/rlimit.h>
 #include <kernel/lib/string.h>
+#include <kernel/core/cmdline.h>
 #include <libc/stdarg.h>
 
 #define MAX_PIDS 64
 #define SNAPSHOT_MAX 640
 
 
-enum kind { K_ROOT, K_PIDDIR, K_MEMINFO, K_UPTIME, K_VERSION, K_MOUNTS, K_INTERRUPTS, K_STATUS, K_CMDLINE };
+enum kind { K_ROOT, K_PIDDIR, K_MEMINFO, K_UPTIME, K_VERSION, K_MOUNTS, K_INTERRUPTS, K_KCMDLINE, K_STATUS, K_CMDLINE };
 
 struct node {
     enum kind kind;
@@ -99,6 +100,13 @@ static size_t render(const struct node *n, char *out) {
         }
         return len < SNAPSHOT_MAX ? len : SNAPSHOT_MAX - 1;
     }
+    case K_KCMDLINE: {
+        size_t len = strlen(cmdline_raw());
+        if (len > SNAPSHOT_MAX - 2) len = SNAPSHOT_MAX - 2;
+        memcpy(out, cmdline_raw(), len);
+        out[len] = '\n';
+        return len + 1;
+    }
     case K_STATUS:
         if (proc_info_get(n->pid, &pi) < 0) return 0;
         {
@@ -156,6 +164,7 @@ static int procfs_open(void *fs, const char *path, int flags, mode_t mode, vnode
         else if (nc == 1 && cl[0] == 7 && !strncmp(c[0], "version", 7)) kind = K_VERSION;
         else if (nc == 1 && cl[0] == 6 && !strncmp(c[0], "mounts", 6)) kind = K_MOUNTS;
         else if (nc == 1 && cl[0] == 10 && !strncmp(c[0], "interrupts", 10)) kind = K_INTERRUPTS;
+        else if (nc == 1 && cl[0] == 7 && !strncmp(c[0], "cmdline", 7)) kind = K_KCMDLINE;
         else {
             if (cl[0] == 4 && !strncmp(c[0], "self", 4)) {
                 pcb_t *cur = get_current_process();
@@ -207,7 +216,7 @@ static ssize_t procfs_read(vnode_t *v, off_t pos, void *buf, size_t len) {
 }
 
 static int procfs_readdir(vnode_t *v, off_t *pos, struct vfs_dirent *out) {
-    static const char *const root_names[] = { "meminfo", "uptime", "version", "mounts", "interrupts", "self" };
+    static const char *const root_names[] = { "meminfo", "uptime", "version", "mounts", "interrupts", "cmdline", "self" };
     static const char *const pid_names[] = { "status", "cmdline" };
     struct node *n = v->data;
     uint32_t i = (uint32_t)*pos;
@@ -221,13 +230,13 @@ static int procfs_readdir(vnode_t *v, off_t *pos, struct vfs_dirent *out) {
         strcpy(out->name, pid_names[i - 2]);
         out->type = DT_REG;
         out->ino = 100 + i;
-    } else if (i - 2 < 6) {
+    } else if (i - 2 < 7) {
         strcpy(out->name, root_names[i - 2]);
-        out->type = i - 2 == 5 ? DT_DIR : DT_REG;
+        out->type = i - 2 == 6 ? DT_DIR : DT_REG;
         out->ino = 10 + i;
     } else {
         uint32_t pids[MAX_PIDS];
-        uint32_t k = i - 8;
+        uint32_t k = i - 9;
         int cnt = proc_info_list(pids, MAX_PIDS);
         if ((int)k >= cnt) return 0;
         pf(out->name, sizeof(out->name), "%u", pids[k]);
