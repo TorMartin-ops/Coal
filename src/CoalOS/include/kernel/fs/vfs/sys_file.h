@@ -37,6 +37,8 @@ int     sys_fsync(int fd);
 int     sys_ioctl(int fd, uint32_t cmd, void *arg);
 int     sys_dup(int oldfd);
 int     sys_dup2(int oldfd, int newfd);
+/** Anonymous pipe: fds[0] reads what is written to fds[1]. flags: O_NONBLOCK. */
+int     sys_pipe(int fds[2], int flags);
 
 /** Look up fd in the current process and take a reference; NULL if invalid. */
 sys_file_t *sys_file_get(int fd);

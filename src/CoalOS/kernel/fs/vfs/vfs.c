@@ -105,6 +105,7 @@ static mount_t *mount_get(const char *path, const char **rel) {
 }
 
 static void mount_put(mount_t *m) {
+    if (!m) return;                 /* anonymous objects (pipes) have no mount */
     uintptr_t fl = spinlock_acquire_irqsave(&mount_lock);
     m->refs--;
     spinlock_release_irqrestore(&mount_lock, fl);

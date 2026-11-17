@@ -10,7 +10,6 @@
 
 #define WEAK __attribute__((weak))
 
-WEAK int sys_pipe(int fds[2], int flags) { (void)fds; (void)flags; return -ENOSYS; }
 WEAK int vfs_utime(const char *path, uint32_t atime, uint32_t mtime) {
     (void)path; (void)atime; (void)mtime;
     return -ENOSYS;
@@ -19,5 +18,3 @@ WEAK int vfs_utime(const char *path, uint32_t atime, uint32_t mtime) {
 WEAK size_t klog_ring_size(void) { return 0; }
 WEAK size_t klog_ring_copy(char *buf, size_t len) { (void)buf; (void)len; return 0; }
 WEAK void   klog_ring_clear(void) {}
-
-WEAK uint32_t rtc_boot_time(void) { return 0; }

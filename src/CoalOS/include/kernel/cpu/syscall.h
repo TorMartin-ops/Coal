@@ -24,9 +24,6 @@ void syscall_dispatch(isr_frame_t *regs);
  * subsystem only has to define the strong symbol.
  */
 
-/** Create an anonymous pipe: two descriptors in the current process, -errno on failure. */
-int sys_pipe(int fds[2], int flags);
-
 /** Set access and modification times of a file (utime). */
 int vfs_utime(const char *path, uint32_t atime, uint32_t mtime);
 
@@ -34,8 +31,5 @@ int vfs_utime(const char *path, uint32_t atime, uint32_t mtime);
 size_t klog_ring_size(void);
 size_t klog_ring_copy(char *buf, size_t len);
 void   klog_ring_clear(void);
-
-/** Unix time at boot (from the RTC); 0 when unknown. */
-uint32_t rtc_boot_time(void);
 
 #endif
