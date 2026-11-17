@@ -32,6 +32,7 @@ typedef struct tcb {
     uint8_t      priority;
     uint32_t     slice;         /* ticks left in the current slice */
     uint32_t     wakeup_tick;
+    struct tcb  *wait_next;     /* driver wait queue link (drivers/wait.h) */
 } tcb_t;
 
 /** Creates the idle task. Call once, before any task is added. */
@@ -70,6 +71,9 @@ void scheduler_tick(void);
 uint32_t scheduler_get_ticks(void);
 
 tcb_t *get_current_task(void);
+
+/** True once scheduler_start() has switched to the first task. */
+bool scheduler_is_ready(void);
 
 extern volatile bool g_need_reschedule;   /* polled by syscall.asm on return to user mode */
 

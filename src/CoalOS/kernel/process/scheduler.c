@@ -12,7 +12,7 @@
 #include <kernel/lib/assert.h>
 #include <kernel/memory/kmalloc.h>
 
-_Static_assert(TARGET_FREQUENCY == 1000, "sleep_ms assumes a 1 kHz tick");
+_Static_assert(TIMER_HZ == 1000, "sleep_ms assumes a 1 kHz tick");
 
 #define IDLE_STACK_SIZE 4096
 
@@ -214,4 +214,8 @@ uint32_t scheduler_get_ticks(void) {
 
 tcb_t *get_current_task(void) {
     return g_current;
+}
+
+bool scheduler_is_ready(void) {
+    return g_started;
 }
