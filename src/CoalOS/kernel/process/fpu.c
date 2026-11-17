@@ -1,7 +1,8 @@
 /**
  * @file fpu.c
- * @brief Lazy FPU switching. The registers belong to fpu_owner; CR0.TS is set whenever the running
- *        task is not the owner, so its first FPU or SSE instruction raises #NM and swaps the state in.
+ * @brief Lazy x87 switching. The registers belong to fpu_owner; CR0.TS is set whenever the running
+ *        task is not the owner, so its first FPU instruction raises #NM and swaps the state in.
+ *        SSE stays disabled (CR4.OSFXSR is clear): SSE code raises #UD.
  *
  * Invariant: while a process runs, CR0.TS is clear exactly when it is fpu_owner. The kernel itself
  * never uses the FPU.
@@ -14,8 +15,6 @@
 #define CR0_MP   (1u << 1)
 #define CR0_EM   (1u << 2)
 #define CR0_TS   (1u << 3)
-#define CR4_OSFXSR     (1u << 9)
-#define CR4_OSXMMEXCPT (1u << 10)
 #define NM_VECTOR 7
 
 static pcb_t *fpu_owner;
@@ -62,16 +61,10 @@ static void device_not_available(isr_frame_t *frame) {
 
 void fpu_init(void) {
     uint32_t edx;
-    uint32_t cr4;
 
     asm volatile("cpuid" : "=d"(edx) : "a"(1) : "ebx", "ecx");
     have_fxsr = (edx >> 24) & 1;
     write_cr0((read_cr0() & ~CR0_EM) | CR0_MP);
-    if (have_fxsr) {
-        asm volatile("mov %%cr4, %0" : "=r"(cr4));
-        cr4 |= CR4_OSFXSR | (((edx >> 25) & 1) ? CR4_OSXMMEXCPT : 0);
-        asm volatile("mov %0, %%cr4" : : "r"(cr4));
-    }
     asm volatile("fninit");
     register_int_handler(NM_VECTOR, device_not_available, NULL);
 }

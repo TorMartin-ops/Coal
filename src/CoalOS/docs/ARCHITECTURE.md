@@ -41,7 +41,7 @@ including an IPv4 stack.
 - Blocking uses wait queues (`drivers/wait.c`): tty, serial, pipes and `poll`/`select`
   sleep until a driver wakes them. `poll` asks each driver for readiness. A restartable call
   interrupted by a `SA_RESTART` handler is restarted by rewinding `eip` over `int 0x80`.
-- The x87/SSE registers are switched lazily (`fpu.c`): CR0.TS is set when the running task is not
+- The x87 registers are switched lazily (`fpu.c`): CR0.TS is set when the running task is not
   the owner and the `#NM` trap swaps FXSAVE images.
 - Out of memory (`oom.c`): a fault that finds no frame kills the process with the most resident
   pages (never init), logs one line and lets the faulting task retry.

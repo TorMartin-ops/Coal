@@ -120,7 +120,7 @@ Behaviour worth knowing:
   `sendmsg`, `recvfrom` and `recvmsg` interrupted by such a handler are re-executed after
   `sigreturn`; `poll`, `select`, `pselect6`, `nanosleep`, `connect` and `socketcall` always
   return `EINTR`, as on Linux. Sockets with `SO_RCVTIMEO` restart with the full timeout.
-- The x87/SSE state is per process (lazy switching); a signal frame carries it in
+- The x87 state is per process (lazy switching); a signal frame carries it in
   `sigcontext.fpstate`.
 - `execve` runs `#!interpreter [arg]` scripts (the rest of the line is one argument, at most four
   levels, `ELOOP` beyond); other formats give `ENOEXEC`.
