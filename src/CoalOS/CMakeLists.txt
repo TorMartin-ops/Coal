@@ -64,6 +64,8 @@ function(add_user_program name)
         -Wl,--gc-sections -T${ARCH_DIR}/user.ld)
 endfunction()
 
+file(GLOB COALBOX_SOURCES CONFIGURE_DEPENDS userspace/coalbox/*.c)
+add_user_program(coalbox ${COALBOX_SOURCES})   # installed as /bin/coalbox
 add_user_program(shell userspace/sh/sh.c)      # installed as /bin/sh
 add_user_program(hello userspace/hello/hello.c)
 add_user_program(libc_test userspace/tests/libc_test.c)
