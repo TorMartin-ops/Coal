@@ -63,6 +63,7 @@ file(GLOB SHELL_SOURCES CONFIGURE_DEPENDS userspace/shell/shell_main.c userspace
 add_user_program(shell ${SHELL_SOURCES})
 add_user_program(libc_test userspace/tests/libc_test.c)
 add_user_program(syscall_test userspace/tests/syscall_test.c)
+add_user_program(mcpd userspace/mcpd/mcpd.c)
 
 # --- Disk image (FAT16) with the user programs --------------------------------
 set(DISK_IMAGE ${CMAKE_BINARY_DIR}/disk.img)
