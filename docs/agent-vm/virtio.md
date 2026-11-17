@@ -91,9 +91,20 @@ through `vhost-user-vsock-pci` + `vhost-device-vsock`, the whole protocol suite 
 `/dev/vhost-vsock` here), KVM, `event_idx` negotiated off, vsock with several concurrent connections
 under load, virtio on real hardware.
 
-microvm notes: QEMU's virtio-mmio slots start at `0xfeb00000`, 512 bytes each, IRQ 5+n, and need
-`-global virtio-mmio.force-legacy=false` (version 2). Without a PIC-routed IRQ the line is polled.
-microvm has no PCI, so the e1000 probe finds nothing and boot is slow under TCG.
+microvm notes: QEMU hands out its 24 virtio-mmio slots from the top, the first device at `0xfeb02e00` (slot 23, IRQ
+28), then `0xfeb02c00` and down, 512 bytes each, and they need `-global virtio-mmio.force-legacy=false` (version 2).
+Pass one `virtio_mmio.device=512@<base>:<irq>` word per slot in use (empty slots are skipped). Example:
+
+```sh
+qemu-system-x86_64 -M microvm -m 128 -display none -kernel kernel.bin -global virtio-mmio.force-legacy=false \
+  -append "root=vda agentd.link=/dev/hvc0 virtio_mmio.device=512@0xfeb02e00:28 virtio_mmio.device=512@0xfeb02c00:27" \
+  -drive file=disk.img,format=raw,if=none,id=d0 -device virtio-blk-device,drive=d0 \
+  -chardev socket,id=c0,path=com2.sock,server=on,wait=off -device virtio-serial-device -device virtconsole,chardev=c0
+```
+
+IRQs of 16 and above are polled. microvm has no PCI, no i8042 and no port 0x61; the kernel skips the keyboard
+controller when its status port reads 0xFF and calibrates the TSC on PIT channel 0. It boots to agentd in about
+10 seconds of TCG time.
 
 ## 64-bit notes
 

@@ -1,6 +1,6 @@
 /**
  * @file pit.c
- * @brief The clock (TSC, calibrated against PIT channel 2) and the PIT as a clock event device.
+ * @brief The clock (TSC, calibrated against PIT channel 0) and the PIT as a clock event device.
  */
 #include <kernel/drivers/timer/pit.h>
 #include <kernel/drivers/timer/clock.h>
@@ -14,9 +14,7 @@
 #define PIT_CMD      0x43
 #define PIT_CMD_CH0_RATE_GEN 0x34 /* channel 0, lobyte/hibyte, mode 2 */
 #define PIT_CMD_CH0_ONESHOT  0x30 /* channel 0, lobyte/hibyte, mode 0 */
-#define PIT_CH2      0x42
-#define PIT_CMD_CH2_ONESHOT 0xB0  /* channel 2, lobyte/hibyte, mode 0 */
-#define PORT_PC_CTRL 0x61         /* bit 0 gates channel 2, bit 1 is the speaker, bit 5 its output */
+#define PIT_CMD_CH0_LATCH    0x00 /* latch channel 0's current count */
 #define CALIBRATE_MS 4u
 #define PIT_COUNT_MULT 5003u /* counts = ns * 5003 >> 22, i.e. ns * 1.19318e-3 */
 #define PIT_ONESHOT_MAX_NS   54000000u  /* 16-bit counter: 54.9 ms */
@@ -25,22 +23,28 @@ static uint32_t s_tsc_khz;              /* 0: no TSC, the clock counts PIT ticks
 static uint64_t s_tsc0;
 static volatile uint32_t s_pit_ticks;   /* only counted in periodic mode */
 
+static uint16_t pit0_count(void) {
+    outb(PIT_CMD, PIT_CMD_CH0_LATCH);
+    uint8_t lo = inb(PIT_CH0);
+    return (uint16_t)(lo | inb(PIT_CH0) << 8);
+}
+
+/* Channel 0 counts down from 0xFFFF (54 ms) without its output being used. Only channel 0 is needed, which
+ * every PC-like machine has, also microvm (it has no port 0x61 and so no channel 2 gate). */
 void timer_early_init(void) {
-    uint32_t edx, count = PIT_BASE_HZ / 1000 * CALIBRATE_MS;
+    uint32_t edx, want = PIT_BASE_HZ / 1000 * CALIBRATE_MS;
 
     asm volatile("cpuid" : "=d"(edx) : "a"(1) : "ebx", "ecx");
     if (!(edx & (1u << 4))) return;                         /* CPUID.1:EDX bit 4: TSC */
 
-    outb(PORT_PC_CTRL, (inb(PORT_PC_CTRL) & ~2u) | 1u);     /* gate channel 2 open, speaker off */
-    outb(PIT_CMD, PIT_CMD_CH2_ONESHOT);
-    outb(PIT_CH2, (uint8_t)count);
-    outb(PIT_CH2, (uint8_t)(count >> 8));
+    outb(PIT_CMD, PIT_CMD_CH0_ONESHOT);
+    outb(PIT_CH0, 0xFF);
+    outb(PIT_CH0, 0xFF);
+    uint16_t start = pit0_count(), now;
     s_tsc0 = tsc_read();
-    while (!(inb(PORT_PC_CTRL) & 0x20)) { }
-    /* ticks / (count / PIT_BASE_HZ) in kHz: the counter holds count * (1000 / PIT_BASE_HZ) ms, not exactly CALIBRATE_MS */
-    uint64_t num = (tsc_read() - s_tsc0) * PIT_BASE_HZ;
-    uint32_t rem;
-    asm("divl %4" : "=a"(s_tsc_khz), "=d"(rem) : "a"((uint32_t)num), "d"((uint32_t)(num >> 32)), "r"(count * 1000u));
+    while ((uint16_t)(start - (now = pit0_count())) < want) { }
+    uint64_t tsc = tsc_read() - s_tsc0;
+    s_tsc_khz = (uint32_t)(tsc * PIT_BASE_HZ / ((uint16_t)(start - now) * 1000ull));
     clock_calibrate();
 }
 
