@@ -4,6 +4,7 @@
  * implements execve on top of it.
  */
 #include <kernel/process/exec.h>
+#include <kernel/process/oom.h>
 #include <kernel/process/elf_loader.h>
 #include <kernel/process/fpu.h>
 #include <kernel/process/vdso.h>
@@ -57,11 +58,17 @@ static int new_address_space(mm_struct_t **out) {
     return 0;
 }
 
-void exec_free_mm(mm_struct_t *mm) {
+static void free_mm(mm_struct_t *mm) {
     uint32_t *pd = mm->pgd_phys;
 
     destroy_mm(mm);                      /* releases the user pages and page tables */
     put_frame((uintptr_t)pd);
+}
+
+void exec_free_mm(mm_struct_t *mm) {
+    oom_teardown_begin();
+    free_mm(mm);
+    oom_teardown_end();
 }
 
 void exec_release_mm(pcb_t *p) {
@@ -69,9 +76,11 @@ void exec_release_mm(pcb_t *p) {
 
     if (!mm) return;
     asm volatile("mov %0, %%cr3" : : "r"(g_kernel_page_directory_phys) : "memory");
+    oom_teardown_begin();                /* before p->mm goes: the OOM killer must not think the memory is back */
     p->mm = NULL;
     p->page_directory_phys = NULL;
-    exec_free_mm(mm);
+    free_mm(mm);
+    oom_teardown_end();
 }
 
 /**

@@ -10,7 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from coal_gateway import frames, machine, runlog, transport  # noqa: E402
+from coal_gateway import agent, errors, frames, machine, runlog, transport  # noqa: E402
 
 
 class Codec(unittest.TestCase):
@@ -61,6 +61,63 @@ class Addresses(unittest.TestCase):
         for bad in ("", "unix:", "tcp:host", "tcp::9", "serial:/dev/x", "vsock:x:1", "hvsock:/tmp/x", "hvsock::1"):
             with self.assertRaises(ValueError, msg=bad):
                 transport.parse_address(bad)
+
+
+class LostLink(unittest.TestCase):
+    """The error for a cut-off request says why the link ended."""
+
+    class Scripted(transport.Transport):
+        def __init__(self, chunks, error=None):
+            self.chunks, self.error = list(chunks), error
+            self.sent = __import__("threading").Event()
+
+        def connect(self, timeout=5.0):
+            pass
+
+        def send(self, data):
+            self.sent.set()
+
+        def recv(self):
+            self.sent.wait(2)                      # let the request register before the link ends
+            if self.error:
+                raise self.error
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def close(self):
+            pass
+
+    def lost_message(self, tr, explain=None):
+        c = agent.AgentClient(tr)
+        c.explain = explain
+        with self.assertRaises(errors.ToolError) as cm:
+            c.request("ping", timeout=2)
+        return str(cm.exception)
+
+    def test_end_of_stream(self):
+        self.assertIn("other end closed the connection", self.lost_message(self.Scripted([])))
+
+    def test_frame_error_shows_the_first_bytes(self):
+        msg = self.lost_message(self.Scripted([b"\xff\xff\xff\x7fjunk"]))
+        self.assertIn("bad frame from agentd", msg)
+        self.assertIn("ff ff ff 7f 6a 75 6e 6b", msg)
+
+    def test_read_error_and_explanation(self):
+        msg = self.lost_message(self.Scripted([], ConnectionResetError("reset by peer")), lambda: "QEMU killed by signal 9")
+        self.assertIn("read failed", msg)
+        self.assertIn("reset by peer", msg)
+        self.assertTrue(msg.endswith("QEMU killed by signal 9"))
+
+    def test_qemu_fate_reports_exit_code_and_stderr(self):
+        import subprocess
+        m = machine.Machine()
+        m.proc = subprocess.Popen(["sh", "-c", "echo boom >&2; exit 3"], stderr=subprocess.PIPE)
+        m.qemu_stderr = machine.collections.deque(maxlen=20)
+        m.stderr_thread = machine.threading.Thread(target=machine._drain, args=(m.proc.stderr, m.qemu_stderr))
+        m.stderr_thread.start()
+        m.proc.wait()
+        text = m.qemu_fate()
+        self.assertIn("exited with code 3", text)
+        self.assertIn("boom", text)
 
 
 class VirtioOptions(unittest.TestCase):

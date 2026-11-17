@@ -38,7 +38,8 @@ class Decoder:
         while len(self.buf) >= 4:
             (length,) = _HEADER.unpack_from(self.buf)
             if length > self.max_frame:
-                raise FrameError("frame of %d bytes exceeds the limit of %d" % (length, self.max_frame))
+                raise FrameError("frame of %d bytes exceeds the limit of %d (first bytes: %s)"
+                                 % (length, self.max_frame, bytes(self.buf[:16]).hex(" ")))
             if len(self.buf) < 4 + length:
                 break
             body = bytes(self.buf[4:4 + length])
