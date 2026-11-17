@@ -40,12 +40,6 @@ void tss_init(void);
 // Set the kernel stack pointer stored in the TSS
 void tss_set_kernel_stack(uint32_t stack);
 
-// Verify that the TSS esp0 value is reasonable
-bool tss_debug_check_esp0(void);
-
-// Get the current kernel stack pointer from the TSS <<< ADDED
-uint32_t tss_get_esp0(void);
-
-#define TSS_SELECTOR 0x28
+extern tss_entry_t tss;
 
 #endif // TSS_H

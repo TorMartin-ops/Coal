@@ -1,14 +1,12 @@
 ; ===============================
-;  PAGE‑FAULT ISR (isr_pf.asm)
+;  PAGE-FAULT ISR (isr_pf.asm)
 ;  -------------------------------
-;  Stand‑alone stub, leaves generic exceptions to isr_stubs.asm
+;  Stand-alone stub, leaves generic exceptions to isr_stubs.asm
 ; ===============================
 section .text
 bits 32
 
-; ***** ADD THIS DEFINITION *****
-KERNEL_DS      equ 0x10         ; must match your GDT data‑segment and other stubs
-; *******************************
+%include "kernel/cpu/cpu_defs.inc"
 
 global isr14                    ; exposed to IDT setup
 
@@ -16,19 +14,10 @@ global isr14                    ; exposed to IDT setup
 extern page_fault_handler       ; void page_fault_handler(isr_frame_t *frame)
 extern find_exception_fixup     ; uint32_t find_exception_fixup(uint32_t fault_eip)
 extern invoke_kernel_panic_from_isr ; void invoke_kernel_panic_from_isr(void)
-extern serial_putc_asm          ; For debug prints
 
-%define KERNEL_CS 0x08          ; Kernel Code Segment Selector (adjust if different in your GDT)
 
 isr14:
     ; CPU Pushes: [SS_user], [ESP_user], EFLAGS, CS, EIP, ErrorCode (if CPL change or priv violation)
-
-    ; --- Minimal Debug Trace ---
-    push eax
-    mov  al, 'F'
-    call serial_putc_asm
-    pop  eax
-    ; --- End Debug Trace ---
 
     push dword 14       ; Push interrupt number (vector 14)
 

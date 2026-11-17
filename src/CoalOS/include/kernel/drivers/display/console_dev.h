@@ -10,9 +10,9 @@
 #include <libc/stddef.h>
 
 // File mode constants for console
-#define CONSOLE_STDIN_MODE  0x001  // Read-only
-#define CONSOLE_STDOUT_MODE 0x002  // Write-only  
-#define CONSOLE_STDERR_MODE 0x002  // Write-only
+#define CONSOLE_STDIN_MODE  0x000  // O_RDONLY
+#define CONSOLE_STDOUT_MODE 0x001  // O_WRONLY
+#define CONSOLE_STDERR_MODE 0x001  // O_WRONLY
 
 /**
  * @brief Create a console file structure

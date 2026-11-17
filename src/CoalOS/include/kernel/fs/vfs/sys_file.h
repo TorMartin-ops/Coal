@@ -28,11 +28,18 @@ extern "C" {
 // Add O_NONBLOCK, O_SYNC, O_DSYNC, O_DIRECTORY, O_NOFOLLOW etc. as needed
 
 // === Structures === (Unchanged)
+/* Open file description: shared by dup/dup2/fork through refs. */
 typedef struct sys_file {
     file_t *vfs_file;
     int flags;
+    uint32_t refs;
 } sys_file_t;
 
+
+// Open-file object lifetime. sys_file_put closes the VFS file with the last reference.
+sys_file_t *sys_file_new(file_t *vfs_file, int flags);   // refs = 1; NULL on no memory
+sys_file_t *sys_file_get(sys_file_t *sf);
+int sys_file_put(sys_file_t *sf);
 
 // === Function Prototypes === (Unchanged)
 int sys_open(const char *pathname, int flags, int mode);

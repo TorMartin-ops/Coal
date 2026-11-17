@@ -41,6 +41,34 @@
  #endif
  
  
+ static spinlock_t g_sys_file_lock = {0};
+
+ sys_file_t *sys_file_new(file_t *vfs_file, int flags) {
+     sys_file_t *sf = (sys_file_t *)kmalloc(sizeof(sys_file_t));
+     if (!sf) return NULL;
+     sf->vfs_file = vfs_file;
+     sf->flags = flags;
+     sf->refs = 1;
+     return sf;
+ }
+
+ sys_file_t *sys_file_get(sys_file_t *sf) {
+     uintptr_t f = spinlock_acquire_irqsave(&g_sys_file_lock);
+     sf->refs++;
+     spinlock_release_irqrestore(&g_sys_file_lock, f);
+     return sf;
+ }
+
+ int sys_file_put(sys_file_t *sf) {
+     uintptr_t f = spinlock_acquire_irqsave(&g_sys_file_lock);
+     uint32_t left = --sf->refs;
+     spinlock_release_irqrestore(&g_sys_file_lock, f);
+     if (left) return 0;
+     int ret = vfs_close(sf->vfs_file);
+     kfree(sf);
+     return ret;
+ }
+
  // Internal helper to find and assign a file descriptor.
  // Assumes proc->fd_table_lock is held.
  static int assign_fd_locked(pcb_t *proc, sys_file_t *sf) {
@@ -95,22 +123,19 @@
          return -ENOENT; // Common error if file not found and O_CREAT not set or failed.
      }
  
-     sys_file_t *sf = (sys_file_t *)kmalloc(sizeof(sys_file_t));
+     sys_file_t *sf = sys_file_new(vfs_file, flags);
      if (!sf) {
          vfs_close(vfs_file); // Clean up allocated VFS file
          SF_LOG("sys_open: kmalloc for sys_file_t failed for path '%s'", pathname);
          return -ENOMEM;
      }
-     sf->vfs_file = vfs_file;
-     sf->flags = flags;
  
      uintptr_t irq_flags = spinlock_acquire_irqsave(&current_proc->fd_table_lock);
      int fd_or_err = assign_fd_locked(current_proc, sf);
      spinlock_release_irqrestore(&current_proc->fd_table_lock, irq_flags);
  
      if (fd_or_err == EMFILE) { // assign_fd_locked returns positive EMFILE
-         vfs_close(vfs_file);
-         kfree(sf);
+         sys_file_put(sf);
          SF_LOG("sys_open: No free FDs (EMFILE) for path '%s'", pathname);
          return -EMFILE; // Convert to negative errno
      }
@@ -206,8 +231,7 @@
  
      KERNEL_ASSERT(sf_to_close != NULL, "sf_to_close became NULL post-lock");
  
-     int vfs_ret = vfs_close(sf_to_close->vfs_file); // vfs_close handles its own internal locking.
-     kfree(sf_to_close);
+     int vfs_ret = sys_file_put(sf_to_close);
  
      SF_LOG("sys_close: fd %d, vfs_close returned %d", fd, vfs_ret);
      // POSIX close typically returns 0 on success or -EBADF.

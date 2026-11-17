@@ -23,6 +23,7 @@
  * @return Pointer to next task, or NULL if no tasks available
  */
 tcb_t* scheduler_select_next_task(void);
+void scheduler_core_set_current_task(tcb_t *task);
 
 /**
  * @brief Main scheduler function - performs task switching

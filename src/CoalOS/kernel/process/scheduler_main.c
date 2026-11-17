@@ -67,11 +67,10 @@ void scheduler_start(void) {
     // We have a user task to start
     KERNEL_ASSERT(first_task != NULL, "scheduler_start: scheduler_select_next_task returned NULL!");
     
-    // Set up the first task
-    volatile tcb_t *current_task_volatile = scheduler_core_get_current_task_volatile();
-    // Update current task (this is a bit tricky due to the module separation)
-    // For now, we'll use the core module's internal state
-    
+    // The first task must be the current one before it makes a system call.
+    scheduler_core_set_current_task(first_task);
+    first_task->state = TASK_RUNNING;
+
     terminal_printf("  [Scheduler Start] First task selected: PID %u\n",
                      first_task->pid);
     

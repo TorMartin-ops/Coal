@@ -162,7 +162,6 @@ extern volatile bool g_need_reschedule;
 
 // --- External Assembly Function Prototypes ---
 extern void simple_switch(context_t *old_esp, context_t new_esp);
-extern void debug_simple_switch(context_t *old_esp, context_t new_esp);
 
 /**
  * @brief Makes a previously blocked task ready and enqueues it.

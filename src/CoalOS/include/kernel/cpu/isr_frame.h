@@ -1,8 +1,8 @@
-/* include/isr_frame.h - CORRECTED Canonical Stack Frame Definition v4.5 */
+/* Stack frame built by the interrupt, exception and syscall entry stubs. */
 #ifndef ISR_FRAME_H
 #define ISR_FRAME_H
 
-#include <libc/stdint.h> // Use standard integer types
+#include <kernel/core/types.h>
 
 /**
  * @brief Structure representing the stack frame layout created by common
@@ -13,7 +13,7 @@
  * Fields ordered by INCREASING stack address (matches pusha hardware order).
  * Offsets shown are relative to ESP *after* pusha executes.
  */
- typedef struct __attribute__((packed)) isr_frame {
+typedef struct __attribute__((packed)) isr_frame {
     /* PUSHA frame: edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax */
     uint32_t edi;
     uint32_t esi;
@@ -42,8 +42,5 @@
     uint32_t ss;
 } isr_frame_t;
 
-// Define syscall_regs_t as an alias for compatibility if needed elsewhere,
-// though standardizing on isr_frame_t is recommended.
-typedef isr_frame_t syscall_regs_t;
 
 #endif // ISR_FRAME_H

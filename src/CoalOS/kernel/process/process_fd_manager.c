@@ -51,48 +51,22 @@ void process_init_fds(pcb_t *proc) {
  * @param proc Pointer to the process PCB
  */
 static void assign_standard_io_fds(pcb_t *proc) {
-    // Create sys_file_t structures for standard I/O
-    
-    // stdin (fd 0) - read-only console
-    sys_file_t *stdin_sf = (sys_file_t *)kmalloc(sizeof(sys_file_t));
-    if (stdin_sf) {
-        memset(stdin_sf, 0, sizeof(sys_file_t));
-        stdin_sf->vfs_file = create_console_file(CONSOLE_STDIN_MODE);
-        if (stdin_sf->vfs_file) {
-            proc->fd_table[0] = stdin_sf;
-        } else {
-            kfree(stdin_sf);
-            serial_printf("[FD Init] Failed to create stdin console file\n");
+    static const struct { int mode; int flags; } std[3] = {
+        { CONSOLE_STDIN_MODE,  O_RDONLY },
+        { CONSOLE_STDOUT_MODE, O_WRONLY },
+        { CONSOLE_STDERR_MODE, O_WRONLY },
+    };
+
+    for (int fd = 0; fd < 3; fd++) {
+        file_t *f = create_console_file(std[fd].mode);
+        sys_file_t *sf = f ? sys_file_new(f, std[fd].flags) : NULL;
+        if (!sf) {
+            if (f) vfs_close(f);
+            serial_printf("[FD Init] Failed to create console fd %d\n", fd);
+            continue;
         }
+        proc->fd_table[fd] = sf;
     }
-    
-    // stdout (fd 1) - write-only console  
-    sys_file_t *stdout_sf = (sys_file_t *)kmalloc(sizeof(sys_file_t));
-    if (stdout_sf) {
-        memset(stdout_sf, 0, sizeof(sys_file_t));
-        stdout_sf->vfs_file = create_console_file(CONSOLE_STDOUT_MODE);
-        if (stdout_sf->vfs_file) {
-            proc->fd_table[1] = stdout_sf;
-        } else {
-            kfree(stdout_sf);
-            serial_printf("[FD Init] Failed to create stdout console file\n");
-        }
-    }
-    
-    // stderr (fd 2) - write-only console (same as stdout)
-    sys_file_t *stderr_sf = (sys_file_t *)kmalloc(sizeof(sys_file_t));
-    if (stderr_sf) {
-        memset(stderr_sf, 0, sizeof(sys_file_t));
-        stderr_sf->vfs_file = create_console_file(CONSOLE_STDERR_MODE);
-        if (stderr_sf->vfs_file) {
-            proc->fd_table[2] = stderr_sf;
-        } else {
-            kfree(stderr_sf);
-            serial_printf("[FD Init] Failed to create stderr console file\n");
-        }
-    }
-    
-    serial_printf("[FD Init] Standard I/O descriptors initialized for PID %u\n", proc->pid);
 }
 
 /**
@@ -129,13 +103,11 @@ void process_close_fds(pcb_t *proc) {
 
            // --- Perform cleanup outside the FD table lock ---
            // Call VFS close (safe to call now that FD entry is clear)
-           int vfs_ret = vfs_close(sf->vfs_file); // vfs_close handles freeing sf->vfs_file->data and the vnode
+           int vfs_ret = sys_file_put(sf);
            if (vfs_ret < 0) {
-               serial_printf("   [Proc %lu] Warning: vfs_close for fd %d returned error %d.\n",
+               serial_printf("   [Proc %lu] Warning: closing fd %d returned error %d.\n",
                               (unsigned long)proc->pid, fd, vfs_ret);
            }
-           // Free the sys_file structure itself
-           kfree(sf);
            // --- End cleanup outside lock ---
 
            // Re-acquire the lock to continue the loop safely

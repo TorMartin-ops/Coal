@@ -1,8 +1,10 @@
-; context_switch.asm - DEAD SIMPLE APPROACH THAT WORKS
-; 
+; context_switch.asm - kernel stack switch between tasks
+;
 ; void simple_switch(uint32_t **old_esp, uint32_t *new_esp);
 ;
-; This is the simplest possible context switch that can work:
+; Saves eflags, general and segment registers on the old stack, then pops the
+; same layout from the new one. The caller switches CR3; FPU state is not
+; saved because the kernel does not use x87/SSE.
 ; 1. Save ALL registers to the stack
 ; 2. Save the stack pointer 
 ; 3. Load the new stack pointer

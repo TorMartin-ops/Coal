@@ -2,12 +2,13 @@
 #define IDT_H
 
 // Include dependencies FIRST
-#include <kernel/cpu/isr_frame.h> 
+#include <kernel/cpu/isr_frame.h>
 #include <kernel/lib/port_io.h>   // For outb, PIC defines below
 #include <kernel/core/types.h>     // For uintN_t types
 
 // --- Constants ---
 #define IDT_ENTRIES 256
+#define SYSCALL_VECTOR 0x80
 
 // --- PIC Ports ---
 #define PIC1         0x20      /* IO base address for master PIC */
@@ -22,7 +23,7 @@
 #define PIC1_START_VECTOR 0x20 // IRQ 0-7 map to 32-39
 #define PIC2_START_VECTOR 0x28 // IRQ 8-15 map to 40-47
 
-// --- IRQ Vectors (Derived from PIC start vectors) --- MOVED HERE FROM IDT.C ---
+// --- IRQ Vectors (derived from PIC start vectors) ------
 #define IRQ0_VECTOR  (PIC1_START_VECTOR + 0)  // PIT Timer (Vector 32)
 #define IRQ1_VECTOR  (PIC1_START_VECTOR + 1)  // Keyboard (Vector 33)
 #define IRQ2_VECTOR  (PIC1_START_VECTOR + 2)  // Cascade (Vector 34)
@@ -39,12 +40,7 @@
 #define IRQ13_VECTOR (PIC2_START_VECTOR + 5)  // FPU / Coprocessor (Vector 45)
 #define IRQ14_VECTOR (PIC2_START_VECTOR + 6)  // Primary ATA Hard Disk (Vector 46)
 #define IRQ15_VECTOR (PIC2_START_VECTOR + 7)  // Secondary ATA Hard Disk (Vector 47)
-// --- END MOVED SECTION ---
 
-
-// Aliases for DATA ports if used elsewhere
-#define PIC1_DAT PIC1_DATA
-#define PIC2_DAT PIC2_DATA
 
 // --- IDT Structure Definitions ---
 
@@ -69,7 +65,6 @@ typedef void (*int_handler_t)(isr_frame_t* frame);
 
 // --- Structure to hold registered handler info ---
 typedef struct interrupt_handler_info {
-    int           num;      // Interrupt number
     int_handler_t handler;  // Pointer to the C handler function
     void* data;     // Optional data pointer for the handler
 } interrupt_handler_info_t;

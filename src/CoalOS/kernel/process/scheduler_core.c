@@ -288,6 +288,10 @@ volatile tcb_t* scheduler_core_get_current_task_volatile(void) {
     return g_current_task; 
 }
 
+void scheduler_core_set_current_task(tcb_t *task) {
+    g_current_task = task;
+}
+
 tcb_t* scheduler_core_get_current_task(void) { 
     return (tcb_t *)g_current_task; 
 }
