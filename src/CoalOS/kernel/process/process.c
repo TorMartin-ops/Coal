@@ -2,10 +2,9 @@
  * Process life cycle: creation, fork, exit, wait, kernel stacks, open files.
  * exec and the user stack live in exec.c, signals in signal.c.
  */
-#define LOG_MODULE "process"
 #include <kernel/process/process.h>
 #include <kernel/process/exec.h>
-#include <kernel/core/log.h>
+#include <kernel/lib/assert.h>
 #include <kernel/cpu/gdt.h>
 #include <kernel/drivers/display/console_dev.h>
 #include <kernel/fs/vfs/fs_errno.h>
@@ -247,22 +246,47 @@ pcb_t *create_user_process(const char *path) {
     process_init_user_frame(process_user_frame(p), img.entry, img.sp);
     process_set_entry_frame(p);
     pcb_publish(p, NULL);
-    LOG_DEBUG("created pid %u from %s", p->pid, path);
     return p;
 }
 
-static void clone_vma(vma_struct_t *v, void *arg) {
-    struct { mm_struct_t *mm; bool ok; } *c = arg;
-    if (c->ok && !insert_vma(c->mm, v->vm_start, v->vm_end, v->vm_flags, v->page_prot,
-                             v->vm_file, v->vm_offset))
-        c->ok = false;
+struct vma_list { vma_struct_t **v; int n; };
+
+static void collect_vma(vma_struct_t *v, void *arg) {
+    struct vma_list *l = arg;
+    l->v[l->n++] = v;
+}
+
+/* Ascending by start; an empty VMA (the heap) sorts after the one that ends where it starts. */
+static bool vma_before(const vma_struct_t *a, const vma_struct_t *b) {
+    if (a->vm_start != b->vm_start) return a->vm_start < b->vm_start;
+    return a->vm_end > b->vm_end;
+}
+
+/** Inserts src's VMAs into mm in address order, which is the order exec builds them in. */
+static bool clone_vmas(mm_struct_t *mm, const mm_struct_t *src) {
+    struct vma_list l = { kmalloc(sizeof(vma_struct_t *) * (src->map_count + 1)), 0 };
+    bool ok = l.v != NULL;
+
+    if (!ok) return false;
+    rbtree_postorder_traverse(src->vma_tree.root, collect_vma, &l);
+    for (int i = 1; i < l.n; i++) {                   /* insertion sort: a handful of entries */
+        vma_struct_t *x = l.v[i];
+        int j = i - 1;
+        while (j >= 0 && vma_before(x, l.v[j])) { l.v[j + 1] = l.v[j]; j--; }
+        l.v[j + 1] = x;
+    }
+    for (int i = 0; ok && i < l.n; i++) {
+        const vma_struct_t *v = l.v[i];
+        ok = insert_vma(mm, v->vm_start, v->vm_end, v->vm_flags, v->page_prot, v->vm_file, v->vm_offset) != NULL;
+    }
+    kfree(l.v);
+    return ok;
 }
 
 /** Duplicates src's address space: page tables via paging_clone_directory, VMAs here. */
 static mm_struct_t *mm_clone(const mm_struct_t *src) {
     uintptr_t pd = paging_clone_directory(src->pgd_phys);
     mm_struct_t *mm;
-    struct { mm_struct_t *mm; bool ok; } c;
 
     if (!pd) return NULL;
     mm = create_mm((uint32_t *)pd);
@@ -271,9 +295,7 @@ static mm_struct_t *mm_clone(const mm_struct_t *src) {
     mm->start_data = src->start_data; mm->end_data = src->end_data;
     mm->start_brk = src->start_brk;   mm->end_brk = src->end_brk;
     mm->start_stack = src->start_stack;
-    c.mm = mm; c.ok = true;
-    rbtree_postorder_traverse(src->vma_tree.root, clone_vma, &c);
-    if (!c.ok) { exec_free_mm(mm); return NULL; }
+    if (!clone_vmas(mm, src)) { exec_free_mm(mm); return NULL; }
     return mm;
 }
 
@@ -307,7 +329,7 @@ void process_exit(int status) {
     pcb_t *me = get_current_process();
     pcb_t *init, *c;
 
-    if (!me) for (;;) asm volatile("cli; hlt");
+    if (!me) KERNEL_PANIC_HALT("process_exit without a current process");
     fds_close_all(me);
     exec_release_mm(me);                  /* leaves the kernel page directory loaded */
 

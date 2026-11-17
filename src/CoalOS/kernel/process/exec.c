@@ -3,10 +3,8 @@
  * user stack laid out like Linux i386 (argc, argv, envp, auxv, strings), and
  * implements execve on top of it.
  */
-#define LOG_MODULE "exec"
 #include <kernel/process/exec.h>
 #include <kernel/process/elf_loader.h>
-#include <kernel/core/log.h>
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/fs/vfs/read_file.h>
 #include <kernel/lib/string.h>
