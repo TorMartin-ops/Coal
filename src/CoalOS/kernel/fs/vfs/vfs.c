@@ -8,7 +8,7 @@
 #define LOG_MODULE "vfs"
 #include <kernel/core/log.h>
 #include <kernel/fs/vfs/vfs.h>
-#include <kernel/drivers/timer/pit.h>
+#include <kernel/drivers/timer/rtc.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/lib/string.h>
 #include <kernel/sync/spinlock.h>
@@ -16,7 +16,6 @@
 #define MAX_DRIVERS   6
 #define MAX_MOUNTS    8
 #define MOUNT_PATH_MAX 48
-#define BOOT_EPOCH    1794873600u   /* 2026-11-17; no RTC driver yet */
 #define IO_MAX        0x7ffff000u
 
 struct mount {
@@ -33,7 +32,7 @@ static vfs_driver_t *drivers[MAX_DRIVERS];
 static mount_t mounts[MAX_MOUNTS];
 static spinlock_t mount_lock;
 
-uint32_t vfs_time(void) { return BOOT_EPOCH + (uint32_t)timer_uptime_ms() / 1000; }
+uint32_t vfs_time(void) { return wall_seconds(); }
 
 void vfs_init(void) {
     spinlock_init(&mount_lock);
