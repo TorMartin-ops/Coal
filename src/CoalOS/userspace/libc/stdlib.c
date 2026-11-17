@@ -5,6 +5,7 @@
 #include <libc/ctype.h>
 #include <libc/syscall.h>
 #include <libc/signal.h>
+#include <libc/limits.h>
 
 /* --- heap: first-fit free list on brk, blocks coalesce with their successor --- */
 
@@ -114,12 +115,14 @@ void abort(void) {
 
 /* --- numbers --- */
 
-unsigned long strtoul(const char *s, char **end, int base) {
+/* Parses an integer with optional sign and base prefix into 64 bits. *ovf is set when it does not fit. */
+static unsigned long long parse_int(const char *s, char **end, int base, int *neg, int *ovf) {
     const char *p = s;
-    unsigned long v = 0;
-    int neg = 0, any = 0;
+    unsigned long long v = 0;
+    int any = 0;
+    *neg = *ovf = 0;
     while (isspace(*p)) p++;
-    if (*p == '-' || *p == '+') neg = *p++ == '-';
+    if (*p == '-' || *p == '+') *neg = *p++ == '-';
     if ((base == 0 || base == 16) && p[0] == '0' && (p[1] | 32) == 'x' && isxdigit(p[2])) {
         p += 2;
         base = 16;
@@ -129,14 +132,55 @@ unsigned long strtoul(const char *s, char **end, int base) {
     for (;; p++) {
         int d = isdigit(*p) ? *p - '0' : isalpha(*p) ? (*p | 32) - 'a' + 10 : 99;
         if (d >= base) break;
-        v = v * base + d;
+        if (__builtin_mul_overflow(v, (unsigned long long)base, &v) || __builtin_add_overflow(v, (unsigned long long)d, &v))
+            *ovf = 1;
         any = 1;
     }
     if (end) *end = (char *)(any ? p : s);
+    return v;
+}
+
+/* Clamps to [lo, hi] (as magnitudes: hi for positive, lo_mag for negative) and sets ERANGE. */
+static unsigned long long clamp_int(unsigned long long v, int neg, int ovf, unsigned long long pos_max) {
+    if (ovf || v > pos_max + neg) {
+        errno = ERANGE;
+        v = pos_max + neg;
+    }
     return neg ? -v : v;
 }
 
-long strtol(const char *s, char **end, int base) { return (long)strtoul(s, end, base); }
+unsigned long long strtoull(const char *s, char **end, int base) {
+    int neg, ovf;
+    unsigned long long v = parse_int(s, end, base, &neg, &ovf);
+    if (ovf) {
+        errno = ERANGE;
+        return ~0ULL;
+    }
+    return neg ? -v : v;
+}
+
+long long strtoll(const char *s, char **end, int base) {
+    int neg, ovf;
+    unsigned long long v = parse_int(s, end, base, &neg, &ovf);
+    return (long long)clamp_int(v, neg, ovf, (unsigned long long)LLONG_MAX);
+}
+
+unsigned long strtoul(const char *s, char **end, int base) {
+    int neg, ovf;
+    unsigned long long v = parse_int(s, end, base, &neg, &ovf);
+    if (ovf || v > ULONG_MAX) {
+        errno = ERANGE;
+        return ULONG_MAX;
+    }
+    return neg ? -(unsigned long)v : (unsigned long)v;
+}
+
+long strtol(const char *s, char **end, int base) {
+    int neg, ovf;
+    unsigned long long v = parse_int(s, end, base, &neg, &ovf);
+    return (long)clamp_int(v, neg, ovf, LONG_MAX);
+}
+
 int atoi(const char *s) { return (int)strtol(s, NULL, 10); }
 int abs(int x) { return x < 0 ? -x : x; }
 
@@ -159,6 +203,23 @@ void qsort(void *base, size_t n, size_t size, int (*cmp)(const void *, const voi
                 memcpy(a + j * size, a + (j - gap) * size, size);
             memcpy(a + j * size, tmp, size);
         }
+}
+
+void *bsearch(const void *key, const void *base, size_t n, size_t size, int (*cmp)(const void *, const void *)) {
+    const char *a = base;
+    while (n) {
+        size_t half = n / 2;
+        const char *mid = a + half * size;
+        int c = cmp(key, mid);
+        if (!c) return (void *)mid;
+        if (c > 0) {
+            a = mid + size;
+            n -= half + 1;
+        } else {
+            n = half;
+        }
+    }
+    return NULL;
 }
 
 /* --- environment --- */
