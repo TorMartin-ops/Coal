@@ -131,5 +131,6 @@ set(COAL_MEMORY_MB 512 CACHE STRING "Guest RAM in MiB for the run target")
 add_custom_target(run
     COMMAND qemu-system-i386 -cdrom ${ISO_IMAGE} -hda ${DISK_IMAGE}
             -boot d -m ${COAL_MEMORY_MB}M -serial stdio
+            -nic user,model=e1000
     DEPENDS image
     USES_TERMINAL)

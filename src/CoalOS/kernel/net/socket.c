@@ -72,6 +72,12 @@ static int wait_event(struct sock *s, const struct waiter *w) {
 
 void sock_wake(struct sock *s) { drv_wake_all(&s->wq); }
 
+/* DHCP may still be running just after boot: give it until its own fallback to finish. */
+static int wait_configured(void) {
+    for (int i = 0; i < 600 && net_if.present && !net_if.ip; i++) sleep_ms(10);
+    return net_if.present ? 0 : -ENETDOWN;
+}
+
 static bool nonblocking(const struct sock *s, int flags) { return s->nonblock || (flags & MSG_DONTWAIT); }
 
 /* ---- table and ports ------------------------------------------------------------ */
@@ -272,7 +278,9 @@ int sock_connect(struct sock *s, uint32_t addr, uint16_t port) {
         local_irq_restore(irq);
         return rc;
     }
-    if (!net_if.present) { local_irq_restore(irq); return -ENETDOWN; }
+    local_irq_restore(irq);
+    if ((rc = wait_configured()) != 0) return rc;
+    irq = local_irq_save();
     if ((rc = autobind(s)) != 0) { local_irq_restore(irq); return rc; }
     s->tcp = tcp_open(s);
     if (!s->tcp) { local_irq_restore(irq); return -ENOMEM; }
@@ -338,6 +346,7 @@ ssize_t sock_send(struct sock *s, const void *buf, size_t len, int flags, const 
     else if (!s->connected) return -EDESTADDRREQ;
     if (len > (s->type == SOCK_DGRAM ? UDP_PAYLOAD_MAX : IP_PAYLOAD_MAX)) return -EMSGSIZE;
 
+    if ((rc = wait_configured()) != 0) return rc;
     irq = local_irq_save();
     if (s->type == SOCK_DGRAM) {
         rc = autobind(s);

@@ -304,9 +304,13 @@ static int caseprefix(const char *s, const char *prefix) {
     return 1;
 }
 
-static void progress(long done, long total, int quiet) {
-    if (quiet) return;
-    if (total > 0) fprintf(stderr, "\r  %ld / %ld bytes (%ld%%)", done, total, done / (total >= 100 ? total / 100 : 1));
+/* Progress line on a terminal only; at most one update per 16 KiB. */
+static void progress(long done, long total, int quiet, int final) {
+    static long shown;
+
+    if (quiet || !isatty(2) || (!final && done - shown < 16384)) return;
+    shown = done;
+    if (total > 0) fprintf(stderr, "\r  %ld / %ld bytes (%ld%%)", done, total, total >= 100 ? done / (total / 100) : done * 100 / total);
     else fprintf(stderr, "\r  %ld bytes", done);
     fflush(stderr);
 }
@@ -378,9 +382,10 @@ static int fetch(const struct url *u, int out_fd, int quiet, char *loc, size_t l
         if (cb_write_all(out_fd, data, (size_t)got) < 0) { cb_err("write", "output"); goto out; }
         done += got;
         if (chunked || length >= 0) left -= got;
-        progress(done, length, quiet);
+        progress(done, length, quiet, 0);
     }
-    if (!quiet) fprintf(stderr, "\n%ld bytes received\n", done);
+    progress(done, length, quiet, 1);
+    if (!quiet) fprintf(stderr, "%s%ld bytes received\n", isatty(2) ? "\n" : "", done);
     rc = 0;
     goto out;
 truncated:

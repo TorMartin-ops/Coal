@@ -3,6 +3,9 @@
 
 Usage: smoke_test.py [build-dir]    exits non-zero on the first failure.
 """
+import functools
+import http.server
+import threading
 import json
 import os
 import subprocess
@@ -44,6 +47,13 @@ def check(cond, what, detail=""):
 
 def main():
     build_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(tempfile.gettempdir(), "coal-smoke")
+    www = tempfile.mkdtemp(prefix="coal-www-")
+    with open(os.path.join(www, "hello.txt"), "w") as f:
+        f.write("hello from smoke\n")
+    srv = http.server.ThreadingHTTPServer(
+        ("0.0.0.0", 0), functools.partial(http.server.SimpleHTTPRequestHandler, directory=www))
+    http_port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
     c = Client(build_dir)
     try:
         err, text = c.tool("coal_boot")
@@ -56,6 +66,13 @@ def main():
         check("0 failed" in text, "syscall_test", text)
         err, text = c.tool("coal_run", command="dmesg")
         check("vfs: mounted fat on /" in text, "dmesg shows the kernel log", text)
+        check("lease:" in text or "static" in text, "network configured (dhcp or static)", text)
+        err, text = c.tool("coal_run", command="ping -c 1 10.0.2.2", timeout_ms=15000)
+        check("exit code: 0" in text, "ping the QEMU gateway", text)
+        err, text = c.tool("coal_run", command="wget -q -O - http://10.0.2.2:%d/hello.txt" % http_port, timeout_ms=30000)
+        check("hello from smoke" in text, "wget from a host http.server", text)
+        err, text = c.tool("coal_run", command="wget https://example.com/ -O /tmp/x; echo rc=$?", timeout_ms=15000)
+        check("not supported" in text, "https gives a clear error", text)
         err, text = c.tool("coal_snapshot", name="smoke")
         check(not err, "snapshot", text)
         err, text = c.tool("coal_run", command="rm /tmp/f && echo gone")

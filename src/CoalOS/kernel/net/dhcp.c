@@ -14,8 +14,8 @@
 #define SERVER_PORT  67
 #define CLIENT_PORT  68
 #define MAGIC        0x63825363u
-#define RETRY_MS     1000u
-#define MAX_TRIES    4
+#define RETRY_MS     400u               /* QEMU's e1000 takes ~0.5 s to bring the link up */
+#define MAX_TRIES    12
 
 /* QEMU user networking defaults, used when no server answers. */
 #define FALLBACK_IP   IP4(10, 0, 2, 15)
