@@ -9,6 +9,7 @@
 #include <kernel/fs/vfs/read_file.h>
 #include <kernel/lib/string.h>
 #include <kernel/memory/frame.h>
+#include <kernel/memory/kmap.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/memory/paging_process.h>
 
@@ -135,13 +136,12 @@ static int build_stack(mm_struct_t *mm, const char *path, const char *const *arg
     *sp_out = base + vo;
 
     for (size_t pg = 0; pg < size; pg += PAGE_SIZE) {
-        uintptr_t phys = frame_alloc();
+        uintptr_t phys = frame_alloc_user();
         void *v;
         if (!phys) { ret = -ENOMEM; goto out; }
-        v = paging_temp_map(phys);
-        if (!v) { put_frame(phys); ret = -ENOMEM; goto out; }
+        v = kmap(phys);
         memcpy(v, buf + pg, PAGE_SIZE);
-        paging_temp_unmap(v);
+        kunmap(v);
         if (paging_map_single_4k(mm->pgd_phys, base + pg, phys,
                                  PAGE_PRESENT | PAGE_RW | PAGE_USER | nx_flag())) {
             put_frame(phys);

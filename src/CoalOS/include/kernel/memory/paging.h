@@ -2,20 +2,22 @@
  * @file paging.h
  * @brief 32-bit non-PAE paging: constants, page-table walker API, address-space helpers.
  *
- * Virtual layout
+ * Virtual layout (3G/1G split, Linux style)
  *   0x00000000 - 0x003FFFFF  identity map of the first 4 MiB (kernel image, VGA,
  *                             boot info). Shared by every page directory; never
  *                             usable by user mappings.
  *   0x00400000 - 0xBFFFFFFF  user space (per process).
- *   0xC0000000 - 0xCFFFFFFF  direct map of the frame-allocator heap:
+ *   0xC0000000 - 0xF7FFFFFF  direct map of lowmem, 896 MiB:
  *                             virt = phys + KERNEL_SPACE_VIRT_START.
- *   0xE0000000 - 0xEFFFFFFF  kernel stacks (page tables pre-allocated, shared).
+ *   0xF8000000 - 0xF8FFFFFF  kernel stacks (page tables pre-allocated, shared).
+ *   0xFA000000 - 0xFA003FFF  kmap slots (highmem frames, see kmap.h).
  *   0xFFC00000 - 0xFFFFFFFF  recursive page-directory mapping.
  *
- * Every frame returned by frame_alloc() lies inside the direct map, so page
- * directories and tables are accessed with phys_to_virt() and no temporary
- * mappings are needed. All kernel PDEs are populated at boot, so copying them
- * into a new directory keeps every address space in sync.
+ * RAM above 896 MiB is highmem: it is handed out only for user pages and is
+ * mapped on demand with kmap(). Every frame from frame_alloc() is lowmem, so
+ * page directories and tables are accessed with phys_to_virt(). All kernel
+ * PDEs are populated at boot, so copying them into a new directory keeps every
+ * address space in sync.
  *
  * Frame ownership: a present PTE owns one reference on its frame. Unmapping
  * drops that reference (the frame is freed when the count reaches zero);
@@ -69,10 +71,12 @@ extern "C" {
 #define RECURSIVE_PDE_INDEX 1023u
 #define RECURSIVE_PD_VADDR  0xFFFFF000u
 
-/* Kernel stack region: its page tables exist from boot so that every page
- * directory shares them. */
-#define KERNEL_STACK_VADDR_START 0xE0000000u
-#define KERNEL_STACK_VADDR_END   0xF0000000u
+/* Fixed kernel windows above the direct map. Their page tables exist from
+ * boot so that every page directory shares them. */
+#define HIGHMEM_START_PHYS       0x38000000u   /* 896 MiB: end of the direct map */
+#define KERNEL_STACK_VADDR_START 0xF8000000u
+#define KERNEL_STACK_VADDR_END   0xF9000000u
+#define KMAP_VADDR_START         0xFA000000u
 
 #define VGA_PHYS_ADDR 0xB8000u
 #define VGA_VIRT_ADDR (KERNEL_SPACE_VIRT_START + VGA_PHYS_ADDR)
@@ -94,14 +98,10 @@ extern uint32_t  g_kernel_page_directory_phys;
 
 /* --- Direct map ---------------------------------------------------------- */
 
-/** Kernel virtual address of a frame that came from frame_alloc(). */
+/** Kernel virtual address of a lowmem frame (frame_alloc(), page tables, kmalloc memory). */
 static inline void *phys_to_virt(uintptr_t phys) { return (void *)(phys + KERNEL_SPACE_VIRT_START); }
 /** Inverse of phys_to_virt() for direct-mapped addresses. */
 static inline uintptr_t virt_to_phys(const void *virt) { return (uintptr_t)virt - KERNEL_SPACE_VIRT_START; }
-
-/** Map a heap frame for CPU access. Always succeeds for allocator frames. */
-static inline void *paging_temp_map(uintptr_t phys) { return phys_to_virt(phys & PAGING_ADDR_MASK); }
-static inline void paging_temp_unmap(void *vaddr) { (void)vaddr; }
 
 /* --- Mapping API ----------------------------------------------------------
  * pd is the physical address of a page directory (the kernel's is

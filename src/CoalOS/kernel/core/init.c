@@ -36,7 +36,6 @@ uint32_t g_multiboot_info_phys_addr_global = 0;
 #define INIT_PATH "/sbin/init"
 
 #define MIN_USABLE_HEAP_SIZE          (1 * 1024 * 1024)
-#define MAX_CLAMPED_INITIAL_HEAP_SIZE (256 * 1024 * 1024)
 
 /* ---- Memory map ---- */
 
@@ -72,7 +71,6 @@ static void initialize_memory_management(uint32_t mb_info) {
         if (end > start && end - start > best_len) { best_base = start; best_len = end - start; }
     }
     if (best_len < MIN_USABLE_HEAP_SIZE) KERNEL_PANIC_HALT("no memory region large enough for the heap");
-    if (best_len > MAX_CLAMPED_INITIAL_HEAP_SIZE) best_len = MAX_CLAMPED_INITIAL_HEAP_SIZE;
     memory_init(best_base, best_len);
 }
 

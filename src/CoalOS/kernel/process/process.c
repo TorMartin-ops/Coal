@@ -19,11 +19,11 @@
 
 #define USER_EFLAGS 0x202                 /* IF set */
 
-/* Kernel stacks: a 16 MiB window of slots, each [guard page][stack pages].
+/* Kernel stacks: a window (paging.h) of slots, each [guard page][stack pages].
  * The guard page is never mapped. The window's page tables exist from boot
  * and are shared by every address space. */
 #define KSTACK_VA_START KERNEL_STACK_VADDR_START
-#define KSTACK_VA_END   0xE1000000u
+#define KSTACK_VA_END   KERNEL_STACK_VADDR_END
 #define KSTACK_SLOT     ((KSTACK_PAGES + 1) * PAGE_SIZE)
 #define KSTACK_FREE_MAX 128
 

@@ -264,7 +264,7 @@ static int resolve(mm_struct_t *mm, uint32_t prot, uintptr_t page, bool write) {
         return VM_FAULT_OOM;
 
     if (!(*pte & PAGE_PRESENT)) {                       /* demand-zero page */
-        uintptr_t frame = frame_alloc_zeroed();
+        uintptr_t frame = frame_alloc_user_zeroed();
         if (!frame)
             return VM_FAULT_OOM;
         *pte = frame | prot;
@@ -280,10 +280,10 @@ static int resolve(mm_struct_t *mm, uint32_t prot, uintptr_t page, bool write) {
     if (get_frame_refcount(shared) == 1) {              /* last owner: just reclaim it */
         *pte = shared | flags;
     } else {
-        uintptr_t copy = frame_alloc();
+        uintptr_t copy = frame_alloc_user();
         if (!copy)
             return VM_FAULT_OOM;
-        memcpy(phys_to_virt(copy), phys_to_virt(shared), PAGE_SIZE);
+        frame_copy(copy, shared);
         *pte = copy | flags;
         put_frame(shared);
     }

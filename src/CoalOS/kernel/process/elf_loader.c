@@ -2,6 +2,7 @@
 #include <kernel/process/elf.h>
 #include <kernel/process/process.h>
 #include <kernel/memory/frame.h>
+#include <kernel/memory/kmap.h>
 #include <kernel/memory/paging.h>
 #include <kernel/lib/string.h>
 #include <kernel/fs/vfs/fs_errno.h>
@@ -24,20 +25,16 @@ static int load_page(uint32_t *pd, uintptr_t page, bool shared, uint32_t flags,
     bool fresh = !shared;
 
     if (fresh) {
-        phys = frame_alloc();
+        phys = frame_alloc_user();
         if (!phys) return -ENOMEM;
     } else if (paging_get_physical_address_and_flags(pd, page, &phys, &old_flags) != 0) {
         return -ENOEXEC;
     }
 
-    uint8_t *v = paging_temp_map(phys);
-    if (!v) {
-        if (fresh) put_frame(phys);
-        return -ENOMEM;
-    }
+    uint8_t *v = kmap(phys);
     if (fresh) memset(v, 0, PAGE_SIZE);
     if (n) memcpy(v + dst_off, src, n);
-    paging_temp_unmap(v);
+    kunmap(v);
 
     if (!fresh) {                            /* page shared with the previous segment: union of rights */
         flags |= old_flags & PAGE_RW;
