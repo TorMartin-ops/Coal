@@ -6,6 +6,7 @@
 #include <kernel/core/init.h>
 #include <kernel/core/log.h>
 #include <kernel/core/multiboot.h>
+#include <kernel/core/cmdline.h>
 #include <kernel/cpu/gdt.h>
 #include <kernel/cpu/idt.h>
 #include <kernel/cpu/syscall.h>
@@ -117,6 +118,7 @@ void kernel_main_init(uint32_t magic, uint32_t mb_info_phys_addr) {
     /* Spec: 8-byte aligned and non-null; GRUB puts it above 1 MiB. */
     if (mb_info_phys_addr == 0 || (mb_info_phys_addr & 7)) KERNEL_PANIC_HALT("bad Multiboot2 info address");
     g_multiboot_info_phys_addr_global = mb_info_phys_addr;
+    cmdline_init(mb_info_phys_addr);
 
     gdt_init();
     initialize_memory_management(mb_info_phys_addr);

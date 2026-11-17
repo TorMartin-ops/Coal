@@ -4,7 +4,8 @@
 
 /**
  * Initialise the VFS, register the FAT, devfs and procfs drivers, mount the
- * root disk on / and devfs and procfs on /dev and /proc.
+ * root disk on / and devfs and procfs on /dev and /proc. The root disk is
+ * "hda" unless the command line says root=/dev/<name> (e.g. root=/dev/vda).
  * Returns 0 or a negative errno (only a failed root mount is fatal).
  */
 int fs_init(void);
@@ -14,7 +15,7 @@ int fs_init(void);
 void fs_start_flusher(void);
 
 /**
- * Makes an additional ATA disk (hdb, hdc, hdd) reachable for mounting; the root
+ * Makes an additional disk (hda..hdd, vda..vdd) reachable for mounting; the root
  * disk is always attached. Returns 0 or -ENODEV when there is no such drive.
  */
 int fs_attach_disk(const char *name);
