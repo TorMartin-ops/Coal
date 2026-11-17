@@ -74,9 +74,6 @@ size_t tty_input_available(void);
 void tty_get_termios(tty_termios_t *out);
 void tty_set_termios(const tty_termios_t *in);
 
-/** Raw mode toggle: no line editing, no echo, no signal keys. */
-void tty_set_raw(bool raw);
-
 /**
  * ioctl on the console with kernel-space arguments. Handles TCGETS, TCSETS*,
  * TIOCGWINSZ, TIOCGPGRP, TIOCSPGRP and FIONREAD; returns 0 or a negative errno
@@ -85,7 +82,6 @@ void tty_set_raw(bool raw);
 int tty_ioctl(unsigned request, void *arg);
 
 uint32_t tty_get_fg_pgrp(void);
-void tty_set_fg_pgrp(uint32_t pgid);
 
 /**
  * Hook called from the keyboard interrupt when a signal key (Ctrl-C = SIGINT,

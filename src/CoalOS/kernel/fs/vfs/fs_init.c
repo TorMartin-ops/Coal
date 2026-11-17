@@ -33,4 +33,3 @@ int fs_init(void) {
     return 0;
 }
 
-void fs_shutdown(void) { vfs_shutdown(); }

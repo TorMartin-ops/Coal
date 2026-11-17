@@ -211,10 +211,6 @@ void scheduler_tick(void) {
     }
 }
 
-uint32_t scheduler_get_ticks(void) {
-    return g_ticks;
-}
-
 tcb_t *get_current_task(void) {
     return g_current;
 }

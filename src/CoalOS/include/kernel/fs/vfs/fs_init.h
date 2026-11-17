@@ -9,7 +9,4 @@
  */
 int fs_init(void);
 
-/** Flush and unmount everything. */
-void fs_shutdown(void);
-
 #endif

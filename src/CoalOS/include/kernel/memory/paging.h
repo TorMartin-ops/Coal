@@ -118,7 +118,6 @@ int paging_unmap_range(uint32_t *pd, uintptr_t vaddr, size_t size);
 /** Translate vaddr; *flags_out gets the PTE flag bits. -1 if not mapped. */
 int paging_get_physical_address_and_flags(uint32_t *pd, uintptr_t vaddr,
                                           uintptr_t *paddr_out, uint32_t *flags_out);
-int paging_get_physical_address(uint32_t *pd, uintptr_t vaddr, uintptr_t *paddr_out);
 
 /** Pointer to the PTE for vaddr in pd, or NULL if the page table is absent
  *  (and create is false) or cannot be allocated. */

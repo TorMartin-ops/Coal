@@ -251,22 +251,7 @@ void tty_set_termios(const tty_termios_t *in) {
     local_irq_restore(flags);
 }
 
-void tty_set_raw(bool raw) {
-    tty_termios_t t;
-    tty_get_termios(&t);
-    if (raw) {
-        t.c_lflag &= ~(uint32_t)(TTY_ICANON | TTY_ECHO | TTY_ISIG);
-        t.c_iflag &= ~(uint32_t)(TTY_ICRNL | TTY_INLCR | TTY_IGNCR);
-        t.c_cc[TTY_VMIN] = 1;
-    } else {
-        t.c_lflag |= TTY_ICANON | TTY_ECHO | TTY_ISIG;
-        t.c_iflag |= TTY_ICRNL;
-    }
-    tty_set_termios(&t);
-}
-
 uint32_t tty_get_fg_pgrp(void) { return g.fg_pgrp; }
-void tty_set_fg_pgrp(uint32_t pgid) { g.fg_pgrp = pgid; }
 
 int tty_ioctl(unsigned request, void *arg) {
     switch (request) {

@@ -86,11 +86,8 @@ ssize_t sys_write(int fd, const void *buf, size_t count) { WITH_FILE(fd, vfs_wri
 off_t sys_lseek(int fd, off_t off, int whence) { WITH_FILE(fd, vfs_lseek(f, off, whence)); }
 int sys_getdents64(int fd, void *buf, size_t count) { WITH_FILE(fd, vfs_getdents64(f, buf, count)); }
 int sys_fstat(int fd, struct kstat64 *st) { WITH_FILE(fd, vfs_fstat(f, st)); }
-int sys_ftruncate(int fd, off_t len) { WITH_FILE(fd, vfs_ftruncate(f, len)); }
-int sys_fsync(int fd) { WITH_FILE(fd, vfs_fsync(f)); }
-int sys_ioctl(int fd, uint32_t cmd, void *arg) { WITH_FILE(fd, vfs_ioctl(f, cmd, arg)); }
 
-int sys_stat(const char *path, struct kstat64 *st) { return vfs_stat(path, st); }
+int sys_ioctl(int fd, uint32_t cmd, void *arg) { WITH_FILE(fd, vfs_ioctl(f, cmd, arg)); }
 
 int sys_dup(int oldfd) {
     pcb_t *p = get_current_process();

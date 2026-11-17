@@ -64,9 +64,6 @@ mm_struct_t *create_mm(uint32_t *pgd_phys);
  *  directory frame is not freed; its owner releases it with put_frame(). */
 void destroy_mm(mm_struct_t *mm);
 
-/** VMA containing addr, or NULL. */
-vma_struct_t *find_vma(mm_struct_t *mm, uintptr_t addr);
-
 /** Add a VMA. start and end must be page aligned with start < end and lie in
  *  [4 MiB, KERNEL_SPACE_VIRT_START). page_prot is ignored (derived from
  *  vm_flags; kept for source compatibility). NULL on overlap, bad range or OOM. */
