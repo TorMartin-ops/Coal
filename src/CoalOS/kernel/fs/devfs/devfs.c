@@ -73,6 +73,11 @@ static int devfs_ioctl(vnode_t *v, uint32_t cmd, void *arg) {
     return o && o->ioctl ? o->ioctl(o->priv, cmd, arg) : -ENOTTY;
 }
 
+static uint32_t devfs_poll(vnode_t *v) {
+    const devfs_char_ops_t *o = ops_of(v);
+    return o && o->poll ? o->poll(o->priv) : POLLIN | POLLOUT;
+}
+
 static int devfs_readdir(vnode_t *dir, off_t *pos, struct vfs_dirent *out) {
     if (*pos >= 2 + node_count) return 0;
     if (*pos < 2) {
@@ -108,6 +113,7 @@ static vfs_driver_t devfs_driver = {
     .read = devfs_read,
     .write = devfs_write,
     .ioctl = devfs_ioctl,
+    .poll = devfs_poll,
     .readdir = devfs_readdir,
     .getattr = devfs_getattr,
 };
@@ -146,15 +152,18 @@ static ssize_t serial_dev_write(void *priv, const void *buf, size_t len) {
     return (ssize_t)serial_port_write((int)(uintptr_t)priv, buf, len);
 }
 
+static uint32_t console_poll(void *priv) { return POLLOUT | (tty_readable() ? POLLIN : 0); }
+static uint32_t serial_dev_poll(void *priv) { return POLLOUT | (serial_port_rx_available((int)(uintptr_t)priv) ? POLLIN : 0); }
+
 static ssize_t null_read(void *priv, void *buf, size_t len) { return 0; }
 static ssize_t sink_write(void *priv, const void *buf, size_t len) { return (ssize_t)len; }
 static ssize_t zero_read(void *priv, void *buf, size_t len) { memset(buf, 0, len); return (ssize_t)len; }
 
-static const devfs_char_ops_t console_ops = { console_read, console_write, console_ioctl, NULL, (5 << 8) | 1 };
-static const devfs_char_ops_t null_ops    = { null_read, sink_write, NULL, NULL, (1 << 8) | 3 };
-static const devfs_char_ops_t zero_ops    = { zero_read, sink_write, NULL, NULL, (1 << 8) | 5 };
-static const devfs_char_ops_t ttyS0_ops   = { serial_dev_read, serial_dev_write, NULL, (void *)SERIAL_COM1, (4 << 8) | 64 };
-static const devfs_char_ops_t ttyS1_ops   = { serial_dev_read, serial_dev_write, NULL, (void *)SERIAL_COM2, (4 << 8) | 65 };
+static const devfs_char_ops_t console_ops = { console_read, console_write, console_ioctl, NULL, (5 << 8) | 1, console_poll };
+static const devfs_char_ops_t null_ops    = { null_read, sink_write, NULL, NULL, (1 << 8) | 3, NULL };
+static const devfs_char_ops_t zero_ops    = { zero_read, sink_write, NULL, NULL, (1 << 8) | 5, NULL };
+static const devfs_char_ops_t ttyS0_ops   = { serial_dev_read, serial_dev_write, NULL, (void *)SERIAL_COM1, (4 << 8) | 64, serial_dev_poll };
+static const devfs_char_ops_t ttyS1_ops   = { serial_dev_read, serial_dev_write, NULL, (void *)SERIAL_COM2, (4 << 8) | 65, serial_dev_poll };
 
 int devfs_init(void) {
     int rc = vfs_register_driver(&devfs_driver);

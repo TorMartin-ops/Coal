@@ -188,7 +188,7 @@ size_t tty_input_available(void) {
 }
 
 /** True when a read can return now (a complete record in canonical mode, any byte in raw mode). */
-static bool readable(void) {
+static bool ring_readable(void) {
     if (!(g.tio.c_lflag & TTY_ICANON)) return g.head != g.tail;
     for (uint32_t i = g.tail; i != g.head; i++) {
         if (g.ring[i & (RING_SIZE - 1)] & (E_EOR | E_EOF)) return true;
@@ -196,12 +196,19 @@ static bool readable(void) {
     return false;
 }
 
+bool tty_readable(void) {
+    uintptr_t flags = local_irq_save();
+    bool r = ring_readable();
+    local_irq_restore(flags);
+    return r;
+}
+
 ssize_t tty_read(void *buf, size_t len) {
     uint8_t *out = buf;
     if (!out || !len) return 0;
 
     uintptr_t flags = local_irq_save();
-    while (!readable()) {
+    while (!ring_readable()) {
         if (!(g.tio.c_lflag & TTY_ICANON) && g.tio.c_cc[TTY_VMIN] == 0) {
             local_irq_restore(flags);
             return 0;

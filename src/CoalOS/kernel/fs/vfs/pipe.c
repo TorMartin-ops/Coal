@@ -4,7 +4,7 @@
  *
  * Each end is an ordinary vnode of an unmounted "pipefs" driver, so read,
  * write, dup, fork and close work through the usual descriptor layer.
- * Blocking is a yield loop; there is no wait queue.
+ * Readers and writers sleep on the pipe's wait queue.
  */
 #include <kernel/fs/vfs/sys_file.h>
 #include <kernel/fs/vfs/fs_errno.h>
@@ -13,6 +13,7 @@
 #include <kernel/process/scheduler.h>
 #include <kernel/process/signal.h>
 #include <kernel/lib/string.h>
+#include <kernel/drivers/wait.h>
 
 #define PIPE_SIZE 4096
 #ifndef S_IFIFO
@@ -23,6 +24,7 @@ struct pipe {
     uint8_t  buf[PIPE_SIZE];
     uint32_t head, count;           /* read position, bytes stored */
     int      readers, writers;      /* open ends */
+    drv_waitq_t wait;
 };
 
 struct pipe_end {
@@ -35,16 +37,19 @@ static ssize_t pipe_read(vnode_t *v, off_t pos, void *out, size_t len) {
     struct pipe *p = e->pipe;
     (void)pos;
 
+    uintptr_t fl = local_irq_save();
     while (p->count == 0) {
-        if (p->writers == 0) return 0;
-        if (e->nonblock) return -EAGAIN;
-        yield();
+        if (p->writers == 0) { local_irq_restore(fl); return 0; }
+        if (e->nonblock) { local_irq_restore(fl); return -EAGAIN; }
+        drv_wait(&p->wait);
     }
+    local_irq_restore(fl);
     size_t n = len < p->count ? len : p->count;
     for (size_t i = 0; i < n; i++)
         ((uint8_t *)out)[i] = p->buf[(p->head + i) % PIPE_SIZE];
     p->head = (p->head + n) % PIPE_SIZE;
     p->count -= n;
+    drv_wake_all(&p->wait);
     return n;
 }
 
@@ -62,7 +67,9 @@ static ssize_t pipe_write(vnode_t *v, off_t pos, const void *in, size_t len) {
         size_t room = PIPE_SIZE - p->count;
         if (room == 0) {
             if (e->nonblock) return done ? (ssize_t)done : -EAGAIN;
-            yield();
+            uintptr_t fl = local_irq_save();
+            if (p->count == PIPE_SIZE && p->readers) drv_wait(&p->wait);
+            local_irq_restore(fl);
             continue;
         }
         size_t n = len - done < room ? len - done : room;
@@ -70,6 +77,7 @@ static ssize_t pipe_write(vnode_t *v, off_t pos, const void *in, size_t len) {
             p->buf[(p->head + p->count + i) % PIPE_SIZE] = ((const uint8_t *)in)[done + i];
         p->count += n;
         done += n;
+        drv_wake_all(&p->wait);
     }
     return done;
 }
@@ -84,6 +92,7 @@ static int pipe_close(vnode_t *v) {
     struct pipe *p = e->pipe;
 
     if (e->writer) p->writers--; else p->readers--;
+    drv_wake_all(&p->wait);
     if (p->readers == 0 && p->writers == 0) kfree(p);
     kfree(e);
     return 0;
@@ -97,6 +106,14 @@ static int pipe_getattr(vnode_t *v, struct kstat64 *st) {
     return 0;
 }
 
+static uint32_t pipe_poll(vnode_t *v) {
+    struct pipe_end *e = v->data;
+    struct pipe *p = e->pipe;
+
+    if (!e->writer) return (p->count ? POLLIN : 0) | (p->writers ? 0 : POLLHUP);
+    return p->readers ? (p->count < PIPE_SIZE ? POLLOUT : 0) : POLLERR;
+}
+
 static vfs_driver_t pipe_driver = {
     .fs_name = "pipefs",
     .open = pipe_open,
@@ -104,6 +121,7 @@ static vfs_driver_t pipe_driver = {
     .read = pipe_read,
     .write = pipe_write,
     .getattr = pipe_getattr,
+    .poll = pipe_poll,
 };
 
 static file_t *new_end(struct pipe *p, bool writer, bool nonblock) {

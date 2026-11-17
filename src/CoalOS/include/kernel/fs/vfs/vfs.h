@@ -41,6 +41,13 @@
 #define S_ISCHR(m) (((m) & S_IFMT) == S_IFCHR)
 #endif
 
+/* poll(2) event bits, Linux values */
+#define POLLIN   0x0001
+#define POLLOUT  0x0004
+#define POLLERR  0x0008
+#define POLLHUP  0x0010
+#define POLLNVAL 0x0020
+
 #define DT_UNKNOWN 0
 #define DT_CHR     2
 #define DT_DIR     4
@@ -123,6 +130,8 @@ struct vfs_driver {
     int   (*sync)(void *fs);                        /* flush the whole file system */
     int   (*ioctl)(vnode_t *v, uint32_t cmd, void *arg);
     int   (*utime)(vnode_t *v, uint32_t atime, uint32_t mtime);
+    /** Readiness: POLLIN/POLLOUT/POLLHUP bits. Must not block. Without it a file is always ready. */
+    uint32_t (*poll)(vnode_t *v);
     int   (*unlink)(void *fs, const char *path);
     int   (*mkdir)(void *fs, const char *path, mode_t mode);
     int   (*rmdir)(void *fs, const char *path);
@@ -151,6 +160,7 @@ int     vfs_fstat(file_t *f, struct kstat64 *st);
 int     vfs_ftruncate(file_t *f, off_t len);
 int     vfs_fsync(file_t *f);
 int     vfs_ioctl(file_t *f, uint32_t cmd, void *arg);
+uint32_t vfs_poll(file_t *f);
 
 /* Namespace operations */
 int  vfs_stat(const char *path, struct kstat64 *st);

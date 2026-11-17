@@ -163,6 +163,13 @@ size_t serial_port_read(int port, void *buf, size_t len) {
     return n;
 }
 
+size_t serial_port_rx_available(int port) {
+    uart_t *u = uart_get(port);
+    if (!u || !u->present) return 0;
+    uart_start_irq(u);                  /* poll(2) on an idle port must see its interrupts */
+    return ring_count(u->rx_head, u->rx_tail);
+}
+
 /* ---- Kernel log on COM1 (synchronous) -------------------------------- */
 
 /** Sends len bytes, waiting for the FIFO as needed, without holding IRQs off while waiting. */

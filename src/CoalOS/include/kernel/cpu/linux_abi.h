@@ -72,10 +72,6 @@ struct linux_sigaction {                /* i386 kernel struct sigaction */
 #define FD_CLOEXEC      1
 
 /* poll */
-#define POLLIN          0x0001
-#define POLLOUT         0x0004
-#define POLLERR         0x0008
-#define POLLNVAL        0x0020
 struct linux_pollfd { int32_t fd; int16_t events, revents; };
 
 /* reboot */

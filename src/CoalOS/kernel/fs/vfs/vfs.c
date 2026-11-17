@@ -342,6 +342,11 @@ int vfs_fsync(file_t *f) {
     return v->fs_driver->sync ? v->fs_driver->sync(v->mnt->ctx) : 0;
 }
 
+uint32_t vfs_poll(file_t *f) {
+    vfs_driver_t *d = f->vnode->fs_driver;
+    return d->poll ? d->poll(f->vnode) : POLLIN | POLLOUT;
+}
+
 int vfs_ioctl(file_t *f, uint32_t cmd, void *arg) {
     vnode_t *v = f->vnode;
     return v->fs_driver->ioctl ? v->fs_driver->ioctl(v, cmd, arg) : -ENOTTY;

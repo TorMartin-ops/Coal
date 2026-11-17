@@ -62,6 +62,9 @@ void tty_init(void);
  */
 ssize_t tty_read(void *buf, size_t len);
 
+/** True when a read would not block (including end of file). */
+bool tty_readable(void);
+
 /** Writes to the screen. Returns len. */
 ssize_t tty_write(const void *buf, size_t len);
 

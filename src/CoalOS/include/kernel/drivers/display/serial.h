@@ -27,6 +27,9 @@ size_t serial_port_write(int port, const void *buf, size_t len);
 size_t serial_port_read(int port, void *buf, size_t len);
 
 
+/** Number of received bytes waiting in the RX ring. */
+size_t serial_port_rx_available(int port);
+
 /** Kernel log on COM1: synchronous, '\n' is sent as "\r\n". */
 void serial_write(const char *str);
 

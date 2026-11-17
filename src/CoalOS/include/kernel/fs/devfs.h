@@ -15,6 +15,7 @@ typedef struct devfs_char_ops {
     int     (*ioctl)(void *priv, uint32_t cmd, void *arg);
     void    *priv;
     uint32_t rdev;                      /* (major << 8) | minor, shown by stat */
+    uint32_t (*poll)(void *priv);       /* POLLIN/POLLOUT bits; NULL = always ready */
 } devfs_char_ops_t;
 
 /**
