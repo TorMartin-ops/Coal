@@ -65,11 +65,7 @@ long sc_clock_getres(uint32_t clk, uintptr_t uts) {
 
 static drv_waitq_t sleep_queue;
 
-long sc_nanosleep(uintptr_t ureq, uintptr_t urem) {
-    struct linux_timespec req;
-
-    if (copy_from_user(&req, (const void *)ureq, sizeof(req)) != 0) return -EFAULT;
-    if (req.tv_sec < 0 || req.tv_nsec < 0 || (uint64_t)req.tv_nsec >= NSEC_PER_SEC) return -EINVAL;
+static long sleep_for(struct linux_timespec req, uintptr_t urem) {
 
     /* Sleep in chunks: the tick counter is 32 bits. */
     uint64_t sec = (uint64_t)req.tv_sec;
@@ -90,6 +86,37 @@ long sc_nanosleep(uintptr_t ureq, uintptr_t urem) {
         if (copy_to_user((void *)urem, &left, sizeof(left)) != 0) return -EFAULT;
     }
     return rc;
+}
+
+static long read_timespec(uintptr_t uts, struct linux_timespec *ts) {
+    if (copy_from_user(ts, (const void *)uts, sizeof(*ts)) != 0) return -EFAULT;
+    return ts->tv_sec < 0 || ts->tv_nsec < 0 || (uint64_t)ts->tv_nsec >= NSEC_PER_SEC ? -EINVAL : 0;
+}
+
+long sc_nanosleep(uintptr_t ureq, uintptr_t urem) {
+    struct linux_timespec req;
+    long rc = read_timespec(ureq, &req);
+
+    return rc ? rc : sleep_for(req, urem);
+}
+
+#define TIMER_ABSTIME 1
+
+long sc_clock_nanosleep(uint32_t clk, uint32_t flags, uintptr_t ureq, uintptr_t urem) {
+    struct linux_timespec req;
+    long rc = read_timespec(ureq, &req);
+
+    if (clk != CLOCK_REALTIME && clk != CLOCK_MONOTONIC) return -EINVAL;
+    if (rc) return rc;
+    if (flags & TIMER_ABSTIME) {
+        int64_t now = (int64_t)(clk == CLOCK_REALTIME ? clock_realtime_ns() : clock_monotonic_ns());
+        int64_t left = req.tv_sec * (int64_t)NSEC_PER_SEC + req.tv_nsec - now;
+
+        if (left <= 0) return 0;
+        req = (struct linux_timespec){ left / (int64_t)NSEC_PER_SEC, left % (int64_t)NSEC_PER_SEC };
+        urem = 0;                                       /* an absolute sleep reports no remainder */
+    }
+    return sleep_for(req, urem);
 }
 
 //============================================================================

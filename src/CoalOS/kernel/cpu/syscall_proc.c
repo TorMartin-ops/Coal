@@ -20,6 +20,25 @@ long sc_fork(void) {
     return process_fork(user_regs());
 }
 
+/* The one clone libcs use for fork(): no shared address space, no new stack, SIGCHLD at exit. The child TID
+ * stores are skipped (single-threaded: tgkill ignores the TID); threads and CLONE_VM give -ENOSYS. */
+#define CLONE_PARENT_SETTID  0x00100000ul
+#define CLONE_CHILD_CLEARTID 0x00200000ul
+#define CLONE_CHILD_SETTID   0x01000000ul
+#define CLONE_EXIT_SIGNAL    0xfful
+
+long sc_clone(uint64_t flags, uintptr_t stack, uintptr_t ptid, uintptr_t ctid, uintptr_t tls) {
+    (void)ctid;
+    (void)tls;
+    if ((flags & ~(CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_EXIT_SIGNAL)) ||
+        (flags & CLONE_EXIT_SIGNAL) != SIGCHLD || stack)
+        return -ENOSYS;
+    long pid = process_fork(user_regs());
+    if (pid > 0 && (flags & CLONE_PARENT_SETTID) && copy_to_user((void *)ptid, &(int32_t){ (int32_t)pid }, 4) != 0)
+        return -EFAULT;
+    return pid;
+}
+
 long sc_execve(uintptr_t path, uintptr_t argv, uintptr_t envp) {
     char kpath[PATH_MAX_SYS];
     struct exec_args args;

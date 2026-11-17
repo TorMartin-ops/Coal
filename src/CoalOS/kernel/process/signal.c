@@ -27,6 +27,7 @@ void signal_return_to_user(isr_frame_t *regs, int restart_nr) {
     for (int sig = 1; pending && sig <= NSIG; sig++) {
         if ((pending & SIGBIT(sig)) && signal_disposition(p, sig) == SIGDISP_DEFAULT) {
             p->pending_signals &= ~SIGBIT(sig);
+            if (SIGBIT(sig) & IGNORED_BY_DEFAULT) continue;     /* held while blocked, harmless now */
             asm volatile("sti");            /* exiting may block; interrupt and exception gates enter with IRQs off */
             process_exit(sig);              /* wait status of a signalled process is the signal number */
         }

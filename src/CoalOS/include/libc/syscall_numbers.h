@@ -51,6 +51,7 @@
 #define SYS_SOCKETPAIR       53
 #define SYS_SETSOCKOPT       54
 #define SYS_GETSOCKOPT       55
+#define SYS_CLONE            56
 #define SYS_FORK             57
 #define SYS_VFORK            58
 #define SYS_EXECVE           59
@@ -103,6 +104,7 @@
 #define SYS_SET_TID_ADDRESS  218
 #define SYS_CLOCK_GETTIME    228
 #define SYS_CLOCK_GETRES     229
+#define SYS_CLOCK_NANOSLEEP  230
 #define SYS_EXIT_GROUP       231
 #define SYS_TGKILL           234
 #define SYS_OPENAT           257
