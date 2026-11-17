@@ -1,9 +1,19 @@
 """Client for the agent protocol: multiplexed requests over one Transport."""
+import os
 import threading
 import time
 
 from .errors import AgentError, ToolError
 from .frames import Decoder, FrameError, encode
+
+
+def scaled(seconds):
+    """A wall-clock wait stretched by $COAL_TIMEOUT_SCALE (default 1): coaltest sets it from the host load so a busy
+    host makes the gateway wait longer instead of reporting a lost connection."""
+    try:
+        return seconds * max(1.0, float(os.environ.get("COAL_TIMEOUT_SCALE", "1")))
+    except ValueError:
+        return seconds
 
 
 class _Pending:
@@ -149,6 +159,7 @@ class AgentClient:
         except (OSError, AttributeError):
             self.close()
             raise ToolError(self.lost() + "\nretry or call coal_boot")
+        timeout = scaled(timeout)
         deadline = time.monotonic() + timeout
         cancelled = False
         while not p.done.wait(0.05 if cancel is not None else max(0.0, deadline - time.monotonic())):
@@ -176,7 +187,7 @@ class AgentClient:
 
     def wait_ready(self, timeout, alive=lambda: True):
         """Pings until agentd answers; returns True on success."""
-        end = time.monotonic() + timeout
+        end = time.monotonic() + scaled(timeout)
         while time.monotonic() < end and alive():
             try:
                 self.request("ping", timeout=0.3)

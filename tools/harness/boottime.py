@@ -31,7 +31,9 @@ REPO = Path(__file__).resolve().parents[2]
 SRC_DIR = REPO / "src" / "CoalOS"
 KLOG = re.compile(rb"^\[\s*(\d+)\.(\d{3})\] \[\w+\s*\] ([\w-]+): (.*)$")
 sys.path.insert(0, str(REPO / "tools" / "coal-gateway"))
+sys.path.insert(0, str(REPO / "tools" / "testkit"))
 from coal_gateway import frames  # noqa: E402
+from testkit import slots  # noqa: E402
 
 PING = frames.encode({"id": 1, "op": "ping"})
 LABEL_MAX = 44
@@ -101,9 +103,10 @@ def connect_early(path, deadline, alive):
 
 def boot_once(args, iso, disk, workdir):
     com1, com2 = os.path.join(workdir, "com1"), os.path.join(workdir, "com2")
+    slot = slots.acquire("boottime")           # waits for a free host slot; the timeline starts after it
     t0 = time.monotonic()
     proc = subprocess.Popen(qemu_cmd(args, iso, disk, com1, com2), stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
     tl = Timeline(t0)
     deadline = t0 + args.timeout
     try:
@@ -118,6 +121,7 @@ def boot_once(args, iso, disk, workdir):
     finally:
         proc.kill()
         proc.wait()
+        slot.release()
         proc.stderr.close()
     return tl.items
 

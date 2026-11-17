@@ -17,6 +17,8 @@ GATEWAY_DIR = os.path.dirname(HERE)
 REPO = os.path.dirname(os.path.dirname(GATEWAY_DIR))
 AGENTD_BUILD = os.path.join(REPO, "src", "CoalOS", "userspace", "agentd", "test", "build_host.sh")
 sys.path.insert(0, GATEWAY_DIR)
+sys.path.insert(0, os.path.join(REPO, "tools", "testkit"))
+from testkit import slots                           # noqa: E402  every QEMU waits for a free host slot
 
 from coal_gateway.agent import AgentClient          # noqa: E402
 from coal_gateway.transport import parse_address    # noqa: E402
@@ -94,10 +96,13 @@ class QemuAgent:
         self.tmp = tempfile.mkdtemp(prefix="coal-qemu-test-")
         self.socket = os.path.join(self.tmp, "com2.sock")
         self.address = "unix:" + self.socket
+        self.slot = slots.acquire("gateway test")
         self.proc = subprocess.Popen(
             ["qemu-system-x86_64", "-display", "none", "-m", "128", "-snapshot", "-nic", "none", "-no-reboot",
+             "-pidfile", os.path.join(self.tmp, "qemu.pid"),
              "-serial", "file:" + os.path.join(self.tmp, "com1.log")] + self.boot_args(),
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            env=dict(os.environ, TMPDIR=self.tmp))
 
     def boot_args(self):
         return ["-boot", "d", "-cdrom", os.path.join(self.build, "kernel.iso"), "-hda", os.path.join(self.build, "disk.img"),
@@ -124,6 +129,7 @@ class QemuAgent:
     def close(self):
         self.proc.kill()
         self.proc.wait()
+        self.slot.release()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
 
