@@ -17,7 +17,6 @@
 //============================================================================
 #include <kernel/core/types.h>
 #include <kernel/core/error.h>
-#include <kernel/core/constants.h>
 #include <libc/stdint.h>
 #include <libc/stdbool.h>
 

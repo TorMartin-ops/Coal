@@ -28,14 +28,6 @@
 // Core Scheduling Configuration
 //============================================================================
 // Priority levels are now defined in scheduler.h
-#define IDLE_TASK_PID           0
-
-#ifndef SCHED_TICKS_PER_SECOND
-#define SCHED_TICKS_PER_SECOND  1000
-#endif
-
-#define MS_TO_TICKS(ms) (((ms) * SCHED_TICKS_PER_SECOND) / 1000)
-
 static const uint32_t g_priority_time_slices_ms[SCHED_PRIORITY_LEVELS] = {
     200, /* P0 */ 100, /* P1 */ 50, /* P2 */ 25  /* P3 (Idle) */
 };

@@ -8,6 +8,9 @@
 extern "C" {
 #endif
 
+// Largest user size served by slabs; must stay below PAGE_SIZE minus the slab header
+#define SLAB_ALLOC_MAX_USER_SIZE 2048
+
 // Forward declaration for slab_t used internally by slab.c
 typedef struct slab slab_t;
 

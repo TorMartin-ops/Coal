@@ -39,9 +39,6 @@
 #include <kernel/drivers/display/terminal.h>       // terminal_printf FOR FORMATTED LOGGING
 
 /* --- Helper Macros --- */
-#ifndef MIN
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
-#endif
 
 /* --- Cluster I/O Helpers --- */
 

@@ -19,6 +19,7 @@
 #include <kernel/fs/fat/fat_utils.h>
 #include <kernel/fs/fat/fat_lfn.h>
 #include <kernel/fs/vfs/fs_errno.h>
+#include <kernel/fs/vfs/dirent.h>   // DT_*
 #include <kernel/sync/spinlock.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/lib/string.h>
@@ -28,19 +29,6 @@
 //============================================================================
 // Reader Configuration
 //============================================================================
-// Directory type constants
-#ifndef DT_DIR
-#define DT_UNKNOWN 0
-#define DT_FIFO    1
-#define DT_CHR     2
-#define DT_DIR     4 // Directory
-#define DT_BLK     6
-#define DT_REG     8 // Regular file
-#define DT_LNK     10
-#define DT_SOCK    12
-#define DT_WHT     14
-#endif
-
 // Logging Macros
 #define FAT_DEBUG_LOG(fmt, ...) serial_printf("[DirReader DEBUG] " fmt "\n", ##__VA_ARGS__)
 #define FAT_INFO_LOG(fmt, ...)  serial_printf("[DirReader INFO ] " fmt "\n", ##__VA_ARGS__)

@@ -12,9 +12,6 @@
 #define KMALLOC_MIN_ALIGNMENT sizeof(void*)
 #endif
 
-// --- Helper Macro ---
-#define ALIGN_UP(addr, align) (((uintptr_t)(addr) + (align) - 1) & ~((uintptr_t)(align) - 1))
-
 // --- Metadata Structure ---
 typedef enum {
     ALLOC_TYPE_BUDDY = 1,

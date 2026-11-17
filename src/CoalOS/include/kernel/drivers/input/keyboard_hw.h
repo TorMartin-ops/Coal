@@ -6,6 +6,10 @@
 #define KBC_STATUS_PORT 0x64
 #define KBC_CMD_PORT    0x64
 
+/* Polling limits */
+#define KBC_WAIT_TIMEOUT_CYCLES 300000
+#define KBC_FLUSH_MAX_ATTEMPTS  100
+
 /* Status-register bits */
 #define KBC_SR_OBF      0x01
 #define KBC_SR_IBF      0x02

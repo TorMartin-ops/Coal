@@ -6,18 +6,9 @@
 #include <libc/stdarg.h> // For va_list
 #include <kernel/drivers/input/keyboard.h> // For KeyEvent
 
-/* --- Configuration --- */
-// VGA_ADDRESS is defined in vga_hardware.h
-#define VGA_COLS    80
-#define VGA_ROWS    25
+#include <kernel/drivers/display/vga_hardware.h> // VGA_COLS, VGA_ROWS, colors
 
-// Ensure this matches the value used in terminal.c or remove definition from .c file
 #define MAX_INPUT_LENGTH 256 // Maximum characters per interactive input line (including null)
-
-
-/* --- VGA Colors --- */
-// ... (color definitions remain the same) ...
-// VGA colors are defined in vga_hardware.h as macros
 
 /* --- Public Functions --- */
 

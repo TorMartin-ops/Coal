@@ -24,26 +24,9 @@
 #include <kernel/cpu/gdt.h>
 #include <kernel/cpu/tss.h>
 #include <kernel/fs/vfs/sys_file.h>
-#include <kernel/fs/vfs/fs_limits.h>
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/fs/vfs/vfs.h>
 #include <kernel/drivers/display/serial.h>
-
-// Define USER_SPACE_START_VIRT if not defined elsewhere (e.g., paging.h)
-#ifndef USER_SPACE_START_VIRT
-#define USER_SPACE_START_VIRT 0x00001000
-#endif
-
-#ifndef KERNEL_VIRT_BASE
-#define KERNEL_VIRT_BASE 0xC0000000
-#endif
-
-#ifndef MAX
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
-#endif
-#ifndef MIN
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
-#endif
 
 // Initial EFLAGS for user processes (IF=1, reserved bit 1=1)
 #define USER_EFLAGS_DEFAULT 0x202

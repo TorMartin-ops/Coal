@@ -27,13 +27,6 @@ extern "C" {
 #define O_APPEND    0x0400  // Set append mode (Bit 10)
 // Add O_NONBLOCK, O_SYNC, O_DSYNC, O_DIRECTORY, O_NOFOLLOW etc. as needed
 
-// === Whence Values for lseek === (Unchanged)
-#ifndef SEEK_SET
-#define SEEK_SET    0
-#define SEEK_CUR    1
-#define SEEK_END    2
-#endif
-
 // === Structures === (Unchanged)
 typedef struct sys_file {
     file_t *vfs_file;

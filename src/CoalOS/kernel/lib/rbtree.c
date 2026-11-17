@@ -8,16 +8,7 @@
  #include <kernel/memory/mm.h> // Need vma_struct definition
  #include <kernel/core/types.h>
  #include <kernel/drivers/display/terminal.h> // For kernel-specific error reporting/panic
- #include <kernel/lib/string.h> // For memset (should be kernel's string.h)
- 
- // Define kernel panic or assert mechanism if available
- #define KERNEL_ASSERT(condition, message) \
-     do { \
-         if (!(condition)) { \
-             terminal_printf("Assertion Failed: %s (%s:%d)\n", message, __FILE__, __LINE__); \
-             asm volatile ("cli; hlt"); /* Halt on assertion failure */ \
-         } \
-     } while (0)
+ #include <kernel/lib/assert.h>  // KERNEL_ASSERT
  
  // --- Static Inline Helpers from Header (Definitions if needed) ---
  // (These are often directly in the header for inlining)

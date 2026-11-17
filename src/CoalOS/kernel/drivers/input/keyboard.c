@@ -10,7 +10,6 @@
 #include <kernel/drivers/input/keyboard.h>
 #include <kernel/drivers/input/keyboard_hw.h> // Should define KB_RESP_ACK, etc.
 #include <kernel/core/types.h>
-#include <kernel/core/constants.h> // For centralized constants
 #include <kernel/cpu/idt.h>          // For PIC_EOI, outb, PIC1_COMMAND, PIC2_COMMAND constants
 #include <kernel/lib/port_io.h>      // For outb, inb
 #include <kernel/cpu/isr_frame.h>
@@ -29,9 +28,6 @@
 // Definitions and Constants
 //============================================================================
 #define KB_BUFFER_SIZE 256
-// Use centralized constants from constants.h
-#define KBC_WAIT_TIMEOUT KBC_WAIT_TIMEOUT_CYCLES
-#define KBC_MAX_FLUSH KBC_FLUSH_MAX_ATTEMPTS
 
 #define DEFAULT_KEYMAP_US keymap_us_qwerty 
 
@@ -90,12 +86,12 @@ static void very_short_delay(void) {
     for (volatile int i = 0; i < 15000; ++i) { asm volatile("pause"); }
 }
 static inline void kbc_wait_for_send_ready(void) {
-    int timeout = KBC_WAIT_TIMEOUT;
+    int timeout = KBC_WAIT_TIMEOUT_CYCLES;
     while ((inb(KBC_STATUS_PORT) & KBC_SR_IBF) && timeout-- > 0) { io_wait(); }
     if (timeout <= 0) { /*serial_write("[KB WaitSend TIMEOUT]\n");*/ }
 }
 static inline void kbc_wait_for_recv_ready(void) {
-    int timeout = KBC_WAIT_TIMEOUT;
+    int timeout = KBC_WAIT_TIMEOUT_CYCLES;
     while (!(inb(KBC_STATUS_PORT) & KBC_SR_OBF) && timeout-- > 0) { io_wait(); }
     if (timeout <= 0) { /*serial_write("[KB WaitRecv TIMEOUT]\n");*/ }
 }
@@ -113,7 +109,7 @@ static void kbc_send_command_port(uint8_t cmd) {
 }
 static void kbc_flush_output_buffer(const char* context) {
     (void)context; int flush_count = 0; uint8_t status_val;
-    while (((status_val = inb(KBC_STATUS_PORT)) & KBC_SR_OBF) && flush_count < KBC_MAX_FLUSH) {
+    while (((status_val = inb(KBC_STATUS_PORT)) & KBC_SR_OBF) && flush_count < KBC_FLUSH_MAX_ATTEMPTS) {
         (void)inb(KBC_DATA_PORT); flush_count++; io_wait();
     }
 }

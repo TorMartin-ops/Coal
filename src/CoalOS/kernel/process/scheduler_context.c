@@ -32,8 +32,6 @@ extern uint32_t* setup_idle_context(uint32_t* stack_top, void (*idle_func)(void)
 //============================================================================
 // Context Switching Configuration
 //============================================================================
-#define IDLE_TASK_PID 0
-
 // Logging Macros
 #define SCHED_INFO(fmt, ...)  serial_printf("[Context INFO ] " fmt "\n", ##__VA_ARGS__)
 #define SCHED_DEBUG(fmt, ...) serial_printf("[Context DEBUG] " fmt "\n", ##__VA_ARGS__)

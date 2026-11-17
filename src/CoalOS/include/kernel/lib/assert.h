@@ -20,8 +20,8 @@
  #ifndef KERNEL_PANIC_HALT // Guard against potential redefinition
  #define KERNEL_PANIC_HALT(msg) do { \
      asm volatile ("cli"); /* Disable interrupts FIRST */ \
-     terminal_printf("KERNEL PANIC: %s at %s:%d\\n", msg, __FILE__, __LINE__); \
-     serial_printf("KERNEL PANIC: %s at %s:%d\\n", msg, __FILE__, __LINE__); \
+     terminal_printf("KERNEL PANIC: %s at %s:%d\n", msg, __FILE__, __LINE__); \
+     serial_printf("KERNEL PANIC: %s at %s:%d\n", msg, __FILE__, __LINE__); \
      while(1) { asm volatile ("hlt"); } /* Halt the CPU */ \
  } while(0)
  #endif // KERNEL_PANIC_HALT
@@ -38,8 +38,8 @@
   */
  #define KERNEL_ASSERT(expr, msg) do { \
      if (!(expr)) { \
-         terminal_printf("ASSERTION FAILED: %s - Expression: %s\\n", msg, #expr); \
-         serial_printf("ASSERTION FAILED: %s - Expression: %s\\n", msg, #expr); \
+         terminal_printf("ASSERTION FAILED: %s - Expression: %s\n", msg, #expr); \
+         serial_printf("ASSERTION FAILED: %s - Expression: %s\n", msg, #expr); \
          KERNEL_PANIC_HALT("Assertion failed"); /* Trigger panic */ \
      } \
  } while (0)

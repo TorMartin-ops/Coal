@@ -8,7 +8,6 @@
 
 #include <kernel/process/process.h>
 #include <kernel/fs/vfs/sys_file.h>
-#include <kernel/fs/vfs/fs_limits.h>
 #include <kernel/fs/vfs/vfs.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/lib/string.h>

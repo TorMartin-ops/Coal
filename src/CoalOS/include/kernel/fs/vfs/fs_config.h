@@ -19,11 +19,6 @@ extern "C" {
 #define FS_TYPE_EXT2        0x04
 #define FS_TYPE_VFS         0x10
 
-/* Maximum filename length (modern systems typically allow up to 255 characters) */
-#ifndef FS_MAX_FILENAME_LENGTH
-#define FS_MAX_FILENAME_LENGTH   255
-#endif
-
 /* Maximum full path length */
 #ifndef FS_MAX_PATH_LENGTH
 #define FS_MAX_PATH_LENGTH       4096

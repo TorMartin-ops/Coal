@@ -32,9 +32,6 @@
  #ifndef TEMP_MAP_ADDR_PT
  #define TEMP_MAP_ADDR_PT (KERNEL_SPACE_VIRT_START - 2 * PAGE_SIZE) // Placeholder
  #endif
- #ifndef TEMP_MAP_ADDR_PF
- #define TEMP_MAP_ADDR_PF (KERNEL_SPACE_VIRT_START - 3 * PAGE_SIZE) // Placeholder
- #endif
  #ifndef TEMP_MAP_ADDR_COW_SRC
  #define TEMP_MAP_ADDR_COW_SRC (KERNEL_SPACE_VIRT_START - 4 * PAGE_SIZE) // Placeholder
  #endif

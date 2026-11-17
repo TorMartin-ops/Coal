@@ -24,14 +24,6 @@
 //============================================================================
 // Sleep Management Configuration
 //============================================================================
-#define IDLE_TASK_PID 0
-
-#ifndef SCHED_TICKS_PER_SECOND
-#define SCHED_TICKS_PER_SECOND  1000
-#endif
-
-#define MS_TO_TICKS(ms) (((ms) * SCHED_TICKS_PER_SECOND) / 1000)
-
 // Logging Macros
 #define SCHED_DEBUG(fmt, ...) serial_printf("[Sleep DEBUG] " fmt "\n", ##__VA_ARGS__)
 #define SCHED_ERROR(fmt, ...) serial_printf("[Sleep ERROR] %s:%d: " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)

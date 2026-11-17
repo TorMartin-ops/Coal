@@ -14,13 +14,6 @@
  #include <libc/stdio.h> // Added for snprintf
 
 
- // ---------------------------------------------------------------------------
- // Constants (Ensure these match kmalloc.c)
- // ---------------------------------------------------------------------------
- #ifndef SLAB_ALLOC_MAX_USER_SIZE // Max *user* size handled by slabs
- #define SLAB_ALLOC_MAX_USER_SIZE 2048
- #endif
-
  // Define size classes based on *total object size* (user + header + align)
  // These caches will store objects of size UP TO the class size.
  // Sizes must accommodate KALLOC_HEADER_SIZE.

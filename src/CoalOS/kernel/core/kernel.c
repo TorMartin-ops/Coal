@@ -132,12 +132,6 @@ static struct multiboot_tag *find_multiboot_tag_virt(uintptr_t mb_info_virt, uin
 //-----------------------------------------------------------------------------
 // Memory Initialization
 //-----------------------------------------------------------------------------
-#ifndef MIN
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
-#endif
-#ifndef MAX
-#define MAX(a, b) (((a) > (b)) ? (a) : (b))
-#endif
 
 static inline uintptr_t safe_add_base_len(uintptr_t base, uint64_t len) {
     if (len > ((uint64_t)UINTPTR_MAX - base)) {

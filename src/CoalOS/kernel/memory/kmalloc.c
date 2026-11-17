@@ -30,14 +30,7 @@
  // Constants and Configuration
  //----------------------------------------------------------------------------
  
- // Max *USER* size eligible for SLAB allocation (per-cpu or global).
- // Should be less than PAGE_SIZE to accommodate slab_t header if buddy fallback occurs.
- // Let's keep it at 2048 for now.
- #define SLAB_ALLOC_MAX_USER_SIZE 2048
  _Static_assert(SLAB_ALLOC_MAX_USER_SIZE < (PAGE_SIZE - 128), "SLAB_ALLOC_MAX_USER_SIZE too large"); // Basic check
- 
- // Define KMALLOC_HEADER_MAGIC for extra validation in kfree (optional)
- #define KMALLOC_HEADER_MAGIC 0xDEADBEEF
  
  //----------------------------------------------------------------------------
  // Global Slab Mode Specifics (Only if USE_PERCPU_ALLOC is NOT defined)

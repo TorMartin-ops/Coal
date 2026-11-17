@@ -12,33 +12,10 @@
  #include <kernel/memory/paging.h>       // Paging functions and constants
  #include <kernel/fs/vfs/fs_errno.h>     // Filesystem error codes (used implicitly by read_file)
  #include <kernel/lib/assert.h>       // KERNEL_ASSERT
- #include <kernel/core/types.h>        // size_t, uintptr_t, etc. (Needs MIN macro added)
+ #include <kernel/core/types.h>        // size_t, uintptr_t, MIN
  
  #include <kernel/lib/string.h>       // memcpy, memset
  #include <libc/stdbool.h> // bool type
- 
- // TODO: Define MIN macro in a suitable header (e.g., include/types.h or include/utils.h)
- // #define MIN(a, b) (((a) < (b)) ? (a) : (b))
- #ifndef MIN
- #warning "MIN macro is not defined. Please define it (e.g., in types.h)."
- #define MIN(a, b) (((a) < (b)) ? (a) : (b)) // Temporary definition
- #endif
- 
- // TODO: Define missing ELF identifier indices in include/elf.h
- /* Example definitions to add to elf.h:
- #define EI_CLASS  4 // File class
- #define EI_DATA   5 // Data encoding
- #define ELFCLASS32 1 // 32-bit objects
- #define ELFDATA2LSB 1 // Little-endian
- */
- 
- // TODO: Define missing paging constants in include/paging.h
- /* Example definitions to add to paging.h:
- #define PAGE_SIZE 4096u
- #define PAGING_PAGE_MASK   (~(PAGE_SIZE - 1u)) // Align down mask
- #define PAGING_OFFSET_MASK (PAGE_SIZE - 1u)   // Offset mask
- */
- 
  
  // Helper structure to track allocated frames for cleanup
  typedef struct {

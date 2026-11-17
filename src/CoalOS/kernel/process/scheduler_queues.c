@@ -24,8 +24,6 @@
 // Queue Configuration
 //============================================================================
 // SCHED_PRIORITY_LEVELS is now defined in scheduler.h
-#define IDLE_TASK_PID           0
-
 // Logging Macros
 #define SCHED_ERROR(fmt, ...) serial_printf("[Queue ERROR] %s:%d: " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
 #define SCHED_WARN(fmt, ...)  serial_printf("[Queue WARN ] %s:%d: " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)

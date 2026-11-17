@@ -7,9 +7,7 @@
 
  #include <kernel/drivers/display/terminal.h>
  #include <kernel/drivers/display/vga_hardware.h>
- #include <kernel/drivers/display/vga_cursor.h>
- #include <kernel/drivers/display/terminal_buffer.h>
- #include <kernel/lib/port_io.h>
+   #include <kernel/lib/port_io.h>
  #include <kernel/drivers/input/keyboard.h>       // For KeyEvent, KeyCode, and apply_modifiers_extended declaration
  #include <kernel/core/types.h>          // For pid_t, ssize_t, etc.
  #include <kernel/sync/spinlock.h>
@@ -25,37 +23,12 @@
  #include <kernel/lib/string.h>         // Kernel's string functions
  
  /* ------------------------------------------------------------------------- */
- /* Utility Macros                                                            */
- /* ------------------------------------------------------------------------- */
- #ifndef MIN
- #define MIN(a, b) (((a) < (b)) ? (a) : (b))
- #endif
- 
- /* ------------------------------------------------------------------------- */
  /* Compile-time configuration                                                */
  /* ------------------------------------------------------------------------- */
  #define TAB_WIDTH           4
  #define PRINTF_BUFFER_SIZE 256
  #define MAX_INPUT_LINES     64
  /* MAX_INPUT_LENGTH comes from terminal.h */
- 
- /* ------------------------------------------------------------------------- */
- /* VGA hardware constants                                                    */
- /* ------------------------------------------------------------------------- */
- // VGA_ADDRESS, VGA_COLS, VGA_ROWS kommer fra terminal.h
- #define VGA_CMD_PORT        0x3D4
- #define VGA_DATA_PORT       0x3D5
- #define VGA_REG_CURSOR_HI   0x0E
- #define VGA_REG_CURSOR_LO   0x0F
- #define VGA_REG_CURSOR_START 0x0A
- #define VGA_REG_CURSOR_END   0x0B
- #define CURSOR_SCANLINE_START 14 // Typiske verdier for en blokkmarkør
- #define CURSOR_SCANLINE_END   15
- 
- /* Simple colour helpers */
- #define VGA_RGB(fg,bg)   (uint8_t)(((bg)&0x0F)<<4 | ((fg)&0x0F))
- #define VGA_FG(attr)     ((attr)&0x0F)
- #define VGA_BG(attr)     (((attr)>>4)&0x0F)
  
  /* ------------------------------------------------------------------------- */
  /* ANSI escape-code state machine                                            */

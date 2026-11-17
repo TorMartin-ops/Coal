@@ -4,12 +4,6 @@
 #include <libc/stdint.h> // For int32_t, uint32_t
 #include <kernel/cpu/isr_frame.h>   // For isr_frame_t
 
-// Define MAX_SYSCALLS if not already defined elsewhere (e.g., in a config file)
-// This value should be greater than the highest syscall number used.
-#ifndef MAX_SYSCALLS
-#define MAX_SYSCALLS 256 // Or a more appropriate number for your system
-#endif
-
 // Linux x86 32-bit compatible syscall numbers
 // Fully aligned with standard Linux ABI
 #define SYS_EXIT    1   // __NR_exit

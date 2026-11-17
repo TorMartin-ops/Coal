@@ -1,10 +1,6 @@
-// src/assert.c
-// Provides implementation for assertion handling, including the panic wrapper for ISRs.
+/* Panic entry point callable from assembly ISRs. */
 
 #include <kernel/lib/assert.h>   // Include the header defining KERNEL_ASSERT and KERNEL_PANIC_HALT
-#include <kernel/interfaces/logger.h> // Include for logging
-
-#define LOG_MODULE "assert"
 
 /**
  * @brief C wrapper function to invoke kernel panic from assembly ISRs.
@@ -22,6 +18,3 @@ void invoke_kernel_panic_from_isr(void) {
     // Add cli/hlt just as a safeguard in case the macro definition changes.
     asm volatile ("cli; hlt");
 }
-
-// Add other potential assertion-related functions here if needed in the future.
-// For example, you might have more complex panic routines that save more state.

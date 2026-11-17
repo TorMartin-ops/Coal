@@ -34,15 +34,9 @@
 #define STDERR_FILENO 2
 
 #ifndef MAX_RW_CHUNK_SIZE
-#ifndef PAGE_SIZE
-#define PAGE_SIZE 4096
-#endif
 #define MAX_RW_CHUNK_SIZE PAGE_SIZE
 #endif
 
-#ifndef MIN
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
-#endif
 
 //============================================================================
 // Forward Declarations for External Functions

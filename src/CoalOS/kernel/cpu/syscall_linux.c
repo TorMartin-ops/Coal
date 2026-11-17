@@ -25,9 +25,6 @@
 typedef int pid_t;
 
 // POSIX limits
-#ifndef PATH_MAX
-#define PATH_MAX 4096
-#endif
 #ifndef ARG_MAX
 #define ARG_MAX 131072
 #endif
@@ -248,7 +245,7 @@ static int sys_linux_open(uint32_t filename, uint32_t flags, uint32_t mode,
     (void)unused1; (void)unused2; (void)unused3;
     
     // Validate filename
-    if (!validate_user_string((const char *)filename, PATH_MAX)) {
+    if (!validate_user_string((const char *)filename, SYSCALL_MAX_PATH_LEN)) {
         return -LINUX_EFAULT;
     }
     
@@ -312,7 +309,7 @@ static int sys_linux_execve(uint32_t filename, uint32_t argv, uint32_t envp,
     (void)unused1; (void)unused2; (void)unused3;
     
     // Validate filename
-    if (!validate_user_string((const char *)filename, PATH_MAX)) {
+    if (!validate_user_string((const char *)filename, SYSCALL_MAX_PATH_LEN)) {
         return -LINUX_EFAULT;
     }
     

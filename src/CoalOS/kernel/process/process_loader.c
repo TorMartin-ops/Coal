@@ -22,24 +22,6 @@
 #include <kernel/cpu/gdt.h>
 #include <kernel/cpu/tss.h>
 
-// Memory layout constants
-#ifndef USER_SPACE_START_VIRT
-#define USER_SPACE_START_VIRT 0x00001000
-#endif
-
-#ifndef KERNEL_VIRT_BASE
-#define KERNEL_VIRT_BASE 0xC0000000
-#endif
-
-// User stack configuration - defined in process.h
-// #define USER_STACK_PAGES 4
-// #define USER_STACK_SIZE (USER_STACK_PAGES * PAGE_SIZE)
-// #define USER_STACK_TOP_VIRT_ADDR (KERNEL_VIRT_BASE)
-// #define USER_STACK_BOTTOM_VIRT (USER_STACK_TOP_VIRT_ADDR - USER_STACK_SIZE)
-
-// Initial EFLAGS for user processes (IF=1, reserved bit 1=1) - defined in process.h
-// #define USER_EFLAGS_DEFAULT 0x202
-
 // Externals
 extern uint32_t g_kernel_page_directory_phys;
 extern uint32_t *g_kernel_page_directory_virt;

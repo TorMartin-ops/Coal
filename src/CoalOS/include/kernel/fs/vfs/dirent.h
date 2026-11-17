@@ -24,13 +24,6 @@
 #define DT_WHT      14  // Whiteout
 #endif
 
-// Maximum filename length
-#ifndef NAME_MAX
-#define NAME_MAX 255
-#endif
-
-// struct dirent is already defined in types.h
-
 /**
  * @brief Linux getdents system call directory entry structure
  * 

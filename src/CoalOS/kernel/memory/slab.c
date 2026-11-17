@@ -12,11 +12,6 @@
  #include <kernel/lib/string.h>
  #include <kernel/memory/paging.h>     // For memset
 
- #ifndef PAGE_SIZE
- #error "PAGE_SIZE is not defined!"
- #define PAGE_SIZE 4096
- #endif
-
  // --- Magic Numbers ---
  #define SLAB_HEADER_MAGIC 0xCAFEBABE // Slab metadata magic
  #define SLAB_FOOTER_MAGIC 0xDEADBEEF // Object footer canary
@@ -27,10 +22,7 @@
  // Size of the footer canary
  #define SLAB_FOOTER_SIZE sizeof(uint32_t)
 
- // Helper macro for alignment calculation
- #define ALIGN_UP(addr, align) (((uintptr_t)(addr) + (align) - 1) & ~((uintptr_t)(align) - 1))
-
- // --- Feature Flags ---
+  // --- Feature Flags ---
  #define ENABLE_SLAB_RECLAIM 1 // Return empty slabs to buddy system
  // #define SLAB_POISON_ALLOC 0xCC // Poison allocated objects
  // #define SLAB_POISON_FREE  0xDD // Poison freed objects

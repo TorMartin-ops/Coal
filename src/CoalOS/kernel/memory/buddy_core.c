@@ -21,10 +21,6 @@
 #define MIN_ORDER 12  // 4KB minimum
 #define MAX_ORDER 20  // 1MB maximum
 
-// Helper macros
-#ifndef ALIGN_DOWN
-#define ALIGN_DOWN(addr, align) ((uintptr_t)(addr) & ~((uintptr_t)(align) - 1))
-#endif
 #define MIN_BLOCK_SIZE (1UL << MIN_ORDER)
 
 // Free list structure

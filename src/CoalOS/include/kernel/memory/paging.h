@@ -11,12 +11,8 @@
  #endif
 
  // --- Page Size Definitions ---
- #ifndef PAGE_SIZE
  #define PAGE_SIZE 4096u
- #endif
- #ifndef PAGE_SIZE_LARGE
  #define PAGE_SIZE_LARGE (4u * 1024u * 1024u) // 4MiB
- #endif
  #define PAGES_PER_TABLE 1024u
  #define TABLES_PER_DIR  1024u
 
@@ -86,12 +82,8 @@
 
 
  // Align address down/up to page boundaries
- #ifndef PAGE_ALIGN_DOWN // Guard against potential redefinition
- #define PAGE_ALIGN_DOWN(addr) ((uintptr_t)(addr) & ~(PAGE_SIZE - 1u))
- #endif
- #ifndef PAGE_ALIGN_UP   // Requires ALIGN_UP from kmalloc_internal.h
+ #define PAGE_ALIGN_DOWN(addr) ALIGN_DOWN(addr, PAGE_SIZE)
  #define PAGE_ALIGN_UP(addr)   ALIGN_UP(addr, PAGE_SIZE)
- #endif
 
  // Align address down/up to large page boundaries
  #define PAGE_LARGE_ALIGN_DOWN(addr) ((uintptr_t)(addr) & ~(PAGE_SIZE_LARGE - 1u))
@@ -138,15 +130,9 @@
  // CPUID Feature Bits (EDX from extended features, Leaf 0x80000001)
  #define CPUID_FEAT_EDX_NX (1 << 20) // Processor supports NX bit (Execute Disable)
 
- // MSR Addresses
- #define MSR_EFER 0xC0000080 // Extended Feature Enable Register
-
  // EFER Bits (Note: EFER is 64-bit MSR)
  #define EFER_NXE (1ULL << 11) // No-Execute Enable
 
-#define PAGE_FAULT_PRESENT  (1 << 0) // P bit: 0=Not Present, 1=Protection Violation
-#define PAGE_FAULT_WRITE    (1 << 1) // W/R bit: 0=Read, 1=Write
-#define PAGE_FAULT_USER     (1 << 2) // U/S bit: 0=Supervisor, 1=User
 
 
  typedef struct registers {

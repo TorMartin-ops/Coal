@@ -29,7 +29,6 @@ int strncpy_from_user_safe(const_userptr_t u_src, char *k_dst, size_t maxlen);
 // Security Configuration
 //============================================================================
 #define SYSCALL_MAX_PATH_LEN        4096    // Maximum path length
-#define SYSCALL_MAX_FILENAME_LEN    255     // Maximum filename length
 #define SYSCALL_MAX_ARG_LEN         131072  // Maximum argument length (128KB)
 #define SYSCALL_MAX_ENV_LEN         131072  // Maximum environment length (128KB)
 #define SYSCALL_MAX_BUFFER_LEN      1048576 // Maximum general buffer (1MB)

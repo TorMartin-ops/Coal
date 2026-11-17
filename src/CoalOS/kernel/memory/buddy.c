@@ -28,9 +28,6 @@
 #ifndef MAX_ORDER
 #error "MAX_ORDER is not defined (include buddy.h)"
 #endif
-#ifndef PAGE_SIZE
-#define PAGE_SIZE 4096 // Define fallback if not in paging.h (should be there)
-#endif
 
 // Calculate the order corresponding to the page size compile-time
 #if (PAGE_SIZE == 4096)

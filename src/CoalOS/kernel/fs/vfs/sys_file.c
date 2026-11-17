@@ -18,7 +18,6 @@
  #include <kernel/lib/string.h>
  #include <kernel/core/types.h>
  #include <kernel/fs/vfs/fs_errno.h>       // Defines positive errno constants (EBADF, ENOENT, etc.)
- #include <kernel/fs/vfs/fs_limits.h>      // MAX_FD
  #include <kernel/process/process.h>        // pcb_t, get_current_process
  #include <kernel/lib/assert.h>         // KERNEL_ASSERT
  #include <kernel/drivers/display/serial.h>         // Low-level serial port for debugging

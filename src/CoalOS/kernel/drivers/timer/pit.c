@@ -18,21 +18,6 @@
  #include <libc/stdint.h> // For UINT32_MAX
  #include <kernel/drivers/display/serial.h>    // For serial_write (if used in debugging)
 
- // Define TARGET_FREQUENCY if not defined elsewhere (e.g., in pit.h or build system)
- #ifndef TARGET_FREQUENCY
- #define TARGET_FREQUENCY 1000 // Default to 1000 Hz if not defined
- #endif
-
- // PIC EOI definitions (can also be from idt.h or a dedicated pic.h)
- #ifndef PIC_EOI
- #define PIC_EOI      0x20      /* End-of-interrupt command code */
- #endif
- #ifndef PIC1_COMMAND
- #define PIC1_COMMAND 0x20
- #endif
- #ifndef PIC2_COMMAND
- #define PIC2_COMMAND 0xA0
- #endif
  #define IRQ_PIT 0         // Timer is IRQ line 0 on the master PIC
 
  // --- Revised Workaround Helper ---

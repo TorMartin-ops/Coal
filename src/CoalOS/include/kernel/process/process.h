@@ -5,7 +5,6 @@
 
 #include <kernel/core/types.h>      // Include necessary base types
 #include <kernel/memory/paging.h>      // Include for PAGE_SIZE, KERNEL_SPACE_VIRT_START, registers_t
-// #include <kernel/fs/vfs/fs_limits.h>   // Define MAX_FD directly below instead
 
 // Forward declare mm_struct to avoid circular dependency with mm.h if needed
 struct mm_struct;
@@ -15,19 +14,15 @@ struct sys_file;
 // === Configuration Constants ===
 
 // Define the maximum number of open file descriptors per process
-#define MAX_FD 16 // <<<--- DEFINE MAX_FD HERE (adjust value as needed)
+#define MAX_FD 16
 
 // Define the size for the kernel stack allocated per process
 // (Must be page-aligned and > 0)
-#define PROCESS_KSTACK_SIZE (PAGE_SIZE *4) // Example: 4 pages (16KB)
+#define PROCESS_KSTACK_SIZE (PAGE_SIZE * 4) // 4 pages (16KB)
 
-// Define User Stack Layout Constants (if not already defined in constants.h)
-#ifndef USER_STACK_TOP_VIRT_ADDR
-#define USER_STACK_PAGES        4                      // Example: 4 pages
-#define USER_STACK_SIZE         (USER_STACK_PAGES * PAGE_SIZE)    // Example: 16KB
-#define USER_STACK_TOP_VIRT_ADDR 0xBFFF0000            // Stack grows down from well below kernel space
-#define USER_STACK_BOTTOM_VIRT  0xBF000000             // Lowest valid stack address
-#endif
+// User stack: grows down from TOP; the VMA spans BOTTOM..TOP
+#define USER_STACK_TOP_VIRT_ADDR 0xBFFF0000
+#define USER_STACK_BOTTOM_VIRT   0xBF000000
 
 #ifdef __cplusplus
 extern "C" {

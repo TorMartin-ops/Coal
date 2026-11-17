@@ -75,6 +75,8 @@ typedef struct tcb {
 
 // --- Constants ---
 #define IDLE_TASK_PID 0 // Special PID for the idle task
+#define SCHED_TICKS_PER_SECOND 1000
+#define MS_TO_TICKS(ms) (((ms) * SCHED_TICKS_PER_SECOND) / 1000)
 
 // --- Public Function Prototypes ---
 

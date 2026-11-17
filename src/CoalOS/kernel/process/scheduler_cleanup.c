@@ -24,8 +24,6 @@
 //============================================================================
 // Cleanup Configuration
 //============================================================================
-#define IDLE_TASK_PID 0
-
 // Logging Macros
 #define SCHED_INFO(fmt, ...)  serial_printf("[Cleanup INFO ] " fmt "\n", ##__VA_ARGS__)
 #define SCHED_DEBUG(fmt, ...) serial_printf("[Cleanup DEBUG] " fmt "\n", ##__VA_ARGS__)

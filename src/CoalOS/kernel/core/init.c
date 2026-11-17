@@ -30,6 +30,8 @@
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/lib/port_io.h>
 #include <kernel/drivers/input/keyboard_hw.h>
+
+#define SHORT_DELAY_CYCLES 15000
 #include <kernel/lib/assert.h>
 #include <kernel/arch/multiboot2.h>
 #include <kernel/process/process.h>
@@ -54,12 +56,6 @@ static bool initialize_memory_management(uint32_t mb_info_phys);
 //============================================================================
 // Utility Macros
 //============================================================================
-#ifndef MIN
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
-#endif
-#ifndef MAX
-#define MAX(a, b) (((a) > (b)) ? (a) : (b))
-#endif
 
 //============================================================================
 // External Global Variables

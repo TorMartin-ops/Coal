@@ -14,16 +14,10 @@
 extern "C" {
 #endif
 
-/* Define SEEK macros if not already defined */
-#ifndef SEEK_SET
+/* lseek whence values */
 #define SEEK_SET    0
-#endif
-#ifndef SEEK_CUR
 #define SEEK_CUR    1
-#endif
-#ifndef SEEK_END
 #define SEEK_END    2
-#endif
 
 /* Type for file offset */
 typedef long off_t;

@@ -27,7 +27,9 @@
  #include <kernel/core/types.h>         // Core types (ssize_t, off_t, etc.)
  #include <kernel/fs/vfs/sys_file.h>      // SEEK_*, O_* flags
  #include <kernel/fs/vfs/fs_errno.h>      // FS_ERR_* / POSIX errno codes
- #include <kernel/fs/vfs/fs_limits.h>     // MAX_PATH_LEN definition
+ 
+ /* Longest accepted mount point path */
+ #define MAX_MOUNT_POINT_LEN 256
  #include <kernel/fs/vfs/mount.h>         // mount_t definition
  #include <kernel/fs/vfs/mount_table.h>   // Global mount table functions
  #include <kernel/sync/spinlock.h>      // Spinlock definitions and functions
@@ -37,17 +39,6 @@
  #include <libc/stdarg.h>   // varargs for printf (Assumed available)
  #include <kernel/lib/assert.h>        // KERNEL_ASSERT
  #include <kernel/drivers/display/serial.h>        // Serial logging for critical paths
-
- /* Define SEEK macros if not already defined (should be in sys_file.h ideally) */
- #ifndef SEEK_SET
- #define SEEK_SET 0
- #endif
- #ifndef SEEK_CUR
- #define SEEK_CUR 1
- #endif
- #ifndef SEEK_END
- #define SEEK_END 2
- #endif
 
  /* Define OFF_T_MAX based on libc/limits.h LONG_MAX if not already defined */
  #ifndef OFF_T_MAX
@@ -266,8 +257,8 @@
  static int add_mount_entry(const char *mp, const char *fs, void *ctx, vfs_driver_t *drv) {
      KERNEL_ASSERT(mp && fs && ctx && drv, "add_mount_entry: Invalid NULL parameter");
      size_t mp_len = strlen(mp);
-     if (mp_len == 0 || mp_len >= MAX_PATH_LEN) {
-         VFS_ERROR("Invalid mount point length: %lu (max: %d)", (unsigned long)mp_len, MAX_PATH_LEN);
+     if (mp_len == 0 || mp_len >= MAX_MOUNT_POINT_LEN) {
+         VFS_ERROR("Invalid mount point length: %lu (max: %d)", (unsigned long)mp_len, MAX_MOUNT_POINT_LEN);
          return -FS_ERR_NAMETOOLONG;
      }
      if (mp[0] != '/') {
@@ -532,10 +523,10 @@
 
      while ((current_mount = mount_table_get_head()) != NULL && unmount_attempts < max_attempts) {
          unmount_attempts++;
-         char mp_copy[MAX_PATH_LEN];
+         char mp_copy[MAX_MOUNT_POINT_LEN];
          if (current_mount->mount_point) {
-             strncpy(mp_copy, current_mount->mount_point, MAX_PATH_LEN - 1);
-             mp_copy[MAX_PATH_LEN - 1] = '\0';
+             strncpy(mp_copy, current_mount->mount_point, MAX_MOUNT_POINT_LEN - 1);
+             mp_copy[MAX_MOUNT_POINT_LEN - 1] = '\0';
          } else {
              strcpy(mp_copy, "[INVALID/NULL Mount Point]");
              VFS_ERROR("VFS Shutdown: Encountered mount entry with NULL mount_point!");

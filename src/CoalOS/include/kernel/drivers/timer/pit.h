@@ -22,13 +22,6 @@
 #define PIT_DEFAULT_DIVISOR  0x4E20
 
 /**
- * PIC (Programmable Interrupt Controller) macros, if needed
- */
-#define PIC1_CMD_PORT        0x20
-#define PIC1_DATA_PORT       0x21
-#define PIC_EOI              0x20  /* End-of-interrupt command code */
-
-/**
  * Custom frequency definitions:
  * PIT_BASE_FREQUENCY = 1193180 Hz (original PIT clock)
  * TARGET_FREQUENCY   = 1000 Hz by default => 1ms per tick

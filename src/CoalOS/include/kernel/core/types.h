@@ -109,6 +109,10 @@ typedef unsigned int gid_t;
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #endif
 
+/* align must be a power of two */
+#define ALIGN_UP(addr, align)   (((uintptr_t)(addr) + (align) - 1) & ~((uintptr_t)(align) - 1))
+#define ALIGN_DOWN(addr, align) ((uintptr_t)(addr) & ~((uintptr_t)(align) - 1))
+
 #ifdef __cplusplus
 }
 #endif
