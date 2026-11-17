@@ -12,7 +12,7 @@
 #include <kernel/core/error.h>
 #include <kernel/cpu/cpuid.h>
 #include <kernel/cpu/msr.h>
-#include <kernel/arch/multiboot2.h>
+#include <kernel/core/multiboot.h>
 #include <kernel/lib/string.h>
 #include <kernel/drivers/display/terminal.h>
 #include <kernel/drivers/display/serial.h>
@@ -51,52 +51,6 @@ static inline void enable_cr4_pse(void) {
 }
 
 /**
- * @brief Find multiboot tag during early boot (before paging)
- */
-static struct multiboot_tag *find_multiboot_tag_early(uint32_t mb_info_phys_addr, uint16_t type) {
-    if (mb_info_phys_addr == 0 || mb_info_phys_addr >= 0x100000) {
-        LOG_ERROR("Invalid MB info address %#x", mb_info_phys_addr);
-        return NULL;
-    }
-    
-    volatile uint32_t* mb_info_ptr = (volatile uint32_t*)mb_info_phys_addr;
-    uint32_t total_size = mb_info_ptr[0];
-
-    if (total_size < 8 || total_size > 16 * 1024) {
-        LOG_ERROR("Invalid MB total size %u", total_size);
-        return NULL;
-    }
-
-    struct multiboot_tag *tag = (struct multiboot_tag *)(mb_info_phys_addr + 8);
-    uintptr_t info_end = mb_info_phys_addr + total_size;
-
-    while ((uintptr_t)tag < info_end && tag->type != MULTIBOOT_TAG_TYPE_END) {
-        uintptr_t current_tag_addr = (uintptr_t)tag;
-        if (current_tag_addr + sizeof(struct multiboot_tag) > info_end ||
-            tag->size < 8 ||
-            current_tag_addr + tag->size > info_end) {
-            LOG_ERROR("Invalid tag at %#x (type %u, size %u)", 
-                     current_tag_addr, tag->type, tag->size);
-            return NULL;
-        }
-
-        if (tag->type == type) {
-            return tag;
-        }
-
-        uintptr_t next_tag_addr = current_tag_addr + ((tag->size + 7) & ~7);
-        if (next_tag_addr <= current_tag_addr || next_tag_addr >= info_end) {
-            LOG_ERROR("Invalid next tag address %#x from tag at %#x", 
-                     next_tag_addr, current_tag_addr);
-            break;
-        }
-        tag = (struct multiboot_tag *)next_tag_addr;
-    }
-
-    return NULL;
-}
-
-/**
  * @brief Allocate a physical frame during early boot
  */
 uintptr_t paging_alloc_early_frame_physical(void) {
@@ -108,7 +62,7 @@ uintptr_t paging_alloc_early_frame_physical(void) {
     }
 
     struct multiboot_tag_mmap *mmap_tag = (struct multiboot_tag_mmap *)
-        find_multiboot_tag_early(g_multiboot_info_phys_addr_global, MULTIBOOT_TAG_TYPE_MMAP);
+        multiboot_find_tag(g_multiboot_info_phys_addr_global, MULTIBOOT_TAG_TYPE_MMAP);
 
     if (!mmap_tag) {
         LOG_FATAL("Multiboot MMAP tag not found!");

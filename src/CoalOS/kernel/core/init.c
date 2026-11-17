@@ -1,10 +1,9 @@
 /**
  * @file init.c
  * @brief Kernel Initialization Management Implementation
- * @version 1.0
- * 
- * @details Modular initialization functions following Single Responsibility
- * Principle. Each function handles one specific aspect of kernel initialization.
+ *
+ * Boot sequence: each init_* function handles one phase; kernel_main_init
+ * runs them in order.
  */
 
 //============================================================================
@@ -30,10 +29,8 @@
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/lib/port_io.h>
 #include <kernel/drivers/input/keyboard_hw.h>
-
-#define SHORT_DELAY_CYCLES 15000
 #include <kernel/lib/assert.h>
-#include <kernel/arch/multiboot2.h>
+#include <kernel/core/multiboot.h>
 #include <kernel/process/process.h>
 #include <libc/string.h>
 
@@ -44,49 +41,26 @@ extern uint8_t _kernel_start_phys;
 extern uint8_t _kernel_end_phys;
 
 //============================================================================
-// Static Function Prototypes for Memory Management
+// Globals and Constants
 //============================================================================
-static struct multiboot_tag *find_multiboot_tag_phys(uint32_t mb_info_phys, uint16_t type);
-static struct multiboot_tag *find_multiboot_tag_virt(uintptr_t mb_info_virt, uint16_t type);
-static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
-                                      uintptr_t *out_total_mem_span,
-                                      uintptr_t *out_heap_base, size_t *out_heap_size);
-static bool initialize_memory_management(uint32_t mb_info_phys);
+// Physical address of the Multiboot2 info; the low 4 MiB stay identity-mapped,
+// so it is readable at the same address after paging is enabled.
+uint32_t g_multiboot_info_phys_addr_global = 0;
 
-//============================================================================
-// Utility Macros
-//============================================================================
-
-//============================================================================
-// External Global Variables
-//============================================================================
-extern uint32_t g_multiboot_info_phys_addr_global;
-extern uintptr_t g_multiboot_info_virt_addr_global;
-
-//============================================================================
-// Global Constants
-//============================================================================
 const char *KERNEL_VERSION_STRING = "0.1.0";
 const char *INITIAL_TEST_PROGRAM_PATH = "/hello.elf";
 const char *SYSTEM_SHELL_PATH = "/bin/shell.elf";
 
-//============================================================================
-// Constants from kernel.c
-//============================================================================
-#define MIN_USABLE_HEAP_SIZE (1 * 1024 * 1024)        // 1MB
+#define MIN_USABLE_HEAP_SIZE (1 * 1024 * 1024)            // 1MB
 #define MAX_CLAMPED_INITIAL_HEAP_SIZE (256 * 1024 * 1024) // 256MB
-
-//============================================================================
-// Function Prototypes
-//============================================================================
-static void launch_program(const char *path_on_disk, const char *program_description);
-
-//============================================================================
-// Constants
-//============================================================================
+#define IDENTITY_MAPPED_LIMIT 0x400000u                   // first 4MB
 #define MULTIBOOT2_BOOTLOADER_MAGIC_EXPECTED  0x36d76289U
-#define KBC_FORCE_CONFIG_DELAY               25000U
-#define KBC_STATUS_CLEAR_DELAY               5000U
+#define SHORT_DELAY_CYCLES                   15000
+#define KBC_FORCE_CONFIG_DELAY               25000
+#define KBC_STATUS_CLEAR_DELAY               5000
+
+static void launch_program(const char *path_on_disk, const char *program_description);
+static bool initialize_memory_management(uint32_t mb_info_phys);
 
 //============================================================================
 // Utility Functions Implementation
@@ -157,8 +131,7 @@ init_result_t init_validate_multiboot(uint32_t magic, uint32_t mb_info_phys_addr
     // Store global reference
     g_multiboot_info_phys_addr_global = mb_info_phys_addr;
     
-    terminal_printf("  Multiboot magic OK (Info at phys 0x%lx)\n", 
-                   (unsigned long)mb_info_phys_addr);
+    terminal_printf("  Multiboot magic OK (Info at phys 0x%x)\n", mb_info_phys_addr);
     
     return init_success("Multiboot Validation");
 }
@@ -260,81 +233,50 @@ init_result_t init_launch_processes(bool filesystem_ready)
 
 init_result_t init_configure_keyboard_controller(void)
 {
-    serial_printf("[INIT] Re-checking and forcing KBC configuration...\n");
-    
-    // Read current KBC configuration
+    // The keyboard driver expects interrupts on and scancode translation on
+    // (config 0x41); keep every other bit as the controller reports it.
     uint8_t current_config = 0;
     outb(KBC_CMD_PORT, KBC_CMD_READ_CONFIG);
-    
-    // Wait for response
+
     for (volatile int wait = 0; wait < SHORT_DELAY_CYCLES; wait++) {
         asm volatile("pause");
     }
-    
+
     if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) {
         current_config = inb(KBC_DATA_PORT);
     }
-    
-    serial_printf("   Read KBC Config Byte: 0x%x\n", current_config);
-    
-    // Set desired configuration
-    uint8_t desired_config = 0x41;
-    serial_printf("   Forcing KBC Config Byte to 0x%x\n", desired_config);
-    
-    // Wait for input buffer to be ready
+
+    uint8_t desired_config = (current_config | KBC_CFG_INT_KB | KBC_CFG_TRANSLATION) & ~KBC_CFG_DISABLE_KB;
+    serial_printf("[INIT] KBC config byte 0x%x -> 0x%x\n", current_config, desired_config);
+
     for (volatile int wait = 0; (inb(KBC_STATUS_PORT) & KBC_SR_IBF) && wait < KBC_WAIT_TIMEOUT_CYCLES; wait++) {
         asm volatile("pause");
     }
-    
-    // Send write config command
     outb(KBC_CMD_PORT, KBC_CMD_WRITE_CONFIG);
-    
-    // Wait for input buffer to be ready for data
+
     for (volatile int wait = 0; (inb(KBC_STATUS_PORT) & KBC_SR_IBF) && wait < KBC_WAIT_TIMEOUT_CYCLES; wait++) {
         asm volatile("pause");
     }
-    
-    // Send configuration data
     outb(KBC_DATA_PORT, desired_config);
-    
-    // Delay for configuration to take effect
+
+    // Let the controller apply the new configuration
     for (volatile int wait = 0; wait < KBC_FORCE_CONFIG_DELAY; wait++) {
         asm volatile("pause");
     }
-    
-    // Clear output buffer
+
+    // Drop bytes queued before the new configuration took effect
     int bytes_cleared = 0;
-    uint8_t status;
-    
-    serial_printf("   [KBC FIX] Clearing output buffer...\n");
-    while ((status = inb(KBC_STATUS_PORT)) & KBC_SR_OBF) {
-        uint8_t discarded = inb(KBC_DATA_PORT);
-        bytes_cleared++;
-        
-        serial_printf("     Cleared byte %d: 0x%x (status: 0x%x)\n", 
-                     bytes_cleared, discarded, status);
-        
-        if (bytes_cleared >= KBC_FLUSH_MAX_ATTEMPTS) {
-            serial_printf("   [WARNING] KBC buffer clear maxed out at %d bytes\n", 
-                         KBC_FLUSH_MAX_ATTEMPTS);
+    while (inb(KBC_STATUS_PORT) & KBC_SR_OBF) {
+        (void)inb(KBC_DATA_PORT);
+        if (++bytes_cleared >= KBC_FLUSH_MAX_ATTEMPTS) {
+            serial_printf("[INIT] KBC buffer clear stopped after %d bytes\n", KBC_FLUSH_MAX_ATTEMPTS);
             break;
         }
-        
-        // Small delay between reads
         for (volatile int wait = 0; wait < KBC_STATUS_CLEAR_DELAY; wait++) {
             asm volatile("pause");
         }
     }
-    
-    if (bytes_cleared > 0) {
-        serial_printf("   [KBC FIX] Cleared %d bytes from output buffer\n", bytes_cleared);
-    } else {
-        serial_printf("   [KBC INFO] Output buffer was already clear\n");
-    }
-    
-    uint8_t final_status = inb(KBC_STATUS_PORT);
-    serial_printf("   KBC Status after configuration: 0x%x\n", final_status);
-    
+
     return init_success("Keyboard Controller Configuration");
 }
 
@@ -352,9 +294,6 @@ init_result_t init_finalize_configuration(void)
         "mov %%ax, %%gs\n"
         : : : "ax"
     );
-    
-    serial_printf("[INIT] KBC Status before enabling interrupts: 0x%08x\n", 
-                 inb(KBC_STATUS_PORT));
     
     return init_success("Final System Configuration");
 }
@@ -405,10 +344,6 @@ void kernel_main_init(uint32_t magic, uint32_t mb_info_phys_addr)
     bool filesystem_ready = (result.error_code == E_SUCCESS);
     init_handle_result(&result, true); // Continue even if filesystem fails
     
-    // Debug: Check KBC status after filesystem
-    serial_printf("[Debug] KBC Status after filesystem init: 0x%08x\n", 
-                 inb(KBC_STATUS_PORT));
-    
     // Phase 7: Launch initial processes
     result = init_launch_processes(filesystem_ready);
     init_handle_result(&result, true); // Continue even if process launch fails
@@ -451,44 +386,16 @@ static inline uintptr_t safe_add_base_len(uintptr_t base, uint64_t len) {
     return base + (uintptr_t)len;
 }
 
-static struct multiboot_tag *find_multiboot_tag_phys(uint32_t mb_info_phys, uint16_t type) {
-    if (mb_info_phys == 0 || mb_info_phys >= 0x100000) return NULL;
-    volatile uint32_t* header = (volatile uint32_t*)((uintptr_t)mb_info_phys);
-    uint32_t total_size = header[0];
-    if (total_size < 8 || total_size > 0x100000) return NULL; 
-
-    volatile struct multiboot_tag *tag = (volatile struct multiboot_tag *)(mb_info_phys + 8);
-    uintptr_t info_end = mb_info_phys + total_size;
-
-    while (tag->type != MULTIBOOT_TAG_TYPE_END) {
-        uintptr_t current_tag_addr = (uintptr_t)tag;
-        if (current_tag_addr + sizeof(struct multiboot_tag) > info_end || tag->size < 8 || (current_tag_addr + tag->size) > info_end) return NULL;
-        if (tag->type == type) return (struct multiboot_tag *)tag; 
-        uintptr_t next_tag_addr = current_tag_addr + ((tag->size + 7) & ~7); 
-        if (next_tag_addr <= current_tag_addr || next_tag_addr >= info_end) break; 
-        tag = (volatile struct multiboot_tag *)next_tag_addr;
+// Removes [res_start, res_end) from [*start, *end), keeping the larger remainder.
+static void subtract_reserved(uintptr_t *start, uintptr_t *end, uintptr_t res_start, uintptr_t res_end) {
+    if (*start >= *end || res_start >= *end || res_end <= *start) return;
+    uintptr_t below = (res_start > *start) ? res_start - *start : 0;
+    uintptr_t above = (res_end < *end) ? *end - res_end : 0;
+    if (below >= above) {
+        *end = *start + below;
+    } else {
+        *start = res_end;
     }
-    return NULL;
-}
-
-static struct multiboot_tag *find_multiboot_tag_virt(uintptr_t mb_info_virt, uint16_t type) {
-    if (mb_info_virt == 0) return NULL;
-    uint32_t* header = (uint32_t*)mb_info_virt;
-    uint32_t total_size = header[0];
-    if (total_size < 8 || total_size > 0x100000) return NULL;
-
-    struct multiboot_tag *tag = (struct multiboot_tag *)(mb_info_virt + 8);
-    uintptr_t info_end = mb_info_virt + total_size;
-
-    while (tag->type != MULTIBOOT_TAG_TYPE_END) {
-        uintptr_t current_tag_addr = (uintptr_t)tag;
-        if (current_tag_addr + sizeof(struct multiboot_tag) > info_end || tag->size < 8 || (current_tag_addr + tag->size) > info_end) return NULL;
-        if (tag->type == type) return tag;
-        uintptr_t next_tag_addr = current_tag_addr + ((tag->size + 7) & ~7);
-        if (next_tag_addr <= current_tag_addr || next_tag_addr >= info_end) break;
-        tag = (struct multiboot_tag *)next_tag_addr;
-    }
-    return NULL;
 }
 
 static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
@@ -496,48 +403,48 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
                                       uintptr_t *out_heap_base, size_t *out_heap_size)
 {
     KERNEL_ASSERT(mmap_tag && out_total_mem_span && out_heap_base && out_heap_size, "parse_memory_map: Invalid args");
+    if (mmap_tag->entry_size < sizeof(multiboot_memory_map_t)) {
+        terminal_printf("  [FATAL] Invalid MMAP entry size %u.\n", mmap_tag->entry_size);
+        return false;
+    }
+
     uintptr_t total_span = 0;
     uintptr_t best_candidate_base = 0;
     uint64_t best_candidate_size64 = 0;
     multiboot_memory_map_t *entry = mmap_tag->entries;
     uintptr_t mmap_end_addr = (uintptr_t)mmap_tag + mmap_tag->size;
     uintptr_t kernel_phys_start_addr = (uintptr_t)&_kernel_start_phys;
-    uintptr_t kernel_phys_end_addr = ALIGN_UP((uintptr_t)&_kernel_end_phys, PAGE_SIZE); 
+    uintptr_t kernel_phys_end_addr = ALIGN_UP((uintptr_t)&_kernel_end_phys, PAGE_SIZE);
+    uintptr_t mb_info_start = g_multiboot_info_phys_addr_global;
+    uintptr_t mb_info_end = ALIGN_UP(mb_info_start + multiboot_info_size(mb_info_start), PAGE_SIZE);
 
     terminal_printf("  Kernel Physical Range: [%#010x - %#010x)\n", kernel_phys_start_addr, kernel_phys_end_addr);
 
-    while ((uintptr_t)entry < mmap_end_addr && (uintptr_t)entry + mmap_tag->entry_size <= mmap_end_addr) {
+    while ((uintptr_t)entry + mmap_tag->entry_size <= mmap_end_addr) {
         uintptr_t region_p_start = (uintptr_t)entry->addr;
         uint64_t region_p_len64 = entry->len;
         uintptr_t region_p_end = safe_add_base_len(region_p_start, region_p_len64);
-        if (region_p_end < region_p_start) region_p_end = UINTPTR_MAX; 
 
         if (region_p_end > total_span) total_span = region_p_end;
 
         if (entry->type == MULTIBOOT_MEMORY_AVAILABLE && region_p_len64 >= MIN_USABLE_HEAP_SIZE) {
-            uintptr_t current_candidate_start = region_p_start;
-            uint64_t current_candidate_len64 = region_p_len64;
+            // The heap must not overlap the kernel image or the boot info
+            uintptr_t cand_start = region_p_start;
+            uintptr_t cand_end = region_p_end;
+            subtract_reserved(&cand_start, &cand_end, kernel_phys_start_addr, kernel_phys_end_addr);
+            subtract_reserved(&cand_start, &cand_end, mb_info_start, mb_info_end);
+            uint64_t cand_len64 = cand_end - cand_start;
 
-            if (current_candidate_start < kernel_phys_end_addr && region_p_end > kernel_phys_start_addr) {
-                if (region_p_end > kernel_phys_end_addr) { 
-                    current_candidate_start = kernel_phys_end_addr;
-                    current_candidate_len64 = region_p_end - current_candidate_start;
-                } else { 
-                    current_candidate_len64 = 0;
-                }
-            }
-            if (current_candidate_len64 >= MIN_USABLE_HEAP_SIZE) {
-                if (current_candidate_len64 > best_candidate_size64) {
-                    best_candidate_base = current_candidate_start;
-                    best_candidate_size64 = current_candidate_len64;
-                }
+            if (cand_len64 >= MIN_USABLE_HEAP_SIZE && cand_len64 > best_candidate_size64) {
+                best_candidate_base = cand_start;
+                best_candidate_size64 = cand_len64;
             }
         }
         entry = (multiboot_memory_map_t*)((uintptr_t)entry + mmap_tag->entry_size);
     }
 
     *out_total_mem_span = ALIGN_UP(total_span, PAGE_SIZE);
-    if (*out_total_mem_span < total_span) *out_total_mem_span = UINTPTR_MAX; 
+    if (*out_total_mem_span < total_span) *out_total_mem_span = UINTPTR_MAX;
 
     if (best_candidate_base < 0x100000 && best_candidate_base != 0) {
         terminal_printf("  Warning: Best heap candidate below 1MB (%#x).\n", best_candidate_base);
@@ -547,10 +454,6 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
         *out_heap_base = best_candidate_base;
         *out_heap_size = (best_candidate_size64 > (uint64_t)MAX_CLAMPED_INITIAL_HEAP_SIZE) ?
                          MAX_CLAMPED_INITIAL_HEAP_SIZE : (size_t)best_candidate_size64;
-        if (*out_heap_size < MIN_USABLE_HEAP_SIZE) {
-            terminal_printf("  [FATAL] Heap candidate (%#x, size %zu) too small after clamping.\n", *out_heap_base, *out_heap_size);
-            return false;
-        }
         terminal_printf("  Best Heap Found: PhysBase=%#x, Size=%zu (may be clamped)\n", *out_heap_base, *out_heap_size);
         return true;
     }
@@ -568,9 +471,9 @@ static bool initialize_memory_management(uint32_t mb_info_phys) {
     uintptr_t kernel_phys_end_aligned = ALIGN_UP((uintptr_t)&_kernel_end_phys, PAGE_SIZE);
 
     terminal_write("  Stage 0: Parsing Multiboot memory map...\n");
-    struct multiboot_tag_mmap *mmap_tag_phys = (struct multiboot_tag_mmap *)find_multiboot_tag_phys(mb_info_phys, MULTIBOOT_TAG_TYPE_MMAP);
-    if (!mmap_tag_phys) KERNEL_PANIC_HALT("Multiboot MMAP tag not found!");
-    if (!parse_memory_map_for_heap(mmap_tag_phys, &total_phys_memory_span, &initial_heap_phys_base, &initial_heap_size)) {
+    struct multiboot_tag_mmap *mmap_tag = (struct multiboot_tag_mmap *)multiboot_find_tag(mb_info_phys, MULTIBOOT_TAG_TYPE_MMAP);
+    if (!mmap_tag) KERNEL_PANIC_HALT("Multiboot MMAP tag not found!");
+    if (!parse_memory_map_for_heap(mmap_tag, &total_phys_memory_span, &initial_heap_phys_base, &initial_heap_size)) {
         KERNEL_PANIC_HALT("Failed to parse memory map or find suitable heap for buddy allocator!");
     }
 
@@ -582,43 +485,27 @@ static bool initialize_memory_management(uint32_t mb_info_phys) {
     }
 
     terminal_write("  Stage 3: Initializing Buddy Allocator...\n");
-    buddy_init((void *)initial_heap_phys_base, initial_heap_size); 
+    buddy_init((void *)initial_heap_phys_base, initial_heap_size);
     terminal_printf("    Buddy Allocator: Initial Free Space: %zu KB\n", buddy_free_space() / 1024);
 
     terminal_write("  Stage 4: Finalizing and Activating Paging...\n");
     if (paging_finalize_and_activate(pd_phys, total_phys_memory_span) != 0) KERNEL_PANIC_HALT("Failed to activate paging!");
 
-    terminal_write("  Stage 4.5: Using Multiboot Info from Identity-Mapped Region...\n");
-    
-    // The multiboot info should be in the identity-mapped region (first 4MB)
-    // So we can use it directly at its physical address
-    if (g_multiboot_info_phys_addr_global >= 0x400000) {
+    // The boot info must stay reachable at its physical address after paging
+    // is on, which only holds inside the identity-mapped low memory.
+    if (mb_info_phys >= IDENTITY_MAPPED_LIMIT) {
         KERNEL_PANIC_HALT("Multiboot info outside identity-mapped region!");
     }
-    
-    // For now, just use the physical address directly since it's identity mapped
-    g_multiboot_info_virt_addr_global = g_multiboot_info_phys_addr_global;
-    
-    // Read the size from the multiboot header
-    size_t mb_total_struct_size = *(volatile uint32_t*)g_multiboot_info_virt_addr_global;
-    
-    // Sanity check the size
-    if (mb_total_struct_size < 8 || mb_total_struct_size > 0x100000) {
-        terminal_printf("    WARNING: Invalid multiboot size: %u bytes. Using default.\n", (unsigned)mb_total_struct_size);
-        mb_total_struct_size = 8192; // Default to 8KB
-    }
-    
-    terminal_printf("    Multiboot info at VIRT: %#x (Size: %u bytes)\n", g_multiboot_info_virt_addr_global, (unsigned)mb_total_struct_size);
 
     terminal_write("  Stage 6: Initializing Frame Allocator...\n");
-    struct multiboot_tag_mmap *mmap_tag_virt = (struct multiboot_tag_mmap *)find_multiboot_tag_virt(g_multiboot_info_virt_addr_global, MULTIBOOT_TAG_TYPE_MMAP);
-    if (!mmap_tag_virt) KERNEL_PANIC_HALT("Cannot find MMAP tag via virtual address for Frame Allocator!");
-    if (frame_init(mmap_tag_virt, kernel_phys_start, kernel_phys_end_aligned, initial_heap_phys_base, initial_heap_phys_base + initial_heap_size) != 0) {
+    mmap_tag = (struct multiboot_tag_mmap *)multiboot_find_tag(mb_info_phys, MULTIBOOT_TAG_TYPE_MMAP);
+    if (!mmap_tag) KERNEL_PANIC_HALT("Cannot find MMAP tag for Frame Allocator!");
+    if (frame_init(mmap_tag, kernel_phys_start, kernel_phys_end_aligned, initial_heap_phys_base, initial_heap_phys_base + initial_heap_size) != 0) {
         KERNEL_PANIC_HALT("Frame Allocator initialization failed!");
     }
 
     terminal_write("  Stage 7: Initializing Kmalloc...\n");
-    kmalloc_init(); 
+    kmalloc_init();
 
     terminal_write("  Stage 8: Initializing Temporary VA Mapper...\n");
     if (paging_temp_map_init() != 0) KERNEL_PANIC_HALT("Failed to initialize temporary VA mapper!");
