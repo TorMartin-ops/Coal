@@ -37,10 +37,16 @@ SECTIONS {
     {
         *(.data .data.*)        /* Link all .data sections */
     }
-    _kernel_data_end_phys = .;   /* Define physical end of .data */
+    _kernel_data_end_phys = .;
 
-    /* Uninitialized data section (BSS) */
-    /* _kernel_data_end_phys already marks the start of BSS conceptually */
+    /* Fixup table for faults in copy_from_user/copy_to_user. Kept before
+     * .bss so the zero-filled BSS is not stored in the kernel file. */
+    .ex_table : ALIGN(4) {
+        __start_ex_table = .;
+        *(.ex_table)
+        __stop_ex_table = .;
+    }
+
     . = ALIGN(4K);
     .bss :
     {
@@ -48,16 +54,7 @@ SECTIONS {
         *(.bss .bss.*)         /* Link all .bss sections */
     }
 
-    /* Exception table for safe user memory access */
-    . = ALIGN(4);
-    .ex_table : ALIGN(4) {
-        __start_ex_table = .;
-        *(.ex_table)
-        __stop_ex_table = .;
-    }
-
-    /* End of the kernel image. Placed after .ex_table so the heap, which
-     * starts here, does not overwrite it. */
+    /* End of the kernel image; the heap starts here. */
     . = ALIGN(4K);
     end = .;
     _kernel_end_phys = .;
