@@ -259,6 +259,7 @@ int sock_accept(struct sock *s, uint32_t *raddr, uint16_t *rport, int flags) {
     struct sock *n = sock_new(SOCK_STREAM, IPPROTO_TCP);
     if (!n) { tcp_close(c); local_irq_restore(irq); return -ENOMEM; }
     n->tcp = c;
+    n->nodelay = s->nodelay;                            /* inherited from the listener, as on Linux */
     n->connected = true;
     n->nonblock = (flags & SOCK_NONBLOCK) != 0;
     n->lport = s->lport;
@@ -373,6 +374,7 @@ ssize_t sock_send(struct sock *s, const void *buf, size_t len, int flags, const 
     } else {
         memcpy(net_tx_payload(), buf, len);
         rc = net_ip_send(IPPROTO_ICMP, 0, dst, len);
+        net_lo_drain();
     }
     local_irq_restore(irq);
     return rc < 0 ? rc : (ssize_t)len;
@@ -468,7 +470,12 @@ int sock_setopt(struct sock *s, int level, int name, const void *val, size_t len
         case SO_BROADCAST: case SO_KEEPALIVE: case SO_SNDBUF: case SO_RCVBUF: case SO_LINGER: return 0;
         }
     } else if (level == IPPROTO_TCP && name == TCP_NODELAY) {
-        return 0;                                       /* segments are never delayed */
+        if (s->type != SOCK_STREAM) return -EOPNOTSUPP;
+        uintptr_t irq = local_irq_save();
+        s->nodelay = v != 0;
+        if (s->tcp) tcp_set_nodelay(s->tcp, s->nodelay);
+        local_irq_restore(irq);
+        return 0;
     }
     return -ENOPROTOOPT;
 }
@@ -476,6 +483,13 @@ int sock_setopt(struct sock *s, int level, int name, const void *val, size_t len
 int sock_getopt(struct sock *s, int level, int name, void *val, size_t *len) {
     int32_t v;
 
+    if (level == IPPROTO_TCP && name == TCP_NODELAY) {
+        v = s->nodelay;
+        if (*len < sizeof(v)) return -EINVAL;
+        memcpy(val, &v, sizeof(v));
+        *len = sizeof(v);
+        return 0;
+    }
     if (level != SOL_SOCKET) return -ENOPROTOOPT;
     switch (name) {
     case SO_TYPE:  v = s->type; break;

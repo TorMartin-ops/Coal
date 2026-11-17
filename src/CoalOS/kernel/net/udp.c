@@ -52,5 +52,7 @@ int udp_send(uint32_t src, uint16_t sport, uint32_t dst, uint16_t dport, const v
     if (!src) src = net_src_for(dst);
     uint16_t c = net_l4_csum(src, dst, IPPROTO_UDP, u, total);
     u->csum = c ? c : 0xFFFF;                   /* zero means "no checksum" on the wire */
-    return net_ip_send(IPPROTO_UDP, src, dst, total);
+    int rc = net_ip_send(IPPROTO_UDP, src, dst, total);
+    net_lo_drain();
+    return rc;
 }

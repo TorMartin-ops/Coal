@@ -535,6 +535,42 @@ static void test_loopback_stream(void) {
     CHECK(waitpid(kid, &st, 0) == kid && WIFEXITED(st) && WEXITSTATUS(st) == 0);
 }
 
+/* Small writes with and without TCP_NODELAY: with Nagle and delayed ACKs the held bytes still arrive, in order. */
+static void test_tcp_small_writes(void) {
+    struct sockaddr_in a;
+    int ls = lo_socket(SOCK_STREAM, &a), c, s, v = -1, one = 1, zero = 0;
+    socklen_t l = sizeof v;
+    char in[256];
+
+    CHECK(ls >= 0 && listen(ls, 1) == 0);
+    c = socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(connect(c, (struct sockaddr *)&a, sizeof a) == 0);
+    s = accept(ls, NULL, NULL);
+    CHECK(s >= 0);
+    CHECK(getsockopt(c, IPPROTO_TCP, TCP_NODELAY, &v, &l) == 0 && v == 0);
+    CHECK(setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one) == 0);
+    CHECK(getsockopt(c, IPPROTO_TCP, TCP_NODELAY, &v, &l) == 0 && v == 1);
+    CHECK(setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &zero, sizeof zero) == 0);
+
+    for (int round = 0; round < 2; round++) {               /* round 0 with Nagle, round 1 after TCP_NODELAY is set */
+        char want[100];
+        for (int i = 0; i < 100; i++) { want[i] = (char)('a' + (i + round) % 26); write(c, &want[i], 1); }
+        if (round) CHECK(setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one) == 0);   /* releases held data at once */
+        int got = 0;
+        while (got < 100) {
+            struct pollfd pfd = { s, POLLIN, 0 };
+            if (poll(&pfd, 1, 2000) <= 0) break;
+            long r = read(s, in + got, (size_t)(100 - got));
+            if (r <= 0) break;
+            got += (int)r;
+        }
+        CHECK(got == 100 && !memcmp(in, want, 100));
+    }
+    close(c);
+    close(s);
+    close(ls);
+}
+
 //============================================================================
 // Scripts, statfs, links
 //============================================================================
@@ -977,6 +1013,7 @@ int main(int argc, char **argv) {
         { "script", test_exec_script, 0 }, { "statfs", test_statfs_links, 0 },
         { "sigchld", test_sigchld, 0 }, { "rlimit", test_rlimit, 0 },
         { "fpu", test_fpu, 0 }, { "loopback", test_loopback, 0 }, { "stream", test_loopback_stream, 0 },
+        { "smallwrites", test_tcp_small_writes, 0 },
         { "vdso", test_vdso, 0 },
         { "oom", test_oom, 1 },                     /* needs a small machine: run as "kernel_test oom" */
     };

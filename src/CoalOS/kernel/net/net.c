@@ -3,10 +3,11 @@
  * @brief Ethernet, ARP, IPv4, ICMP echo and port unreachable, and the loopback interface.
  *
  * Packets for 127.0.0.0/8 or for our own address never reach the NIC: they are
- * queued (LO_SLOTS packets, excess is dropped like on a full NIC ring) and
- * delivered by a timer on the next millisecond. Delivering from the timer
- * rather than from net_ip_send() keeps the transport code from being re-entered
- * while it is still building the packet.
+ * queued (LO_SLOTS packets) and delivered by net_lo_drain(), which the transport
+ * calls once it has finished its own work, like a softirq. Delivering from
+ * net_ip_send() itself would re-enter the transport while it is still building
+ * the packet. A timer drains the queue too, as a fallback. Looped-back segments
+ * carry no checksum: nothing can corrupt them.
  *
  * Two kernel timers drive the stack: one delivers loopback packets, the other runs the TCP
  * and DHCP timers and polls a NIC without interrupts. Neither runs while there is nothing to do.
@@ -27,7 +28,8 @@
 #define ARP_REPLY   2
 #define ARP_TTL_MS  300000u
 #define ARP_SLOTS   8
-#define LO_SLOTS    16
+#define LO_SLOTS    32
+#define LO_BUDGET   256             /* packets one drain delivers before leaving the rest to the tick */
 #define ICMP_UNREACH      3
 #define ICMP_PORT_UNREACH 3
 
@@ -59,7 +61,8 @@ static const uint8_t BCAST[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 static const uint8_t NO_MAC[6] = { 0 };
 
 static struct { uint32_t ip, expires; uint8_t mac[6]; bool used; } arp_cache[ARP_SLOTS];
-static uint8_t  tx_frame[ETH_HLEN + NET_MTU];       /* the one outgoing frame */
+static uint8_t  tx_scratch[ETH_HLEN + NET_MTU];     /* outgoing frame when the NIC has no free buffer */
+static uint8_t *tx_frame = tx_scratch;              /* the one outgoing frame */
 static uint8_t  arp_held[ETH_HLEN + NET_MTU];       /* a frame waiting for its next hop's MAC */
 static size_t   arp_held_len;
 static uint32_t arp_held_hop;
@@ -67,21 +70,33 @@ static uint16_t ip_id;
 
 static struct { size_t len; uint8_t pkt[NET_MTU]; } lo_q[LO_SLOTS];     /* loopback packets in flight */
 static unsigned lo_head, lo_tail;                                      /* free-running counters */
+bool net_rx_trusted;
 static struct ktimer lo_timer, proto_timer;
 
 bool net_is_loopback(uint32_t ip) { return (ip >> 24) == 127; }
 
-static bool is_local(uint32_t ip) { return net_is_loopback(ip) || (net_if.ip && ip == net_if.ip); }
+bool net_is_local(uint32_t ip) { return net_is_loopback(ip) || (net_if.ip && ip == net_if.ip); }
 
 uint32_t net_src_for(uint32_t dst) { return net_is_loopback(dst) ? dst : net_if.ip; }
 
 /* ---- checksums ------------------------------------------------------------ */
 
+typedef uint32_t __attribute__((aligned(1), may_alias)) u32_unaligned;
+typedef uint16_t __attribute__((aligned(1), may_alias)) u16_unaligned;
+
+/* Sums native-endian words and swaps the folded result: ones' complement addition does not
+ * depend on byte order (RFC 1071), and a 32-bit load covers two 16-bit words. */
 uint32_t net_csum_add(uint32_t sum, const void *data, size_t len) {
     const uint8_t *p = data;
-    for (; len > 1; len -= 2, p += 2) sum += (uint32_t)p[0] << 8 | p[1];
-    if (len) sum += (uint32_t)p[0] << 8;
-    return sum;
+    uint64_t acc = 0;
+
+    for (; len >= 4; len -= 4, p += 4) acc += *(const u32_unaligned *)p;
+    if (len >= 2) { acc += *(const u16_unaligned *)p; p += 2; len -= 2; }
+    if (len) acc += *p;
+    acc = (acc & 0xFFFFFFFFu) + (acc >> 32);
+    acc = (acc & 0xFFFFu) + (acc >> 16);
+    acc = (acc & 0xFFFFu) + (acc >> 16);
+    return sum + __builtin_bswap16((uint16_t)acc);
 }
 
 uint16_t net_csum_fold(uint32_t sum) {
@@ -119,12 +134,12 @@ static const uint8_t *arp_lookup(uint32_t ip) {
     return NULL;
 }
 
-static void eth_send(const uint8_t *dst_mac, uint16_t type, uint8_t *frame, size_t payload_len) {
+static int eth_send(const uint8_t *dst_mac, uint16_t type, uint8_t *frame, size_t payload_len) {
     struct eth_hdr *e = (struct eth_hdr *)frame;
     memcpy(e->dst, dst_mac, 6);
     memcpy(e->src, net_if.mac, 6);
     e->type = htons(type);
-    e1000_send(frame, ETH_HLEN + payload_len);
+    return e1000_send(frame, ETH_HLEN + payload_len);
 }
 
 static void arp_send(uint16_t op, const uint8_t *tmac, uint32_t tip) {
@@ -161,15 +176,19 @@ static void arp_input(const uint8_t *pkt, size_t len) {
 
 /* ---- IPv4 ----------------------------------------------------------------- */
 
-uint8_t *net_tx_payload(void) { return tx_frame + ETH_HLEN + IP_HLEN; }
+uint8_t *net_tx_payload(void) {
+    uint8_t *nic = net_if.present ? e1000_tx_buffer() : NULL;
+    tx_frame = nic ? nic : tx_scratch;
+    return tx_frame + ETH_HLEN + IP_HLEN;
+}
 
 int net_ip_send(uint8_t proto, uint32_t src, uint32_t dst, size_t len) {
     struct ip_hdr *ip = (struct ip_hdr *)(tx_frame + ETH_HLEN);
     const uint8_t *mac;
     uint32_t hop = dst;
 
-    if (!net_if.present && !is_local(dst)) return -ENETDOWN;
-    if (dst != IP4_BROADCAST && !is_local(dst)) {
+    if (!net_if.present && !net_is_local(dst)) return -ENETDOWN;
+    if (dst != IP4_BROADCAST && !net_is_local(dst)) {
         if (!net_if.ip) return -ENETUNREACH;
         if ((dst & net_if.mask) != (net_if.ip & net_if.mask)) hop = net_if.gw;
         if (!hop) return -ENETUNREACH;
@@ -187,23 +206,19 @@ int net_ip_send(uint8_t proto, uint32_t src, uint32_t dst, size_t len) {
     ip->dst = htonl(dst);
     ip->csum = net_csum_fold(net_csum_add(0, ip, IP_HLEN));
 
-    if (is_local(dst)) {
-        if (lo_tail - lo_head < LO_SLOTS) {
-            lo_q[lo_tail % LO_SLOTS].len = IP_HLEN + len;
-            memcpy(lo_q[lo_tail % LO_SLOTS].pkt, ip, IP_HLEN + len);
-            lo_tail++;
-            timer_add_earlier(&lo_timer, 0);
-        }
+    if (net_is_local(dst)) {
+        if (lo_tail - lo_head >= LO_SLOTS) return -ENOBUFS;
+        lo_q[lo_tail % LO_SLOTS].len = IP_HLEN + len;
+        memcpy(lo_q[lo_tail % LO_SLOTS].pkt, ip, IP_HLEN + len);
+        lo_tail++;
+        timer_add_earlier(&lo_timer, 0);
         return 0;
     }
     memcpy(((struct eth_hdr *)tx_frame)->src, net_if.mac, 6);      /* complete the header a held frame keeps */
     ((struct eth_hdr *)tx_frame)->type = htons(ETH_IP);
 
     mac = dst == IP4_BROADCAST ? BCAST : arp_lookup(hop);
-    if (mac) {
-        eth_send(mac, ETH_IP, tx_frame, IP_HLEN + len);
-        return 0;
-    }
+    if (mac) return eth_send(mac, ETH_IP, tx_frame, IP_HLEN + len);
     /* Next hop unknown: hold this frame, ask, and let the sender's retransmit cover a lost request. */
     memcpy(arp_held, tx_frame, ETH_HLEN + IP_HLEN + len);
     arp_held_len = ETH_HLEN + IP_HLEN + len;
@@ -276,16 +291,28 @@ void net_rx_frame(const uint8_t *frame, size_t len) {
 
 /* ---- init and timers -------------------------------------------------------- */
 
-/* Delivers the loopback packets queued so far; replies queued meanwhile wait for the next millisecond. */
-static void lo_deliver(struct ktimer *t) {
-    (void)t;
-    for (unsigned n = lo_tail - lo_head; n; n--) {
+/* Delivers queued loopback packets, and the replies they cause, until the queue is empty. */
+void net_lo_drain(void) {
+    static bool busy;
+
+    if (busy) return;
+    busy = true;
+    net_rx_trusted = true;
+    for (unsigned n = LO_BUDGET; lo_head != lo_tail && n; n--) {
         ip_input(lo_q[lo_head % LO_SLOTS].pkt, lo_q[lo_head % LO_SLOTS].len);
         lo_head++;
     }
+    net_rx_trusted = false;
+    busy = false;
 }
 
 #define NIC_POLL_MS 10u
+
+static void lo_deliver(struct ktimer *t) {
+    (void)t;
+    net_lo_drain();
+    if (lo_head != lo_tail) timer_add_earlier(&lo_timer, 1);
+}
 
 static void proto_tick(struct ktimer *t) {
     (void)t;

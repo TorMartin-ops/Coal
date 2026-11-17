@@ -29,6 +29,8 @@ void tcp_close(struct tcp_conn *c);
 /** Resets and frees every connection still waiting in listener's accept queue or handshake. */
 void tcp_drop_children(struct sock *listener);
 int  tcp_shutdown_wr(struct tcp_conn *c);
+/** TCP_NODELAY: send small writes at once instead of holding them until earlier data is acknowledged. */
+void tcp_set_nodelay(struct tcp_conn *c, bool on);
 
 /** Bytes queued for sending (may be less than len, 0 if the buffer is full), or -errno. */
 int  tcp_write(struct tcp_conn *c, const void *buf, size_t len);
