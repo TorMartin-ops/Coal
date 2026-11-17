@@ -28,7 +28,7 @@ struct ifreq {
 
 static long now_ms(void) {
     struct timespec ts;
-    __sc(SYS_CLOCK_GETTIME, 1, (long)&ts, 0, 0, 0);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 

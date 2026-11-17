@@ -35,9 +35,27 @@ execute_process(COMMAND ${CMAKE_C_COMPILER} -m32 -print-libgcc-file-name
 file(GLOB_RECURSE KERNEL_SOURCES CONFIGURE_DEPENDS
     boot/*.asm kernel/*.c kernel/*.asm)
 
+# The vDSO is a tiny shared object linked at a fixed address (vdso_abi.h); the kernel embeds the file
+# (kernel/process/vdso_image.asm) and maps it into every process.
+set(VDSO_SO ${CMAKE_BINARY_DIR}/vdso.so)
+add_custom_command(
+    OUTPUT ${VDSO_SO}
+    COMMAND ${CMAKE_C_COMPILER} -m32 -march=i386 -O2 -fno-pic -ffreestanding -nostdlib -shared -s
+            -fno-stack-protector -fno-asynchronous-unwind-tables -Wall -Wextra -Werror
+            -I${CMAKE_SOURCE_DIR}/include
+            -Wl,--hash-style=sysv -Wl,-soname=linux-vdso.so.1 -Wl,--build-id=none -Wl,-z,noexecstack
+            -Wl,--version-script=${ARCH_DIR}/vdso.ver -Wl,-T${ARCH_DIR}/vdso.ld
+            -o ${VDSO_SO} ${CMAKE_SOURCE_DIR}/userspace/vdso/vdso.c
+    DEPENDS userspace/vdso/vdso.c include/kernel/cpu/vdso_abi.h ${ARCH_DIR}/vdso.ld ${ARCH_DIR}/vdso.ver
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Linking the vDSO")
+add_custom_target(vdso DEPENDS ${VDSO_SO})
+
 add_executable(kernel ${KERNEL_SOURCES})
+add_dependencies(kernel vdso)
+set_source_files_properties(kernel/process/vdso_image.asm PROPERTIES OBJECT_DEPENDS ${VDSO_SO})
 set_target_properties(kernel PROPERTIES OUTPUT_NAME kernel.bin)
-target_include_directories(kernel PRIVATE include kernel)
+target_include_directories(kernel PRIVATE include kernel ${CMAKE_BINARY_DIR})
 target_compile_definitions(kernel PRIVATE COAL_VERSION="${COAL_VERSION}")
 target_compile_options(kernel PRIVATE $<$<COMPILE_LANGUAGE:C>:${FREESTANDING_FLAGS}>)
 target_link_options(kernel PRIVATE

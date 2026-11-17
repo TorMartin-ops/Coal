@@ -57,6 +57,14 @@ grouped in `syscall_fs.c`, `syscall_proc.c`, `syscall_mm.c`, `syscall_signal.c`,
 `syscall_misc.c`, `syscall_user.c` (user-space path and argument copying).
 [syscalls.md](syscalls.md) lists them.
 
+Two entries share the table: `int 0x80` (returns with `iret`) and `sysenter` from the
+vDSO stub `__kernel_vsyscall` (returns with `sysexit` to a landing pad placed behind an
+`int 0x80`, so a signal restart re-executes through the old entry). Every process maps
+the vDSO and a read-only seqlock time page at the top of user space
+(`kernel/process/vdso.c`, `include/kernel/cpu/vdso_abi.h`); exec announces them through
+AT_SYSINFO and AT_SYSINFO_EHDR. The clock is the TSC calibrated against the PIT
+(`kernel/drivers/timer/clock.c`).
+
 ## File systems
 
 `kernel/fs/vfs` is the VFS: mount table, path normalisation, file API and a

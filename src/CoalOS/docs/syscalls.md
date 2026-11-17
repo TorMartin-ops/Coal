@@ -3,7 +3,10 @@
 Coal OS implements the Linux i386 system call ABI: `int 0x80`, number in EAX,
 arguments in EBX, ECX, EDX, ESI, EDI, EBP, result or `-errno` in EAX, Linux
 numbers and Linux struct layouts (`stat64`, `linux_dirent64`, `timespec`,
-`sigaction`, ...). There is one table, `syscall_table` in
+`sigaction`, ...). Programs can also enter through the vDSO's `__kernel_vsyscall`
+(`sysenter`, AT_SYSINFO); the kernel entry in `kernel/cpu/syscall.asm` builds the
+same frame, so both entries share the table. The vDSO also serves `clock_gettime`,
+`gettimeofday` and `time` without a system call. There is one table, `syscall_table` in
 `kernel/cpu/syscall.c`; any number not listed below returns `-ENOSYS`.
 The table below is generated from it. `scripts/check_syscall_numbers.sh`
 compares `include/libc/syscall_numbers.h` with the Linux headers.

@@ -379,9 +379,20 @@ int unsetenv(const char *name) {
 
 extern int main(int argc, char **argv, char **envp);
 
+#define AT_SYSINFO      32
+#define AT_SYSINFO_EHDR 33
+
+void *__vdso_base;
+
 void __libc_start(long *sp) {
     int argc = (int)sp[0];
     char **argv = (char **)(sp + 1);
+    char **env;
     environ = argv + argc + 1;
+    for (env = environ; *env; env++) { }
+    for (unsigned long *a = (unsigned long *)(env + 1); a[0]; a += 2) {
+        if (a[0] == AT_SYSINFO) __vsyscall = (void (*)(void))a[1];
+        else if (a[0] == AT_SYSINFO_EHDR) __vdso_base = (void *)a[1];
+    }
     exit(main(argc, argv, environ));
 }

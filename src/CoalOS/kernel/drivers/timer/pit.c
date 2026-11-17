@@ -58,7 +58,15 @@ void timer_early_init(void) {
     outb(PIT_CH2, (uint8_t)(count >> 8));
     s_tsc0 = rdtsc();
     while (!(inb(PORT_PC_CTRL) & 0x20)) { }
-    s_tsc_khz = (uint32_t)(rdtsc() - s_tsc0) / CALIBRATE_MS;
+    /* ticks / (count / PIT_BASE_HZ) in kHz: the counter holds count * (1000 / PIT_BASE_HZ) ms, not exactly CALIBRATE_MS */
+    uint64_t num = (rdtsc() - s_tsc0) * PIT_BASE_HZ;
+    uint32_t rem;
+    asm("divl %4" : "=a"(s_tsc_khz), "=d"(rem) : "a"((uint32_t)num), "d"((uint32_t)(num >> 32)), "r"(count * 1000u));
+}
+
+uint32_t timer_tsc_khz(uint64_t *tsc0) {
+    *tsc0 = s_tsc0;
+    return s_tsc_khz;
 }
 
 void timer_start(void) {

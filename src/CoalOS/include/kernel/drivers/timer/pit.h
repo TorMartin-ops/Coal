@@ -13,6 +13,9 @@
  *  Call first thing at boot; without a TSC the uptime reads 0 until timer_start(). */
 void timer_early_init(void);
 
+/** TSC frequency in kHz from that calibration (0: no TSC); *tsc0 is the TSC value at the start of the uptime. */
+uint32_t timer_tsc_khz(uint64_t *tsc0);
+
 /** From here the uptime is the interrupt tick count, continuing from the time already passed.
  *  Call right before enabling interrupts. */
 void timer_start(void);
