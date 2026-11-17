@@ -1,102 +1,164 @@
-/* include/vfs.h */
-#pragma once
+/**
+ * @file vfs.h
+ * @brief Virtual file system: driver interface, mount table and file API.
+ *
+ * All functions return 0/positive on success and a negative Linux errno on
+ * failure. Paths are absolute; the VFS normalises them (".", "..", "//").
+ */
 #ifndef VFS_H
 #define VFS_H
 
-#include <libc/stddef.h>    // For size_t, NULL, etc.
-#include <libc/stdint.h>    // For uint32_t and friends
-#include <libc/stdbool.h>   // For bool
 #include <kernel/core/types.h>
-#include <kernel/sync/spinlock.h>
-#include <sys/stat.h>        // For struct stat
+#include <kernel/fs/vfs/fs_errno.h>
 
-#ifdef __cplusplus
-extern "C" {
+#define VFS_PATH_MAX   256      /* longest accepted absolute path, incl. NUL */
+#define VFS_NAME_MAX   255
+
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+
+/* open(2) flags, Linux i386 values */
+#define O_ACCMODE   0x0003
+#define O_RDONLY    0x0000
+#define O_WRONLY    0x0001
+#define O_RDWR      0x0002
+#define O_CREAT     0x0040
+#define O_EXCL      0x0080
+#define O_NOCTTY    0x0100
+#define O_TRUNC     0x0200
+#define O_APPEND    0x0400
+#define O_NONBLOCK  0x0800
+#define O_DIRECTORY 0x10000
+
+#ifndef S_IFMT
+#define S_IFMT   0170000
+#define S_IFDIR  0040000
+#define S_IFCHR  0020000
+#define S_IFREG  0100000
+#define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+#define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+#define S_ISCHR(m) (((m) & S_IFMT) == S_IFCHR)
 #endif
 
-/* lseek whence values */
-#define SEEK_SET    0
-#define SEEK_CUR    1
-#define SEEK_END    2
+#define DT_UNKNOWN 0
+#define DT_CHR     2
+#define DT_DIR     4
+#define DT_REG     8
 
-/* Type for file offset */
-typedef long off_t;
+/** Layout of Linux i386 struct stat64 (what fstat64/stat64 copy to user). */
+struct kstat64 {
+    uint64_t st_dev;
+    uint32_t __pad0;
+    uint32_t __st_ino;
+    uint32_t st_mode;
+    uint32_t st_nlink;
+    uint32_t st_uid;
+    uint32_t st_gid;
+    uint64_t st_rdev;
+    uint32_t __pad3;
+    int64_t  st_size;
+    uint32_t st_blksize;
+    uint64_t st_blocks;
+    uint32_t st_atime, st_atime_nsec;
+    uint32_t st_mtime, st_mtime_nsec;
+    uint32_t st_ctime, st_ctime_nsec;
+    uint64_t st_ino;
+} __attribute__((packed));
 
-/* Forward declaration for vnode */
-typedef struct vnode vnode_t;
+/** Layout of Linux struct linux_dirent64 (getdents64 records). */
+struct linux_dirent64 {
+    uint64_t d_ino;
+    int64_t  d_off;
+    uint16_t d_reclen;
+    uint8_t  d_type;
+    char     d_name[];
+} __attribute__((packed));
 
-/* VFS file handle structure */
-typedef struct file {
-    vnode_t    *vnode;    // Underlying vnode pointer
-    uint32_t    flags;    // Open flags
-    off_t       offset;   // Current file offset (protected by lock)
-    spinlock_t  lock;
-} file_t;
-
-/* VFS driver interface */
-typedef struct vfs_driver {
-    const char *fs_name;  // Filesystem name (e.g., "FAT32")
-    /* Mount function: returns a filesystem-specific context pointer or NULL on failure. */
-    void *(*mount)(const char *device);
-    /* Unmount function: returns 0 on success, negative on error. */
-    int (*unmount)(void *fs_context);
-    /* Open: returns a pointer to a vnode or NULL on error. */
-    vnode_t *(*open)(void *fs_context, const char *path, int flags);
-    /* Read: returns the number of bytes read or negative error code. */
-    int (*read)(file_t *file, void *buf, size_t len);
-    /* Write: returns the number of bytes written or negative error code. */
-    int (*write)(file_t *file, const void *buf, size_t len);
-    /* Close: returns 0 on success, negative error code on failure. */
-    int (*close)(file_t *file);
-    /* Lseek: returns new file offset or negative error code. */
-    off_t (*lseek)(file_t *file, off_t offset, int whence);
-    int (*readdir)(file_t *dir_file, struct dirent *d_entry_out, size_t entry_index); // Add this
-    int (*unlink)(void *fs_context, const char *path); // Add this
-    int (*mkdir)(void *fs_context, const char *path, mode_t mode); // Add this
-    int (*rmdir)(void *fs_context, const char *path); // Add this
-    
-    /* Inode-based operations for page cache */
-    ssize_t (*read_inode)(void *fs_context, uint32_t inode_number, 
-                          uint64_t offset, void *buffer, size_t size);
-    ssize_t (*write_inode)(void *fs_context, uint32_t inode_number,
-                           uint64_t offset, const void *buffer, size_t size);
-    int (*stat_inode)(void *fs_context, uint32_t inode_number, struct stat *st);
-    
-    struct vfs_driver *next;
-} vfs_driver_t;
-
-/* Abstract vnode structure */
-struct vnode {
-    void *data;                // Filesystem‑specific data (driver-specific context)
-    vfs_driver_t *fs_driver;   // Pointer to the driver handling this vnode
+/** One directory entry as produced by a driver's readdir. */
+struct vfs_dirent {
+    uint32_t ino;
+    uint8_t  type;                      /* DT_* */
+    char     name[VFS_NAME_MAX + 1];
 };
 
-/* VFS API */
+typedef struct vfs_driver vfs_driver_t;
+typedef struct mount mount_t;
+
+/** An open object inside a file system (shared by all file_t that open it). */
+typedef struct vnode {
+    void         *data;                 /* driver private */
+    vfs_driver_t *fs_driver;
+    mount_t      *mnt;
+    uint32_t      type;                 /* S_IFDIR / S_IFREG / S_IFCHR, set by driver open */
+} vnode_t;
+
+/** An open file description: offset and flags on top of a vnode. */
+typedef struct file {
+    vnode_t *vnode;
+    uint32_t flags;                     /* open flags */
+    off_t    offset;
+} file_t;
+
+/**
+ * Driver operations. Only open/close are mandatory. Data operations take an
+ * explicit position so a driver keeps no per-descriptor state; the VFS owns
+ * file->offset. Paths handed to a driver are relative to its mount point and
+ * start with '/'.
+ */
+struct vfs_driver {
+    const char *fs_name;
+    void *(*mount)(const char *device);
+    int   (*unmount)(void *fs);                     /* -EBUSY if still in use */
+    /** Open or create. Must honour O_CREAT/O_EXCL; fills v->data and v->type. */
+    int   (*open)(void *fs, const char *path, int flags, mode_t mode, vnode_t *v);
+    int   (*close)(vnode_t *v);
+    ssize_t (*read)(vnode_t *v, off_t pos, void *buf, size_t len);
+    ssize_t (*write)(vnode_t *v, off_t pos, const void *buf, size_t len);
+    /** Returns 1 and advances *pos for each entry, 0 at the end. */
+    int   (*readdir)(vnode_t *dir, off_t *pos, struct vfs_dirent *out);
+    int   (*getattr)(vnode_t *v, struct kstat64 *st);
+    int   (*truncate)(vnode_t *v, off_t len);
+    int   (*fsync)(vnode_t *v);
+    int   (*sync)(void *fs);                        /* flush the whole file system */
+    int   (*ioctl)(vnode_t *v, uint32_t cmd, void *arg);
+    int   (*unlink)(void *fs, const char *path);
+    int   (*mkdir)(void *fs, const char *path, mode_t mode);
+    int   (*rmdir)(void *fs, const char *path);
+    int   (*rename)(void *fs, const char *from, const char *to);
+};
+
+/* Registration and mounting */
 void vfs_init(void);
-int vfs_register_driver(vfs_driver_t *driver);
-int vfs_unregister_driver(vfs_driver_t *driver);
-vfs_driver_t *vfs_get_driver(const char *fs_name);
-int vfs_mount_root(const char *mount_point, const char *fs_name, const char *device);
-int vfs_unmount_root(void);
-int vfs_shutdown(void);
-file_t *vfs_open(const char *path, int flags);
-int vfs_close(file_t *file);
-int vfs_read(file_t *file, void *buf, size_t len);
-int vfs_write(file_t *file, const void *buf, size_t len);
-off_t vfs_lseek(file_t *file, off_t offset, int whence);
-int vfs_unlink(const char *path);
-int vfs_mkdir(const char *path, mode_t mode);
-int vfs_rmdir(const char *path);
+int  vfs_register_driver(vfs_driver_t *drv);
+int  vfs_mount(const char *target, const char *fs_name, const char *device);
+int  vfs_umount(const char *target);
+void vfs_sync(void);
+void vfs_shutdown(void);
 
-/* Page cache I/O functions */
-ssize_t vfs_read_at(uint32_t device_id, uint32_t inode_number,
-                    uint64_t offset, void *buffer, size_t size);
-ssize_t vfs_write_at(uint32_t device_id, uint32_t inode_number,
-                     uint64_t offset, const void *buffer, size_t size);
-int vfs_get_file_size(uint32_t device_id, uint32_t inode_number, uint64_t *size);
+/* Paths */
+int  vfs_normalize(const char *path, char *out, size_t size);
 
-#ifdef __cplusplus
-}
-#endif
+/* Files */
+int     vfs_open(const char *path, int flags, mode_t mode, file_t **out);
+int     vfs_close(file_t *f);
+ssize_t vfs_read(file_t *f, void *buf, size_t len);
+ssize_t vfs_write(file_t *f, const void *buf, size_t len);
+off_t   vfs_lseek(file_t *f, off_t off, int whence);
+int     vfs_getdents64(file_t *f, void *buf, size_t len);
+int     vfs_fstat(file_t *f, struct kstat64 *st);
+int     vfs_ftruncate(file_t *f, off_t len);
+int     vfs_fsync(file_t *f);
+int     vfs_ioctl(file_t *f, uint32_t cmd, void *arg);
+
+/* Namespace operations */
+int  vfs_stat(const char *path, struct kstat64 *st);
+int  vfs_unlink(const char *path);
+int  vfs_mkdir(const char *path, mode_t mode);
+int  vfs_rmdir(const char *path);
+int  vfs_rename(const char *from, const char *to);
+
+/** Seconds since the Unix epoch used for new timestamps. */
+uint32_t vfs_time(void);
 
 #endif /* VFS_H */

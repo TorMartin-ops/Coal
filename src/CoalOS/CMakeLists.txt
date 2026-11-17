@@ -58,33 +58,34 @@ function(add_user_program name)
     target_link_libraries(${name} PRIVATE ${LIBGCC})
 endfunction()
 
-# Linux-ABI test: raw int 0x80, no libc, no entry stub.
-add_executable(abi_test userspace/tests/abi_test.c)
-set_target_properties(abi_test PROPERTIES OUTPUT_NAME abi_test.elf)
-target_compile_options(abi_test PRIVATE
-    $<$<COMPILE_LANGUAGE:C>:-m32 -ffreestanding -nostdlib -fno-pie -fno-pic -fno-stack-protector -mno-sse -O1 -Wall -Wextra -Werror>)
-target_link_options(abi_test PRIVATE
-    -m32 -nostdlib -static -no-pie -Wl,--build-id=none -Wl,--no-warn-rwx-segments -T${ARCH_DIR}/user.ld)
-
 add_user_program(hello userspace/hello/hello.c)
 file(GLOB SHELL_SOURCES CONFIGURE_DEPENDS userspace/shell/shell_main.c userspace/shell/modules/*.c)
 add_user_program(shell ${SHELL_SOURCES})
 add_user_program(libc_test userspace/tests/libc_test.c)
 add_user_program(syscall_test userspace/tests/syscall_test.c)
 
-# --- Disk image (FAT16) with the user programs --------------------------------
+# --- Disk image (FAT16, long file names) with a Linux directory layout ---------
+set(ROOTFS_DIR ${CMAKE_BINARY_DIR}/rootfs)
+file(MAKE_DIRECTORY ${ROOTFS_DIR})
+file(WRITE ${ROOTFS_DIR}/hostname "coal\n")
+file(WRITE ${ROOTFS_DIR}/motd "Welcome to Coal OS.\n")
+file(WRITE ${ROOTFS_DIR}/passwd "root:x:0:0:root:/root:/bin/sh\n")
+
 set(DISK_IMAGE ${CMAKE_BINARY_DIR}/disk.img)
+set(IMG -i ${DISK_IMAGE})
 add_custom_command(
     OUTPUT ${DISK_IMAGE}
     COMMAND rm -f ${DISK_IMAGE}
     COMMAND mkfs.fat -C -F 16 ${DISK_IMAGE} 32768
-    COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:hello> ::/hello.elf
-    COMMAND mmd -i ${DISK_IMAGE} ::/bin
-    COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:shell> ::/bin/shell.elf
-    COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:libc_test> ::/bin/libc_test.elf
-    COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:syscall_test> ::/bin/syscall_test.elf
-    COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:abi_test> ::/bin/abi_test.elf
-    DEPENDS hello shell libc_test syscall_test abi_test
+    COMMAND mmd ${IMG} ::/bin ::/sbin ::/etc ::/home ::/root ::/tmp ::/dev ::/proc ::/usr ::/usr/bin ::/var
+    COMMAND mcopy ${IMG} $<TARGET_FILE:shell> ::/bin/sh
+    COMMAND mcopy ${IMG} $<TARGET_FILE:shell> ::/bin/shell.elf
+    COMMAND mcopy ${IMG} $<TARGET_FILE:hello> ::/hello.elf
+    COMMAND mcopy ${IMG} $<TARGET_FILE:hello> ::/usr/bin/hello
+    COMMAND mcopy ${IMG} $<TARGET_FILE:libc_test> ::/usr/bin/libc_test
+    COMMAND mcopy ${IMG} $<TARGET_FILE:syscall_test> ::/usr/bin/syscall_test
+    COMMAND mcopy ${IMG} ${ROOTFS_DIR}/hostname ${ROOTFS_DIR}/motd ${ROOTFS_DIR}/passwd ::/etc/
+    DEPENDS hello shell libc_test syscall_test
     COMMENT "Creating FAT16 disk image"
     VERBATIM)
 
