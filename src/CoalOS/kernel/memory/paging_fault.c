@@ -10,20 +10,8 @@
 #include <kernel/memory/mm.h>
 #include <kernel/process/process.h>
 #include <kernel/process/signal.h>
-#include <kernel/process/scheduler.h>
 #include <kernel/core/log.h>
 #include <kernel/lib/assert.h>
-
-
-void vm_fault_kill_current(uintptr_t fault_addr, uintptr_t fault_eip, int vm_fault_result) {
-    pcb_t *p = get_current_process();
-    KLOG_WARN(LOG_MODULE, "PID %u: %s at %#x (eip %#x), terminating",
-              p ? (unsigned)p->pid : 0u,
-              vm_fault_result == VM_FAULT_OOM ? "out of memory" : "segmentation fault",
-              (unsigned)fault_addr, (unsigned)fault_eip);
-    process_exit(vm_fault_result == VM_FAULT_OOM ? SIGKILL : SIGSEGV);
-    KERNEL_PANIC_HALT("vm_fault_kill_current returned");
-}
 
 void page_fault_handler(registers_t *regs) {
     uintptr_t addr;
@@ -34,6 +22,11 @@ void page_fault_handler(registers_t *regs) {
 
     pcb_t *p = get_current_process();
     int r = (p && p->mm) ? mm_fault(p->mm, addr, regs->err_code) : VM_FAULT_SEGV;
-    if (r != VM_FAULT_OK)
-        vm_fault_kill_current(addr, regs->eip, r);
+    if (r != VM_FAULT_OK) {
+        KLOG_WARN(LOG_MODULE, "PID %u: %s at %#x (eip %#x)", (unsigned)p->pid,
+                  r == VM_FAULT_OOM ? "out of memory" : "segmentation fault",
+                  (unsigned)addr, (unsigned)regs->eip);
+        signal_force(r == VM_FAULT_OOM ? SIGKILL : SIGSEGV);
+    }
+    signal_return_to_user((isr_frame_t *)regs);
 }

@@ -107,5 +107,5 @@ void syscall_dispatch(isr_frame_t *r) {
     syscall_fn_t fn = nr < NR_SYSCALLS ? syscall_table[nr] : NULL;
 
     r->eax = fn ? (uint32_t)fn(r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp, r) : (uint32_t)-ENOSYS;
-    signal_deliver(r);
+    signal_return_to_user(r);
 }

@@ -98,8 +98,6 @@ void schedule(void) {
     next->slice = SCHED_SLICE_TICKS;
     if (next != prev) switch_to(prev, next);
     local_irq_restore(flags);
-
-    signal_dispatch_current();
 }
 
 void yield(void) {

@@ -7,12 +7,14 @@
 #include <kernel/cpu/gdt.h>
 #include <kernel/drivers/timer/pit.h>
 #include <kernel/process/scheduler.h>
+#include <kernel/drivers/wait.h>
 #include <kernel/lib/port_io.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/lib/string.h>
 #include <kernel/core/log.h>
 
 #define NSEC_PER_SEC 1000000000u
+#define SLEEP_CHUNK_S 1000000u          /* 10^9 ms still fits the tick compare */
 #define TLS_ENTRY    (GDT_TLS_SELECTOR >> 3)
 #define LIMIT_IN_PAGES 0x10             /* user_desc.flags bit 4 */
 
@@ -98,19 +100,31 @@ long sc_clock_gettime(uint32_t clk, uint32_t uts) {
     return copy_to_user((void *)uts, &ts, sizeof(ts)) ? -EFAULT : 0;
 }
 
+static drv_waitq_t sleep_queue;
+
 long sc_nanosleep(uint32_t ureq, uint32_t urem) {
     struct linux_timespec req;
 
     if (copy_from_user(&req, (const void *)ureq, sizeof(req)) != 0) return -EFAULT;
     if (req.tv_sec < 0 || req.tv_nsec < 0 || (uint32_t)req.tv_nsec >= NSEC_PER_SEC) return -EINVAL;
 
-    uint32_t ms = (uint32_t)req.tv_sec * 1000u + ((uint32_t)req.tv_nsec + 999999u) / 1000000u;
-    sleep_ms(ms);
-    if (urem) {
-        struct linux_timespec none = {0, 0};
-        if (copy_to_user((void *)urem, &none, sizeof(none)) != 0) return -EFAULT;
+    /* Sleep in chunks: the tick counter is 32 bits. */
+    uint32_t sec = (uint32_t)req.tv_sec, ms = ((uint32_t)req.tv_nsec + 999999u) / 1000000u;
+    long rc = 0;
+    if (!sec && !ms) yield();
+    while (!rc && (sec || ms)) {
+        uint32_t s = sec < SLEEP_CHUNK_S ? sec : SLEEP_CHUNK_S;
+        uintptr_t flags = local_irq_save();
+        rc = drv_wait_timeout(&sleep_queue, s * 1000u + (s == sec ? ms : 0));   /* only a signal ends it early */
+        local_irq_restore(flags);
+        if (!rc && s == sec) ms = 0;
+        sec -= s;
     }
-    return 0;
+    if (urem) {
+        struct linux_timespec left = { (int32_t)sec, (int32_t)ms * 1000000 };
+        if (copy_to_user((void *)urem, &left, sizeof(left)) != 0) return -EFAULT;
+    }
+    return rc;
 }
 
 //============================================================================

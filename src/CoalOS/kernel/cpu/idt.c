@@ -7,12 +7,14 @@
 #include <kernel/cpu/gdt.h>
 #include <kernel/core/types.h>
 #include <kernel/process/signal.h>
+#include <kernel/process/process.h>
 #include <kernel/lib/string.h>
 #include <kernel/core/log.h>
 #include <kernel/lib/assert.h>
 #include <kernel/drivers/storage/block_device.h>
 
 #define IDT_FLAG_INTERRUPT_GATE 0x8E   // ring 0, present, 32-bit interrupt gate
+#define IDT_FLAG_USER_INT_GATE  0xEE   // int3 and into may be executed from ring 3
 #define IDT_FLAG_SYSCALL_GATE   0xEF   // ring 3 callable trap gate: system calls run with interrupts on
 
 #define ICW1_INIT   0x10
@@ -118,23 +120,36 @@ void kernel_fault_panic(isr_frame_t *frame) {
         asm volatile("hlt");
 }
 
+// Signal for a CPU exception raised by user code (as Linux maps them).
+static int exception_signal(uint32_t vector) {
+    switch (vector) {
+    case 0: case 7: case 16: case 19: return SIGFPE;    // divide, no FPU, x87 and SIMD errors
+    case 1: case 3:                   return SIGTRAP;   // debug, int3
+    case 6:                           return SIGILL;    // ud2 and unknown opcodes
+    case 11: case 12: case 17: case 18: return SIGBUS;  // not present, stack, alignment, machine check
+    default:                          return SIGSEGV;   // #GP, #TS, into, bound, ...
+    }
+}
+
 // Called by the stubs for every vector except page faults and syscalls.
 void isr_common_handler(isr_frame_t *frame) {
     interrupt_handler_info_t *entry = &interrupt_c_handlers[frame->int_no];
 
     if (entry->handler) {
         entry->handler(frame);          // hardware handlers send their own EOI
-        if (frame->cs & 3) signal_deliver(frame);   // a user-mode task about to resume
-        return;
-    }
-    if (frame->int_no >= IRQ0_VECTOR && frame->int_no < IRQ0_VECTOR + 16) {
+    } else if (frame->int_no >= IRQ0_VECTOR && frame->int_no < IRQ0_VECTOR + 16) {
         pic_send_eoi(frame->int_no);    // no driver for this IRQ: acknowledge and ignore
-        return;
+    } else if (frame->cs & 3) {
+        KLOG_WARN("idt", "pid %u: exception %u at %#x", (unsigned)get_current_process()->pid,
+                  (unsigned)frame->int_no, (unsigned)frame->eip);
+        signal_force(exception_signal(frame->int_no));
+    } else {
+        asm volatile("cli");
+        dump_frame(frame);
+        for (;;)
+            asm volatile("hlt");
     }
-    asm volatile("cli");
-    dump_frame(frame);
-    for (;;)
-        asm volatile("hlt");
+    if (frame->cs & 3) signal_return_to_user(frame);
 }
 
 void idt_init(void) {
@@ -147,7 +162,7 @@ void idt_init(void) {
 
     for (int v = 0; v < STUB_VECTORS; v++) {
         if (isr_stub_table[v])
-            idt_set_gate(v, isr_stub_table[v], IDT_FLAG_INTERRUPT_GATE);
+            idt_set_gate(v, isr_stub_table[v], v == 3 || v == 4 ? IDT_FLAG_USER_INT_GATE : IDT_FLAG_INTERRUPT_GATE);
     }
     idt_set_gate(SYSCALL_VECTOR, syscall_entry, IDT_FLAG_SYSCALL_GATE);
 

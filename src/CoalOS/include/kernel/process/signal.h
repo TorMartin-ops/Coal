@@ -5,6 +5,8 @@
 #ifndef SIGNAL_H
 #define SIGNAL_H
 
+#include <kernel/core/types.h>
+
 #define SIGHUP    1
 #define SIGINT    2
 #define SIGQUIT   3
@@ -40,5 +42,19 @@ int signal_disposition(struct pcb *p, int sig);
 /* Before returning to user mode: builds an rt signal frame for one pending signal that has a handler. */
 struct isr_frame;
 void signal_deliver(struct isr_frame *regs);
+
+/**
+ * The one place signals take effect. Every return to ring 3 (system call exit,
+ * interrupt or exception return) calls it: a pending signal with the default
+ * action ends the process, one with a handler gets its frame. Kernel code is
+ * never interrupted by a signal; blocking calls return -EINTR instead.
+ */
+void signal_return_to_user(struct isr_frame *regs);
+
+/** True if a deliverable signal is pending for the current process (blocking calls give up). */
+bool signal_pending(void);
+
+/** Raises a CPU-fault signal on the current process; a blocked or ignored one is reset to the default action. */
+void signal_force(int sig);
 
 #endif

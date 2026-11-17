@@ -1,6 +1,6 @@
 /**
  * @file process.h
- * @brief Processes: PCB, fork/execve/exit/wait, signals (default actions only)
+ * @brief Processes: PCB, fork/execve/exit/wait
  */
 #ifndef PROCESS_H
 #define PROCESS_H
@@ -103,8 +103,5 @@ int process_setpgid(pcb_t *proc, uint32_t pgid);
 
 /** Sends sig (1..31, or 0 to probe) to pid, or a group for pid <= 0. Default actions only. */
 int process_kill(int pid, int sig);
-
-/** Called by the scheduler on every resume: runs pending default actions. */
-void signal_dispatch_current(void);
 
 #endif

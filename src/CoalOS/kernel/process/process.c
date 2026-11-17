@@ -4,6 +4,7 @@
  */
 #include <kernel/process/process.h>
 #include <kernel/process/exec.h>
+#include <kernel/process/signal.h>
 #include <kernel/drivers/wait.h>
 #include <kernel/lib/assert.h>
 #include <kernel/cpu/gdt.h>
@@ -336,6 +337,10 @@ int process_waitpid(int pid, int *status, int options) {
         if (!have_child || (options & WNOHANG)) {
             local_irq_restore(flags);
             return have_child ? 0 : -ECHILD;
+        }
+        if (signal_pending()) {
+            local_irq_restore(flags);
+            return -EINTR;
         }
         me->wait_blocked = true;
         me->task.state = TASK_BLOCKED;

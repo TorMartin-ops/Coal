@@ -88,7 +88,6 @@ long sc_rt_sigprocmask(uint32_t how, uint32_t uset, uint32_t uoset, uint32_t siz
         uint32_t out[2] = { mask_to_user(old), 0 };
         if (copy_to_user((void *)uoset, out, sizeof(out)) != 0) return -EFAULT;
     }
-    signal_dispatch_current();                  /* a signal that was only blocked may now be fatal */
     return 0;
 }
 

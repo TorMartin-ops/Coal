@@ -2,8 +2,8 @@
  * @file fat_priv.h
  * @brief Internal structures and helpers shared by the FAT driver files.
  *
- * Locking: one busy flag per mounted volume, taken around every driver entry
- * point. It never disables interrupts, so disk I/O does not delay IRQs.
+ * Locking: one sleeping mutex per mounted volume, taken around every driver
+ * entry point. Waiters sleep, so a holder blocked in disk I/O can be preempted.
  */
 #ifndef FAT_PRIV_H
 #define FAT_PRIV_H
@@ -11,6 +11,7 @@
 #include <kernel/core/types.h>
 #include <kernel/fs/vfs/vfs.h>
 #include <kernel/drivers/storage/buffer_cache.h>
+#include <kernel/sync/mutex.h>
 
 #define FAT_ATTR_RO     0x01
 #define FAT_ATTR_VOLID  0x08
@@ -52,7 +53,7 @@ typedef struct fat_fs {
     uint8_t *fat;               /* in-memory copy of FAT 1 */
     uint32_t dirty_lo, dirty_hi;/* dirty FAT sector range, lo > hi when clean */
     struct fat_node *nodes;     /* open files and directories */
-    volatile int busy;
+    mutex_t lock;
 } fat_fs_t;
 
 /** In-memory state of an open file or directory, shared by all openers. */
@@ -91,10 +92,8 @@ typedef struct {
     bool grow;                  /* extend the chain when running off the end */
 } fat_dir_t;
 
-static inline void fat_lock(fat_fs_t *fs) {
-    while (__atomic_exchange_n(&fs->busy, 1, __ATOMIC_ACQUIRE)) asm volatile("pause");
-}
-static inline void fat_unlock(fat_fs_t *fs) { __atomic_store_n(&fs->busy, 0, __ATOMIC_RELEASE); }
+static inline void fat_lock(fat_fs_t *fs) { mutex_lock(&fs->lock); }
+static inline void fat_unlock(fat_fs_t *fs) { mutex_unlock(&fs->lock); }
 static inline uint32_t fat_root(const fat_fs_t *fs) { return fs->type == 32 ? fs->root_cluster : 0; }
 
 /* fat.c: volume, FAT table, cluster allocation */

@@ -153,7 +153,10 @@ size_t serial_port_read(int port, void *buf, size_t len) {
     uint8_t *p = buf;
     uintptr_t flags = local_irq_save();
     while (u->rx_head == u->rx_tail) {
-        drv_wait(&u->rx_wait);
+        if (drv_wait(&u->rx_wait)) {
+            local_irq_restore(flags);
+            return 0;                   /* interrupted: the caller sees a short read */
+        }
     }
     size_t n = 0;
     while (n < len && u->rx_head != u->rx_tail) {

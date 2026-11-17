@@ -3,26 +3,45 @@
  * ignored by default, everything else terminates the target. A signal is a bit
  * in pending_signals; signals the target blocks or handles in user mode
  * (signal_disposition() == SIGDISP_HOLD) stay pending and are delivered by the
- * system call layer, the rest act the next time the target is scheduled.
+ * system call layer, the rest act when the target next returns to user mode.
  */
 #include <kernel/process/process.h>
 #include <kernel/process/signal.h>
+#include <kernel/cpu/isr_frame.h>
+#include <kernel/cpu/linux_abi.h>
 #include <kernel/fs/vfs/fs_errno.h>
 
 #define IGNORED_BY_DEFAULT ((1u << SIGCHLD) | (1u << SIGCONT) | (1u << SIGURG) | (1u << SIGWINCH) | \
                             (1u << SIGSTOP) | (1u << SIGTSTP) | (1u << SIGTTIN) | (1u << SIGTTOU))
 
-void signal_dispatch_current(void) {
+bool signal_pending(void) {
     pcb_t *p = get_current_process();
-    uint32_t pending;
+    return p && (p->pending_signals & ~p->sig_blocked);
+}
 
-    if (!p || !(pending = p->pending_signals)) return;
-    for (int sig = 1; sig < NSIG; sig++) {
+void signal_return_to_user(isr_frame_t *regs) {
+    pcb_t *p = get_current_process();
+    uint32_t pending = p->pending_signals;
+
+    if (!pending) return;
+    for (int sig = 1; pending && sig < NSIG; sig++) {
         if ((pending & (1u << sig)) && signal_disposition(p, sig) == SIGDISP_DEFAULT) {
             p->pending_signals &= ~(1u << sig);
+            asm volatile("sti");            /* exiting may block; interrupt and exception gates enter with IRQs off */
             process_exit(sig);              /* wait status of a signalled process is the signal number */
         }
     }
+    signal_deliver(regs);
+}
+
+void signal_force(int sig) {
+    pcb_t *p = get_current_process();
+
+    if (p->sigact[sig].handler <= SIG_IGN || (p->sig_blocked & (1u << sig))) {
+        p->sigact[sig] = (struct sigact){0};
+        p->sig_blocked &= ~(1u << sig);
+    }
+    p->pending_signals |= 1u << sig;
 }
 
 static void send_one(pcb_t *p, int sig) {
@@ -31,9 +50,8 @@ static void send_one(pcb_t *p, int sig) {
     if (p->task.state == TASK_ZOMBIE || disp == SIGDISP_IGNORE ||
         (disp == SIGDISP_DEFAULT && ((1u << sig) & IGNORED_BY_DEFAULT))) return;
     p->pending_signals |= 1u << sig;
-    if (disp == SIGDISP_HOLD) return;
-    if (p == get_current_process()) signal_dispatch_current();
-    else scheduler_wake(&p->task);
+    if (!(p->sig_blocked & (1u << sig)))
+        scheduler_wake(&p->task);           /* a blocked call returns -EINTR */
 }
 
 int process_kill(int pid, int sig) {
@@ -57,7 +75,7 @@ int process_kill(int pid, int sig) {
     }
     if (me && (pid == 0 || (pid < -1 && me->pgid == (uint32_t)-pid))) {
         hits++;
-        if (sig) send_one(me, sig);       /* last: this may not return */
+        if (sig) send_one(me, sig);
     }
     return hits ? 0 : -ESRCH;
 }

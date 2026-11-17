@@ -213,7 +213,11 @@ ssize_t tty_read(void *buf, size_t len) {
             local_irq_restore(flags);
             return 0;
         }
-        drv_wait(&g.waiters);
+        int rc = drv_wait(&g.waiters);
+        if (rc && !ring_readable()) {
+            local_irq_restore(flags);
+            return rc;
+        }
     }
 
     size_t n = 0;

@@ -164,13 +164,10 @@ long sc_poll(uint32_t ufds, uint32_t nfds, int32_t timeout_ms) {
         if (!ready && timeout_ms != 0) {
             uint64_t now = timer_uptime_ms();
             if (timeout_ms < 0 || now < deadline) {
-                if (get_current_process()->pending_signals & ~get_current_process()->sig_blocked) {
-                    local_irq_restore(flags);
-                    return -EINTR;
-                }
-                if (timeout_ms < 0) drv_wait(&drv_poll_queue);
-                else drv_wait_timeout(&drv_poll_queue, (uint32_t)(deadline - now));
+                int rc = timeout_ms < 0 ? drv_wait(&drv_poll_queue)
+                                        : drv_wait_timeout(&drv_poll_queue, (uint32_t)(deadline - now));
                 local_irq_restore(flags);
+                if (rc) return rc;
                 continue;
             }
         }
@@ -186,6 +183,14 @@ long sc_poll(uint32_t ufds, uint32_t nfds, int32_t timeout_ms) {
 //============================================================================
 // read / write / seek
 //============================================================================
+
+static bool regular_file(uint32_t fd) {
+    sys_file_t *sf = sys_file_get(fd);
+    bool reg = sf && S_ISREG(sf->vfs_file->vnode->type);
+
+    if (sf) sys_file_put(sf);
+    return reg;
+}
 
 /* One read or write of up to count bytes through a bounce buffer. */
 static long transfer(uint32_t fd, uint32_t ubuf, uint32_t count, bool is_write) {
@@ -211,6 +216,7 @@ static long transfer(uint32_t fd, uint32_t ubuf, uint32_t count, bool is_write) 
         if (r < 0) { if (!total) total = r; break; }
         total += r;
         if ((size_t)r < n) break;                   /* short transfer: EOF, line, or full pipe */
+        if (!is_write && (uint32_t)total < count && !regular_file(fd)) break;   /* pipes, ttys, sockets: no refill */
     }
     kfree(kbuf);
     return total;
