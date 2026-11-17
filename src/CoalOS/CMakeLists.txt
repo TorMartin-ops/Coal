@@ -79,6 +79,8 @@ add_user_program(mcpd userspace/mcpd/mcpd.c)
 add_user_program(memtest userspace/tests/memtest.c)
 add_user_program(fault_test userspace/tests/fault_test.c)
 add_user_program(fs_stress userspace/tests/fs_stress.c)
+add_user_program(coalbench userspace/bench/coalbench.c)
+add_user_program(coalbench_null userspace/bench/null.c)
 
 # Raw int 0x80 smoke test: no libc, no start-up code.
 add_executable(abi_test userspace/tests/abi_test.c)
@@ -112,8 +114,10 @@ add_custom_command(
     COMMAND mcopy ${IMG} $<TARGET_FILE:memtest> ::/usr/bin/memtest
     COMMAND mcopy ${IMG} $<TARGET_FILE:fault_test> ::/usr/bin/fault_test
     COMMAND mcopy ${IMG} $<TARGET_FILE:fs_stress> ::/usr/bin/fs_stress
+    COMMAND mcopy ${IMG} $<TARGET_FILE:coalbench> ::/usr/bin/coalbench
+    COMMAND mcopy ${IMG} $<TARGET_FILE:coalbench_null> ::/usr/bin/coalbench_null
     COMMAND mcopy ${IMG} ${ROOTFS_ETC} ::/etc/
-    DEPENDS hello snake shell coalbox init mcpd libc_test syscall_test abi_test memtest fault_test fs_stress ${ROOTFS_ETC}
+    DEPENDS hello snake shell coalbox init mcpd libc_test syscall_test abi_test memtest fault_test fs_stress coalbench coalbench_null ${ROOTFS_ETC}
     COMMENT "Creating FAT16 disk image"
     VERBATIM)
 
