@@ -90,3 +90,129 @@ Effect: file_write_8m (sync) 79 to 183 MB/s on top of the page cache.
 ### Tried and not kept
 Nothing was reverted. Not done: READ/WRITE MULTIPLE (the PIO path already uses multi-sector READ/WRITE SECTORS,
 and DMA made it moot), an async readahead trigger page, a negative name cache.
+
+## Perf wave C: memory
+
+Numbers below are icount medians (`-icount shift=0,sleep=off`, 5 reps) against the commit before the wave
+(`ffb6890`). In this mode QEMU counts every `rep` iteration as one instruction, so byte-wise `rep movsb`/`stosb`
+look four times worse than dword-wise; see the wall-clock table at the end for the real effect.
+
+### rep movsd / rep stosd for memcpy, memset and copy_*_user
+
+The kernel `memset`/`memcpy` were byte loops, the libc ones and `copy_*_user` used `rep movsb`/`stosb`.
+All now move whole dwords with `rep movsl`/`rep stosl` and finish with at most three bytes (`rep movsb`).
+`copy_*_user` keeps its exception-table fixup: a fault in the dword phase returns `ECX*4 + tail` bytes
+not copied. `memmove` copies backwards (`std`, tail bytes first) only for a forward overlap.
+Interrupt stubs now execute `cld`, because user mode can set DF and the kernel's `rep` strings need it clear.
+The usual rationale: string instructions are microcoded and cost per iteration, so fewer, wider iterations win
+(Intel SDM vol. 1, 7.3.9; Intel optimization manual, "Fast string operations").
+
+| test | before | after |
+|------|--------|-------|
+| memcpy_bw (MB/s) | 999 | 3998 |
+| page_fault (ns) | 10813 | 1592 |
+| pipe_bw (MB/s) | 117 | 661 |
+| fork_exit_wait (ns) | 97274 | 52115 |
+| fork_exec_wait (ns) | 250837 | 120025 |
+
+### Slab: free-list sharding
+
+`slab.c` follows mimalloc's free-list sharding (Leijen, Zorn, de Moura, MSR-TR-2019-18): every page has an
+allocation list (`free`) and a `local_free` list that frees push to; they are merged only when `free` runs
+dry. A cache allocates from one current page, so the fast path is a load, a pop and a counter increment, and
+a fresh page bumps an offset instead of threading all its objects into a list (a 16-byte page used to cost
+252 stores up front). A free into a full page puts it back on the partial list; a page that empties goes back
+to the buddy allocator at once unless it is the cache's current page. The per-free `%` (a division) that
+validated the pointer is gone. Result in icount mode: small but consistent (0.1 to 1.7 percent fewer
+instructions on syscall, pipe, mmap and fork paths) and 64 bytes less kernel text.
+
+| test | before | after |
+|------|--------|-------|
+| mmap_munmap_1m (ns) | 1270.7 | 1249.2 |
+| pipe_rw_1b (ns) | 1814.9 | 1800.9 |
+| fork_exit_wait (ns) | 52114.9 | 52071.1 |
+| open_close (ns) | 11915.4 | 11877.3 |
+
+### Frame reference counts without a lock; page tables copied without clearing
+
+`get_frame`/`put_frame` change the count with one `lock xaddw` instead of a spinlock with interrupt
+save/restore (fork touches one count per mapped page in both directions). `paging_clone_directory` no longer
+clears the new page table before filling it: every entry is written, and the table is published only when full.
+fork_exit_wait 52071 -> 50072 ns (icount), fork_exec_wait 119877 -> 119246.
+
+### Pre-zeroed frame pool
+
+The idle loop zeroes one frame at a time into a pool of 32 (`frame_refill_zeroed`); `frame_alloc*_zeroed`
+(demand-zero faults, page tables) take from it and fall back to clearing the frame themselves. The pool is
+bounded (128 KiB), counts as free in `/proc/meminfo`, is refilled only while the buddy allocator holds more than
+256 pages, and is drained by ordinary allocations when memory runs out. MemFree after boot is identical with and
+without it (127272 kB of 129168 kB at 128 MiB). An empty pool costs one load on the allocation path.
+New benchmark `page_fault_idle`: 16 first-touch faults right after a 10 ms sleep.
+
+| test | pool off | pool on |
+|------|----------|---------|
+| page_fault_idle (ns) | 1700.1 | 357.9 |
+| page_fault (ns), back-to-back, pool empty | 1634.6 (lock on every call) | 1594.6 |
+
+A throughput loop never idles, so `page_fault` itself cannot gain; the pool pays off for bursts that follow idle
+time (shell commands, program start-up).
+
+### libc malloc: size classes and per-page free lists
+
+The first-fit list with a linear scan (and coalescing on every pass) is replaced by the same scheme as the
+kernel slab: 22 size classes up to 2032 bytes (16-byte steps to 128, then four per doubling), 4 KiB pages
+from brk each serving one class with `free`/`local_free` lists and bump allocation, empty pages kept in a pool
+every class can reuse, larger blocks mapped on their own and unmapped on `free`. The header sits at the start of
+the page, so `free` and `realloc` need no per-block header and blocks stay 16-byte aligned.
+Alloc/free ping-pong on one page merges the lists inline instead of taking the slow path.
+Cost: one 4 KiB page per size class in use (a running `cat` holds 28 kB more than before).
+New benchmarks `malloc_free_64` (malloc+free of 64 bytes) and `malloc_churn` (128 live blocks of 8 sizes, freed
+out of order). The libc test that expected a freed 100-byte block to serve a 50-byte request now asks for 100.
+
+| test | before | after |
+|------|--------|-------|
+| malloc_free_64 (ns) | 102.0 | 87.0 |
+| malloc_churn (ns) | 86890 | 12862 |
+
+### Fault-around for demand-zero pages
+
+A demand-zero fault in a growing-up VMA (heap, mmap; not the stack) also maps the next three absent pages
+that share the page table. Only spare memory is used (`frame_alloc_user_zeroed_spare` fails below 256 free pages)
+and the OOM killer is never involved for the extra pages. Four pages is the knee: eight pages gave only
+12.0 percent instead of 10.2 percent on `page_fault` because zeroing the frames dominates. ELF segments are
+loaded eagerly by exec, so there is nothing to fault around for file-backed pages.
+Worst case for a process that touches one page in a sparse region: three extra frames, freed on exit or munmap.
+
+| test | before | after |
+|------|--------|-------|
+| page_fault (ns) | 1594.5 | 1431.7 |
+| page_fault_idle (ns) | 357.9 | 195.3 |
+
+### Not done: rep movsb with ERMS
+
+CPUID leaf 7 reports ERMS, and `rep movsb` is then as fast as `rep movsd` for long copies, with no tail. It was not
+added: QEMU's TCG executes one iteration per byte, so under emulation (the only place these numbers can be
+measured) it is four times slower than the dword form, and on hardware fast-string microcode already covers
+`rep movsd`. A CPUID probe and a branch in every copy would buy nothing measurable here.
+
+### Wall-clock summary (TCG, host load average about 4 on 2 cores, 21 reps, one run)
+
+Wall-clock numbers on a loaded host move by tens of percent between runs (one earlier run measured
+`mmap_munmap_1m` 53 percent worse, the next 4 percent better); only large effects are meaningful.
+Before is `ffb6890`, after is the end of the wave.
+
+| test | unit | before | after |
+|------|------|--------|-------|
+| memcpy_bw | MB/s | 31.1 | 1681.6 |
+| pipe_bw | MB/s | 37.1 | 201.8 |
+| page_fault | ns | 5179 | 2406 |
+| fork_exit_wait | ns | 104609 | 65932 |
+| fork_exec_wait | ns | 594941 | 327354 |
+| signal_roundtrip | ns | 24908 | 6533 |
+| create_delete_4k | ns | 133042 | 80804 |
+| mmap_munmap_1m | ns | 2942 | 2818 |
+| file_write_8m | MB/s | 2.08 | 2.64 |
+
+RAM after boot (`/proc/meminfo` MemFree at 128 MiB, a `cat` running): 127268 kB before, 127224 kB after (44 kB less:
+one more kernel text page and the 28 kB of size-class pages that the new libc malloc touches in that process).
+The zero pool is counted as free, so it does not show.

@@ -207,6 +207,33 @@ static uint64_t t_page_fault(unsigned n) {
     return t;
 }
 
+/* A burst of faults after the machine was idle: the kernel's pool of zeroed pages is full. */
+static uint64_t t_page_fault_idle(unsigned n) {
+    char *p = map_anon((size_t)n * 4096);
+    if (!p) return 0;
+    struct timespec ts = { 0, 10000000 };
+    nanosleep(&ts, NULL);
+    uint64_t t0 = rdtsc();
+    for (unsigned i = 0; i < n; i++) p[(size_t)i * 4096] = 1;
+    uint64_t t = rdtsc() - t0;
+    unmap(p, (size_t)n * 4096);
+    return t;
+}
+
+static void *volatile sink;
+
+static uint64_t t_malloc_free(unsigned n) {
+    LOOP(n, void *p = malloc(64); if (!p) return 0; sink = p; free(p));
+}
+
+/* 128 live blocks of eight sizes, freed in a different order than allocated. */
+static uint64_t t_malloc_churn(unsigned n) {
+    static void *blk[128];
+    LOOP(n,
+        for (unsigned k = 0; k < 128; k++) { blk[k] = malloc(8 + (k & 7) * 40); if (!blk[k]) return 0; }
+        for (unsigned k = 0; k < 128; k++) free(blk[(k * 37) & 127]));
+}
+
 static uint64_t t_mmap_munmap(unsigned n) {
     LOOP(n, void *p = map_anon(1 << 20); if (!p) return 0; unmap(p, 1 << 20));
 }
@@ -488,6 +515,7 @@ static const struct test tests[] = {
     { "stat",            NS,   256, 1 << 16, 0, NULL, t_stat, NULL },
     { "pipe_rw_1b",      NS,   512, 1 << 16, 0, NULL, t_pipe_rw, NULL },
     { "page_fault",      NS,   512,    8192, 0, NULL, t_page_fault, NULL },
+    { "page_fault_idle", NS,    16,      16, 0, NULL, t_page_fault_idle, NULL },
     { "mmap_munmap_1m",  NS,   128, 1 << 16, 0, NULL, t_mmap_munmap, NULL },
     { "fork_exit_wait",  NS,     8,     256, 0, NULL, t_fork_exit, NULL },
     { "fork_exec_wait",  NS,     8,     256, 0, null_prog_present, t_fork_exec, NULL },
@@ -502,6 +530,8 @@ static const struct test tests[] = {
     { "file_read_8m",   MBS,     1,       1, FILE_BYTES, file_read_setup, t_file_read, file_read_teardown },
     { "tcp_latency",     NS,   128, 1 << 16, 0, tcp_lat_setup, t_tcp_lat, tcp_teardown },
     { "tcp_bw",         MBS,     1,      64, TCP_BURST, tcp_bw_setup, t_tcp_bw, tcp_teardown },
+    { "malloc_free_64", NS,    256, 1 << 16, 0, NULL, t_malloc_free, NULL },
+    { "malloc_churn",    NS,     4,     256, 0, NULL, t_malloc_churn, NULL },
     { "memcpy_bw",      MBS,     2,     256, 2u << 20, memcpy_setup, t_memcpy, memcpy_teardown },
 };
 #define NTESTS ((int)(sizeof tests / sizeof tests[0]))

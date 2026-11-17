@@ -10,6 +10,8 @@
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/lib/string.h>
 
+#define FAULT_AROUND 4                  /* pages mapped by one demand-zero fault, at most */
+
 static vma_struct_t *vma_alloc(void) {
     vma_struct_t *v = kmalloc(sizeof(*v));
     if (v)
@@ -248,9 +250,25 @@ static vma_struct_t *grow_stack(mm_struct_t *mm, uintptr_t addr) {
     return v;
 }
 
+/* After a demand-zero fault, also map the next absent pages of the VMA (up to `end`) that share the
+ * page table. Sequential first touches (heap growth, big buffers) then cost one fault instead of
+ * FAULT_AROUND. Takes only spare memory and never triggers the OOM killer. */
+static void fault_around(uint32_t *pte, uint32_t prot, uintptr_t page, uintptr_t end) {
+    for (unsigned i = 1; i < FAULT_AROUND; i++) {
+        page += PAGE_SIZE;
+        if (page >= end || !PTE_INDEX(page) || (pte[i] & PAGE_PRESENT))
+            return;
+        uintptr_t frame = frame_alloc_user_zeroed_spare();
+        if (!frame)
+            return;
+        pte[i] = frame | prot;
+    }
+}
+
 /* Make the page at `page` present (and writable if asked) with PTE flags prot.
+ * `around` is the end of the VMA when neighbours may be mapped too, else 0.
  * Touches page tables only, never the VMA tree, so it runs without mm->lock. */
-static int resolve(mm_struct_t *mm, uint32_t prot, uintptr_t page, bool write) {
+static int resolve(mm_struct_t *mm, uint32_t prot, uintptr_t page, bool write, uintptr_t around) {
     uint32_t *pte = paging_pte(mm->pgd_phys, page, true);
     if (!pte)
         return VM_FAULT_OOM;
@@ -260,6 +278,8 @@ static int resolve(mm_struct_t *mm, uint32_t prot, uintptr_t page, bool write) {
         if (!frame)
             return VM_FAULT_OOM;
         *pte = frame | prot;
+        if (around)
+            fault_around(pte, prot, page, around);
         return VM_FAULT_OK;
     }
     if (!write || (*pte & PAGE_RW))
@@ -284,10 +304,10 @@ static int resolve(mm_struct_t *mm, uint32_t prot, uintptr_t page, bool write) {
 }
 
 /* resolve(); if memory is short the OOM killer frees some and the allocation is tried again. */
-static int resolve_or_kill(mm_struct_t *mm, uint32_t prot, uintptr_t page, bool write) {
+static int resolve_or_kill(mm_struct_t *mm, uint32_t prot, uintptr_t page, bool write, uintptr_t around) {
     int r;
 
-    for (int i = 0; (r = resolve(mm, prot, page, write)) == VM_FAULT_OOM && i < OOM_RETRIES && oom_make_room(); i++) { }
+    for (int i = 0; (r = resolve(mm, prot, page, write, around)) == VM_FAULT_OOM && i < OOM_RETRIES && oom_make_room(); i++) { }
     return r;
 }
 
@@ -307,9 +327,10 @@ int mm_fault(mm_struct_t *mm, uintptr_t addr, uint32_t error_code) {
         v = grow_stack(mm, addr);
     bool ok = v && vma_allows(v, write);
     uint32_t prot = ok ? v->page_prot : 0;
+    uintptr_t around = ok && !(v->vm_flags & VM_GROWS_DOWN) ? v->vm_end : 0;
     spinlock_release_irqrestore(&mm->lock, flags);
 
-    return ok ? resolve_or_kill(mm, prot, PAGE_ALIGN_DOWN(addr), write) : VM_FAULT_SEGV;
+    return ok ? resolve_or_kill(mm, prot, PAGE_ALIGN_DOWN(addr), write, around) : VM_FAULT_SEGV;
 }
 
 bool mm_access_ok(mm_struct_t *mm, uintptr_t addr, size_t len, bool write, bool populate) {
@@ -333,7 +354,7 @@ bool mm_access_ok(mm_struct_t *mm, uintptr_t addr, size_t len, bool write, bool 
             for (uintptr_t p = PAGE_ALIGN_DOWN(a); p < seg_end; p += PAGE_SIZE) {
                 uint32_t *pte = paging_pte(mm->pgd_phys, p, false);
                 if ((!pte || !(*pte & PAGE_PRESENT) || (write && !(*pte & PAGE_RW))) &&
-                    resolve_or_kill(mm, prot, p, write) != VM_FAULT_OK)
+                    resolve_or_kill(mm, prot, p, write, 0) != VM_FAULT_OK)
                     return false;
             }
         }

@@ -2,60 +2,41 @@
 #include <libc/stdint.h> // For uintptr_t, uint8_t etc. used in optimized memcpy
 #include <libc/stddef.h> // For size_t, NULL
 
-// Helper definitions for optimized memcpy
-typedef uintptr_t word_t; // Use native word size for potentially faster copies
-#define WORD_SIZE sizeof(word_t)
-#define WORD_MASK (WORD_SIZE - 1)
-
 /* --- Memory Manipulation Functions --- */
 
+/* Whole dwords with rep movsl/stosl, then at most three tail bytes. */
+
 void *memset(void *dest, int c, size_t n) {
-    unsigned char *ptr = (unsigned char *)dest;
-    unsigned char value = (unsigned char)c;
-
-    for (size_t i = 0; i < n; i++) {
-        ptr[i] = value;
-    }
-
+    void *d = dest;
+    size_t words = n >> 2, tail = n & 3;
+    uint32_t v = (uint8_t)c * 0x01010101u;
+    asm volatile("rep stosl" : "+D"(d), "+c"(words) : "a"(v) : "memory");
+    asm volatile("rep stosb" : "+D"(d), "+c"(tail) : "a"(v) : "memory");
     return dest;
 }
 
-/**
- * @brief Copies n bytes from memory area src to memory area dest.
- * Uses word-sized copies for aligned sections for better performance.
- * @warning The memory areas must not overlap. Use memmove if overlap is possible.
- */
- void *memcpy(void *dest, const void *src, size_t n) {
-    unsigned char *d = dest;
-    const unsigned char *s = src;
-    while (n--) {
-        *d++ = *s++;
-    }
+void *memcpy(void *dest, const void *src, size_t n) {
+    void *d = dest;
+    size_t words = n >> 2, tail = n & 3;
+    asm volatile("rep movsl" : "+D"(d), "+S"(src), "+c"(words) : : "memory");
+    asm volatile("rep movsb" : "+D"(d), "+S"(src), "+c"(tail) : : "memory");
     return dest;
 }
-
 
 void *memmove(void *dest, const void *src, size_t n) {
-    unsigned char *d = (unsigned char *)dest;
-    const unsigned char *s = (const unsigned char *)src;
+    uintptr_t d = (uintptr_t)dest, s = (uintptr_t)src;
+    if (d <= s || d - s >= n)
+        return memcpy(dest, src, n);
 
-    // If dest is before src or they don't overlap significantly,
-    // a forward copy is safe.
-    if (d <= s || d >= s + n) {
-        // Can use memcpy (or the optimized forward copy logic within it)
-        return memcpy(dest, src, n); // Assuming memcpy is defined (either builtin or custom)
-    }
-
-    // Otherwise, regions overlap and dest is *after* src (d > s).
-    // Copy backward to avoid overwriting source data before it's read.
-    // Start from the end of the buffers.
-    d += n;
-    s += n;
-    while (n--) {
-        *(--d) = *(--s);
-    }
-
-    return dest; // Per standard, return the original destination pointer
+    /* Overlap with dest above src: copy backwards, tail bytes first. */
+    size_t words = n >> 2, tail = n & 3;
+    d += n - 1;
+    s += n - 1;
+    asm volatile("std\n\trep movsb\n\tsubl $3, %%edi\n\tsubl $3, %%esi\n\t"
+                 "movl %3, %%ecx\n\trep movsl\n\tcld"
+                 : "+D"(d), "+S"(s), "+c"(tail)
+                 : "r"(words) : "memory", "cc");
+    return dest;
 }
 
 void *memchr(const void *s, int c, size_t n) {

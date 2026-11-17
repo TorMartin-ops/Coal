@@ -2,9 +2,9 @@
  * @file slab.h
  * @brief Slab allocator for small fixed-size objects.
  *
- * A slab is one page: a header followed by equally sized objects. A slab with
- * free objects sits on its cache's partial list; full slabs are unlinked and
- * come back when one of their objects is freed. Objects need no per-object
+ * A slab is one page: a header followed by equally sized objects. The cache
+ * allocates from its current slab; other slabs with free objects sit on the
+ * partial list, full slabs on no list until one of their objects is freed. Objects need no per-object
  * header: the slab (and with it the cache) is found by masking the pointer.
  */
 #ifndef SLAB_H
@@ -17,7 +17,8 @@ struct slab;
 
 typedef struct slab_cache {
     size_t obj_size;            /* multiple of 16 */
-    uint32_t objs_per_slab;
+    uint32_t limit;             /* highest page offset an object can start at */
+    struct slab *cur;           /* allocation target */
     struct slab *partial;
     spinlock_t lock;
 } slab_cache_t;

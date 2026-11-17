@@ -97,7 +97,7 @@ static void test_malloc(void) {
     memset(b, 0xBB, 100);
     CHECK((unsigned char)a[99] == 0xAA && (unsigned char)b[0] == 0xBB);
     free(a);
-    char *c = malloc(50);
+    char *c = malloc(100);
     CHECK(c == a);                              /* the freed block is reused */
     char *d = realloc(b, 5000);
     CHECK(d && (unsigned char)d[99] == 0xBB);

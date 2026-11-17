@@ -26,6 +26,7 @@ isr14:
     push es
     push fs
     push gs
+    cld                 ; user mode may have set DF
 
     ; Load kernel data segments
     mov ax, KERNEL_DS   ; Use the defined KERNEL_DS

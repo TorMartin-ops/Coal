@@ -7,6 +7,7 @@
 #include <kernel/drivers/display/terminal.h>
 #include <kernel/drivers/timer/pit.h>
 #include <kernel/memory/buddy.h>
+#include <kernel/memory/frame.h>
 #include <kernel/memory/paging.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/process/process.h>
@@ -62,8 +63,8 @@ static size_t render(const struct node *n, char *out) {
     uint32_t ms = (uint32_t)timer_uptime_ms();
     switch (n->kind) {
     case K_MEMINFO: {
-        uint32_t lt = (uint32_t)buddy_total_pages(ZONE_NORMAL), lf = (uint32_t)buddy_free_pages_count(ZONE_NORMAL);
-        uint32_t ht = (uint32_t)buddy_total_pages(ZONE_HIGH), hf = (uint32_t)buddy_free_pages_count(ZONE_HIGH);
+        uint32_t lt = (uint32_t)buddy_total_pages(ZONE_NORMAL), lf = (uint32_t)(buddy_free_pages_count(ZONE_NORMAL) + frame_pool_pages(ZONE_NORMAL));
+        uint32_t ht = (uint32_t)buddy_total_pages(ZONE_HIGH), hf = (uint32_t)(buddy_free_pages_count(ZONE_HIGH) + frame_pool_pages(ZONE_HIGH));
         const uint32_t kb = PAGE_SIZE / 1024;
         return (size_t)pf(out, SNAPSHOT_MAX,
                           "MemTotal:    %8u kB\nMemFree:     %8u kB\nMemAvailable:%8u kB\n"
