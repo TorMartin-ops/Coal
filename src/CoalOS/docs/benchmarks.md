@@ -25,3 +25,27 @@
 | tcp_bw               | MB/s |               n/a |                        |           n/a |
 | memcpy_bw            | MB/s |             29.99 |         23.82 .. 32.09 |        999.53 |
 No loopback interface exists yet, so the TCP tests print `n/a`.
+
+## Perf wave C: memory
+
+Numbers below are icount medians (`-icount shift=0,sleep=off`, 5 reps) against the commit before the wave
+(`ffb6890`). In this mode QEMU counts every `rep` iteration as one instruction, so byte-wise `rep movsb`/`stosb`
+look four times worse than dword-wise; see the wall-clock table at the end for the real effect.
+
+### rep movsd / rep stosd for memcpy, memset and copy_*_user
+
+The kernel `memset`/`memcpy` were byte loops, the libc ones and `copy_*_user` used `rep movsb`/`stosb`.
+All now move whole dwords with `rep movsl`/`rep stosl` and finish with at most three bytes (`rep movsb`).
+`copy_*_user` keeps its exception-table fixup: a fault in the dword phase returns `ECX*4 + tail` bytes
+not copied. `memmove` copies backwards (`std`, tail bytes first) only for a forward overlap.
+Interrupt stubs now execute `cld`, because user mode can set DF and the kernel's `rep` strings need it clear.
+The usual rationale: string instructions are microcoded and cost per iteration, so fewer, wider iterations win
+(Intel SDM vol. 1, 7.3.9; Intel optimization manual, "Fast string operations").
+
+| test | before | after |
+|------|--------|-------|
+| memcpy_bw (MB/s) | 999 | 3998 |
+| page_fault (ns) | 10813 | 1592 |
+| pipe_bw (MB/s) | 117 | 661 |
+| fork_exit_wait (ns) | 97274 | 52115 |
+| fork_exec_wait (ns) | 250837 | 120025 |

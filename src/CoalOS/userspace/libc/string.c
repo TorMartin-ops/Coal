@@ -3,15 +3,21 @@
 #include <libc/errno.h>
 #include <libc/ctype.h>
 
+/* Whole dwords with rep movsl/stosl, then at most three tail bytes. */
 void *memcpy(void *d, const void *s, size_t n) {
     void *r = d;
-    __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+    size_t words = n >> 2, tail = n & 3;
+    __asm__ volatile("rep movsl" : "+D"(d), "+S"(s), "+c"(words) : : "memory");
+    __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(tail) : : "memory");
     return r;
 }
 
 void *memset(void *d, int c, size_t n) {
     void *r = d;
-    __asm__ volatile("rep stosb" : "+D"(d), "+c"(n) : "a"(c) : "memory");
+    size_t words = n >> 2, tail = n & 3;
+    unsigned v = (unsigned char)c * 0x01010101u;
+    __asm__ volatile("rep stosl" : "+D"(d), "+c"(words) : "a"(v) : "memory");
+    __asm__ volatile("rep stosb" : "+D"(d), "+c"(tail) : "a"(v) : "memory");
     return r;
 }
 

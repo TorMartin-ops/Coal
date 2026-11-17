@@ -58,6 +58,7 @@ ISR_NOERR 19
 
 isr_common_stub:
     SAVE_FRAME
+    cld                         ; user mode may have set DF; the C ABI and rep movs need it clear
     push    esp                 ; &isr_frame_t
     call    isr_common_handler
     add     esp, 4
