@@ -26,8 +26,9 @@ static struct idt_entry idt_entries[IDT_ENTRIES] __attribute__((aligned(16)));
 static struct idt_ptr idtp;
 static interrupt_handler_info_t interrupt_c_handlers[IDT_ENTRIES];
 
-// Entry points for vectors 0..47 (0 = none), from isr_stubs.asm.
-#define STUB_VECTORS 48
+// Entry points for vectors 0..63 (0 = none), from isr_stubs.asm.
+#define STUB_VECTORS 64
+static uint32_t irq_counts[STUB_VECTORS];
 extern void (*const isr_stub_table[STUB_VECTORS])(void);
 extern void syscall_entry(void);
 extern void idt_flush(uintptr_t idt_ptr_addr);
@@ -131,10 +132,15 @@ static int exception_signal(uint32_t vector) {
     }
 }
 
+uint32_t irq_count(unsigned vector) {
+    return vector < STUB_VECTORS ? irq_counts[vector] : 0;
+}
+
 // Called by the stubs for every vector except page faults and syscalls.
 void isr_common_handler(isr_frame_t *frame) {
     interrupt_handler_info_t *entry = &interrupt_c_handlers[frame->int_no];
 
+    irq_counts[frame->int_no]++;
     if (entry->handler) {
         entry->handler(frame);          // hardware handlers send their own EOI
     } else if (frame->int_no >= IRQ0_VECTOR && frame->int_no < IRQ0_VECTOR + 16) {
@@ -149,7 +155,10 @@ void isr_common_handler(isr_frame_t *frame) {
         for (;;)
             asm volatile("hlt");
     }
-    if (frame->cs & 3) signal_return_to_user(frame, 0);
+    if (frame->cs & 3) {
+        if (g_need_reschedule) schedule();          // an interrupt made a better task runnable
+        signal_return_to_user(frame, 0);
+    }
 }
 
 void idt_init(void) {

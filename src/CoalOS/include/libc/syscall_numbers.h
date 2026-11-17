@@ -24,6 +24,8 @@
 #define SYS_GETPID          20
 #define SYS_GETUID          24
 #define SYS_LINK            9
+#define SYS_GETPRIORITY     96
+#define SYS_SETPRIORITY     97
 #define SYS_STATFS          99
 #define SYS_FSTATFS         100
 #define SYS_SYMLINK         83
@@ -31,6 +33,7 @@
 #define SYS_STATFS64        268
 #define SYS_FSTATFS64       269
 #define SYS_ACCESS          33
+#define SYS_NICE            34
 #define SYS_KILL            37
 #define SYS_MKDIR           39
 #define SYS_RMDIR           40

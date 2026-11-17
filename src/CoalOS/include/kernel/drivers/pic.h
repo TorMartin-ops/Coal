@@ -15,6 +15,12 @@ static inline void pic_send_eoi(unsigned irq) {
     outb(PIC1_COMMAND, PIC_EOI);
 }
 
+/** Mask IRQ line 0-15. */
+static inline void pic_mask(unsigned irq) {
+    uint16_t port = (irq >= 8) ? PIC2_DATA : PIC1_DATA;
+    outb(port, (uint8_t)(inb(port) | (1u << (irq & 7))));
+}
+
 /** Unmask IRQ line 0-15 (and the cascade line for the slave). */
 static inline void pic_unmask(unsigned irq) {
     uint16_t port = (irq >= 8) ? PIC2_DATA : PIC1_DATA;

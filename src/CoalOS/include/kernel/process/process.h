@@ -38,6 +38,7 @@ typedef struct pcb {
     uint32_t pgid, sid;
     struct pcb *parent, *children, *sibling;
     struct pcb *all_next;             /* list of every process */
+    struct pcb *dead_next;            /* list of exited processes nobody waits for */
     int      exit_status;             /* Linux wait status encoding */
     bool     wait_blocked;            /* parent is blocked in process_waitpid() */
     bool     exiting;                 /* process_exit() has started */

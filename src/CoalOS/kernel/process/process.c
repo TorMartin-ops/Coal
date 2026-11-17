@@ -35,7 +35,7 @@ static unsigned  kstack_nfree;
 
 static pcb_t *g_all;                      /* every live process */
 static pcb_t *g_dead;                     /* exited with no parent to wait for them */
-static void dead_push(pcb_t *p) { p->task.next = (tcb_t *)g_dead; g_dead = p; }
+static void dead_push(pcb_t *p) { p->dead_next = g_dead; g_dead = p; }
 static uint32_t g_next_pid = 1;
 
 pcb_t *get_current_process(void) {
@@ -135,7 +135,6 @@ static pcb_t *pcb_new(void) {
     memset(p, 0, sizeof(*p));
     spinlock_init(&p->fd_table_lock);
     p->task.process = p;
-    p->task.priority = SCHED_DEFAULT_PRIORITY;
     strcpy(p->cwd, "/");
     if (!kstack_alloc(p)) { kfree(p); return NULL; }
     return p;
@@ -180,7 +179,7 @@ void process_reap_orphans(void) {
     for (;;) {
         uintptr_t flags = local_irq_save();
         pcb_t *p = g_dead;
-        if (p) g_dead = (pcb_t *)p->task.next;
+        if (p) g_dead = p->dead_next;
         local_irq_restore(flags);
         if (!p) return;
         pcb_free(p);
@@ -262,6 +261,7 @@ int process_fork(const isr_frame_t *regs) {
     child->cmdline_len = parent->cmdline_len;
     strcpy(child->cwd, parent->cwd);
     child->cloexec = parent->cloexec;
+    child->task.nice = parent->task.nice;
     child->tls_base = parent->tls_base;
     child->tls_pages = parent->tls_pages;
     child->sig_blocked = parent->sig_blocked;

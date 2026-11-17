@@ -1,32 +1,38 @@
 /**
  * @file pit.h
- * @brief 8253/8254 PIT: 1000 Hz system tick, monotonic tick counter, uptime.
+ * @brief Time base: the TSC, calibrated against PIT channel 2 at boot, gives the monotonic clock.
+ *        Without a TSC the PIT ticks at 1 kHz and counts the time instead. The PIT is also the
+ *        fallback clock event device when the CPU has no local APIC.
  */
 #ifndef PIT_H
 #define PIT_H
 
 #include <kernel/core/types.h>
+#include <kernel/drivers/timer/timer.h>
 
-#define TIMER_HZ 1000u /* ticks per second; one tick is 1 ms */
-
-/** Calibrates the TSC against the PIT (a few ms) so that uptime is real from the first log line on.
- *  Call first thing at boot; without a TSC the uptime reads 0 until timer_start(). */
+/** Calibrates the TSC against the PIT (a few ms) so that time is real from the first log line on.
+ *  Call first thing at boot. */
 void timer_early_init(void);
 
-/** From here the uptime is the interrupt tick count, continuing from the time already passed.
- *  Call right before enabling interrupts. */
-void timer_start(void);
+/** Nanoseconds since timer_early_init(). Monotonic. */
+uint64_t clock_ns(void);
 
-/** Programs channel 0 for TIMER_HZ and installs the IRQ0 handler. */
-void init_pit(void);
+/** TSC frequency in kHz, 0 when the CPU has no TSC. */
+uint32_t clock_tsc_khz(void);
 
-/** Ticks (ms) since timer_early_init(). Monotonic, never wraps in practice (64 bit). */
+static inline uint64_t tsc_read(void) {
+    uint32_t lo, hi;
+    asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/** Milliseconds since timer_early_init(). Monotonic, never wraps in practice (64 bit). */
 uint64_t timer_ticks(void);
 
-/** Milliseconds since timer_early_init(). */
+/** Same as timer_ticks(). */
 uint64_t timer_uptime_ms(void);
 
-/** Calls fn from the tick interrupt every millisecond (one hook; NULL removes it). */
-void timer_set_hook(void (*fn)(void));
+/** The PIT as clock event device: one-shot with a TSC, 1 kHz periodic without. */
+const struct clockevent *pit_clockevent_init(void);
 
 #endif /* PIT_H */

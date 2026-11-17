@@ -68,8 +68,8 @@ int net_ip_send(uint8_t proto, uint32_t src, uint32_t dst, size_t len);
 /** Called by the NIC driver for every received frame (interrupt context). */
 void net_rx_frame(const uint8_t *frame, size_t len);
 
-/** Per-millisecond timer entry: delivers loopback packets, and runs the NIC poll and protocol timers every 10 ms. */
-void net_tick(void);
+/** Makes the protocol timers (tcp_tick, dhcp_tick, NIC poll) run within ms milliseconds; an earlier request stays. */
+void net_timer_kick(uint32_t ms);
 
 /** Sends one UDP datagram (payload up to IP_PAYLOAD_MAX - 8 bytes) from sport. src 0 = the interface address. */
 int udp_send(uint32_t src, uint16_t sport, uint32_t dst, uint16_t dport, const void *data, size_t len);
@@ -77,7 +77,8 @@ int udp_send(uint32_t src, uint16_t sport, uint32_t dst, uint16_t dport, const v
 /* Transport hooks. src/dst are host order, seg points at the transport header. */
 bool udp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len);   /* false: no socket, send port unreachable */
 void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, size_t len);
-void tcp_tick(void);
+/** Retransmits what is overdue. Returns the milliseconds until it has work again, 0 if no timer is armed. */
+uint32_t tcp_tick(void);
 void icmp_deliver(const uint8_t *ip_packet, size_t len);   /* to raw sockets */
 /** An ICMP port unreachable arrived; quoted is the IP header and first 8 bytes of our datagram. */
 void icmp_port_unreachable(const uint8_t *quoted, size_t len);
@@ -85,6 +86,7 @@ void icmp_port_unreachable(const uint8_t *quoted, size_t len);
 /* DHCP client (UDP port 68). */
 void dhcp_start(void);
 void dhcp_input(const uint8_t *msg, size_t len);
-void dhcp_tick(void);
+/** Returns the milliseconds until dhcp_tick() has work again, 0 if it needs none. */
+uint32_t dhcp_tick(void);
 
 #endif

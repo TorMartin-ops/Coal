@@ -16,6 +16,7 @@
 #include <kernel/drivers/display/terminal.h>
 #include <kernel/drivers/display/console_dev.h>
 #include <kernel/drivers/timer/pit.h>
+#include <kernel/drivers/timer/timer.h>
 #include <kernel/drivers/input/keyboard.h>
 #include <kernel/drivers/input/keyboard_hw.h>
 #include <kernel/drivers/input/keymap.h>
@@ -116,7 +117,8 @@ void kernel_main_init(uint32_t magic, uint32_t mb_info_phys_addr) {
     gdt_init();
     initialize_memory_management(mb_info_phys_addr);
     idt_init();
-    init_pit();
+    timer_init();
+    LOG_INFO("timer: %s", timer_device_name());
     fpu_init();
     scheduler_init();
     keyboard_init();
@@ -132,7 +134,6 @@ void kernel_main_init(uint32_t magic, uint32_t mb_info_phys_addr) {
     configure_keyboard_controller();
     LOG_INFO("starting %s", INIT_PATH);
     klog_console_quiet();
-    timer_start();
     asm volatile("sti");
     scheduler_start();
     KERNEL_PANIC_HALT("scheduler_start() returned");

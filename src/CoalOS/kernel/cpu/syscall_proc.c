@@ -81,6 +81,34 @@ long sc_sched_yield(void) {
     return 0;
 }
 
+#define PRIO_PROCESS 0
+
+long sc_nice(int32_t inc) {
+    tcb_t *t = &get_current_process()->task;
+
+    scheduler_set_nice(t, t->nice + (inc < -40 ? -40 : inc > 40 ? 40 : inc));
+    return 0;
+}
+
+/* The kernel's getpriority returns 20 - nice, so that the result is never negative. */
+long sc_getpriority(uint32_t which, uint32_t who) {
+    pcb_t *p;
+
+    if (which != PRIO_PROCESS) return -EINVAL;
+    p = who ? process_find(who) : get_current_process();
+    return p ? 20 - p->task.nice : -ESRCH;
+}
+
+long sc_setpriority(uint32_t which, uint32_t who, int32_t nice) {
+    pcb_t *p;
+
+    if (which != PRIO_PROCESS) return -EINVAL;
+    p = who ? process_find(who) : get_current_process();
+    if (!p) return -ESRCH;
+    scheduler_set_nice(&p->task, nice);
+    return 0;
+}
+
 //============================================================================
 // Sessions and process groups
 //============================================================================

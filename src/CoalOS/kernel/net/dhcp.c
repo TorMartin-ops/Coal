@@ -47,6 +47,38 @@ static uint32_t xid, retry_at, offered_ip, server_ip;
 static int      tries;
 static uint32_t bound_at, t1_ms, t2_ms, lease_ms;   /* lease times, counted from bound_at */
 
+/* Milliseconds until `at`, at least 1. */
+static uint32_t until(uint32_t at) {
+    int32_t d = (int32_t)(at - net_now());
+    return d > 0 ? (uint32_t)d : 1;
+}
+
+/* When dhcp_tick() next has something to do, 0 if never. */
+static uint32_t next_ms(void) {
+    uint32_t ms;
+
+    switch (state) {
+    case SELECTING: case REQUESTING:
+        return until(retry_at);
+    case BOUND: case RENEWING: case REBINDING:
+        if (!lease_ms) return 0;
+        ms = until(bound_at + lease_ms);
+        if (state == BOUND) ms = until(bound_at + t1_ms) < ms ? until(bound_at + t1_ms) : ms;
+        if (state != REBINDING) ms = until(bound_at + t2_ms) < ms ? until(bound_at + t2_ms) : ms;
+        if (state != BOUND) ms = until(retry_at) < ms ? until(retry_at) : ms;
+        return ms;
+    default:
+        return 0;
+    }
+}
+
+/* Makes sure net.c's timer runs when the client next has work. */
+static void kick(void) {
+    uint32_t ms = next_ms();
+
+    if (ms) net_timer_kick(ms);
+}
+
 static void send_msg(uint8_t type) {
     struct bootp m;
     uint8_t *o = m.options;
@@ -98,6 +130,7 @@ void dhcp_start(void) {
     tries = 1;
     retry_at = net_now() + RETRY_MS;
     send_msg(DISCOVER);
+    kick();
 }
 
 /* Next retransmission while renewing: half the time left, at least RENEW_RETRY_MS. */
@@ -130,7 +163,7 @@ static void lease_tick(void) {
     }
 }
 
-void dhcp_tick(void) {
+static void tick(void) {
     if (state == BOUND || state == RENEWING || state == REBINDING) { lease_tick(); return; }
     if ((state != SELECTING && state != REQUESTING) || (int32_t)(net_now() - retry_at) < 0) return;
     if (tries >= MAX_TRIES) {
@@ -141,6 +174,11 @@ void dhcp_tick(void) {
     tries++;
     retry_at = net_now() + RETRY_MS;
     send_msg(state == SELECTING ? DISCOVER : REQUEST);
+}
+
+uint32_t dhcp_tick(void) {
+    tick();
+    return next_ms();
 }
 
 void dhcp_input(const uint8_t *msg, size_t len) {
@@ -185,4 +223,5 @@ void dhcp_input(const uint8_t *msg, size_t len) {
         net_if.ip = net_if.mask = net_if.gw = net_if.dns = 0;
         dhcp_start();
     }
+    kick();
 }

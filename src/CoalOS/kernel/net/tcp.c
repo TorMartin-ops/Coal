@@ -111,6 +111,7 @@ static void finish(struct tcp_conn *c, int err) {
 static void arm(struct tcp_conn *c, uint32_t ms) {
     c->rtx_on = true;
     c->rtx_at = net_now() + ms;
+    net_timer_kick(ms);
 }
 
 static uint32_t window(const struct tcp_conn *c) { return BUF_SIZE - c->rx_len; }
@@ -210,12 +211,17 @@ static void retransmit(struct tcp_conn *c) {
     }
 }
 
-void tcp_tick(void) {
-    uint32_t now = net_now();
+uint32_t tcp_tick(void) {
+    uint32_t now = net_now(), next = 0;
 
     for (int i = 0; i < MAX_CONNS; i++) {
         struct tcp_conn *c = &conns[i];
-        if (!c->used || !c->rtx_on || (int32_t)(now - c->rtx_at) < 0) continue;
+        if (!c->used || !c->rtx_on) continue;
+        if ((int32_t)(now - c->rtx_at) < 0) {
+            uint32_t left = c->rtx_at - now;
+            if (!next || left < next) next = left;
+            continue;
+        }
 
         if (c->state == TCP_TIME_WAIT || c->state == TCP_FIN_WAIT2) {
             finish(c, 0);
@@ -236,6 +242,7 @@ void tcp_tick(void) {
         retransmit(c);
         arm(c, c->rto);
     }
+    return next;
 }
 
 /* ---- input ------------------------------------------------------------------- */

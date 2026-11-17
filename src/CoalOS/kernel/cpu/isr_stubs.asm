@@ -55,6 +55,8 @@ ISR_NOERR 19
     IRQ i
 %assign i i+1
 %endrep
+IRQ 16                          ; local APIC timer (vector 0x30)
+IRQ 31                          ; local APIC spurious interrupt (vector 0x3F)
 
 isr_common_stub:
     SAVE_FRAME
@@ -64,14 +66,14 @@ isr_common_stub:
     RESTORE_FRAME
     iret
 
-; Entry points indexed by vector 0..47; 0 marks vectors without a stub.
+; Entry points indexed by vector 0..63; 0 marks vectors without a stub.
 extern isr14
 section .rodata
 global isr_stub_table
 isr_stub_table:
 %assign v 0
-%rep 48
-    %if v = 9 || v = 15 || (v >= 20 && v < 32)
+%rep 64
+    %if v = 9 || v = 15 || (v >= 20 && v < 32) || (v > 48 && v < 63)
         dd 0
     %elif v = 14
         dd isr14
