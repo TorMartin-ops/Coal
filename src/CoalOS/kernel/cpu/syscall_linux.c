@@ -16,7 +16,6 @@
 #include <kernel/fs/vfs/vfs.h>
 #include <kernel/fs/vfs/sys_file.h>
 #include <kernel/drivers/display/serial.h>
-#include <kernel/drivers/timer/time.h>
 #include <kernel/lib/string.h>
 #include <libc/limits.h>
 

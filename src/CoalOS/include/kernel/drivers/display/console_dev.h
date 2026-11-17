@@ -1,30 +1,21 @@
 /**
  * @file console_dev.h
- * @brief Console device driver header
+ * @brief /dev/console: VFS glue between file descriptors and the tty/terminal.
  */
-
 #ifndef CONSOLE_DEV_H
 #define CONSOLE_DEV_H
 
 #include <kernel/fs/vfs/vfs.h>
-#include <libc/stddef.h>
+#include <kernel/fs/vfs/sys_file.h> /* O_RDONLY, O_WRONLY */
 
-// File mode constants for console
-#define CONSOLE_STDIN_MODE  0x001  // Read-only
-#define CONSOLE_STDOUT_MODE 0x002  // Write-only  
-#define CONSOLE_STDERR_MODE 0x002  // Write-only
+#define CONSOLE_STDIN_MODE  O_RDONLY
+#define CONSOLE_STDOUT_MODE O_WRONLY
+#define CONSOLE_STDERR_MODE O_WRONLY
 
-/**
- * @brief Create a console file structure
- * @param mode File mode (CONSOLE_STDIN_MODE, CONSOLE_STDOUT_MODE, etc.)
- * @return Pointer to file_t structure, or NULL on failure
- */
-file_t *create_console_file(int mode);
+/** Creates an open file on the console with the given O_* access mode. */
+file_t *create_console_file(int flags);
 
-/**
- * @brief Initialize console device driver
- * Called during system initialization
- */
+/** Registers the console with the VFS and hooks keyboard input up to the tty. */
 void console_dev_init(void);
 
-#endif // CONSOLE_DEV_H
+#endif /* CONSOLE_DEV_H */

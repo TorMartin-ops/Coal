@@ -34,7 +34,6 @@
 #include <libc/stddef.h>    // NULL, size_t
 #include <libc/stdbool.h>   // bool
 #include <libc/stdarg.h>    // varargs for printf (though not used in macros now)
-#include <kernel/drivers/timer/time.h>           // kernel_get_time(), kernel_time_t (placeholder)
 #include <kernel/drivers/display/terminal.h>       // terminal_printf FOR FORMATTED LOGGING
 
 /* --- Helper Macros --- */

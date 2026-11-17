@@ -1,32 +1,25 @@
+/**
+ * @file keymap.h
+ * @brief Keyboard layouts: scancode set 1 -> Latin-1 characters.
+ */
 #ifndef KEYMAP_H
 #define KEYMAP_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-// *** THIS IS THE CRUCIAL FIX for "stdint.h: No such file or directory" ***
-// It MUST point to your project's stdint.h because of -nostdinc compiler flag
-#include <libc/stdint.h> // For uint16_t
+#include <kernel/core/types.h>
 
 typedef enum {
     KEYMAP_US_QWERTY = 0,
-    KEYMAP_UK_QWERTY,
-    KEYMAP_DVORAK,
-    KEYMAP_COLEMAK,
-    KEYMAP_NORWEGIAN
+    KEYMAP_NORWEGIAN,
 } KeymapLayout;
 
+/** Selects the active layout. Safe to call at any time. */
 void keymap_load(KeymapLayout layout);
 
-extern const uint16_t keymap_us_qwerty[128];
-extern const uint16_t keymap_uk_qwerty[128];
-extern const uint16_t keymap_dvorak[128];
-extern const uint16_t keymap_colemak[128];
-extern const uint16_t keymap_norwegian[128];
+/**
+ * Translates a set-1 make code (0x01..0x58, without the 0x80 break bit) to a
+ * Latin-1 character, honouring Shift, AltGr and Caps Lock from `mods`.
+ * Returns 0 for keys that produce no character.
+ */
+uint8_t keymap_translate(uint8_t scancode, uint8_t mods);
 
-#ifdef __cplusplus
-}
-#endif
-
-#endif // KEYMAP_H
+#endif /* KEYMAP_H */

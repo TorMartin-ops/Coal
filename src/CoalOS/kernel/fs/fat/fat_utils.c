@@ -21,7 +21,6 @@
 #include <libc/stdbool.h> // For bool
 #include <libc/stdint.h>  // For uint*_t
 #include <libc/stddef.h>  // For size_t, NULL
-#include <kernel/drivers/timer/time.h>       // For kernel_time_t and kernel_get_time (if available)
 
 // --- Logging Macros (Ensure defined correctly) ---
 // Define FAT_DEBUG_LEVEL to 1 or higher for debug logs
