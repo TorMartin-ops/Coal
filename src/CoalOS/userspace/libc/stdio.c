@@ -110,112 +110,111 @@ int snprintf(char *str, size_t size, const char *format, ...) {
     return result;
 }
 
+// Output cursor for vsnprintf: always leaves room for the final NUL.
+typedef struct {
+    char *buf;
+    size_t size;
+    size_t pos;
+} out_t;
+
+static void out_char(out_t *o, char c) {
+    if (o->pos < o->size - 1) o->buf[o->pos++] = c;
+}
+
+// Write text (len bytes) padded to width with spaces or zeros.
+static void out_field(out_t *o, const char *text, size_t len, size_t width,
+                      bool left, bool zero) {
+    size_t pad = width > len ? width - len : 0;
+    size_t i = 0;
+
+    if (!left && zero && len > 0 && text[0] == '-') {
+        out_char(o, '-');   // keep the sign in front of the zeros
+        i = 1;
+    }
+    for (size_t k = 0; !left && k < pad; k++) out_char(o, zero ? '0' : ' ');
+    for (; i < len; i++) out_char(o, text[i]);
+    for (size_t k = 0; left && k < pad; k++) out_char(o, ' ');
+}
+
 int vsnprintf(char *str, size_t size, const char *format, va_list args) {
     if (!str || !format || size == 0) return -1;
-    
-    size_t pos = 0;
-    const char *p = format;
+
+    out_t o = { str, size, 0 };
     char temp_buf[64];
-    
-    while (*p && pos < size - 1) {
+
+    for (const char *p = format; *p; p++) {
         if (*p != '%') {
-            str[pos++] = *p++;
+            out_char(&o, *p);
             continue;
         }
-        
-        p++; // Skip '%'
-        while (*p == 'l') p++; // long is 32 bits, same as int
+        p++;
+
+        bool left = false, zero = false;
+        for (;; p++) {
+            if (*p == '-') left = true;
+            else if (*p == '0') zero = true;
+            else break;
+        }
+        size_t width = 0;
+        while (*p >= '0' && *p <= '9') width = width * 10 + (size_t)(*p++ - '0');
+        while (*p == 'l') p++;   // long is 32 bits, same as int
         if (!*p) break;
 
-        // Handle format specifiers
+        const char *text = temp_buf;
+        size_t len = 0;
+
         switch (*p) {
-            case 'c': {
-                int c = va_arg(args, int);
-                if (pos < size - 1) {
-                    str[pos++] = (char)c;
-                }
+            case 'c':
+                temp_buf[0] = (char)va_arg(args, int);
+                len = 1;
+                zero = false;
                 break;
-            }
-            case 's': {
-                const char *s = va_arg(args, const char*);
-                if (s) {
-                    while (*s && pos < size - 1) {
-                        str[pos++] = *s++;
-                    }
-                } else {
-                    const char *null_str = "(null)";
-                    while (*null_str && pos < size - 1) {
-                        str[pos++] = *null_str++;
-                    }
-                }
+            case 's':
+                text = va_arg(args, const char *);
+                if (!text) text = "(null)";
+                len = strlen(text);
+                zero = false;
                 break;
-            }
             case 'd':
-            case 'i': {
-                int num = va_arg(args, int);
-                int len = int_to_string(num, temp_buf);
-                for (int i = 0; i < len && pos < size - 1; i++) {
-                    str[pos++] = temp_buf[i];
-                }
+            case 'i':
+                len = (size_t)int_to_string(va_arg(args, int), temp_buf);
                 break;
-            }
-            case 'u': {
-                unsigned int num = va_arg(args, unsigned int);
-                int len = uint_to_string(num, temp_buf, 10);
-                for (int i = 0; i < len && pos < size - 1; i++) {
-                    str[pos++] = temp_buf[i];
-                }
+            case 'u':
+                len = (size_t)uint_to_string(va_arg(args, unsigned int), temp_buf, 10);
                 break;
-            }
-            case 'x': {
-                unsigned int num = va_arg(args, unsigned int);
-                int len = uint_to_string(num, temp_buf, 16);
-                for (int i = 0; i < len && pos < size - 1; i++) {
-                    str[pos++] = temp_buf[i];
-                }
+            case 'x':
+                len = (size_t)uint_to_string(va_arg(args, unsigned int), temp_buf, 16);
                 break;
-            }
             case 'X': {
-                unsigned int num = va_arg(args, unsigned int);
-                int len = uint_to_string(num, temp_buf, 16);
-                for (int i = 0; i < len && pos < size - 1; i++) {
-                    char c = temp_buf[i];
-                    str[pos++] = (c >= 'a' && c <= 'z') ? c - 'a' + 'A' : c;
+                len = (size_t)uint_to_string(va_arg(args, unsigned int), temp_buf, 16);
+                for (size_t i = 0; i < len; i++) {
+                    if (temp_buf[i] >= 'a' && temp_buf[i] <= 'f') temp_buf[i] -= 'a' - 'A';
                 }
                 break;
             }
-            case 'p': {
-                void *ptr = va_arg(args, void*);
-                if (pos < size - 3) {
-                    str[pos++] = '0';
-                    str[pos++] = 'x';
-                }
-                unsigned int addr = (unsigned int)(uintptr_t)ptr;
-                int len = uint_to_string(addr, temp_buf, 16);
-                for (int i = 0; i < len && pos < size - 1; i++) {
-                    str[pos++] = temp_buf[i];
-                }
+            case 'p':
+                temp_buf[0] = '0';
+                temp_buf[1] = 'x';
+                len = 2 + (size_t)uint_to_string((unsigned int)(uintptr_t)va_arg(args, void *),
+                                                 temp_buf + 2, 16);
                 break;
-            }
-            case '%': {
-                if (pos < size - 1) {
-                    str[pos++] = '%';
-                }
+            case '%':
+                temp_buf[0] = '%';
+                len = 1;
+                width = 0;
                 break;
-            }
-            default:
-                // Unknown format specifier, just copy it
-                if (pos < size - 2) {
-                    str[pos++] = '%';
-                    str[pos++] = *p;
-                }
+            default:   // unknown specifier: print it unchanged
+                temp_buf[0] = '%';
+                temp_buf[1] = *p;
+                len = 2;
+                width = 0;
                 break;
         }
-        p++;
+        out_field(&o, text, len, width, left, zero);
     }
-    
-    str[pos] = '\0';
-    return (int)pos;
+
+    str[o.pos] = '\0';
+    return (int)o.pos;
 }
 
 int sprintf(char *str, const char *format, ...) {
