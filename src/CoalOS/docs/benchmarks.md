@@ -122,3 +122,32 @@ Worst case for a process that touches one page in a sparse region: three extra f
 |------|--------|-------|
 | page_fault (ns) | 1594.5 | 1431.7 |
 | page_fault_idle (ns) | 357.9 | 195.3 |
+
+### Not done: rep movsb with ERMS
+
+CPUID leaf 7 reports ERMS, and `rep movsb` is then as fast as `rep movsd` for long copies, with no tail. It was not
+added: QEMU's TCG executes one iteration per byte, so under emulation (the only place these numbers can be
+measured) it is four times slower than the dword form, and on hardware fast-string microcode already covers
+`rep movsd`. A CPUID probe and a branch in every copy would buy nothing measurable here.
+
+### Wall-clock summary (TCG, host load average about 4 on 2 cores, 21 reps, one run)
+
+Wall-clock numbers on a loaded host move by tens of percent between runs (one earlier run measured
+`mmap_munmap_1m` 53 percent worse, the next 4 percent better); only large effects are meaningful.
+Before is `ffb6890`, after is the end of the wave.
+
+| test | unit | before | after |
+|------|------|--------|-------|
+| memcpy_bw | MB/s | 31.1 | 1681.6 |
+| pipe_bw | MB/s | 37.1 | 201.8 |
+| page_fault | ns | 5179 | 2406 |
+| fork_exit_wait | ns | 104609 | 65932 |
+| fork_exec_wait | ns | 594941 | 327354 |
+| signal_roundtrip | ns | 24908 | 6533 |
+| create_delete_4k | ns | 133042 | 80804 |
+| mmap_munmap_1m | ns | 2942 | 2818 |
+| file_write_8m | MB/s | 2.08 | 2.64 |
+
+RAM after boot (`/proc/meminfo` MemFree at 128 MiB, a `cat` running): 127268 kB before, 127224 kB after (44 kB less:
+one more kernel text page and the 28 kB of size-class pages that the new libc malloc touches in that process).
+The zero pool is counted as free, so it does not show.
