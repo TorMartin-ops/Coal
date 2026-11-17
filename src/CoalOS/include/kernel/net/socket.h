@@ -15,6 +15,7 @@
 
 #define AF_UNIX         1
 #define AF_INET         2
+#define AF_VSOCK        40
 #define SOCK_STREAM     1
 #define SOCK_DGRAM      2
 #define SOCK_RAW        3
@@ -61,6 +62,24 @@ struct dgram {
 };
 
 struct tcp_conn;
+struct sock;
+
+/**
+ * Operations of a protocol other than the built-in AF_INET ones (AF_VSOCK). A socket with `ops` set is
+ * handled entirely by them. Addresses arrive as the raw sockaddr copied from user space.
+ */
+struct sock_ops {
+    int     (*bind)(struct sock *s, const void *addr, size_t len);
+    int     (*connect)(struct sock *s, const void *addr, size_t len);
+    int     (*listen)(struct sock *s, int backlog);
+    int     (*accept)(struct sock *s, int flags, void *addr, size_t *len);     /* new descriptor */
+    ssize_t (*send)(struct sock *s, const void *buf, size_t len, int flags);
+    ssize_t (*recv)(struct sock *s, void *buf, size_t len, int flags);
+    int     (*shutdown)(struct sock *s, int how);
+    int     (*name)(const struct sock *s, bool peer, void *addr, size_t *len);
+    uint32_t (*poll)(struct sock *s);
+    void    (*close)(struct sock *s);                                          /* not the struct sock itself */
+};
 
 struct sock {
     uint8_t  type, proto;
@@ -71,6 +90,8 @@ struct sock {
     uint16_t lport, rport;
     uint32_t rcv_timeout_ms, snd_timeout_ms; /* 0 = block forever */
     drv_waitq_t wq;
+    const struct sock_ops *ops;             /* non-NULL: a protocol outside AF_INET */
+    void *pdata;                            /* its state */
     struct tcp_conn *tcp;
     struct tcp_conn *accq[BACKLOG_MAX];     /* established, not yet accepted */
     uint8_t  acc_n, backlog;
@@ -93,6 +114,14 @@ int  sock_shutdown(struct sock *s, int how);
 int  sock_setopt(struct sock *s, int level, int name, const void *val, size_t len);
 int  sock_getopt(struct sock *s, int level, int name, void *val, size_t *len);
 void sock_name(const struct sock *s, bool peer, struct sockaddr_in *out);
+
+/* For protocol code: sleeping on a socket, and socket objects */
+typedef struct { bool timed; uint32_t end; } sock_wait_t;
+void sock_wait_init(sock_wait_t *w, uint32_t ms);          /* ms == 0: no deadline */
+int  sock_wait(struct sock *s, const sock_wait_t *w);      /* interrupts off; -EINTR, or -EAGAIN at the deadline */
+struct sock *sock_new(int type, int protocol);             /* registered, interrupts off */
+int  sock_install(struct sock *s, int flags);              /* new descriptor; frees s on failure */
+void sock_free(struct sock *s);
 
 /* Internal hooks for the protocol code */
 struct sock *sock_find_listener(uint16_t port);
