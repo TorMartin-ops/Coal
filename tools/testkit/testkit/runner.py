@@ -132,7 +132,7 @@ def execute_host(test, ctx, seed):
     skipped = re.search(r"skipped=(\d+)", text)
     if verdict == PASS and skipped and n is not None and int(skipped.group(1)) >= n:
         verdict, detail = SKIP, "every case was skipped"
-    h = qemu.hashlib.sha256(HOST_VOLATILE.sub("_", text).encode()).hexdigest()[:16]
+    h = fingerprint(test, HOST_VOLATILE.sub("_", text))
     return Run(verdict, detail, text, h, n, 0, 0, host_s, seed)
 
 
