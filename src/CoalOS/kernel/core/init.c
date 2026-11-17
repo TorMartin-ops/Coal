@@ -152,8 +152,9 @@ init_result_t init_validate_multiboot(uint32_t magic, uint32_t mb_info_phys_addr
                            "Invalid Multiboot magic number");
     }
     
-    // Validate multiboot info address
-    if (mb_info_phys_addr == 0 || mb_info_phys_addr >= 0x100000) {
+    // The Multiboot2 spec only guarantees an 8-byte aligned, non-null address.
+    // GRUB places the info structure above 1 MiB, so no upper bound is checked.
+    if (mb_info_phys_addr == 0 || (mb_info_phys_addr & 7) != 0) {
         return init_failure("Multiboot Validation", E_INVAL,
                            "Invalid Multiboot info physical address");
     }

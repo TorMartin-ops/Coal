@@ -1,69 +1,29 @@
-# Build directories
-build/*/
-!build/CoalOS/.gitkeep
+# Build output
+build/
 
-# CMake files
+# CMake (when configured in-source)
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
 compile_commands.json
-*.cmake
-.cmake/
 
-# Binary files
-*.bin
-*.elf
+# Binaries and images
 *.o
 *.a
+*.bin
+*.elf
 *.iso
 *.img
 
-# Log files
+# Logs
 *.log
-*.txt
 
-# IDE specific files
-.vscode/browse.vc*
+# Editors and OS
 .vscode/*.db
+.vscode/browse.vc*
 .idea/
 *.swp
-*.swo
 *~
-
-# OS specific files
 .DS_Store
 Thumbs.db
-
-# Temporary files
-*.tmp
-*.bak
-*.backup
-*.lock
-
-# Debug files
-*.map
-*.sym
-
-# Documentation build
-docs/_build/
-docs/_static/
-docs/_templates/
-
-# Python
-venv/
-*.egg-info*
-__pycache__/
-*.py[cod]
-.env
-
-# Ninja build
-build.ninja
-.ninja*
-
-# ISO build directory
-iso/
-
-# Keep important files
-!build/CoalOS/
-!src/CoalOS/
