@@ -369,6 +369,13 @@
              if (seg_end > highest_addr) {
                  highest_addr = seg_end;
              }
+             // Describe the segment so uaccess and the fault handler know it exists.
+             uint32_t vm = VM_READ | VM_USER | VM_PRIVATE;
+             uint32_t prot = PAGE_PRESENT | PAGE_USER;
+             if (phdr->p_flags & PF_W) { vm |= VM_WRITE; prot |= PAGE_RW; }
+             if (phdr->p_flags & PF_X) vm |= VM_EXEC;
+             insert_vma(mm, phdr->p_vaddr & PAGING_PAGE_MASK,
+                        (seg_end + PAGE_SIZE - 1) & PAGING_PAGE_MASK, vm, prot, NULL, 0);
          }
      }
      

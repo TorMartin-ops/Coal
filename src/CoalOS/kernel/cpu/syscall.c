@@ -88,6 +88,7 @@ void syscall_dispatch(isr_frame_t *r) {
         r->eax = (uint32_t)sc_read_terminal_line(r->ebx, r->ecx);
     else
         r->eax = (uint32_t)-ENOSYS;
+    serial_printf("SC nr=%u a=%x b=%x c=%x -> %d\n", nr, r->ebx, r->ecx, r->edx, (int)r->eax);
 }
 
 void syscall_init(void) {

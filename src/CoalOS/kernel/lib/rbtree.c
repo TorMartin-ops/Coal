@@ -392,58 +392,25 @@
   * Finds a VMA overlapping the interval [start, end).
   */
  struct vma_struct* rbtree_find_overlap(struct rb_node *root, uintptr_t start, uintptr_t end) {
-     struct rb_node *node = root;
-     struct vma_struct *candidate = NULL; // Most recent node visited
- 
-     // Find the node <= start address (potential overlap start)
-     while (node) {
-         candidate = rb_entry(node, vma_struct_t, rb_node);
-         if (start < candidate->vm_start) {
-              // Interval starts before this node, potential overlap could be here or left
-              node = node->left;
-         } else if (start >= candidate->vm_end) {
-              // Interval starts after this node, must go right
-              node = node->right;
+     for (struct rb_node *node = root; node; ) {
+         vma_struct_t *v = rb_entry(node, vma_struct_t, rb_node);
+
+         if (end <= v->vm_start) {
+             node = node->left;
+         } else if (start >= v->vm_end) {
+             node = node->right;
+         } else if (v->vm_start == v->vm_end) {
+             // Empty placeholder inside the range: it overlaps nothing, look on both sides.
+             vma_struct_t *hit = rbtree_find_overlap(node->left, start, end);
+             return hit ? hit : rbtree_find_overlap(node->right, start, end);
          } else {
-             // start is within candidate: definite overlap
-             return candidate;
+             return v;
          }
      }
- 
-     // If loop finished, 'candidate' is the node with the largest start address <= 'start'
-     // (or NULL if tree is empty or start is before the first node).
-     // Check if this candidate actually overlaps [start, end).
-     if (candidate && candidate->vm_end > start) {
-         return candidate;
-     }
- 
-     // If candidate didn't overlap, check its successor if it exists.
-     // The successor is the node with the smallest start address > candidate->vm_start.
-     // If this successor's start address is less than 'end', it overlaps.
-     if (candidate) {
-          struct rb_node* next_node_ptr = rb_node_next(&candidate->rb_node);
-          if (next_node_ptr) {
-               struct vma_struct* next_vma = rb_entry(next_node_ptr, vma_struct_t, rb_node);
-               if (next_vma->vm_start < end) {
-                    return next_vma; // Successor overlaps
-               }
-          }
-     } else {
-          // If no candidate found initially (start < first node), check the very first node
-          struct rb_node* first_node_ptr = root ? rb_node_minimum(root) : NULL;
-          if (first_node_ptr) {
-               struct vma_struct* first_vma = rb_entry(first_node_ptr, vma_struct_t, rb_node);
-               if (first_vma->vm_start < end) {
-                    return first_vma; // First node overlaps
-               }
-          }
-     }
- 
- 
-     return NULL; // No overlap found
+     return NULL;
  }
- 
- 
+
+
  // --- Traversal Implementation ---
  
  /**

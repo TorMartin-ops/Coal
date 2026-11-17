@@ -58,6 +58,14 @@ function(add_user_program name)
     target_link_libraries(${name} PRIVATE ${LIBGCC})
 endfunction()
 
+# Linux-ABI test: raw int 0x80, no libc, no entry stub.
+add_executable(abi_test userspace/tests/abi_test.c)
+set_target_properties(abi_test PROPERTIES OUTPUT_NAME abi_test.elf)
+target_compile_options(abi_test PRIVATE
+    $<$<COMPILE_LANGUAGE:C>:-m32 -ffreestanding -nostdlib -fno-pie -fno-pic -fno-stack-protector -mno-sse -O1 -Wall -Wextra -Werror>)
+target_link_options(abi_test PRIVATE
+    -m32 -nostdlib -static -no-pie -Wl,--build-id=none -Wl,--no-warn-rwx-segments -T${ARCH_DIR}/user.ld)
+
 add_user_program(hello userspace/hello/hello.c)
 file(GLOB SHELL_SOURCES CONFIGURE_DEPENDS userspace/shell/shell_main.c userspace/shell/modules/*.c)
 add_user_program(shell ${SHELL_SOURCES})
@@ -75,7 +83,8 @@ add_custom_command(
     COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:shell> ::/bin/shell.elf
     COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:libc_test> ::/bin/libc_test.elf
     COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:syscall_test> ::/bin/syscall_test.elf
-    DEPENDS hello shell libc_test syscall_test
+    COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:abi_test> ::/bin/abi_test.elf
+    DEPENDS hello shell libc_test syscall_test abi_test
     COMMENT "Creating FAT16 disk image"
     VERBATIM)
 
