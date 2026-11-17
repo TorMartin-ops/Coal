@@ -1,5 +1,5 @@
 /* Checks for the user-space C library. Uses only read/write/brk, so it also
- * builds and runs on a Linux host: gcc -m32 -static -nostdlib (see CMake flags). */
+ * builds and runs on a Linux host: gcc -m64 -static -nostdlib (see CMake flags). */
 
 #include <libc/stdio.h>
 #include <libc/stdlib.h>

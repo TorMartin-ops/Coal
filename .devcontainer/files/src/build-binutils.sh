@@ -5,7 +5,7 @@ BINUTILS_VERSION=$1
 
 export PREFIX=$2
 #export TARGET=x86_64-elf
-export TARGET=i686-elf
+export TARGET=x86_64-elf
 export PATH="$PREFIX/bin:$PATH"
 
 cd $PREFIX/src

@@ -1,13 +1,13 @@
 #!/bin/sh
-# Check include/libc/syscall_numbers.h against the Linux i386 syscall numbers.
-# Every SYS_FOO below 0x1000 must equal __NR_foo from asm/unistd_32.h; Coal-only
+# Check include/libc/syscall_numbers.h against the Linux x86_64 syscall numbers.
+# Every SYS_FOO below 0x1000 must equal __NR_foo from asm/unistd_64.h; Coal-only
 # numbers must be >= 0x1000. Usage: scripts/check_syscall_numbers.sh
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
-ref=$(for d in /usr/include/asm /usr/include/x86_64-linux-gnu/asm /usr/include/i386-linux-gnu/asm; do
-          [ -f "$d/unistd_32.h" ] && echo "$d/unistd_32.h" && break
+ref=$(for d in /usr/include/asm /usr/include/x86_64-linux-gnu/asm /usr/include/asm-generic; do
+          [ -f "$d/unistd_64.h" ] && echo "$d/unistd_64.h" && break
       done || true)
-[ -n "$ref" ] || { echo "skip: asm/unistd_32.h not found" >&2; exit 0; }
+[ -n "$ref" ] || { echo "skip: asm/unistd_64.h not found" >&2; exit 0; }
 status=0
 while read -r name num; do
     [ -n "$num" ] && [ "$num" -lt 4096 ] || continue

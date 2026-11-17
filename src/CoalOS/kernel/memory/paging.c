@@ -168,9 +168,18 @@ uintptr_t paging_new_directory(void) {
     return pd;
 }
 
+/* Unused entries are always zero, so a table is mostly skipped eight entries at a time. */
+static inline bool empty8(const pte_t *t) {
+    return !(t[0] | t[1] | t[2] | t[3] | t[4] | t[5] | t[6] | t[7]);
+}
+
 /* Drops every frame below `table` (a table at `level`, 0 = page table) and the tables themselves. */
 static void free_table(pte_t *table, unsigned level) {
     for (unsigned i = 0; i < PTES_PER_TABLE; i++) {
+        if (!(i & 7) && empty8(&table[i])) {
+            i += 7;
+            continue;
+        }
         pte_t e = table[i];
         if (!(e & PAGE_PRESENT))
             continue;
@@ -196,11 +205,13 @@ void paging_free_user_space(void *pd) {
 /* Copies the table `src` at `level` into `dst`; leaf frames are shared and made copy-on-write. */
 static bool clone_table(pte_t *dst, pte_t *src, unsigned level) {
     for (unsigned i = 0; i < PTES_PER_TABLE; i++) {
-        pte_t e = src[i];
-        if (!(e & PAGE_PRESENT)) {
-            dst[i] = 0;
+        if (!(i & 7) && empty8(&src[i])) {     /* dst is a zeroed frame: nothing to copy */
+            i += 7;
             continue;
         }
+        pte_t e = src[i];
+        if (!(e & PAGE_PRESENT))
+            continue;
         if (level == 0) {
             if (e & PAGE_RW) {                  /* both sides copy on first write */
                 e = (e & ~PAGE_RW) | PAGE_COW;

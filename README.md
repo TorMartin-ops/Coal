@@ -1,7 +1,7 @@
 # Coal OS
 
-A small 32-bit x86 kernel that speaks the **Linux i386 system call ABI**. Static ELF32 binaries
-built for Linux run on it unchanged. It boots to a shell in about half a second, the kernel image
+A small x86_64 kernel that speaks the **Linux x86_64 system call ABI**. Static ELF64 binaries
+built for Linux (musl, or glibc with `-static`) run on it unchanged. It boots to a shell in about half a second, the kernel image
 is 173 KB stripped, and it ships with an MCP server so an AI assistant can build it, boot it and
 drive it like a remote machine.
 
@@ -11,14 +11,14 @@ security boundary. See [SECURITY.md](SECURITY.md) and [Limitations](#limitations
 
 ## Features
 
-- **Kernel**: Multiboot2 boot through GRUB, EEVDF preemptive scheduler with nice levels, tickless timer wheel, wait queues,
+- **Kernel**: Multiboot2 boot through GRUB or direct PVH boot (`qemu -kernel`), 4-level paging with a direct map, SMEP/SMAP, SYSCALL/SYSRET, EEVDF preemptive scheduler with nice levels, tickless timer wheel, wait queues,
   paging with copy-on-write `fork`, demand-paged VMAs, frame/buddy/slab allocators, signals with
-  user handlers, `poll`, TLS, a 16 KiB kernel log ring (`dmesg`).
+  user handlers, `poll`, `arch_prctl` TLS, a vDSO, a 16 KiB kernel log ring (`dmesg`).
 - **File systems**: VFS with FAT16/32 (long file names) on ATA, devfs, procfs, pipes. Linux
   layout: `/bin /sbin /etc /home /root /tmp /dev /proc /usr /var`.
 - **Network**: Intel e1000 driver, ARP, IPv4, ICMP, UDP, TCP, loopback, DHCP, DNS, and the Linux socket
   calls. `ping`, `nslookup`, `wget` (http), `nc` and `ifconfig` are applets.
-- **System calls**: 99 Linux i386 calls with Linux numbers and struct layouts, one table
+- **System calls**: Linux x86_64 calls with Linux numbers and struct layouts, one table
   ([docs/syscalls.md](src/CoalOS/docs/syscalls.md)). Unimplemented calls return `-ENOSYS`.
 - **User space**: a small libc, `coalbox` (BusyBox-style multi-call binary with 65 applets, including `edit`, `top`, `find`, `diff`, `tr`, `printf`, `expr`),
   `sh` (POSIX-style: `if`/`while`/`for`/`case`, functions, `$(...)`, subshells, here-documents, `set -e`/`-x`, `trap`, `#!` scripts, history and Tab completion), `init`, and `agentd`.
@@ -48,8 +48,8 @@ Measured on one development machine (QEMU/TCG, no KVM, 512 MiB guest, the defaul
 
 ## Quick start
 
-Needs CMake 3.22+, NASM, a 32-bit capable GCC (`gcc-multilib` or `i686-elf-gcc`), `grub-mkrescue`
-with `xorriso` and `grub-pc-bin`, `mtools`, `dosfstools` and `qemu-system-i386`
+Needs CMake 3.22+, NASM, an x86_64 GCC (`x86_64-linux-gnu-gcc` or `x86_64-elf-gcc`), `grub-mkrescue`
+with `xorriso` and `grub-pc-bin`, `mtools`, `dosfstools` and `qemu-system-x86_64`
 (`.devcontainer/Dockerfile` installs them all).
 
 ```sh
@@ -78,7 +78,7 @@ For Claude Desktop, add the same command to `claude_desktop_config.json`
 
 - "Boot Coal OS, show me `uname -a` and how much memory is in use."
 - "Take a snapshot, write a C program that prints its pid, build it on the host with
-  `gcc -m32 -static`, upload it with `coal_write_file` (host_path) and run it in Coal."
+  `gcc -static`, upload it with `coal_write_file` (host_path) and run it in Coal."
 - "Run `/usr/bin/syscall_test` and tell me if anything fails."
 - "Start a web server on the host, fetch a page from it inside Coal with `wget` and show me the
   kernel log."
@@ -95,7 +95,7 @@ built OS; booted in 0.5s; agentd is ready
 > coal_run command="uname -a; ls /bin; cat /proc/meminfo | head -2"
 exit code: 0
 --- stdout ---
-Coal coal 0.2.0 #1 i386
+Coal coal 0.2.0 #1 x86_64
 coalbox
 sh
 MemTotal:      521296 kB
@@ -148,8 +148,8 @@ Start with [ARCHITECTURE.md](src/CoalOS/docs/ARCHITECTURE.md).
 - Signals are delivered when a task returns to user mode, from a system call or an interrupt. There
   is no job control (`SIGSTOP` has no effect).
 - The disk is a 32 MiB FAT16 image: no permissions, no symbolic links.
-- `mmap2` supports anonymous private mappings only, no file-backed mappings. Programs must be
-  static ELF32 executables; there is no dynamic loader.
+- `mmap` supports anonymous private mappings only, no file-backed mappings. Programs must be
+  static ELF64 executables (`ET_EXEC` or static PIE); there is no dynamic loader.
 - Network: IPv4 only, no TLS, no IP fragment reassembly, at most four out-of-order TCP ranges
   per connection; the loopback queue holds 16 packets.
 - The shell has no subshells, `$!` or command substitution.

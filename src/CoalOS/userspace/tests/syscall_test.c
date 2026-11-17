@@ -1,4 +1,4 @@
-/* Checks the Linux i386 system call ABI through the libc wrappers. Uses /tmp
+/* Checks the Linux x86_64 system call ABI through the libc wrappers. Uses /tmp
  * only, so it runs unchanged on a Linux host and on Coal OS. */
 
 #include <libc/stdio.h>

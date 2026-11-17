@@ -345,8 +345,11 @@ long sc_fstat(uint32_t fd, uintptr_t buf) {
 }
 
 long sc_newfstatat(int dirfd, uintptr_t path, uintptr_t buf, uint32_t flags) {
-    (void)flags;                                    /* AT_SYMLINK_NOFOLLOW: no symbolic links */
-    if (dirfd != AT_FDCWD) return -ENOSYS;
+    char first;
+
+    if ((flags & AT_EMPTY_PATH) && path && copy_from_user(&first, (const void *)path, 1) == 0 && !first)
+        return sc_fstat(dirfd, buf);                /* fstat as newer libcs spell it */
+    if (dirfd != AT_FDCWD) return -ENOSYS;          /* AT_SYMLINK_NOFOLLOW is moot: no symbolic links */
     return sc_stat(path, buf);
 }
 

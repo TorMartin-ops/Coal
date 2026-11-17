@@ -77,7 +77,7 @@ static size_t render(const struct node *n, char *out) {
     case K_UPTIME:
         return (size_t)pf(out, SNAPSHOT_MAX, "%u.%u%u %u.00\n", ms / 1000, ms / 100 % 10, ms / 10 % 10, ms / 1000);
     case K_VERSION:
-        return (size_t)pf(out, SNAPSHOT_MAX, "Coal OS version %s (i386)\n", COAL_VERSION);
+        return (size_t)pf(out, SNAPSHOT_MAX, "Coal OS version %s (x86_64)\n", COAL_VERSION);
     case K_MOUNTS: {                                /* Linux format: device mountpoint type options dump pass */
         const char *path, *dev, *fs;
         size_t len = 0;

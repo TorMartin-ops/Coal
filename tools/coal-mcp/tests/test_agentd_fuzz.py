@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Throws malformed and hostile frames at the real agentd (32-bit host build on a pty).
+"""Throws malformed and hostile frames at the real agentd (host build on a pty).
 Run: python3 tools/coal-mcp/tests/test_agentd_fuzz.py
 
 After every request agentd must still answer a ping, and every frame it sends must be valid
@@ -37,7 +37,7 @@ class AgentdFuzz(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp(prefix="coal-fuzz-")
         binary = os.path.join(cls.tmp, "agentd")
         if subprocess.call(["sh", AGENTD_BUILD, binary], stderr=subprocess.DEVNULL) != 0:
-            raise unittest.SkipTest("cannot build 32-bit agentd on this host")
+            raise unittest.SkipTest("cannot build the host agentd on this host")
         cls.master, slave = pty.openpty()
         tty.setraw(cls.master)
         cls.proc = subprocess.Popen([binary, os.ttyname(slave), os.path.join(cls.tmp, "spill")])

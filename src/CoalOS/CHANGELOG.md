@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Port to x86_64, replacing the i386 kernel. Boot: Multiboot2 (GRUB) and Xen PVH (`qemu-system-x86_64 -kernel`)
+  share one 32 to 64 bit trampoline. Kernel at -2 GiB, 4-level paging with a direct map of physical memory
+  (no highmem), NX on data, SMEP/SMAP with `stac`/`clac` in the user copy routines, per-CPU data in GS,
+  IST stacks for `#DF`, NMI and `#MC`, lazy FPU/SSE with FXSAVE64. ABI: SYSCALL/SYSRET with Linux x86_64
+  numbers, registers and structures (`stat`, `dirent64`, `rt_sigframe` with `ucontext`, `timespec`,
+  `iovec`, `msghdr`, `sockaddr`, `rlimit`, `sysinfo`), direct socket calls, `arch_prctl` and FSGSBASE,
+  `mprotect`, `madvise`, `getrandom`, `sigaltstack`. A 64-bit vDSO (`clock_gettime`, `gettimeofday`, `time`,
+  `getcpu`), an ELF64 loader for `ET_EXEC` and static PIE with the full auxiliary vector. ATA DMA and the
+  e1000 use 64-bit clean addressing with buffers below 4 GiB. Removed: highmem and `kmap`, the `int 0x80`
+  table, `sysenter`, `socketcall`, the i386 vDSO and all 32-bit structures. `rt_sigaction` now requires
+  `SA_RESTORER`. coalbox `grep` understands bracket expressions.
 - agentd replaces mcpd: length-prefixed JSON frames with multiplexed requests (a slow command no longer
   blocks a ping), a structured exec result (exit code, signal, duration, `killed_by`, per-stream byte
   counts), head and tail truncation with the full output kept in a file, non-interactive commands

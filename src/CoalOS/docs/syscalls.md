@@ -1,128 +1,126 @@
 # System calls
 
-Coal OS implements the Linux i386 system call ABI: `int 0x80`, number in EAX,
-arguments in EBX, ECX, EDX, ESI, EDI, EBP, result or `-errno` in EAX, Linux
-numbers and Linux struct layouts (`stat64`, `linux_dirent64`, `timespec`,
-`sigaction`, ...). Programs can also enter through the vDSO's `__kernel_vsyscall`
-(`sysenter`, AT_SYSINFO); the kernel entry in `kernel/cpu/syscall.asm` builds the
-same frame, so both entries share the table. The vDSO also serves `clock_gettime`,
-`gettimeofday` and `time` without a system call. There is one table, `syscall_table` in
-`kernel/cpu/syscall.c`; any number not listed below returns `-ENOSYS`.
+Coal OS implements the Linux x86_64 system call ABI: `syscall`, number in RAX,
+arguments in RDI, RSI, RDX, R10, R8, R9, result or `-errno` in RAX (RCX and R11 are clobbered), Linux
+numbers and Linux struct layouts (`struct stat`, `linux_dirent64`, `timespec`, `sigaction`,
+`rt_sigframe`, `msghdr`, `sockaddr`, `rlimit`, `sysinfo`, `utsname` with machine `x86_64`).
+The kernel entry in `kernel/cpu/syscall.asm` builds the frame the interrupt gates build.
+The vDSO serves `clock_gettime`, `gettimeofday`, `time` and `getcpu` without a system call. There
+is one table, `syscall_table` in `kernel/cpu/syscall.c`; any number not listed below returns `-ENOSYS`.
 The table below is generated from it. `scripts/check_syscall_numbers.sh`
 compares `include/libc/syscall_numbers.h` with the Linux headers.
 
 | Number | Name | Handler | Note |
 |---:|---|---|---|
-| 1 | exit | `sc_exit` |  |
-| 2 | fork | `sc_fork` |  |
-| 3 | read | `sc_read` |  |
-| 4 | write | `sc_write` |  |
-| 5 | open | `sc_open` |  |
-| 6 | close | `sc_close` |  |
-| 7 | waitpid | `sc_waitpid` |  |
-| 9 | link | `sc_link` | EPERM on FAT |
-| 10 | unlink | `sc_unlink` |  |
-| 11 | execve | `sc_execve` |  |
-| 12 | chdir | `sc_chdir` |  |
-| 13 | time | `sc_time` |  |
-| 19 | lseek | `sc_lseek` |  |
-| 20 | getpid | `sc_getpid` |  |
-| 21 | mount | `sc_mount` | types `fat` (device `hdb`..`hdd` or `/dev/hdX`) and `procfs` |
-| 24 | getuid | `sc_zero` |  |
-| 30 | utime | `sc_utime` |  |
-| 33 | access | `sc_access` |  |
-| 34 | nice | `sc_nice` | no permission checks; the level is clamped to -20..19 |
-| 36 | sync | `sc_sync` |  |
-| 37 | kill | `sc_kill` |  |
-| 38 | rename | `sc_rename` |  |
-| 39 | mkdir | `sc_mkdir` |  |
-| 40 | rmdir | `sc_rmdir` |  |
-| 41 | dup | `sc_dup` |  |
-| 42 | pipe | `sc_pipe` |  |
-| 45 | brk | `sc_brk` |  |
-| 47 | getgid | `sc_zero` |  |
-| 49 | geteuid | `sc_zero` |  |
-| 50 | getegid | `sc_zero` |  |
-| 52 | umount2 | `sc_umount2` |  |
-| 54 | ioctl | `sc_ioctl` |  |
-| 57 | setpgid | `sc_setpgid` |  |
-| 63 | dup2 | `sc_dup2` |  |
-| 64 | getppid | `sc_getppid` |  |
-| 65 | getpgrp | `sc_getpgrp` |  |
-| 66 | setsid | `sc_setsid` |  |
-| 75 | setrlimit | `sc_setrlimit` | CPU, AS, NPROC only (see below) |
-| 78 | gettimeofday | `sc_gettimeofday` |  |
-| 82 | select | `sc_oldselect` | old argument-block form |
-| 83 | symlink | `sc_symlink` | EPERM on FAT |
-| 85 | readlink | `sc_readlink` | EINVAL: no symbolic links |
-| 88 | reboot | `sc_reboot` |  |
-| 91 | munmap | `sc_munmap` |  |
-| 96 | getpriority | `sc_getpriority` | `PRIO_PROCESS` only; returns 20 - nice like Linux |
-| 97 | setpriority | `sc_setpriority` | `PRIO_PROCESS` only |
-| 99 | statfs | `sc_statfs` |  |
-| 100 | fstatfs | `sc_fstatfs` |  |
-| 102 | socketcall | `sc_socketcall` | multiplexer for the calls below |
+| 0 | read | `sc_read` |  |
+| 1 | write | `sc_write` |  |
+| 2 | open | `sc_open` |  |
+| 3 | close | `sc_close` |  |
+| 4 | stat | `sc_stat` |  |
+| 5 | fstat | `sc_fstat` |  |
+| 6 | lstat | `sc_stat` | same as stat (no symbolic links) |
+| 7 | poll | `sc_poll` |  |
+| 8 | lseek | `sc_lseek` |  |
+| 9 | mmap | `sc_mmap` | anonymous private mappings only |
+| 10 | mprotect | `sc_mprotect` | splits VMAs; PROT_NONE pages fault |
+| 11 | munmap | `sc_munmap` |  |
+| 12 | brk | `sc_brk` |  |
+| 13 | rt_sigaction | `sc_rt_sigaction` | SA_RESTORER is required with a handler (EINVAL otherwise) |
+| 14 | rt_sigprocmask | `sc_rt_sigprocmask` |  |
+| 15 | rt_sigreturn | `sc_rt_sigreturn` |  |
+| 16 | ioctl | `sc_ioctl` |  |
+| 19 | readv | `sc_readv` |  |
+| 20 | writev | `sc_writev` |  |
+| 21 | access | `sc_access` |  |
+| 22 | pipe | `sc_pipe` |  |
+| 23 | select | `sc_select` | descriptors below 32 |
+| 24 | sched_yield | `sc_sched_yield` |  |
+| 28 | madvise | `sc_madvise` | accepted, no effect |
+| 32 | dup | `sc_dup` |  |
+| 33 | dup2 | `sc_dup2` |  |
+| 35 | nanosleep | `sc_nanosleep` |  |
+| 39 | getpid | `sc_getpid` |  |
+| 41 | socket | `sc_socket` |  |
+| 42 | connect | `sc_connect` |  |
+| 43 | accept | `sc_accept` |  |
+| 44 | sendto | `sc_sendto` |  |
+| 45 | recvfrom | `sc_recvfrom` |  |
+| 46 | sendmsg | `sc_sendmsg` |  |
+| 47 | recvmsg | `sc_recvmsg` |  |
+| 48 | shutdown | `sc_shutdown` |  |
+| 49 | bind | `sc_bind` |  |
+| 50 | listen | `sc_listen` |  |
+| 51 | getsockname | `sc_getsockname` |  |
+| 52 | getpeername | `sc_getpeername` |  |
+| 53 | socketpair | `sc_socketpair` | AF_UNIX, SOCK_STREAM only |
+| 54 | setsockopt | `sc_setsockopt` |  |
+| 55 | getsockopt | `sc_getsockopt` |  |
+| 57 | fork | `sc_fork` |  |
+| 58 | vfork | `sc_fork` | same as fork (copy-on-write); the parent does not wait |
+| 59 | execve | `sc_execve` |  |
+| 60 | exit | `sc_exit` |  |
+| 61 | wait4 | `sc_wait4` |  |
+| 62 | kill | `sc_kill` |  |
+| 63 | uname | `sc_uname` |  |
+| 72 | fcntl | `sc_fcntl` |  |
+| 74 | fsync | `sc_fsync` | writes the file's data and metadata to disk |
+| 75 | fdatasync | `sc_fsync` | same as fsync |
+| 79 | getcwd | `sc_getcwd` |  |
+| 80 | chdir | `sc_chdir` |  |
+| 82 | rename | `sc_rename` |  |
+| 83 | mkdir | `sc_mkdir` |  |
+| 84 | rmdir | `sc_rmdir` |  |
+| 86 | link | `sc_link` | EPERM on FAT |
+| 87 | unlink | `sc_unlink` |  |
+| 88 | symlink | `sc_symlink` | EPERM on FAT |
+| 89 | readlink | `sc_readlink` | EINVAL: no symbolic links |
+| 96 | gettimeofday | `sc_gettimeofday` | served by the vDSO without a system call |
+| 97 | getrlimit | `sc_getrlimit` |  |
+| 99 | sysinfo | `sc_sysinfo` | uptime, memory, process count |
+| 102 | getuid | `sc_zero` |  |
 | 103 | syslog | `sc_syslog` |  |
-| 114 | wait4 | `sc_wait4` |  |
-| 118 | fsync | `sc_fsync` | writes the file's data and metadata to disk |
-| 122 | uname | `sc_uname` |  |
-| 132 | getpgid | `sc_getpgid` |  |
-| 140 | llseek | `sc_llseek` |  |
-| 142 | _newselect | `sc_newselect` | built on the poll machinery |
-| 145 | readv | `sc_readv` |  |
-| 146 | writev | `sc_writev` |  |
-| 147 | getsid | `sc_getsid` |  |
-| 148 | fdatasync | `sc_fsync` | same as fsync |
-| 158 | sched_yield | `sc_sched_yield` |  |
-| 162 | nanosleep | `sc_nanosleep` |  |
-| 168 | poll | `sc_poll` |  |
-| 173 | rt_sigreturn | `sc_rt_sigreturn` |  |
-| 174 | rt_sigaction | `sc_rt_sigaction` |  |
-| 175 | rt_sigprocmask | `sc_rt_sigprocmask` |  |
-| 183 | getcwd | `sc_getcwd` |  |
-| 191 | ugetrlimit | `sc_ugetrlimit` | other resources report unlimited |
-| 192 | mmap2 | `sc_mmap2` |  |
-| 195 | stat64 | `sc_stat64` |  |
-| 196 | lstat64 | `sc_stat64` | no symbolic links |
-| 197 | fstat64 | `sc_fstat64` |  |
-| 199 | getuid32 | `sc_zero` |  |
-| 200 | getgid32 | `sc_zero` |  |
-| 201 | geteuid32 | `sc_zero` |  |
-| 202 | getegid32 | `sc_zero` |  |
-| 220 | getdents64 | `sc_getdents64` |  |
-| 221 | fcntl64 | `sc_fcntl64` |  |
-| 224 | gettid | `sc_getpid` |  |
-| 243 | set_thread_area | `sc_set_thread_area` |  |
-| 252 | exit_group | `sc_exit` |  |
-| 258 | set_tid_address | `sc_set_tid_address` |  |
-| 265 | clock_gettime | `sc_clock_gettime` |  |
-| 268 | statfs64 | `sc_statfs64` |  |
-| 269 | fstatfs64 | `sc_fstatfs64` |  |
-| 295 | openat | `sc_openat` |  |
-| 300 | fstatat64 | `sc_fstatat64` |  |
-| 308 | pselect6 | `sc_pselect6` | temporary signal mask, timespec timeout |
-| 331 | pipe2 | `sc_pipe2` |  |
-| 340 | prlimit64 | `sc_prlimit64` | any process; 64-bit values |
-| 359 | socket | `sc_socket` |  |
-| 360 | socketpair | `sc_socketpair` | AF_UNIX, SOCK_STREAM only |
-| 361 | bind | `sc_bind` |  |
-| 362 | connect | `sc_connect` |  |
-| 363 | listen | `sc_listen` |  |
-| 364 | accept4 | `sc_accept4` |  |
-| 365 | getsockopt | `sc_getsockopt` |  |
-| 366 | setsockopt | `sc_setsockopt` |  |
-| 367 | getsockname | `sc_getsockname` |  |
-| 368 | getpeername | `sc_getpeername` |  |
-| 369 | sendto | `sc_sendto` |  |
-| 370 | sendmsg | `sc_sendmsg` |  |
-| 371 | recvfrom | `sc_recvfrom` |  |
-| 372 | recvmsg | `sc_recvmsg` |  |
-| 373 | shutdown | `sc_shutdown` |  |
+| 104 | getgid | `sc_zero` |  |
+| 107 | geteuid | `sc_zero` |  |
+| 108 | getegid | `sc_zero` |  |
+| 109 | setpgid | `sc_setpgid` |  |
+| 110 | getppid | `sc_getppid` |  |
+| 111 | getpgrp | `sc_getpgrp` |  |
+| 112 | setsid | `sc_setsid` |  |
+| 121 | getpgid | `sc_getpgid` |  |
+| 124 | getsid | `sc_getsid` |  |
+| 131 | sigaltstack | `sc_sigaltstack` | SA_ONSTACK handlers run on it |
+| 132 | utime | `sc_utime` |  |
+| 137 | statfs | `sc_statfs` |  |
+| 138 | fstatfs | `sc_fstatfs` |  |
+| 140 | getpriority | `sc_getpriority` | `PRIO_PROCESS` only; returns 20 - nice like Linux |
+| 141 | setpriority | `sc_setpriority` | `PRIO_PROCESS` only |
+| 158 | arch_prctl | `sc_arch_prctl` | ARCH_SET_FS/GET_FS/SET_GS/GET_GS |
+| 160 | setrlimit | `sc_setrlimit` | CPU, AS, NPROC only (see below) |
+| 162 | sync | `sc_sync` |  |
+| 165 | mount | `sc_mount` | types `fat` (device `hdb`..`hdd` or `/dev/hdX`) and `procfs` |
+| 166 | umount2 | `sc_umount2` |  |
+| 169 | reboot | `sc_reboot` |  |
+| 186 | gettid | `sc_getpid` | same as getpid |
+| 200 | tkill | `sc_tkill` | single-threaded: same as kill |
+| 201 | time | `sc_time` | served by the vDSO without a system call |
+| 217 | getdents64 | `sc_getdents64` |  |
+| 218 | set_tid_address | `sc_set_tid_address` |  |
+| 228 | clock_gettime | `sc_clock_gettime` | served by the vDSO without a system call for CLOCK_REALTIME and CLOCK_MONOTONIC |
+| 229 | clock_getres | `sc_clock_getres` | 1 ns |
+| 231 | exit_group | `sc_exit` |  |
+| 234 | tgkill | `sc_tgkill` | single-threaded: same as kill |
+| 257 | openat | `sc_openat` |  |
+| 262 | newfstatat | `sc_newfstatat` | AT_FDCWD and absolute paths |
+| 270 | pselect6 | `sc_pselect6` | temporary signal mask, timespec timeout |
+| 288 | accept4 | `sc_accept4` |  |
+| 293 | pipe2 | `sc_pipe2` |  |
+| 302 | prlimit64 | `sc_prlimit64` | any process; 64-bit values |
+| 318 | getrandom | `sc_getrandom` | RDRAND, else a TSC-seeded generator |
 
 Behaviour worth knowing:
 
 - Resource limits: `RLIMIT_CPU` (SIGXCPU at the soft limit, repeated every second, SIGKILL at the
-  hard limit; counted per process in timer ticks, children start at zero), `RLIMIT_AS` (`mmap2` and
+  hard limit; counted per process in timer ticks, children start at zero), `RLIMIT_AS` (`mmap` and
   `brk` fail with `ENOMEM`; the stack is not counted) and `RLIMIT_NPROC` (`fork` fails with `EAGAIN`;
   there is one user, so the limit applies to every process in the system). Other resources read as
   unlimited and `setrlimit` on them returns `EINVAL`. A hard limit cannot be raised (`EPERM`). Limits
@@ -136,9 +134,9 @@ Behaviour worth knowing:
   `SIGSTOP`/`SIGTSTP` have no effect (no job control stop).
 - `SA_RESTART`: `read`, `write`, `readv`, `writev`, `wait4`/`waitpid`, `accept4`, `sendto`,
   `sendmsg`, `recvfrom` and `recvmsg` interrupted by such a handler are re-executed after
-  `sigreturn`; `poll`, `select`, `pselect6`, `nanosleep`, `connect` and `socketcall` always
+  `sigreturn`; `poll`, `select`, `pselect6`, `nanosleep` and `connect` always
   return `EINTR`, as on Linux. Sockets with `SO_RCVTIMEO` restart with the full timeout.
-- The x87 state is per process (lazy switching); a signal frame carries it in
+- The x87 and SSE state is per process (lazy switching); a signal frame carries it in
   `sigcontext.fpstate`.
 - `execve` runs `#!interpreter [arg]` scripts (the rest of the line is one argument, at most four
   levels, `ELOOP` beyond); other formats give `ENOEXEC`.
@@ -149,15 +147,19 @@ Behaviour worth knowing:
   empty directory with `st_nlink` 0.
 - `select` and `pselect6` accept descriptors below 32 (`EBADF` above) and report only read,
   write and error readiness like `poll`.
-- `statfs`/`statfs64` report cluster counts for FAT and a type for devfs/procfs. `link` and
+- `statfs`/`fstatfs` report cluster counts for FAT and a type for devfs/procfs. `link` and
   `symlink` return `EPERM` (FAT), `readlink` returns `EINVAL` for existing paths.
 - Networking: `127.0.0.0/8` and the own address are looped back without a NIC (interface `lo`,
   16-packet queue, UDP overflow is dropped); a connected UDP socket sees `ECONNREFUSED` once
   after an ICMP port unreachable.
 - `poll` asks each driver (tty, pipe, serial) for readiness and sleeps until an
   event or the timeout. Regular files are always ready.
-- `mmap2` supports anonymous private mappings only; `brk` grows the heap.
-- `lstat64` is `stat64` (no symbolic links). `utime` stores the modification
+- `mmap` supports anonymous private mappings only (`MAP_FIXED` included); `brk` grows the heap. `mprotect`
+  changes protections page-exactly, `PROT_NONE` pages fault, copy-on-write pages stay read-only until written.
+- Only `SA_RESTORER` handlers are accepted: the kernel has no restorer of its own (the vDSO has none either), so
+  `rt_sigaction` with a handler and no restorer returns `EINVAL`. libc supplies one. A signal frame skips the 128-byte
+  red zone and honours `sigaltstack`.
+- `lstat` is `stat` (no symbolic links). `utime` stores the modification
   time on FAT.
 - `syslog` reads the 16 KiB kernel log ring (`dmesg`).
-- `set_thread_area` keeps one TLS descriptor per process.
+- `arch_prctl` keeps the FS and GS bases per process; they are saved on switch and reset by `execve`.
