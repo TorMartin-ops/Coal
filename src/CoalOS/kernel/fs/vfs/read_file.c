@@ -10,7 +10,7 @@
 
 void *read_file(const char *path, size_t *file_size) {
     file_t *f;
-    struct kstat64 st;
+    struct kstat st;
     char *buf = NULL;
     size_t total = 0;
 

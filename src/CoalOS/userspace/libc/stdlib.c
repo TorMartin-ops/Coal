@@ -16,7 +16,7 @@
  * of every page and of every large block, so free() finds it by masking the pointer. */
 
 #define PAGE   4096u
-#define HDR    32u                              /* header size; keeps blocks 16-byte aligned */
+#define HDR    48u                              /* header size; keeps blocks 16-byte aligned */
 #define LARGE  0xFF
 #define GROW   (16 * PAGE)
 
@@ -31,9 +31,9 @@ struct page {
 _Static_assert(sizeof(struct page) <= HDR, "page header does not fit");
 
 static const unsigned short csize[] = { 16, 32, 48, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384,
-                                        448, 512, 640, 768, 896, 1008, 1344, 2032 };
+                                        448, 512, 640, 768, 896, 1008, 1344, 2016 };
 #define NCLS      ((unsigned)(sizeof csize / sizeof csize[0]))
-#define MAX_SMALL 2032u
+#define MAX_SMALL 2016u
 
 static struct page *cur[NCLS], *partial[NCLS];
 static struct page *spare;                      /* empty pages, linked through next */
@@ -122,7 +122,7 @@ static void *malloc_slow(unsigned c) {
 
 static void *malloc_large(size_t n) {
     size_t len = (n + HDR + PAGE - 1) & ~(size_t)(PAGE - 1);
-    long r = __sc(SYS_MMAP2, 0, (long)len, 3 /* RW */, 0x22 /* PRIVATE|ANON */, -1);
+    long r = __sc6(SYS_MMAP, 0, (long)len, 3 /* RW */, 0x22 /* PRIVATE|ANON */, -1, 0);
     if ((unsigned long)r > (unsigned long)-4096) {
         errno = ENOMEM;
         return NULL;
@@ -379,7 +379,6 @@ int unsetenv(const char *name) {
 
 extern int main(int argc, char **argv, char **envp);
 
-#define AT_SYSINFO      32
 #define AT_SYSINFO_EHDR 33
 
 void *__vdso_base;
@@ -391,8 +390,7 @@ void __libc_start(long *sp) {
     environ = argv + argc + 1;
     for (env = environ; *env; env++) { }
     for (unsigned long *a = (unsigned long *)(env + 1); a[0]; a += 2) {
-        if (a[0] == AT_SYSINFO) __vsyscall = (void (*)(void))a[1];
-        else if (a[0] == AT_SYSINFO_EHDR) __vdso_base = (void *)a[1];
+        if (a[0] == AT_SYSINFO_EHDR) __vdso_base = (void *)a[1];
     }
     exit(main(argc, argv, environ));
 }

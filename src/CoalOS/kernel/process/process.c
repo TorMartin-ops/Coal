@@ -46,7 +46,7 @@ pcb_t *get_current_process(void) {
 /* ---- kernel stacks -------------------------------------------------- */
 
 static bool kstack_alloc(pcb_t *p) {
-    uint32_t *kpd = (uint32_t *)g_kernel_page_directory_phys;
+    void *kpd = (void *)g_kernel_page_directory_phys;
     uintptr_t va, flags = local_irq_save();
 
     if (kstack_nfree) va = kstack_free[--kstack_nfree];
@@ -70,12 +70,12 @@ static bool kstack_alloc(pcb_t *p) {
             return false;
         }
     }
-    p->kernel_stack_vaddr_top = (uint32_t *)(va + KSTACK_SLOT);
+    p->kernel_stack_vaddr_top = (void *)(va + KSTACK_SLOT);
     return true;
 }
 
 static void kstack_free_pages(pcb_t *p) {
-    uint32_t *kpd = (uint32_t *)g_kernel_page_directory_phys;
+    void *kpd = (void *)g_kernel_page_directory_phys;
     uintptr_t va = (uintptr_t)p->kernel_stack_vaddr_top - KSTACK_SLOT, flags;
 
     if (!p->kernel_stack_vaddr_top) return;
@@ -86,24 +86,18 @@ static void kstack_free_pages(pcb_t *p) {
     p->kernel_stack_vaddr_top = NULL;
 }
 
-/** The frame the CPU/ret_from_fork uses for the first return to user mode. */
-isr_frame_t *process_user_frame(pcb_t *p) {
-    return (isr_frame_t *)p->kernel_stack_vaddr_top - 1;
-}
-
 /** Makes p runnable from a user frame already placed at the top of its kernel stack. */
 void process_set_entry_frame(pcb_t *p) {
-    p->task.context = scheduler_make_context(process_user_frame(p), ret_from_fork, 0x2);
+    p->task.context = scheduler_make_context(user_regs_of(p), ret_from_fork, 0x2);
 }
 
-void process_init_user_frame(isr_frame_t *f, uint32_t entry, uint32_t sp) {
+void process_init_user_frame(isr_frame_t *f, uintptr_t entry, uintptr_t sp) {
     memset(f, 0, sizeof(*f));
-    f->ds = f->es = f->fs = f->gs = GDT_USER_DATA_SELECTOR;
     f->cs = GDT_USER_CODE_SELECTOR;
     f->ss = GDT_USER_DATA_SELECTOR;
-    f->eip = entry;
-    f->useresp = sp;
-    f->eflags = USER_EFLAGS;
+    f->rip = entry;
+    f->rsp = sp;
+    f->rflags = USER_EFLAGS;
 }
 
 /* ---- PCB bookkeeping -------------------------------------------------- */
@@ -226,7 +220,7 @@ pcb_t *create_user_process(const char *path) {
     p->page_directory_phys = img.mm->pgd_phys;
     exec_set_name(p, path, argv);
     fds_init_std(p);
-    process_init_user_frame(process_user_frame(p), img.entry, img.sp);
+    process_init_user_frame(user_regs_of(p), img.entry, img.sp);
     process_set_entry_frame(p);
     pcb_publish(p, NULL);
     return p;
@@ -265,15 +259,17 @@ int process_fork(const isr_frame_t *regs) {
     child->cloexec = parent->cloexec;
     child->task.nice = parent->task.nice;
     rlimit_fork(child, parent);
-    child->tls_base = parent->tls_base;
-    child->tls_pages = parent->tls_pages;
+    child->fs_base = parent->fs_base;
+    child->gs_base = parent->gs_base;
+    child->sigaltstack_sp = parent->sigaltstack_sp;
+    child->sigaltstack_size = parent->sigaltstack_size;
     child->sig_blocked = parent->sig_blocked;
     fpu_fork(child, parent);
     memcpy(child->sigact, parent->sigact, sizeof(child->sigact));
     sys_files_clone(child, parent);
-    f = process_user_frame(child);
+    f = user_regs_of(child);
     *f = *regs;
-    f->eax = 0;
+    f->rax = 0;
     process_set_entry_frame(child);
     pcb_publish(child, parent);
     scheduler_add_task(child);

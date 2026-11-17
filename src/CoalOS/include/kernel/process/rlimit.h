@@ -19,7 +19,7 @@
 
 struct pcb;
 
-#define RLIM_INFINITY 0xFFFFFFFFu
+#define RLIM_INFINITY (~0ull)
 
 #define RLIMIT_CPU    0
 #define RLIMIT_NPROC  6
@@ -29,7 +29,7 @@ struct pcb;
 enum { RL_CPU, RL_NPROC, RL_AS, RL_COUNT };        /* index into pcb.rlim */
 #define RL_HIT(r) (1u << (r))
 
-struct rlim { uint32_t cur, max; };
+struct rlim { uint64_t cur, max; };
 
 /** Resets p's limits to unlimited. */
 void rlimit_init(struct pcb *p);
@@ -37,9 +37,9 @@ void rlimit_init(struct pcb *p);
 void rlimit_fork(struct pcb *child, const struct pcb *parent);
 
 /** Linux setrlimit semantics for one resource; 0 or -errno. */
-int rlimit_set(struct pcb *p, uint32_t resource, uint32_t cur, uint32_t max);
+int rlimit_set(struct pcb *p, uint32_t resource, uint64_t cur, uint64_t max);
 /** Current limits of one resource (RLIM_INFINITY when not enforced); -EINVAL for a bad resource number. */
-int rlimit_get(const struct pcb *p, uint32_t resource, uint32_t *cur, uint32_t *max);
+int rlimit_get(const struct pcb *p, uint32_t resource, uint64_t *cur, uint64_t *max);
 
 /** Charges CPU time of the running process (from the scheduler) and signals at the limits. */
 void rlimit_charge(struct pcb *p, uint64_t delta_ns);

@@ -1,4 +1,4 @@
-/* Linker script for static i386 user programs: code and read-only data in one
+/* Linker script for static x86_64 user programs: code and read-only data in one
  * R-X segment, data and bss in one RW- segment on their own pages, so no page
  * is both writable and executable. */
 ENTRY(_start)
@@ -10,7 +10,7 @@ PHDRS {
 }
 
 SECTIONS {
-    . = 0x08048000;
+    . = 0x400000;
 
     .text : {
         *(.text .text.* .gnu.linkonce.t.*)

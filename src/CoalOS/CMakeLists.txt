@@ -1,10 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 
-# Use the i686-elf cross compiler when it is installed; otherwise fall back to
-# the host GCC in 32-bit mode (works on any x86-64 Linux with gcc-multilib).
-find_program(CROSS_CC i686-elf-gcc)
+# Use the x86_64-elf cross compiler when it is installed; otherwise the host GCC (x86_64-linux-gnu on an
+# x86-64 Linux machine, which is what the freestanding flags below are written for).
+find_program(CROSS_CC x86_64-elf-gcc)
+find_program(HOST_CC x86_64-linux-gnu-gcc)
 if(CROSS_CC)
     set(CMAKE_C_COMPILER ${CROSS_CC})
+elseif(HOST_CC)
+    set(CMAKE_C_COMPILER ${HOST_CC})
 else()
     set(CMAKE_C_COMPILER gcc)
 endif()
@@ -14,22 +17,19 @@ project(CoalOS LANGUAGES C ASM_NASM)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_EXTENSIONS ON)
-set(CMAKE_ASM_NASM_OBJECT_FORMAT elf32)
+set(CMAKE_ASM_NASM_OBJECT_FORMAT elf64)
 set(CMAKE_ASM_NASM_COMPILE_OBJECT
-    "<CMAKE_ASM_NASM_COMPILER> <INCLUDES> <FLAGS> -f elf32 -g -o <OBJECT> <SOURCE>")
+    "<CMAKE_ASM_NASM_COMPILER> <INCLUDES> <FLAGS> -f elf64 -g -o <OBJECT> <SOURCE>")
 
 file(STRINGS ${CMAKE_SOURCE_DIR}/VERSION COAL_VERSION LIMIT_COUNT 1)
 
-set(ARCH_DIR ${CMAKE_SOURCE_DIR}/src/arch/i386)
+set(ARCH_DIR ${CMAKE_SOURCE_DIR}/src/arch/x86_64)
 
 set(FREESTANDING_FLAGS
-    -m32 -march=i386 -ffreestanding -nostdinc -fno-builtin
+    -m64 -mcmodel=kernel -ffreestanding -nostdinc -fno-builtin
     -fno-stack-protector -fno-pie -fno-pic
-    -mno-mmx -mno-sse -mno-sse2 -mno-red-zone
+    -mgeneral-regs-only -mno-red-zone
     -O2 -g -fno-strict-aliasing -Wall -Wextra -Wno-unused-parameter -Werror)
-
-execute_process(COMMAND ${CMAKE_C_COMPILER} -m32 -print-libgcc-file-name
-                OUTPUT_VARIABLE LIBGCC OUTPUT_STRIP_TRAILING_WHITESPACE)
 
 # --- Kernel -----------------------------------------------------------------
 file(GLOB_RECURSE KERNEL_SOURCES CONFIGURE_DEPENDS
@@ -40,10 +40,11 @@ file(GLOB_RECURSE KERNEL_SOURCES CONFIGURE_DEPENDS
 set(VDSO_SO ${CMAKE_BINARY_DIR}/vdso.so)
 add_custom_command(
     OUTPUT ${VDSO_SO}
-    COMMAND ${CMAKE_C_COMPILER} -m32 -march=i386 -O2 -fno-pic -ffreestanding -nostdlib -shared -s
-            -fno-stack-protector -fno-asynchronous-unwind-tables -Wall -Wextra -Werror
+    COMMAND ${CMAKE_C_COMPILER} -m64 -O2 -fPIC -ffreestanding -nostdlib -shared -s
+            -mgeneral-regs-only -fno-stack-protector -fno-asynchronous-unwind-tables -Wall -Wextra -Werror
             -I${CMAKE_SOURCE_DIR}/include
             -Wl,--hash-style=sysv -Wl,-soname=linux-vdso.so.1 -Wl,--build-id=none -Wl,-z,noexecstack
+            -Wl,-z,max-page-size=0x1000
             -Wl,--version-script=${ARCH_DIR}/vdso.ver -Wl,-T${ARCH_DIR}/vdso.ld
             -o ${VDSO_SO} ${CMAKE_SOURCE_DIR}/userspace/vdso/vdso.c
     DEPENDS userspace/vdso/vdso.c include/kernel/cpu/vdso_abi.h ${ARCH_DIR}/vdso.ld ${ARCH_DIR}/vdso.ver
@@ -59,8 +60,8 @@ target_include_directories(kernel PRIVATE include kernel ${CMAKE_BINARY_DIR})
 target_compile_definitions(kernel PRIVATE COAL_VERSION="${COAL_VERSION}")
 target_compile_options(kernel PRIVATE $<$<COMPILE_LANGUAGE:C>:${FREESTANDING_FLAGS}>)
 target_link_options(kernel PRIVATE
-    -m32 -nostdlib -static -no-pie -Wl,--build-id=none -T${ARCH_DIR}/linker.ld)
-target_link_libraries(kernel PRIVATE ${LIBGCC})
+    -m64 -nostdlib -static -no-pie -Wl,--build-id=none -Wl,-z,max-page-size=0x1000 -Wl,-z,noexecstack
+    -T${ARCH_DIR}/linker.ld)
 
 # --- User programs ------------------------------------------------------------
 file(GLOB USER_LIBC_SOURCES CONFIGURE_DEPENDS userspace/libc/*.c)
@@ -68,9 +69,8 @@ file(GLOB USER_LIBC_SOURCES CONFIGURE_DEPENDS userspace/libc/*.c)
 # User programs are small: -Os, warnings are errors, no libgcc (the libc avoids
 # the helpers it would provide), unused sections are dropped and the result is stripped.
 set(USER_FLAGS
-    -m32 -march=i386 -ffreestanding -nostdinc
+    -m64 -ffreestanding -nostdinc
     -fno-stack-protector -fno-pie -fno-pic
-    -mno-mmx -mno-sse -mno-sse2 -mno-red-zone
     -Os -Wall -Wextra -Werror -Wno-unused-parameter
     -fno-asynchronous-unwind-tables -fno-tree-loop-distribute-patterns
     -ffunction-sections -fdata-sections)
@@ -81,7 +81,7 @@ function(add_user_program name)
     target_include_directories(${name} PRIVATE include)
     target_compile_options(${name} PRIVATE $<$<COMPILE_LANGUAGE:C>:${USER_FLAGS}>)
     target_link_options(${name} PRIVATE
-        -m32 -nostdlib -static -no-pie -s -Wl,--build-id=none
+        -m64 -nostdlib -static -no-pie -s -Wl,--build-id=none -Wl,-z,max-page-size=0x1000 -Wl,-z,noexecstack
         -Wl,--gc-sections -T${ARCH_DIR}/user.ld)
 endfunction()
 
@@ -102,13 +102,13 @@ add_user_program(kernel_test userspace/tests/kernel_test.c)
 add_user_program(coalbench userspace/bench/coalbench.c)
 add_user_program(coalbench_null userspace/bench/null.c)
 
-# Raw int 0x80 smoke test: no libc, no start-up code.
+# Raw SYSCALL smoke test: no libc, no start-up code.
 add_executable(abi_test userspace/tests/abi_test.c)
 set_target_properties(abi_test PROPERTIES OUTPUT_NAME abi_test.elf)
-target_compile_options(abi_test PRIVATE -m32 -ffreestanding -nostdlib -fno-pie -fno-pic
-    -fno-stack-protector -mno-sse -O1 -Wall -Wextra -Werror)
-target_link_options(abi_test PRIVATE -m32 -nostdlib -static -no-pie -s -Wl,--build-id=none
-    -T${ARCH_DIR}/user.ld)
+target_compile_options(abi_test PRIVATE -m64 -ffreestanding -nostdlib -fno-pie -fno-pic
+    -fno-stack-protector -O1 -Wall -Wextra -Werror)
+target_link_options(abi_test PRIVATE -m64 -nostdlib -static -no-pie -s -Wl,--build-id=none
+    -Wl,-z,max-page-size=0x1000 -Wl,-z,noexecstack -T${ARCH_DIR}/user.ld)
 
 # --- Disk image (FAT16, long file names) with a Linux directory layout ---------
 # Static files for the image live in rootfs/ in the source tree.
@@ -164,7 +164,7 @@ add_custom_target(iso DEPENDS ${ISO_IMAGE})
 
 set(COAL_MEMORY_MB 512 CACHE STRING "Guest RAM in MiB for the run target")
 add_custom_target(run
-    COMMAND qemu-system-i386 -cdrom ${ISO_IMAGE} -hda ${DISK_IMAGE}
+    COMMAND qemu-system-x86_64 -cpu max -cdrom ${ISO_IMAGE} -hda ${DISK_IMAGE}
             -boot d -m ${COAL_MEMORY_MB}M -serial stdio
             -nic user,model=e1000
     DEPENDS image

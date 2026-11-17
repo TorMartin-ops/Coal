@@ -2,24 +2,23 @@
  * @file frame.h
  * @brief Reference-counted physical frames (single 4 KiB pages).
  *
- * frame_alloc*() return lowmem frames, always reachable through the direct
- * map (page tables, kernel stacks, anything the kernel dereferences).
- * frame_alloc_user*() may return highmem frames, which are for user data only
- * and must be touched through kmap(). A present page-table entry owns one
- * reference; unmapping drops it.
+ * frame_alloc*() return frames below 4 GiB (page tables, kernel stacks, DMA buffers: anything a
+ * device or the kernel itself touches). frame_alloc_user*() prefer frames above 4 GiB, which keeps the
+ * low memory for those. Every frame is reachable through the direct map (phys_to_virt()). A present
+ * page-table entry owns one reference; unmapping drops it.
  */
 #ifndef FRAME_H
 #define FRAME_H
 
 #include <kernel/core/types.h>
 
-/** Lowmem frame with reference count 1, contents undefined. Returns its physical address, or 0 when out of memory. */
+/** Frame below 4 GiB with reference count 1, contents undefined. Returns its physical address, or 0 when out of memory. */
 uintptr_t frame_alloc(void);
 
 /** Same, zero-filled (from the pre-zeroed pool when it has one). */
 uintptr_t frame_alloc_zeroed(void);
 
-/** User-data frame (highmem preferred), contents undefined. */
+/** User-data frame (above 4 GiB preferred), contents undefined. */
 uintptr_t frame_alloc_user(void);
 
 /** Same, zero-filled. */
@@ -35,7 +34,7 @@ size_t frame_pool_pages(unsigned zone);
 /** Same, for work nobody asked for: fails instead of taking the last free memory. */
 uintptr_t frame_alloc_user_zeroed_spare(void);
 
-/** Copy one frame to another; either may be highmem. */
+/** Copy one frame to another. */
 void frame_copy(uintptr_t dst, uintptr_t src);
 
 /** Take an additional reference. */

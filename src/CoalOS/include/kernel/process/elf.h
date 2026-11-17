@@ -39,7 +39,7 @@
 #define ET_DYN    3
 
 /* e_machine */
-#define EM_386    3
+#define EM_X86_64 62
 
 /* e_version */
 #define EV_NONE     0
@@ -56,41 +56,33 @@
 #define PF_W       0x2
 #define PF_R       0x4
 
-/* ---- ELF base types ---- */
-typedef uint16_t Elf32_Half;  /* 16-bit quantity */
-typedef uint32_t Elf32_Word;  /* 32-bit quantity */
-typedef int32_t  Elf32_Sword; /* signed 32-bit */
-typedef uint32_t Elf32_Off;   /* offset */
-typedef uint32_t Elf32_Addr;  /* address */
-
-/* ---- 32-bit ELF Header ---- */
+/* ---- ELF64 ---- */
 typedef struct {
-    unsigned char e_ident[EI_NIDENT]; /* ELF identification */
-    Elf32_Half    e_type;            /* Object file type */
-    Elf32_Half    e_machine;         /* Machine type */
-    Elf32_Word    e_version;         /* Object file version */
-    Elf32_Addr    e_entry;           /* Entry point address */
-    Elf32_Off     e_phoff;           /* Program header offset */
-    Elf32_Off     e_shoff;           /* Section header offset */
-    Elf32_Word    e_flags;           /* Processor-specific flags */
-    Elf32_Half    e_ehsize;          /* ELF header size */
-    Elf32_Half    e_phentsize;       /* Size of program header entry */
-    Elf32_Half    e_phnum;           /* Number of program header entries */
-    Elf32_Half    e_shentsize;       /* Size of section header entry */
-    Elf32_Half    e_shnum;           /* Number of section header entries */
-    Elf32_Half    e_shstrndx;        /* Section name string table index */
-} Elf32_Ehdr;
+    unsigned char e_ident[EI_NIDENT];
+    uint16_t e_type;
+    uint16_t e_machine;
+    uint32_t e_version;
+    uint64_t e_entry;
+    uint64_t e_phoff;
+    uint64_t e_shoff;
+    uint32_t e_flags;
+    uint16_t e_ehsize;
+    uint16_t e_phentsize;
+    uint16_t e_phnum;
+    uint16_t e_shentsize;
+    uint16_t e_shnum;
+    uint16_t e_shstrndx;
+} Elf64_Ehdr;
 
-/* ---- 32-bit Program Header ---- */
 typedef struct {
-    Elf32_Word p_type;   /* Type of segment */
-    Elf32_Off  p_offset; /* File offset where segment is located */
-    Elf32_Addr p_vaddr;  /* Virtual address of segment in memory */
-    Elf32_Addr p_paddr;  /* Physical address (not used on many systems) */
-    Elf32_Word p_filesz; /* Size of segment in file */
-    Elf32_Word p_memsz;  /* Size of segment in memory */
-    Elf32_Word p_flags;  /* Segment flags */
-    Elf32_Word p_align;  /* Segment alignment */
-} Elf32_Phdr;
+    uint32_t p_type;
+    uint32_t p_flags;
+    uint64_t p_offset;
+    uint64_t p_vaddr;
+    uint64_t p_paddr;
+    uint64_t p_filesz;
+    uint64_t p_memsz;
+    uint64_t p_align;
+} Elf64_Phdr;
 
 #endif /* ELF_H */

@@ -1,9 +1,9 @@
 /**
  * @file paging_process.h
- * @brief Per-process page directories.
+ * @brief Per-process address spaces (PML4 roots).
  *
  * Fork recipe:
- *   child_mm = dup_mm(parent_mm);   // mm.h: clones the directory and the VMAs
+ *   child_mm = dup_mm(parent_mm);   // mm.h: clones the page tables and the VMAs
  * or, at the paging level only:
  *   child_pd = paging_clone_directory(parent_pd);
  */
@@ -12,28 +12,23 @@
 
 #include <kernel/core/types.h>
 
-/** Allocate a page directory containing only the shared kernel mappings
- *  (identity map, direct map, kernel stacks, recursive entry).
- *  @return physical address of the directory, or 0 if out of memory. */
+/** Allocate a PML4 containing only the shared kernel entries.
+ *  @return physical address of the root, or 0 if out of memory. */
 uintptr_t paging_new_directory(void);
 
-/** Duplicate the user address space of src_pd_phys into a new directory.
+/** Duplicate the user address space of src_pd (physical address of its PML4) into a new one.
  *
  *  Every present user page is shared with the child. Writable pages are made
- *  read-only and tagged PAGE_COW in both directories; the first write on
+ *  read-only and tagged PAGE_COW in both address spaces; the first write on
  *  either side copies the page (see mm_fault()). Read-only pages stay shared.
  *  The parent's TLB is flushed. On failure the partial child is released and
  *  the parent stays valid.
  *  The caller must also duplicate the VMAs (dup_mm() does both).
- *  @return physical address of the new directory, or 0 on failure. */
-uintptr_t paging_clone_directory(uint32_t *src_pd_phys);
+ *  @return physical address of the new root, or 0 on failure. */
+uintptr_t paging_clone_directory(void *src_pd);
 
-/** Drop every user mapping and user page table of a directory. The directory
- *  frame itself is not freed; the owner releases it with put_frame(). */
-void paging_free_user_space(uint32_t *page_directory_phys);
-
-/** Copy the shared kernel PDEs (identity map, 0xC0000000 and up, except the
- *  recursive slot) into a directory reachable at new_pd_virt. */
-void copy_kernel_pde_entries(uint32_t *new_pd_virt);
+/** Drop every user mapping and user page table of an address space. The PML4 frame
+ *  itself is not freed; the owner releases it with put_frame(). */
+void paging_free_user_space(void *pd);
 
 #endif /* PAGING_PROCESS_H */

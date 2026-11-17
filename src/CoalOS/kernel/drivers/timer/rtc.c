@@ -31,10 +31,12 @@ uint32_t rtc_unix_time(void) {
 }
 
 uint32_t wall_seconds(void) {
-    uint32_t nsec;
-    return vdso_split_ns(clock_realtime_ns(), &nsec);
+    return (uint32_t)(clock_realtime_ns() / 1000000000u);
 }
 
 void wall_time(uint32_t *sec, uint32_t *nsec) {
-    *sec = vdso_split_ns(clock_realtime_ns(), nsec);
+    uint64_t ns = clock_realtime_ns();
+
+    *sec = (uint32_t)(ns / 1000000000u);
+    *nsec = (uint32_t)(ns % 1000000000u);
 }

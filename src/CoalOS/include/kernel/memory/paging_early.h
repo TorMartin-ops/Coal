@@ -6,20 +6,18 @@
 #define PAGING_EARLY_H
 
 #include <kernel/core/types.h>
+#include <kernel/core/boot_info.h>
 
 /**
- * Bring up all of memory management while paging is still off.
+ * Bring up all of memory management on the boot page tables.
  *
- * Builds the kernel page directory (identity map, direct map of lowmem,
- * pre-allocated kernel stack and kmap tables), enables paging, then starts the
- * page allocator on whatever part of the region the boot structures did not
- * use, and finally kmalloc. Halts the machine on failure.
+ * Builds the kernel PML4 (direct map of every RAM range, the kernel image with W^X permissions, the shared
+ * upper tables for the stack and device windows) and switches to it, which drops the identity map the boot
+ * code set up. Then starts the page allocator on the memory the early allocations left over, and kmalloc.
+ * Halts the machine on failure.
  *
- * @param heap_phys  start of the largest usable RAM region (not overlapping the
- *                   kernel image or the boot info)
- * @param heap_size  its size in bytes; memory above 896 MiB becomes highmem and
- *                   the region is clipped at 4 GiB
+ * @param map  usable RAM, page aligned, without the kernel image and the boot information
  */
-void memory_init(uintptr_t heap_phys, size_t heap_size);
+void memory_init(const struct boot_memmap *map);
 
 #endif /* PAGING_EARLY_H */

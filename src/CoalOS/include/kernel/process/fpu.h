@@ -1,15 +1,15 @@
 /**
  * @file fpu.h
- * @brief x87 state per process, switched lazily with CR0.TS and the #NM trap.
+ * @brief x87 and SSE state per process, switched lazily with CR0.TS and the #NM trap.
  */
 #ifndef FPU_H
 #define FPU_H
 
 #include <kernel/process/process.h>
 
-#define FPU_AREA_SIZE 512       /* FXSAVE image; the FSAVE image on CPUs without FXSR is smaller */
+#define FPU_AREA_SIZE 512       /* FXSAVE image */
 
-/** Detects FXSR and installs the #NM handler. Call once during boot. */
+/** Enables SSE for user code and installs the #NM handler. Call once during boot. */
 void fpu_init(void);
 /** Called on every task switch: the FPU holds the state of another task, so the first use must trap. */
 void fpu_task_switch(const pcb_t *next);

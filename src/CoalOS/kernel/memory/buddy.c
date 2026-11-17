@@ -1,10 +1,10 @@
 /**
  * @file buddy.c
- * @brief Binary buddy page allocator with a NORMAL and a HIGH zone.
+ * @brief Binary buddy page allocator with a LOW (below 4 GiB) and a HIGH zone.
  *
  * Free blocks sit on doubly linked lists threaded through struct page by page
- * index, so removing a buddy while merging is O(1) and highmem pages need no
- * mapping. A block never merges across the zone boundary.
+ * index, so removing a buddy while merging is O(1). A block never merges across the zone boundary
+ * (4 GiB is aligned to the largest block) or over reserved pages.
  */
 
 #include <kernel/memory/buddy.h>
@@ -15,18 +15,19 @@
 
 #define META_FREE  0x80u
 #define META_ALLOC 0x40u
+#define META_RESERVED 0x20u
 #define META_ORDER 0x1Fu
 #define NONE       0xFFFFFFFFu
 
 static uint32_t g_free[ZONE_COUNT][BUDDY_MAX_ORDER + 1];
 static struct page *g_pages;
 static uintptr_t g_base;
-static size_t g_count, g_high_idx;      /* total pages; first HIGH page index */
+static size_t g_count;                  /* pages in the span */
 static size_t g_zone_pages[ZONE_COUNT];
 static size_t g_zone_free[ZONE_COUNT];
 static spinlock_t g_lock;
 
-static inline unsigned zone_of(size_t idx) { return idx >= g_high_idx ? ZONE_HIGH : ZONE_NORMAL; }
+static inline unsigned zone_of(size_t idx) { return g_base + ((uintptr_t)idx << PAGE_SHIFT) >= ZONE_HIGH_START_PHYS ? ZONE_HIGH : ZONE_LOW; }
 
 static void push_free(size_t idx, unsigned order) {
     uint32_t *head = &g_free[zone_of(idx)][order];
@@ -49,35 +50,41 @@ static void unlink_free(size_t idx, unsigned order) {
     p->meta = 0;
 }
 
-void buddy_init(uintptr_t base, uintptr_t high_start, uintptr_t end, struct page *pages) {
-    base = PAGE_ALIGN_UP(base);
-    end = PAGE_ALIGN_DOWN(end);
+void buddy_init(uintptr_t base, uintptr_t end, struct page *pages) {
+    base = PAGE_ALIGN_DOWN(base);
+    end = PAGE_ALIGN_UP(end);
     if (end <= base)
         KERNEL_PANIC_HALT("buddy_init: empty region");
     spinlock_init(&g_lock);
     g_pages = pages;
     g_base = base;
     g_count = (end - base) >> PAGE_SHIFT;
-    g_high_idx = high_start >= end ? g_count : (high_start - base) >> PAGE_SHIFT;
-    memset(pages, 0, g_count * sizeof(struct page));
+    for (size_t i = 0; i < g_count; i++) {
+        pages[i].refcount = 0;
+        pages[i].meta = META_RESERVED;
+    }
     for (unsigned z = 0; z < ZONE_COUNT; z++)
         for (unsigned o = 0; o <= BUDDY_MAX_ORDER; o++)
             g_free[z][o] = NONE;
+}
 
-    /* Carve each zone into the largest naturally aligned blocks. */
-    for (size_t idx = 0, stop; idx < g_count; idx = stop) {
-        stop = idx < g_high_idx ? g_high_idx : g_count;
-        while (idx < stop) {
-            unsigned order = BUDDY_MAX_ORDER;
-            while (order > 0 && ((idx & ((1u << order) - 1)) || idx + (1u << order) > stop))
-                order--;
-            push_free(idx, order);
-            g_zone_free[zone_of(idx)] += (size_t)1 << order;
-            idx += (size_t)1 << order;
-        }
+void buddy_add_range(uintptr_t start, uintptr_t end) {
+    size_t idx = (PAGE_ALIGN_UP(start) - g_base) >> PAGE_SHIFT;
+    size_t stop = (PAGE_ALIGN_DOWN(end) - g_base) >> PAGE_SHIFT;
+
+    if (stop > g_count || start < g_base)
+        KERNEL_PANIC_HALT("buddy_add_range: outside the managed span");
+    for (size_t i = idx; i < stop; i++)
+        g_pages[i].meta = 0;
+    while (idx < stop) {                /* carve the largest naturally aligned blocks */
+        unsigned order = BUDDY_MAX_ORDER;
+        while (order > 0 && ((idx & (((size_t)1 << order) - 1)) || idx + ((size_t)1 << order) > stop))
+            order--;
+        push_free(idx, order);
+        g_zone_free[zone_of(idx)] += (size_t)1 << order;
+        g_zone_pages[zone_of(idx)] += (size_t)1 << order;
+        idx += (size_t)1 << order;
     }
-    g_zone_pages[ZONE_NORMAL] = g_high_idx;
-    g_zone_pages[ZONE_HIGH] = g_count - g_high_idx;
 }
 
 /* Take a block of 2^order pages from the given zone; (size_t)-1 if it has none. */
@@ -105,7 +112,7 @@ static uintptr_t alloc(unsigned order, bool high_ok) {
     uintptr_t flags = spinlock_acquire_irqsave(&g_lock);
     size_t idx = high_ok ? take(ZONE_HIGH, order) : (size_t)-1;
     if (idx == (size_t)-1)
-        idx = take(ZONE_NORMAL, order);
+        idx = take(ZONE_LOW, order);
     spinlock_release_irqrestore(&g_lock, flags);
     return idx == (size_t)-1 ? 0 : g_base + ((uintptr_t)idx << PAGE_SHIFT);
 }
@@ -143,7 +150,8 @@ void buddy_free_pages(uintptr_t phys) {
 struct page *buddy_page(uintptr_t phys) {
     if (phys < g_base || phys - g_base >= ((uintptr_t)g_count << PAGE_SHIFT))
         return NULL;
-    return &g_pages[(phys - g_base) >> PAGE_SHIFT];
+    struct page *pg = &g_pages[(phys - g_base) >> PAGE_SHIFT];
+    return (pg->meta & META_RESERVED) ? NULL : pg;
 }
 
 size_t buddy_total_pages(unsigned zone) { return g_zone_pages[zone]; }

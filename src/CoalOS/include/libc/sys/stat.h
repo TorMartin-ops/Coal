@@ -20,24 +20,23 @@
 #define S_IWUSR 0200
 #define S_IXUSR 0100
 
-/* Linux i386 struct stat64 (96 bytes). */
+/* Linux x86_64 struct stat (144 bytes). */
 struct stat {
-    unsigned long long st_dev;
-    unsigned int       __pad0;
-    unsigned int       __ino32;
-    unsigned int       st_mode;
-    unsigned int       st_nlink;
-    unsigned int       st_uid;
-    unsigned int       st_gid;
-    unsigned long long st_rdev;
-    unsigned int       __pad3;
-    long long          st_size;
-    unsigned int       st_blksize;
-    unsigned long long st_blocks;
-    long               st_atime, st_atime_nsec;
-    long               st_mtime, st_mtime_nsec;
-    long               st_ctime, st_ctime_nsec;
-    unsigned long long st_ino;
+    unsigned long st_dev;
+    unsigned long st_ino;
+    unsigned long st_nlink;
+    unsigned int  st_mode;
+    unsigned int  st_uid;
+    unsigned int  st_gid;
+    unsigned int  __pad0;
+    unsigned long st_rdev;
+    long          st_size;
+    long          st_blksize;
+    long          st_blocks;
+    long          st_atime, st_atime_nsec;
+    long          st_mtime, st_mtime_nsec;
+    long          st_ctime, st_ctime_nsec;
+    long          __unused[3];
 };
 
 int stat(const char *path, struct stat *st);

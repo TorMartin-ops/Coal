@@ -1,7 +1,7 @@
 /**
  * @file format.c
  * @brief Kernel snprintf: %s %c %d %i %u %x %X %o %p %%, flags - 0 #, width,
- *        precision, length modifiers h hh l ll z t j, including 64-bit values.
+ *        precision, length modifiers h hh l ll z t j, including 64-bit values (l, ll, j, z, t).
  */
 #include <kernel/drivers/display/terminal.h>
 #include <kernel/lib/string.h>
@@ -20,13 +20,10 @@ static void pad(out_t *o, char c, int n) {
     while (n-- > 0) put(o, c);
 }
 
-/* v /= base, returns the remainder. 64/32 division with divl: the kernel is
- * not linked against libgcc, so there is no __udivdi3. */
+/* v /= base, returns the remainder. */
 static uint32_t divmod(uint64_t *v, uint32_t base) {
-    uint32_t hi = (uint32_t)(*v >> 32), lo = (uint32_t)*v;
-    uint32_t qhi = hi / base, rem = hi % base, qlo;
-    __asm__("divl %4" : "=a"(qlo), "=d"(rem) : "a"(lo), "d"(rem), "rm"(base));
-    *v = ((uint64_t)qhi << 32) | qlo;
+    uint32_t rem = (uint32_t)(*v % base);
+    *v /= base;
     return rem;
 }
 
@@ -89,11 +86,10 @@ int _vsnprintf(char *str, size_t size, const char *fmt, va_list args) {
             while (*fmt >= '0' && *fmt <= '9') sp.prec = sp.prec * 10 + (*fmt++ - '0');
         }
 
-        int longs = 0; /* 2 = 64-bit; everything else is 32-bit on i386 */
+        bool wide = false; /* l, ll, j, z and t are 64-bit; the rest are int */
         for (;; fmt++) {
-            if (*fmt == 'l') longs++;
-            else if (*fmt == 'j') longs = 2;
-            else if (*fmt != 'h' && *fmt != 'z' && *fmt != 't') break;
+            if (*fmt == 'l' || *fmt == 'j' || *fmt == 'z' || *fmt == 't') wide = true;
+            else if (*fmt != 'h') break;
         }
 
         switch (*fmt) {
@@ -113,13 +109,13 @@ int _vsnprintf(char *str, size_t size, const char *fmt, va_list args) {
             break;
         }
         case 'd': case 'i': {
-            int64_t v = longs >= 2 ? va_arg(args, long long) : (int64_t)va_arg(args, int);
+            int64_t v = wide ? va_arg(args, long long) : (int64_t)va_arg(args, int);
             bool neg = v < 0;
             put_number(&o, neg ? 0 - (uint64_t)v : (uint64_t)v, 10, false, neg, "", &sp);
             break;
         }
         case 'u': case 'x': case 'X': case 'o': {
-            uint64_t v = longs >= 2 ? va_arg(args, unsigned long long) : (uint64_t)va_arg(args, unsigned int);
+            uint64_t v = wide ? va_arg(args, unsigned long long) : (uint64_t)va_arg(args, unsigned int);
             uint32_t base = *fmt == 'u' ? 10 : *fmt == 'o' ? 8 : 16;
             const char *prefix = "";
             if (alt && v) prefix = base == 16 ? (*fmt == 'X' ? "0X" : "0x") : base == 8 ? "0" : "";
@@ -127,7 +123,7 @@ int _vsnprintf(char *str, size_t size, const char *fmt, va_list args) {
             break;
         }
         case 'p': {
-            sp.prec = 8;
+            sp.prec = 16;
             put_number(&o, (uintptr_t)va_arg(args, void *), 16, false, false, "0x", &sp);
             break;
         }

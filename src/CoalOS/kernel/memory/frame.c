@@ -5,7 +5,6 @@
 
 #include <kernel/memory/frame.h>
 #include <kernel/memory/buddy.h>
-#include <kernel/memory/kmap.h>
 #include <kernel/memory/paging.h>
 #include <kernel/sync/spinlock.h>
 #include <kernel/lib/string.h>
@@ -22,7 +21,7 @@ static volatile unsigned g_pool_n;
 static size_t g_pool_zone[ZONE_COUNT];
 static spinlock_t g_pool_lock;
 
-static inline unsigned zone_of_phys(uintptr_t phys) { return phys >= HIGHMEM_START_PHYS ? ZONE_HIGH : ZONE_NORMAL; }
+static inline unsigned zone_of_phys(uintptr_t phys) { return phys >= ZONE_HIGH_START_PHYS ? ZONE_HIGH : ZONE_LOW; }
 
 /* Take a pool frame; only a lowmem one if `low` (page tables must be reachable). */
 static uintptr_t pool_pop(bool low) {
@@ -30,7 +29,7 @@ static uintptr_t pool_pop(bool low) {
     if (!g_pool_n)
         return 0;                       /* the common case when busy: no lock */
     uintptr_t flags = spinlock_acquire_irqsave(&g_pool_lock);
-    if (g_pool_n && (!low || g_pool[g_pool_n - 1] < HIGHMEM_START_PHYS)) {
+    if (g_pool_n && (!low || g_pool[g_pool_n - 1] < ZONE_HIGH_START_PHYS)) {
         phys = g_pool[--g_pool_n];
         g_pool_zone[zone_of_phys(phys)]--;
     }
@@ -39,13 +38,11 @@ static uintptr_t pool_pop(bool low) {
 }
 
 static void clear_frame(uintptr_t phys) {
-    void *v = kmap(phys);
-    memset(v, 0, PAGE_SIZE);
-    kunmap(v);
+    memset(phys_to_virt(phys), 0, PAGE_SIZE);
 }
 
 bool frame_refill_zeroed(void) {
-    if (g_pool_n >= ZERO_POOL || buddy_free_pages_count(ZONE_NORMAL) + buddy_free_pages_count(ZONE_HIGH) < POOL_RESERVE)
+    if (g_pool_n >= ZERO_POOL || buddy_free_pages_count(ZONE_LOW) + buddy_free_pages_count(ZONE_HIGH) < POOL_RESERVE)
         return false;
     uintptr_t phys = buddy_alloc_page_user();
     if (!phys)
@@ -103,16 +100,13 @@ uintptr_t frame_alloc_user_zeroed(void) {
 }
 
 uintptr_t frame_alloc_user_zeroed_spare(void) {
-    if (buddy_free_pages_count(ZONE_NORMAL) + buddy_free_pages_count(ZONE_HIGH) < POOL_RESERVE)
+    if (buddy_free_pages_count(ZONE_LOW) + buddy_free_pages_count(ZONE_HIGH) < POOL_RESERVE)
         return 0;
     return frame_alloc_user_zeroed();
 }
 
 void frame_copy(uintptr_t dst, uintptr_t src) {
-    void *d = kmap(dst), *s = kmap(src);
-    memcpy(d, s, PAGE_SIZE);
-    kunmap(s);
-    kunmap(d);
+    memcpy(phys_to_virt(dst), phys_to_virt(src), PAGE_SIZE);
 }
 
 /* Counts change with one locked xadd: no spinlock, no interrupt toggling. */

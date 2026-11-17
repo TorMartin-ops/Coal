@@ -86,8 +86,8 @@ ssize_t sys_read(int fd, void *buf, size_t count) { WITH_FILE(fd, vfs_read(f, bu
 ssize_t sys_write(int fd, const void *buf, size_t count) { WITH_FILE(fd, vfs_write(f, buf, count)); }
 off_t sys_lseek(int fd, off_t off, int whence) { WITH_FILE(fd, vfs_lseek(f, off, whence)); }
 int sys_getdents64(int fd, void *buf, size_t count) { WITH_FILE(fd, vfs_getdents64(f, buf, count)); }
-int sys_fstat(int fd, struct kstat64 *st) { WITH_FILE(fd, vfs_fstat(f, st)); }
-int sys_fstatfs(int fd, struct kstatfs64 *st) { WITH_FILE(fd, vfs_fstatfs(f, st)); }
+int sys_fstat(int fd, struct kstat *st) { WITH_FILE(fd, vfs_fstat(f, st)); }
+int sys_fstatfs(int fd, struct kstatfs *st) { WITH_FILE(fd, vfs_fstatfs(f, st)); }
 
 int sys_ioctl(int fd, uint32_t cmd, void *arg) { WITH_FILE(fd, vfs_ioctl(f, cmd, arg)); }
 

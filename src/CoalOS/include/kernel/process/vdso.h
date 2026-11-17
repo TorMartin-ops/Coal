@@ -8,8 +8,8 @@
 #include <kernel/core/types.h>
 #include <kernel/memory/mm.h>
 
-/** Allocates the pages, copies the image and publishes the clock. Without sysenter the stub uses int 0x80. */
-void vdso_init(bool sysenter);
+/** Allocates the pages, copies the image and publishes the clock. */
+void vdso_init(void);
 
 /** Maps the time page and the vDSO read-only into mm. 0 or -ENOMEM (mm is then released by the caller). */
 int vdso_map(mm_struct_t *mm);

@@ -29,7 +29,7 @@ int copy_path_from_user(const char *user, char *kbuf, size_t size) {
     return -ENAMETOOLONG;
 }
 
-int user_path(uint32_t user, char *out, size_t size) {
+int user_path(uintptr_t user, char *out, size_t size) {
     const char *cwd = get_current_process()->cwd;
     char *full = kmalloc(PATH_MAX_SYS);       /* too big for the kernel stack */
     char first;
@@ -53,13 +53,13 @@ int user_path(uint32_t user, char *out, size_t size) {
  * Copy a NULL-terminated user pointer array and its strings into one block:
  * [ pointer vector | strings ]. Returns the number of strings or -errno.
  */
-static long copy_strv(uint32_t user_vec, char **vec, size_t *nvec, char *strings, size_t *used) {
+static long copy_strv(uintptr_t user_vec, char **vec, size_t *nvec, char *strings, size_t *used) {
     long n = 0;
 
     if (!user_vec) { vec[(*nvec)++] = NULL; return 0; }
     for (;;) {
-        uint32_t uptr;
-        if (copy_from_user(&uptr, (const void *)(user_vec + 4u * n), sizeof(uptr)) != 0)
+        uintptr_t uptr;
+        if (copy_from_user(&uptr, (const void *)(user_vec + sizeof(uptr) * n), sizeof(uptr)) != 0)
             return -EFAULT;
         if (*nvec >= ARG_MAX_VECS) return -E2BIG;
         if (!uptr) { vec[(*nvec)++] = NULL; return n; }
@@ -78,7 +78,7 @@ static long copy_strv(uint32_t user_vec, char **vec, size_t *nvec, char *strings
     }
 }
 
-long exec_args_copy(uint32_t user_argv, uint32_t user_envp, struct exec_args *out) {
+long exec_args_copy(uintptr_t user_argv, uintptr_t user_envp, struct exec_args *out) {
     size_t vec_bytes = ARG_MAX_VECS * sizeof(char *);
     char *block = kmalloc(vec_bytes + ARG_MAX_BYTES);
     if (!block) return -ENOMEM;

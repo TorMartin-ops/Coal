@@ -26,7 +26,7 @@ static void print_long(const char *name, const struct stat *st) {
     char who[2][12];
     snprintf(who[0], sizeof who[0], st->st_uid ? "%u" : "root", st->st_uid);
     snprintf(who[1], sizeof who[1], st->st_gid ? "%u" : "root", st->st_gid);
-    printf("%s %3u %-5s %-5s %8llu %s %s\n", mode, st->st_nlink, who[0], who[1],
+    printf("%s %3lu %-5s %-5s %8llu %s %s\n", mode, (unsigned long)st->st_nlink, who[0], who[1],
            (unsigned long long)st->st_size, when, name);
 }
 

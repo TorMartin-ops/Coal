@@ -9,7 +9,7 @@
  * One event loop polls the link, the output pipes of running commands and a
  * self-pipe that SIGCHLD writes to; it never blocks anywhere else.
  *
- * The daemon talks to the Linux i386 system call ABI directly and needs
+ * The daemon talks to the Linux x86_64 system call ABI directly and needs
  * nothing from libc, so the same source also builds and runs on a Linux host
  * (see test/).
  */
@@ -23,18 +23,9 @@ typedef long long s64;
 
 #define offsetof(t, m) __builtin_offsetof(t, m)
 
-/* --- Linux i386 system calls ---------------------------------------------- */
+/* --- Linux x86_64 system calls ---------------------------------------------- */
 
-enum {
-    SYS_exit = 1, SYS_fork = 2, SYS_read = 3, SYS_write = 4, SYS_open = 5,
-    SYS_close = 6, SYS_unlink = 10, SYS_execve = 11, SYS_chdir = 12, SYS_lseek = 19,
-    SYS_kill = 37, SYS_rename = 38, SYS_mkdir = 39, SYS_rmdir = 40, SYS_pipe2 = 331,
-    SYS_ioctl = 54, SYS_setsid = 66, SYS_dup2 = 63, SYS_uname = 122, SYS_fsync = 118,
-    SYS_wait4 = 114, SYS_nanosleep = 162, SYS_poll = 168, SYS_munmap = 91,
-    SYS_getdents64 = 220, SYS_lstat64 = 196, SYS_fstat64 = 197, SYS_fcntl64 = 221,
-    SYS_clock_gettime = 265, SYS_mmap2 = 192, SYS_setrlimit = 75, SYS_rt_sigaction = 174,
-    SYS_rt_sigreturn = 173,
-};
+#include <libc/syscall_numbers.h>
 
 enum {
     O_RDONLY = 0, O_WRONLY = 1, O_RDWR = 2, O_CREAT = 0x40, O_NOCTTY = 0x100,
@@ -49,9 +40,11 @@ enum {
 
 static long sc(long n, long a, long b, long c, long d, long e) {
     long r;
-    __asm__ volatile ("int $0x80" : "=a"(r)
-                      : "a"(n), "b"(a), "c"(b), "d"(c), "S"(d), "D"(e)
-                      : "memory", "cc");
+    register long r10 __asm__("r10") = d;
+    register long r8 __asm__("r8") = e;
+    __asm__ volatile ("syscall" : "=a"(r)
+                      : "a"(n), "D"(a), "S"(b), "d"(c), "r"(r10), "r"(r8)
+                      : "rcx", "r11", "memory", "cc");
     return r;
 }
 
@@ -60,24 +53,27 @@ static long sc(long n, long a, long b, long c, long d, long e) {
 #define SYS3(n, a, b, c)    sc(n, (long)(a), (long)(b), (long)(c), 0, 0)
 #define SYS4(n, a, b, c, d) sc(n, (long)(a), (long)(b), (long)(c), (long)(d), 0)
 
-/* mmap2 takes a sixth argument in ebp. */
 static long anon_map(size_t len) {
+    register long r10 __asm__("r10") = 0x22;           /* MAP_PRIVATE | MAP_ANONYMOUS */
+    register long r8 __asm__("r8") = -1;
+    register long r9 __asm__("r9") = 0;
     long r;
-    __asm__ volatile ("pushl %%ebp\n\txorl %%ebp, %%ebp\n\tint $0x80\n\tpopl %%ebp"
-                      : "=a"(r)
-                      : "a"(SYS_mmap2), "b"(0), "c"(len), "d"(3), "S"(0x22), "D"(-1)
-                      : "memory", "cc");
+    __asm__ volatile ("syscall" : "=a"(r)
+                      : "a"(SYS_MMAP), "D"(0), "S"(len), "d"(3), "r"(r10), "r"(r8), "r"(r9)
+                      : "rcx", "r11", "memory", "cc");
     return r;
 }
 
-/* Linux i386 struct stat64 as the kernel lays it out (96 bytes). */
-struct stat64 {
-    u64 st_dev; u32 pad1; u32 st_ino32; u32 st_mode; u32 st_nlink;
-    u32 st_uid; u32 st_gid; u64 st_rdev; u32 pad2; s64 st_size;
-    u32 st_blksize; u64 st_blocks; u32 atime, atime_ns, mtime, mtime_ns,
-    ctime, ctime_ns; u64 st_ino;
-} __attribute__((packed));
-typedef char stat64_size_check[sizeof(struct stat64) == 96 ? 1 : -1];
+/* Linux x86_64 struct stat (144 bytes). */
+struct kstat {
+    u64 st_dev, st_ino, st_nlink;
+    u32 st_mode, st_uid, st_gid, pad0;
+    u64 st_rdev;
+    s64 st_size, st_blksize, st_blocks;
+    s64 st_atime, st_atime_nsec, st_mtime, st_mtime_nsec, st_ctime, st_ctime_nsec;
+    s64 unused[3];
+};
+typedef char kstat_size_check[sizeof(struct kstat) == 144 ? 1 : -1];
 
 struct dirent64 {
     u64 d_ino; s64 d_off; unsigned short d_reclen; u8 d_type; char d_name[];
@@ -85,7 +81,7 @@ struct dirent64 {
 
 struct pollfd { int fd; short events, revents; };
 struct timespec { long tv_sec, tv_nsec; };
-struct ksigaction { void (*handler)(int); unsigned long flags; void (*restorer)(void); u32 mask[2]; };
+struct ksigaction { void (*handler)(int); unsigned long flags; void (*restorer)(void); u64 mask; };
 
 #define S_IFMT 0170000
 #define S_IFDIR 0040000
@@ -114,12 +110,12 @@ static u32 umin(u32 a, u32 b) { return a < b ? a : b; }
 
 static void msleep(long ms) {
     struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
-    SYS2(SYS_nanosleep, &ts, 0);
+    SYS2(SYS_NANOSLEEP, &ts, 0);
 }
 
 static long now_ms(void) {
     struct timespec ts;
-    if (SYS2(SYS_clock_gettime, 1, &ts) < 0 && SYS2(SYS_clock_gettime, 0, &ts) < 0)
+    if (SYS2(SYS_CLOCK_GETTIME, 1, &ts) < 0 && SYS2(SYS_CLOCK_GETTIME, 0, &ts) < 0)
         return 0;
     return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
@@ -150,23 +146,23 @@ static void fmt_u(char *buf, unsigned long v) {
 /* Raw 8N1 mode: no echo, no line editing, no CR/LF translation. */
 static void make_raw(int fd) {
     unsigned int t[16] = { 0 };                 /* struct termios, 36 bytes used */
-    if (SYS3(SYS_ioctl, fd, TCGETS, t) < 0) return;
+    if (SYS3(SYS_IOCTL, fd, TCGETS, t) < 0) return;
     t[0] = 0;                                   /* c_iflag */
     t[1] = 0;                                   /* c_oflag */
     t[2] = (t[2] & ~0x30u) | 0x30 | 0x80;       /* c_cflag: CS8 | CREAD, keep speed */
     t[3] = 0;                                   /* c_lflag */
     ((u8 *)t)[17 + 6] = 1;                      /* c_cc[VMIN]  (offset 17 + 6) */
     ((u8 *)t)[17 + 5] = 0;                      /* c_cc[VTIME] */
-    SYS3(SYS_ioctl, fd, TCSETS, t);
+    SYS3(SYS_IOCTL, fd, TCSETS, t);
 }
 
 static int link_open(const char *dev) {
-    long fd = SYS2(SYS_open, dev, O_RDWR | O_NOCTTY);
+    long fd = SYS2(SYS_OPEN, dev, O_RDWR | O_NOCTTY);
     if (fd < 0) return -1;
     make_raw((int)fd);
-    SYS2(SYS_dup2, fd, 0);
-    SYS2(SYS_dup2, fd, 1);
-    if (fd > 1) SYS1(SYS_close, fd);
+    SYS2(SYS_DUP2, fd, 0);
+    SYS2(SYS_DUP2, fd, 1);
+    if (fd > 1) SYS1(SYS_CLOSE, fd);
     return 0;
 }
 
@@ -174,7 +170,7 @@ static int link_open(const char *dev) {
 static long write_all(int fd, const char *p, size_t n) {
     int stalls = 0;
     while (n) {
-        long w = SYS3(SYS_write, fd, p, n);
+        long w = SYS3(SYS_WRITE, fd, p, n);
         if (w < 0) return w;
         if (w == 0) {
             if (++stalls > 5000) return -5;      /* EIO: the peer stopped draining */
@@ -657,7 +653,7 @@ static char *xalloc(size_t n) {
 }
 
 static void xfree(char *p, size_t n) {
-    if (p) SYS2(SYS_munmap, p, n);
+    if (p) SYS2(SYS_MUNMAP, p, n);
 }
 
 /* --- Settings -------------------------------------------------------------- */
@@ -723,8 +719,8 @@ static struct job *job_find(long id) {
 
 static void job_files_remove(struct job *j) {
     if (!j->exec) {
-        SYS1(SYS_unlink, j->paths[0]);
-        SYS1(SYS_unlink, j->paths[1]);
+        SYS1(SYS_UNLINK, j->paths[0]);
+        SYS1(SYS_UNLINK, j->paths[1]);
     }
 }
 
@@ -771,11 +767,11 @@ static void spill_write(struct stream *s, const char *p, u32 n, u32 cap) {
 static void spill_start(struct job *j, struct stream *s, const char *suffix) {
     char old[48];
     if (j->exec_n > KEEP_SPILLS) {                   /* keep the disk from filling up over a long session */
-        make_spill_path(old, sizeof old, "x", j->exec_n - KEEP_SPILLS, ".stdout"); SYS1(SYS_unlink, old);
-        make_spill_path(old, sizeof old, "x", j->exec_n - KEEP_SPILLS, ".stderr"); SYS1(SYS_unlink, old);
+        make_spill_path(old, sizeof old, "x", j->exec_n - KEEP_SPILLS, ".stdout"); SYS1(SYS_UNLINK, old);
+        make_spill_path(old, sizeof old, "x", j->exec_n - KEEP_SPILLS, ".stderr"); SYS1(SYS_UNLINK, old);
     }
     make_spill_path(s->path, sizeof s->path, "x", j->exec_n, suffix);
-    long fd = SYS3(SYS_open, s->path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    long fd = SYS3(SYS_OPEN, s->path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fd < 0) { s->spill_err = 1; return; }
     s->spill = (int)fd;
     u32 hlen = umin(s->total, s->H), tlen = s->total - hlen;     /* the ring has not wrapped yet */
@@ -888,20 +884,20 @@ static void build_env(const struct req *r, char *buf, size_t cap, char **envp) {
 
 static void set_limit(int res, unsigned long v, unsigned long hard) {
     unsigned long l[2] = { v, hard };
-    SYS2(SYS_setrlimit, res, l);
+    SYS2(SYS_SETRLIMIT, res, l);
 }
 
 static long count_processes(void) {
     static char dents[1024];
-    long fd = SYS2(SYS_open, "/proc", O_RDONLY | O_DIRECTORY), n = 0;
+    long fd = SYS2(SYS_OPEN, "/proc", O_RDONLY | O_DIRECTORY), n = 0;
     if (fd < 0) return 0;
-    for (long got; (got = SYS3(SYS_getdents64, fd, dents, sizeof dents)) > 0; )
+    for (long got; (got = SYS3(SYS_GETDENTS64, fd, dents, sizeof dents)) > 0; )
         for (long off = 0; off < got; ) {
             struct dirent64 *d = (struct dirent64 *)(dents + off);
             off += d->d_reclen;
             n += d->d_name[0] >= '0' && d->d_name[0] <= '9';
         }
-    SYS1(SYS_close, fd);
+    SYS1(SYS_CLOSE, fd);
     return n;
 }
 
@@ -917,28 +913,28 @@ static long launch(struct job *j, const struct req *r, int out_fd, int err_fd) {
 
     build_env(r, envbuf, sizeof envbuf, envp);
     if (r->cwd && r->cwd[0]) {                              /* fail here with a proper error, not in the child */
-        long d = SYS2(SYS_open, r->cwd, O_RDONLY | O_DIRECTORY);
+        long d = SYS2(SYS_OPEN, r->cwd, O_RDONLY | O_DIRECTORY);
         if (d < 0) return d;
-        SYS1(SYS_close, d);
+        SYS1(SYS_CLOSE, d);
     }
     if (r->nproc > 0) nproc_limit = (unsigned long)(count_processes() + r->nproc);
     j->limited = r->mem_mb > 0 || r->cpu_s > 0 || r->nproc > 0;
 
-    long pid = SYS1(SYS_fork, 0);
+    long pid = SYS1(SYS_FORK, 0);
     if (pid != 0) return pid;
 
     char *argv[] = { "sh", "-c", (char *)r->cmd, NULL };
-    SYS1(SYS_setsid, 0);
-    long nul = SYS2(SYS_open, "/dev/null", O_RDONLY);
-    if (nul >= 0) { SYS2(SYS_dup2, nul, 0); if (nul > 2) SYS1(SYS_close, nul); }
-    SYS2(SYS_dup2, out_fd, 1);
-    SYS2(SYS_dup2, err_fd, 2);
+    SYS1(SYS_SETSID, 0);
+    long nul = SYS2(SYS_OPEN, "/dev/null", O_RDONLY);
+    if (nul >= 0) { SYS2(SYS_DUP2, nul, 0); if (nul > 2) SYS1(SYS_CLOSE, nul); }
+    SYS2(SYS_DUP2, out_fd, 1);
+    SYS2(SYS_DUP2, err_fd, 2);
     if (r->mem_mb > 0 && r->mem_mb < 4096) set_limit(RLIMIT_AS, (unsigned long)r->mem_mb << 20, (unsigned long)r->mem_mb << 20);
     if (r->cpu_s > 0) set_limit(RLIMIT_CPU, (unsigned long)r->cpu_s, (unsigned long)r->cpu_s + 2);
     if (nproc_limit) set_limit(RLIMIT_NPROC, nproc_limit, nproc_limit);
-    if (r->cwd && r->cwd[0] && SYS1(SYS_chdir, r->cwd) < 0) SYS1(SYS_exit, 126);
-    SYS3(SYS_execve, "/bin/sh", argv, envp);
-    SYS1(SYS_exit, 127);
+    if (r->cwd && r->cwd[0] && SYS1(SYS_CHDIR, r->cwd) < 0) SYS1(SYS_EXIT, 126);
+    SYS3(SYS_EXECVE, "/bin/sh", argv, envp);
+    SYS1(SYS_EXIT, 127);
     return 0;
 }
 
@@ -971,10 +967,10 @@ static void op_exec(const struct req *r) {
     if (!j->buf) return fail(r, "ENOMEM", "no memory for output buffers", -12);
 
     int po[2], pe[2];
-    long rc = SYS2(SYS_pipe2, po, O_CLOEXEC);
+    long rc = SYS2(SYS_PIPE2, po, O_CLOEXEC);
     if (rc >= 0) {
-        rc = SYS2(SYS_pipe2, pe, O_CLOEXEC);
-        if (rc < 0) { SYS1(SYS_close, po[0]); SYS1(SYS_close, po[1]); }
+        rc = SYS2(SYS_PIPE2, pe, O_CLOEXEC);
+        if (rc < 0) { SYS1(SYS_CLOSE, po[0]); SYS1(SYS_CLOSE, po[1]); }
     }
     if (rc < 0) { xfree(j->buf, j->buf_size); return fail(r, "EMFILE", "pipe failed", rc); }
 
@@ -984,9 +980,9 @@ static void op_exec(const struct req *r) {
     j->spill_max = (u32)clamp(r->spill_max, SPILL_DEFAULT, 0, SPILL_LIMIT);
     job_describe(j, r);
     long pid = launch(j, r, po[1], pe[1]);
-    SYS1(SYS_close, po[1]); SYS1(SYS_close, pe[1]);
+    SYS1(SYS_CLOSE, po[1]); SYS1(SYS_CLOSE, pe[1]);
     if (pid < 0) {
-        SYS1(SYS_close, po[0]); SYS1(SYS_close, pe[0]);
+        SYS1(SYS_CLOSE, po[0]); SYS1(SYS_CLOSE, pe[0]);
         xfree(j->buf, j->buf_size);
         mzero(j, sizeof *j);
         return fail(r, "EAGAIN", "cannot start the command", pid);
@@ -1019,18 +1015,18 @@ static void op_spawn(const struct req *r) {
     if (!j) return fail(r, "EAGAIN", "job table is full", -11);
     j->id = next_job_id++;
     make_job_paths(j);
-    long fo = SYS3(SYS_open, j->paths[0], O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-    long fe = fo < 0 ? fo : SYS3(SYS_open, j->paths[1], O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    long fo = SYS3(SYS_OPEN, j->paths[0], O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    long fe = fo < 0 ? fo : SYS3(SYS_OPEN, j->paths[1], O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fe < 0) {
-        if (fo >= 0) SYS1(SYS_close, fo);
+        if (fo >= 0) SYS1(SYS_CLOSE, fo);
         mzero(j, sizeof *j);
         return fail(r, "EIO", "cannot create the job's output files", fe);
     }
     job_describe(j, r);
     long pid = launch(j, r, (int)fo, (int)fe);
-    SYS1(SYS_close, fo); SYS1(SYS_close, fe);
+    SYS1(SYS_CLOSE, fo); SYS1(SYS_CLOSE, fe);
     if (pid < 0) {
-        SYS1(SYS_unlink, j->paths[0]); SYS1(SYS_unlink, j->paths[1]);
+        SYS1(SYS_UNLINK, j->paths[0]); SYS1(SYS_UNLINK, j->paths[1]);
         mzero(j, sizeof *j);
         return fail(r, "EAGAIN", "cannot start the command", pid);
     }
@@ -1052,8 +1048,8 @@ static const char *const hit_names[] = { "cpu", "nproc", "as" };    /* order of 
 
 static void kill_job(struct job *j, int sig, int reason) {
     if (!j->kill_reason) j->kill_reason = reason;
-    SYS2(SYS_kill, -j->pid, sig);               /* the whole group; the leader may not have created it yet */
-    SYS2(SYS_kill, j->pid, sig);
+    SYS2(SYS_KILL, -j->pid, sig);               /* the whole group; the leader may not have created it yet */
+    SYS2(SYS_KILL, j->pid, sig);
 }
 
 static int term_signal(const struct job *j) { return j->status & 0x7f; }
@@ -1134,12 +1130,12 @@ static void drain_pipes(struct job *j) {
     for (int round = 0; round < 64; round++) {
         struct pollfd fds[2] = { { j->s[0].fd, POLLIN, 0 }, { j->s[1].fd, POLLIN, 0 } };
         int any = 0;
-        if (SYS3(SYS_poll, fds, 2, 0) <= 0) break;
+        if (SYS3(SYS_POLL, fds, 2, 0) <= 0) break;
         for (int i = 0; i < 2; i++) {
             if (j->s[i].fd < 0 || !fds[i].revents) continue;
-            long n = SYS3(SYS_read, j->s[i].fd, chunk, sizeof chunk);
+            long n = SYS3(SYS_READ, j->s[i].fd, chunk, sizeof chunk);
             if (n > 0) { stream_add(j, &j->s[i], chunk, (u32)n); any = 1; }
-            else { SYS1(SYS_close, j->s[i].fd); j->s[i].fd = -1; }
+            else { SYS1(SYS_CLOSE, j->s[i].fd); j->s[i].fd = -1; }
         }
         if (!any) break;
     }
@@ -1151,8 +1147,8 @@ static void finish_exec(struct job *j) {
     mcopy(r.id, j->req_id, sizeof r.id);
     drain_pipes(j);
     for (int i = 0; i < 2; i++) {
-        if (j->s[i].fd >= 0) SYS1(SYS_close, j->s[i].fd);
-        if (j->s[i].spill >= 0) SYS1(SYS_close, j->s[i].spill);
+        if (j->s[i].fd >= 0) SYS1(SYS_CLOSE, j->s[i].fd);
+        if (j->s[i].spill >= 0) SYS1(SYS_CLOSE, j->s[i].spill);
     }
     emit_hit_events(j);
     ok_begin(&r);
@@ -1187,10 +1183,10 @@ static int zombie_hits(struct job *j) {
     char path[32] = "/proc/", num[12], buf[320];
     fmt_u(num, (unsigned long)j->pid);
     cat(path, sizeof path, num); cat(path, sizeof path, "/status");
-    long fd = SYS2(SYS_open, path, O_RDONLY);
+    long fd = SYS2(SYS_OPEN, path, O_RDONLY);
     if (fd < 0) return 1;                        /* no procfs (host test): reap and report no hits */
-    long n = SYS3(SYS_read, fd, buf, sizeof buf - 1);
-    SYS1(SYS_close, fd);
+    long n = SYS3(SYS_READ, fd, buf, sizeof buf - 1);
+    SYS1(SYS_CLOSE, fd);
     if (n <= 0) return 1;
     buf[n] = 0;
     int zombie = 0;
@@ -1227,7 +1223,7 @@ static void reap_children(void) {
         int status = 0;
         if (j->state != J_RUN) continue;
         if (j->limited && !zombie_hits(j)) continue;
-        if (SYS4(SYS_wait4, j->pid, &status, WNOHANG, 0) == j->pid) job_exited(j, status);
+        if (SYS4(SYS_WAIT4, j->pid, &status, WNOHANG, 0) == j->pid) job_exited(j, status);
     }
 }
 
@@ -1338,22 +1334,22 @@ static void op_job_release(const struct req *r) {
 static u8 file_buf[FILE_CAP];
 
 static long read_at(const char *path, long offset, long limit, long *size) {
-    long fd = SYS2(SYS_open, path, O_RDONLY);
+    long fd = SYS2(SYS_OPEN, path, O_RDONLY);
     if (fd < 0) return fd;
-    struct stat64 st;
-    *size = SYS2(SYS_fstat64, fd, &st) == 0 ? (long)st.st_size : -1;
+    struct kstat st;
+    *size = SYS2(SYS_FSTAT, fd, &st) == 0 ? (long)st.st_size : -1;
     if (offset > 0) {
-        long rc = SYS3(SYS_lseek, fd, offset, 0);
-        if (rc < 0) { SYS1(SYS_close, fd); return rc; }
+        long rc = SYS3(SYS_LSEEK, fd, offset, 0);
+        if (rc < 0) { SYS1(SYS_CLOSE, fd); return rc; }
     }
     long got = 0;
     while (got < limit) {
-        long n = SYS3(SYS_read, fd, file_buf + got, limit - got);
-        if (n < 0 && got == 0) { SYS1(SYS_close, fd); return n; }
+        long n = SYS3(SYS_READ, fd, file_buf + got, limit - got);
+        if (n < 0 && got == 0) { SYS1(SYS_CLOSE, fd); return n; }
         if (n <= 0) break;
         got += n;
     }
-    SYS1(SYS_close, fd);
+    SYS1(SYS_CLOSE, fd);
     return got;
 }
 
@@ -1402,19 +1398,19 @@ static const char *type_name(u32 mode) {
     }
 }
 
-static void put_stat(const struct stat64 *st) {
+static void put_stat(const struct kstat *st) {
     puts_(",\"type\":\""); puts_(type_name(st->st_mode));
     puts_("\",\"size\":"); put_num((long)st->st_size);
     puts_(",\"mode\":"); put_num(st->st_mode & 07777);
     puts_(",\"uid\":"); put_num(st->st_uid);
     puts_(",\"gid\":"); put_num(st->st_gid);
-    puts_(",\"mtime\":"); put_num(st->mtime);
+    puts_(",\"mtime\":"); put_num(st->st_mtime);
 }
 
 static void op_fs_stat(const struct req *r) {
-    struct stat64 st;
+    struct kstat st;
     if (!r->path) return bad(r, "missing path");
-    long rc = SYS2(SYS_lstat64, r->path, &st);
+    long rc = SYS2(SYS_LSTAT, r->path, &st);
     if (rc < 0) return fail(r, NULL, "stat failed", rc);
     ok_begin(r); put_stat(&st); put('}');
     send_out();
@@ -1443,8 +1439,8 @@ static struct { long fd; char path[256], tmp[272]; } upload = { -1, "", "" };
 
 static void upload_abort(void) {
     if (upload.fd < 0) return;
-    SYS1(SYS_close, upload.fd);
-    SYS1(SYS_unlink, upload.tmp);
+    SYS1(SYS_CLOSE, upload.fd);
+    SYS1(SYS_UNLINK, upload.tmp);
     upload.fd = -1;
 }
 
@@ -1457,10 +1453,10 @@ static void op_fs_write(const struct req *r) {
     if (plen == 0 || plen >= sizeof upload.path) return fail(r, "ENAMETOOLONG", "path too long", -36);
 
     if (r->append) {
-        long fd = SYS3(SYS_open, r->path, O_WRONLY | O_CREAT | O_APPEND, mode);
+        long fd = SYS3(SYS_OPEN, r->path, O_WRONLY | O_CREAT | O_APPEND, mode);
         if (fd < 0) return fail(r, NULL, "open failed", fd);
         long rc = write_all((int)fd, r->data, (size_t)n);
-        long crc = SYS1(SYS_close, fd);
+        long crc = SYS1(SYS_CLOSE, fd);
         if (rc < 0 || crc < 0) return fail(r, NULL, "write failed", rc < 0 ? rc : crc);
         ok_begin(r); put_kv_num("written", n); put_kv_bool("committed", 1); put('}');
         return send_out();
@@ -1470,17 +1466,17 @@ static void op_fs_write(const struct req *r) {
         mcopy(upload.path, r->path, plen + 1);
         mcopy(upload.tmp, r->path, plen);
         mcopy(upload.tmp + plen, ".agentd-tmp", 12);
-        upload.fd = SYS3(SYS_open, upload.tmp, O_WRONLY | O_CREAT | O_TRUNC, mode);
+        upload.fd = SYS3(SYS_OPEN, upload.tmp, O_WRONLY | O_CREAT | O_TRUNC, mode);
         if (upload.fd < 0) { long e = upload.fd; upload.fd = -1; return fail(r, NULL, "open failed", e); }
     }
     long rc = write_all((int)upload.fd, r->data, (size_t)n);
     if (rc < 0) { upload_abort(); return fail(r, NULL, "write failed", rc); }
     if (!r->more) {
-        SYS1(SYS_fsync, upload.fd);
-        long crc = SYS1(SYS_close, upload.fd);
+        SYS1(SYS_FSYNC, upload.fd);
+        long crc = SYS1(SYS_CLOSE, upload.fd);
         upload.fd = -1;
-        if (crc >= 0) crc = SYS2(SYS_rename, upload.tmp, upload.path);
-        if (crc < 0) { SYS1(SYS_unlink, upload.tmp); return fail(r, NULL, "commit failed", crc); }
+        if (crc >= 0) crc = SYS2(SYS_RENAME, upload.tmp, upload.path);
+        if (crc < 0) { SYS1(SYS_UNLINK, upload.tmp); return fail(r, NULL, "commit failed", crc); }
     }
     ok_begin(r); put_kv_num("written", n); put_kv_bool("committed", !r->more); put('}');
     send_out();
@@ -1493,7 +1489,7 @@ static void op_fs_list(const struct req *r) {
     if (!r->path) return bad(r, "missing path");
     size_t plen = slen(r->path);
     if (plen + 258 > sizeof full) return fail(r, "ENAMETOOLONG", "path too long", -36);
-    long fd = SYS2(SYS_open, r->path, O_RDONLY | O_DIRECTORY);
+    long fd = SYS2(SYS_OPEN, r->path, O_RDONLY | O_DIRECTORY);
     if (fd < 0) return fail(r, NULL, "open failed", fd);
     mcopy(full, r->path, plen);
     if (plen && full[plen - 1] != '/') full[plen++] = '/';
@@ -1503,7 +1499,7 @@ static void op_fs_list(const struct req *r) {
     long skip = r->offset < 0 ? 0 : r->offset, seen = 0;
     int first = 1, clipped = 0;
     for (;;) {
-        long n = SYS3(SYS_getdents64, fd, dent_buf, sizeof dent_buf);
+        long n = SYS3(SYS_GETDENTS64, fd, dent_buf, sizeof dent_buf);
         if (n <= 0) break;
         for (long off = 0; off < n && !clipped;) {
             struct dirent64 *d = (struct dirent64 *)(dent_buf + off);
@@ -1517,13 +1513,13 @@ static void op_fs_list(const struct req *r) {
             if (!first) put(',');
             first = 0;
             puts_("{\"name\":\""); put_jstr(d->d_name, nl); put('"');
-            struct stat64 st;
-            if (SYS2(SYS_lstat64, full, &st) == 0) put_stat(&st);
+            struct kstat st;
+            if (SYS2(SYS_LSTAT, full, &st) == 0) put_stat(&st);
             put('}');
         }
         if (clipped) break;
     }
-    SYS1(SYS_close, fd);
+    SYS1(SYS_CLOSE, fd);
     puts_("],\"truncated\":"); put_bool(clipped); put('}');
     send_out();
 }
@@ -1533,7 +1529,7 @@ static long mkdir_parents(char *path) {
     for (char *p = path + 1; *p; p++) {
         if (*p != '/') continue;
         *p = 0;
-        rc = SYS2(SYS_mkdir, path, 0755);
+        rc = SYS2(SYS_MKDIR, path, 0755);
         *p = '/';
         if (rc < 0 && rc != -17) return rc;
     }
@@ -1550,7 +1546,7 @@ static void op_fs_mkdir(const struct req *r) {
         long rc = mkdir_parents(path);
         if (rc < 0) return fail(r, NULL, "mkdir failed", rc);
     }
-    long rc = SYS2(SYS_mkdir, path, 0755);
+    long rc = SYS2(SYS_MKDIR, path, 0755);
     if (rc < 0 && !(r->parents && rc == -17)) return fail(r, NULL, "mkdir failed", rc);
     ok_begin(r); put_kv_bool("created", rc == 0); put('}');
     send_out();
@@ -1558,11 +1554,11 @@ static void op_fs_mkdir(const struct req *r) {
 
 /* Removes path; directories only if recursive. Returns 0 or -errno. */
 static long remove_tree(const char *path, int recursive, int depth) {
-    struct stat64 st;
-    long rc = SYS2(SYS_lstat64, path, &st);
+    struct kstat st;
+    long rc = SYS2(SYS_LSTAT, path, &st);
     if (rc < 0) return rc;
-    if ((st.st_mode & S_IFMT) != S_IFDIR) return SYS1(SYS_unlink, path);
-    if (!recursive) return SYS1(SYS_rmdir, path);
+    if ((st.st_mode & S_IFMT) != S_IFDIR) return SYS1(SYS_UNLINK, path);
+    if (!recursive) return SYS1(SYS_RMDIR, path);
     if (depth > 12) return -36;
     char child[512], dents[1024];
     size_t plen = slen(path);
@@ -1570,9 +1566,9 @@ static long remove_tree(const char *path, int recursive, int depth) {
     mcopy(child, path, plen);
     if (plen && child[plen - 1] != '/') child[plen++] = '/';
     for (int pass = 0; pass < 100000; pass++) {          /* removing entries moves the directory, so rescan until empty */
-        long fd = SYS2(SYS_open, path, O_RDONLY | O_DIRECTORY), removed = 0;
+        long fd = SYS2(SYS_OPEN, path, O_RDONLY | O_DIRECTORY), removed = 0;
         if (fd < 0) return fd;
-        long n = SYS3(SYS_getdents64, fd, dents, sizeof dents);
+        long n = SYS3(SYS_GETDENTS64, fd, dents, sizeof dents);
         for (long off = 0; off < n; ) {
             struct dirent64 *d = (struct dirent64 *)(dents + off);
             off += d->d_reclen;
@@ -1580,14 +1576,14 @@ static long remove_tree(const char *path, int recursive, int depth) {
             if (slen(d->d_name) > 255) continue;
             mcopy(child + plen, d->d_name, slen(d->d_name) + 1);
             rc = remove_tree(child, 1, depth + 1);
-            if (rc < 0) { SYS1(SYS_close, fd); return rc; }
+            if (rc < 0) { SYS1(SYS_CLOSE, fd); return rc; }
             removed++;
         }
-        SYS1(SYS_close, fd);
+        SYS1(SYS_CLOSE, fd);
         if (n < 0) return n;
         if (!removed) break;
     }
-    return SYS1(SYS_rmdir, path);
+    return SYS1(SYS_RMDIR, path);
 }
 
 static void op_fs_remove(const struct req *r) {
@@ -1602,15 +1598,15 @@ static void op_fs_remove(const struct req *r) {
 /* --- System information ------------------------------------------------------------- */
 
 static long slurp(const char *path, char *buf, size_t cap) {
-    long fd = SYS2(SYS_open, path, O_RDONLY);
+    long fd = SYS2(SYS_OPEN, path, O_RDONLY);
     if (fd < 0) return -1;
     size_t got = 0;
     while (got + 1 < cap) {
-        long n = SYS3(SYS_read, fd, buf + got, cap - 1 - got);
+        long n = SYS3(SYS_READ, fd, buf + got, cap - 1 - got);
         if (n <= 0) break;
         got += (size_t)n;
     }
-    SYS1(SYS_close, fd);
+    SYS1(SYS_CLOSE, fd);
     buf[got] = 0;
     return (long)got;
 }
@@ -1641,13 +1637,13 @@ static size_t line_len(const char *s) {
 static char proc_buf[2048];
 
 static void op_sys_ps(const struct req *r) {
-    long fd = SYS2(SYS_open, "/proc", O_RDONLY | O_DIRECTORY);
+    long fd = SYS2(SYS_OPEN, "/proc", O_RDONLY | O_DIRECTORY);
     if (fd < 0) return fail(r, NULL, "/proc is not available", fd);
     ok_begin(r);
     puts_(",\"processes\":[");
     int first = 1, clipped = 0;
     for (;;) {
-        long n = SYS3(SYS_getdents64, fd, dent_buf, sizeof dent_buf);
+        long n = SYS3(SYS_GETDENTS64, fd, dent_buf, sizeof dent_buf);
         if (n <= 0) break;
         for (long off = 0; off < n && !clipped;) {
             struct dirent64 *d = (struct dirent64 *)(dent_buf + off);
@@ -1679,7 +1675,7 @@ static void op_sys_ps(const struct req *r) {
         }
         if (clipped) break;
     }
-    SYS1(SYS_close, fd);
+    SYS1(SYS_CLOSE, fd);
     puts_("],\"truncated\":"); put_bool(clipped); put('}');
     send_out();
 }
@@ -1688,7 +1684,7 @@ static void op_sys_info(const struct req *r) {
     char un[6][65];
     static const char *const keys[] = { "sysname", "nodename", "release", "version", "machine" };
     ok_begin(r);
-    if (SYS1(SYS_uname, un) == 0)
+    if (SYS1(SYS_UNAME, un) == 0)
         for (int i = 0; i < 5; i++) put_kv_str(keys[i], un[i], slen(un[i]));
     long n = slurp("/proc/meminfo", proc_buf, sizeof proc_buf);
     if (n >= 0) put_kv_str("meminfo", proc_buf, (size_t)n);
@@ -1745,11 +1741,11 @@ static int chld_r = -1, chld_w = -1;
 static void on_sigchld(int sig) {
     char c = 1;
     (void)sig;
-    SYS3(SYS_write, chld_w, &c, 1);
+    SYS3(SYS_WRITE, chld_w, &c, 1);
 }
 
 __attribute__((naked)) static void sigreturn_trampoline(void) {
-    __asm__ volatile ("movl $173, %eax\n\tint $0x80");
+    __asm__ volatile ("movl $15, %eax\n\tsyscall");
 }
 
 static void link_error(const char *msg) {
@@ -1769,7 +1765,7 @@ static void start_resync(const char *msg) {
 /* Takes what the link has and runs every complete frame. */
 static void link_input(void) {
     long room = (long)(MAX_FRAME + 5 - rx_len);
-    long n = SYS3(SYS_read, 0, rx + rx_len, room);
+    long n = SYS3(SYS_READ, 0, rx + rx_len, room);
     if (n <= 0) { msleep(10); return; }        /* nothing there, or no carrier yet */
     if (resync) { rx_deadline = now_ms() + RESYNC_QUIET_MS; return; }
     rx_len += (size_t)n;
@@ -1788,13 +1784,13 @@ static void link_input(void) {
 }
 
 static void clean_spill_dir(void) {
-    long rc = SYS2(SYS_mkdir, spill_dir, 0755);
+    long rc = SYS2(SYS_MKDIR, spill_dir, 0755);
     if (rc < 0 && rc != -17) return;
-    long fd = SYS2(SYS_open, spill_dir, O_RDONLY | O_DIRECTORY);
+    long fd = SYS2(SYS_OPEN, spill_dir, O_RDONLY | O_DIRECTORY);
     if (fd < 0) return;
     char path[128];
     for (int pass = 0; pass < 1000; pass++) {          /* unlinking moves entries: rescan until empty */
-        long n = SYS3(SYS_getdents64, fd, dent_buf, sizeof dent_buf), removed = 0;
+        long n = SYS3(SYS_GETDENTS64, fd, dent_buf, sizeof dent_buf), removed = 0;
         if (n <= 0) break;
         for (long off = 0; off < n; ) {
             struct dirent64 *d = (struct dirent64 *)(dent_buf + off);
@@ -1802,12 +1798,12 @@ static void clean_spill_dir(void) {
             if (seq(d->d_name, ".") || seq(d->d_name, "..") || slen(d->d_name) > 40) continue;
             path[0] = 0;
             cat(path, sizeof path, spill_dir); cat(path, sizeof path, "/"); cat(path, sizeof path, d->d_name);
-            removed += SYS1(SYS_unlink, path) == 0;
+            removed += SYS1(SYS_UNLINK, path) == 0;
         }
-        SYS3(SYS_lseek, fd, 0, 0);
+        SYS3(SYS_LSEEK, fd, 0, 0);
         if (!removed) break;
     }
-    SYS1(SYS_close, fd);
+    SYS1(SYS_CLOSE, fd);
 }
 
 int main(int argc, char **argv) {
@@ -1816,10 +1812,10 @@ int main(int argc, char **argv) {
     if (link_open(dev) < 0) return 1;
 
     int p[2];
-    if (SYS2(SYS_pipe2, p, O_NONBLOCK | O_CLOEXEC) < 0) return 1;
+    if (SYS2(SYS_PIPE2, p, O_NONBLOCK | O_CLOEXEC) < 0) return 1;
     chld_r = p[0]; chld_w = p[1];
-    struct ksigaction sa = { on_sigchld, SA_SIGINFO | SA_RESTORER, sigreturn_trampoline, { 0, 0 } };
-    SYS4(SYS_rt_sigaction, SIGCHLD, &sa, 0, 8);
+    struct ksigaction sa = { on_sigchld, SA_SIGINFO | SA_RESTORER, sigreturn_trampoline, 0 };
+    SYS4(SYS_RT_SIGACTION, SIGCHLD, &sa, 0, 8);
     clean_spill_dir();
 
     event_begin("hello");
@@ -1851,20 +1847,20 @@ int main(int argc, char **argv) {
         for (int i = 0; i < MAX_JOBS; i++)       /* safety net: a lost SIGCHLD must not hang a job */
             if (jobs[i].state == J_RUN && (timeout < 0 || timeout > 1000)) timeout = 1000;
 
-        long ready = SYS3(SYS_poll, fds, nfds, timeout);
+        long ready = SYS3(SYS_POLL, fds, nfds, timeout);
         now = now_ms();
 
         if (ready > 0) {
             char junk[64];
-            if (fds[1].revents) while (SYS3(SYS_read, chld_r, junk, sizeof junk) > 0) { }
+            if (fds[1].revents) while (SYS3(SYS_READ, chld_r, junk, sizeof junk) > 0) { }
             for (int i = 2; i < nfds; i++) {
                 static char chunk[4096];
                 if (!fds[i].revents) continue;
-                long n = SYS3(SYS_read, ostream[i]->fd, chunk, sizeof chunk);
+                long n = SYS3(SYS_READ, ostream[i]->fd, chunk, sizeof chunk);
                 if (n > 0) {
                     stream_add(ojob[i], ostream[i], chunk, (u32)n);
                 } else {
-                    SYS1(SYS_close, ostream[i]->fd);
+                    SYS1(SYS_CLOSE, ostream[i]->fd);
                     ostream[i]->fd = -1;
                 }
             }

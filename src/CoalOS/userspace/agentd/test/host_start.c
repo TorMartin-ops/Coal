@@ -15,11 +15,10 @@ void *memset(void *d, int c, unsigned long n) {
 
 __attribute__((noreturn, used)) static void start_c(long *sp) {
     int rc = main((int)sp[0], (char **)(sp + 1));
-    __asm__ volatile ("int $0x80" :: "a"(1), "b"(rc));
+    __asm__ volatile ("syscall" :: "a"(60), "D"(rc));
     for (;;) { }
 }
 
 __attribute__((naked)) void _start(void) {
-    __asm__ volatile ("mov %esp, %eax; and $-16, %esp; push %eax; push %eax; "
-                      "call start_c");
+    __asm__ volatile ("mov %rsp, %rdi; and $-16, %rsp; call start_c");
 }

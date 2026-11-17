@@ -19,7 +19,7 @@
 #define OOM_CACHE_PAGES 256
 
 /* Killed or exiting: its memory is about to come back. */
-static bool going_away(const pcb_t *p) { return p->exiting || (p->pending_signals & (1u << SIGKILL)); }
+static bool going_away(const pcb_t *p) { return p->exiting || (p->pending_signals & SIGBIT(SIGKILL)); }
 
 static size_t resident_pages(mm_struct_t *mm) {
     uintptr_t flags = spinlock_acquire_irqsave(&mm->lock);
@@ -28,7 +28,7 @@ static size_t resident_pages(mm_struct_t *mm) {
     for (struct rb_node *r = rb_tree_first(&mm->vma_tree); r; r = rb_node_next(r)) {
         const vma_struct_t *v = rb_entry(r, vma_struct_t, rb_node);
         for (uintptr_t a = v->vm_start; a < v->vm_end; a += PAGE_SIZE) {
-            uint32_t *pte = paging_pte(mm->pgd_phys, a, false);
+            pte_t *pte = paging_pte(mm->pgd_phys, a, false);
             n += pte && (*pte & PAGE_PRESENT);
         }
     }

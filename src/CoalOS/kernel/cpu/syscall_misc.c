@@ -1,10 +1,12 @@
 /**
  * @file syscall_misc.c
- * @brief Time, identity, thread area, reboot and syslog system calls.
+ * @brief Time, identity, arch_prctl, random, sysinfo, reboot and syslog system calls.
  */
 
 #include "syscall_internal.h"
-#include <kernel/cpu/gdt.h>
+#include <kernel/cpu/percpu.h>
+#include <kernel/memory/buddy.h>
+#include <kernel/lib/random.h>
 #include <kernel/drivers/timer/clock.h>
 #include <kernel/drivers/timer/pit.h>
 #include <kernel/drivers/timer/rtc.h>
@@ -15,59 +17,67 @@
 #include <kernel/lib/string.h>
 #include <kernel/core/log.h>
 
-#define NSEC_PER_SEC 1000000000u
+#define NSEC_PER_SEC 1000000000ull
 #define SLEEP_CHUNK_S 1000000u          /* 10^9 ms still fits the tick compare */
-#define TLS_ENTRY    (GDT_TLS_SELECTOR >> 3)
-#define GDT_LIMIT_MAX  0xFFFFFu
-#define LIMIT_IN_PAGES 0x10             /* user_desc.flags bit 4 */
+
+#define ARCH_SET_GS 0x1001
+#define ARCH_SET_FS 0x1002
+#define ARCH_GET_FS 0x1003
+#define ARCH_GET_GS 0x1004
 
 //============================================================================
 // Time: see clock.h
 //============================================================================
 
-long sc_time(uint32_t tloc) {
-    uint32_t s = wall_seconds();
+long sc_time(uintptr_t tloc) {
+    int64_t s = clock_realtime_ns() / NSEC_PER_SEC;
 
     if (tloc && copy_to_user((void *)tloc, &s, sizeof(s)) != 0) return -EFAULT;
     return s;
 }
 
-long sc_gettimeofday(uint32_t tv, uint32_t tz) {
-    uint32_t s, ns;
+long sc_gettimeofday(uintptr_t tv, uintptr_t tz) {
     static const int32_t utc[2];
 
     if (tz && copy_to_user((void *)tz, utc, sizeof(utc)) != 0) return -EFAULT;      /* the zone is UTC */
     if (!tv) return 0;
-    wall_time(&s, &ns);
-    struct linux_timeval t = { (int32_t)s, (int32_t)(ns / 1000) };
+    uint64_t ns = clock_realtime_ns();
+    struct linux_timeval t = { ns / NSEC_PER_SEC, ns % NSEC_PER_SEC / 1000 };
     return copy_to_user((void *)tv, &t, sizeof(t)) ? -EFAULT : 0;
 }
 
-long sc_clock_gettime(uint32_t clk, uint32_t uts) {
+long sc_clock_gettime(uint32_t clk, uintptr_t uts) {
     uint64_t ns;
-    uint32_t rem;
 
     if (clk == CLOCK_REALTIME) ns = clock_realtime_ns();
     else if (clk == CLOCK_MONOTONIC) ns = clock_monotonic_ns();
     else return -EINVAL;
-    struct linux_timespec ts = { (int32_t)vdso_split_ns(ns, &rem), (int32_t)rem };
+    struct linux_timespec ts = { ns / NSEC_PER_SEC, ns % NSEC_PER_SEC };
     return copy_to_user((void *)uts, &ts, sizeof(ts)) ? -EFAULT : 0;
+}
+
+long sc_clock_getres(uint32_t clk, uintptr_t uts) {
+    struct linux_timespec ts = { 0, 1 };
+
+    if (clk != CLOCK_REALTIME && clk != CLOCK_MONOTONIC) return -EINVAL;
+    return uts && copy_to_user((void *)uts, &ts, sizeof(ts)) ? -EFAULT : 0;
 }
 
 static drv_waitq_t sleep_queue;
 
-long sc_nanosleep(uint32_t ureq, uint32_t urem) {
+long sc_nanosleep(uintptr_t ureq, uintptr_t urem) {
     struct linux_timespec req;
 
     if (copy_from_user(&req, (const void *)ureq, sizeof(req)) != 0) return -EFAULT;
-    if (req.tv_sec < 0 || req.tv_nsec < 0 || (uint32_t)req.tv_nsec >= NSEC_PER_SEC) return -EINVAL;
+    if (req.tv_sec < 0 || req.tv_nsec < 0 || (uint64_t)req.tv_nsec >= NSEC_PER_SEC) return -EINVAL;
 
     /* Sleep in chunks: the tick counter is 32 bits. */
-    uint32_t sec = (uint32_t)req.tv_sec, ms = ((uint32_t)req.tv_nsec + 999999u) / 1000000u;
+    uint64_t sec = (uint64_t)req.tv_sec;
+    uint32_t ms = ((uint32_t)req.tv_nsec + 999999u) / 1000000u;
     long rc = 0;
     if (!sec && !ms) yield();
     while (!rc && (sec || ms)) {
-        uint32_t s = sec < SLEEP_CHUNK_S ? sec : SLEEP_CHUNK_S;
+        uint32_t s = sec < SLEEP_CHUNK_S ? (uint32_t)sec : SLEEP_CHUNK_S;
         uintptr_t flags = local_irq_save();
         rc = drv_wait_timeout(&sleep_queue, s * 1000u + (s == sec ? ms : 0));   /* only a signal ends it early */
         local_irq_restore(flags);
@@ -76,7 +86,7 @@ long sc_nanosleep(uint32_t ureq, uint32_t urem) {
         sec -= s;
     }
     if (urem) {
-        struct linux_timespec left = { (int32_t)sec, (int32_t)ms * 1000000 };
+        struct linux_timespec left = { (int64_t)sec, (int64_t)ms * 1000000 };
         if (copy_to_user((void *)urem, &left, sizeof(left)) != 0) return -EFAULT;
     }
     return rc;
@@ -86,7 +96,7 @@ long sc_nanosleep(uint32_t ureq, uint32_t urem) {
 // Identity
 //============================================================================
 
-long sc_uname(uint32_t ubuf) {
+long sc_uname(uintptr_t ubuf) {
     struct linux_utsname u;
 
     memset(&u, 0, sizeof(u));
@@ -94,36 +104,79 @@ long sc_uname(uint32_t ubuf) {
     strcpy(u.nodename, "coal");
     strcpy(u.release, COAL_VERSION);
     strcpy(u.version, "#1");
-    strcpy(u.machine, "i386");
+    strcpy(u.machine, "x86_64");
     return copy_to_user((void *)ubuf, &u, sizeof(u)) ? -EFAULT : 0;
 }
 
 long sc_zero(void) { return 0; }        /* uid, gid, euid, egid: single-user system, always root */
 
 //============================================================================
-// Thread area (minimal, for static libc start-up)
+// Thread pointer, thread id, random bytes, memory totals
 //============================================================================
 
-/* One TLS descriptor per process (saved in the PCB, loaded on every switch); libc loads GDT_TLS_SELECTOR into %gs. */
-long sc_set_thread_area(uint32_t udesc) {
-    struct linux_user_desc d;
+long sc_arch_prctl(int code, uintptr_t addr) {
+    pcb_t *p = get_current_process();
+    uint64_t fs, gs;
 
-    if (copy_from_user(&d, (const void *)udesc, sizeof(d)) != 0) return -EFAULT;
-    if (d.entry_number != 0xFFFFFFFFu && d.entry_number != TLS_ENTRY) return -EINVAL;
-
-    uint32_t pages = (d.flags & LIMIT_IN_PAGES) ? d.limit : (d.limit + PAGE_SIZE - 1) / PAGE_SIZE;
-    if (pages > GDT_LIMIT_MAX) pages = GDT_LIMIT_MAX;       /* the descriptor limit is 20 bits wide */
-    get_current_process()->tls_base = d.base_addr;
-    get_current_process()->tls_pages = pages;
-    gdt_set_tls_base(d.base_addr, pages);
-    d.entry_number = TLS_ENTRY;
-    return copy_to_user((void *)udesc, &d, sizeof(d)) ? -EFAULT : 0;
+    cpu_get_user_bases(&fs, &gs);
+    p->fs_base = fs;
+    p->gs_base = gs;
+    switch (code) {
+    case ARCH_SET_FS:
+    case ARCH_SET_GS:
+        if (addr >= USER_SPACE_MAX) return -EPERM;                  /* only canonical user addresses */
+        if (code == ARCH_SET_FS) p->fs_base = addr; else p->gs_base = addr;
+        cpu_set_user_bases(p->fs_base, p->gs_base);
+        return 0;
+    case ARCH_GET_FS:
+        return copy_to_user((void *)addr, &p->fs_base, sizeof(p->fs_base)) ? -EFAULT : 0;
+    case ARCH_GET_GS:
+        return copy_to_user((void *)addr, &p->gs_base, sizeof(p->gs_base)) ? -EFAULT : 0;
+    default:
+        return -EINVAL;
+    }
 }
 
 /* Single-threaded: there is no thread-exit futex to clear, so only the tid is reported. */
-long sc_set_tid_address(uint32_t ptr) {
+long sc_set_tid_address(uintptr_t ptr) {
     (void)ptr;
     return get_current_process()->pid;
+}
+
+long sc_getrandom(uintptr_t ubuf, size_t len, uint32_t flags) {
+    uint8_t kbuf[256];
+    size_t done = 0;
+
+    (void)flags;
+    if (len > 0x7ffff000) len = 0x7ffff000;
+    while (done < len) {
+        size_t n = len - done < sizeof(kbuf) ? len - done : sizeof(kbuf);
+        random_bytes(kbuf, n);
+        if (copy_to_user((char *)ubuf + done, kbuf, n) != 0) return done ? (long)done : -EFAULT;
+        done += n;
+    }
+    return done;
+}
+
+long sc_sysinfo(uintptr_t uinfo) {
+    struct {
+        int64_t uptime;
+        uint64_t loads[3], totalram, freeram, sharedram, bufferram, totalswap, freeswap;
+        uint16_t procs, pad;
+        uint32_t pad2;
+        uint64_t totalhigh, freehigh;
+        uint32_t mem_unit;
+        char pad3[20 - 2 * sizeof(long) - sizeof(int)];
+    } si = { 0 };
+    unsigned nproc = 0;
+
+    for (pcb_t *p = process_all(); p; p = p->all_next) nproc++;
+    si.uptime = clock_monotonic_ns() / NSEC_PER_SEC;
+    si.totalram = (buddy_total_pages(ZONE_LOW) + buddy_total_pages(ZONE_HIGH)) * PAGE_SIZE;
+    si.freeram = (buddy_free_pages_count(ZONE_LOW) + buddy_free_pages_count(ZONE_HIGH)) * PAGE_SIZE;
+    si.procs = nproc;
+    si.mem_unit = 1;
+    return copy_to_user((void *)uinfo, &si, sizeof(si)) ? -EFAULT : 0;
 }
 
 //============================================================================
@@ -150,7 +203,7 @@ long sc_reboot(uint32_t magic1, uint32_t magic2, uint32_t cmd) {
     }
 }
 
-long sc_syslog(uint32_t type, uint32_t ubuf, uint32_t len) {
+long sc_syslog(int type, uintptr_t ubuf, size_t len) {
     if (type == SYSLOG_ACTION_SIZE_BUFFER) return KLOG_RING_SIZE;
     if (type == SYSLOG_ACTION_CLEAR) { klog_ring_clear(); return 0; }
     if (type != SYSLOG_ACTION_READ_ALL && type != SYSLOG_ACTION_READ_CLEAR) return -EINVAL;

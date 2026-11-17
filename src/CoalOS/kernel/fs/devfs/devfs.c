@@ -93,7 +93,7 @@ static int devfs_readdir(vnode_t *dir, off_t *pos, struct vfs_dirent *out) {
     return 1;
 }
 
-static int devfs_getattr(vnode_t *v, struct kstat64 *st) {
+static int devfs_getattr(vnode_t *v, struct kstat *st) {
     const devfs_char_ops_t *o = ops_of(v);
     st->st_mode = o ? S_IFCHR | 0666 : S_IFDIR | 0755;
     st->st_nlink = o ? 1 : 2;

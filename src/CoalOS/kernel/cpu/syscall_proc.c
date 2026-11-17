@@ -5,26 +5,25 @@
 
 #include "syscall_internal.h"
 #include <kernel/process/scheduler.h>
-#include <kernel/cpu/gdt.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/lib/string.h>
 
 #define WUNTRACED   2
-#define RUSAGE_SIZE 72                  /* struct rusage on i386 */
+#define RUSAGE_SIZE 144                 /* struct rusage on x86_64 */
 
-long sc_exit(uint32_t code) {
+long sc_exit(int code) {
     process_exit(PROC_EXITCODE(code));
 }
 
-long sc_fork(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, isr_frame_t *regs) {
-    (void)a; (void)b; (void)c; (void)d; (void)e; (void)f;
-    return process_fork(regs);
+/* vfork is a fork: the child gets a copy-on-write copy, the parent just does not wait for it. */
+long sc_fork(void) {
+    return process_fork(user_regs());
 }
 
-long sc_execve(uint32_t path, uint32_t argv, uint32_t envp, uint32_t d, uint32_t e, uint32_t f, isr_frame_t *regs) {
+long sc_execve(uintptr_t path, uintptr_t argv, uintptr_t envp) {
     char kpath[PATH_MAX_SYS];
     struct exec_args args;
-    (void)d; (void)e; (void)f;
+    isr_frame_t *regs = user_regs();
 
     long err = user_path(path, kpath, sizeof(kpath));
     if (err) return err;
@@ -35,7 +34,7 @@ long sc_execve(uint32_t path, uint32_t argv, uint32_t envp, uint32_t d, uint32_t
     exec_args_free(&args);
     if (err == 0) {
         proc_exec_reset(get_current_process());
-        return regs->eax;               /* the new image's initial eax */
+        return regs->rax;               /* the new image's initial rax */
     }
     return err;
 }
@@ -45,11 +44,10 @@ void proc_exec_reset(pcb_t *p) {
     for (int fd = 0; fd < MAX_FD; fd++)
         if (p->cloexec & (1u << fd)) sc_close(fd);
     p->cloexec = 0;
-    p->tls_base = p->tls_pages = 0;
-    gdt_set_tls_base(0, 0);
+    p->sigaltstack_sp = p->sigaltstack_size = 0;
 }
 
-long sc_wait4(int32_t pid, uint32_t ustatus, uint32_t options, uint32_t rusage) {
+long sc_wait4(int32_t pid, uintptr_t ustatus, uint32_t options, uintptr_t rusage) {
     int status = 0;
 
     if (options & ~(uint32_t)(WNOHANG | WUNTRACED)) return -EINVAL;
@@ -65,12 +63,17 @@ long sc_wait4(int32_t pid, uint32_t ustatus, uint32_t options, uint32_t rusage) 
     return r;
 }
 
-long sc_waitpid(int32_t pid, uint32_t status, uint32_t options) {
-    return sc_wait4(pid, status, options, 0);
+long sc_kill(int32_t pid, int sig) {
+    return process_kill(pid, sig);
 }
 
-long sc_kill(int32_t pid, uint32_t sig) {
-    return process_kill(pid, sig);
+/* One thread per process: a thread id is a process id. */
+long sc_tkill(int32_t tid, int sig) {
+    return tid > 0 ? process_kill(tid, sig) : -EINVAL;
+}
+
+long sc_tgkill(int32_t tgid, int32_t tid, int sig) {
+    return tgid == tid ? sc_tkill(tid, sig) : -ESRCH;
 }
 
 long sc_getpid(void)  { return get_current_process()->pid; }
@@ -83,15 +86,8 @@ long sc_sched_yield(void) {
 
 #define PRIO_PROCESS 0
 
-long sc_nice(int32_t inc) {
-    tcb_t *t = &get_current_process()->task;
-
-    scheduler_set_nice(t, t->nice + (inc < -40 ? -40 : inc > 40 ? 40 : inc));
-    return 0;
-}
-
 /* The kernel's getpriority returns 20 - nice, so that the result is never negative. */
-long sc_getpriority(uint32_t which, uint32_t who) {
+long sc_getpriority(int which, uint32_t who) {
     pcb_t *p;
 
     if (which != PRIO_PROCESS) return -EINVAL;
@@ -99,7 +95,7 @@ long sc_getpriority(uint32_t which, uint32_t who) {
     return p ? 20 - p->task.nice : -ESRCH;
 }
 
-long sc_setpriority(uint32_t which, uint32_t who, int32_t nice) {
+long sc_setpriority(int which, uint32_t who, int nice) {
     pcb_t *p;
 
     if (which != PRIO_PROCESS) return -EINVAL;
@@ -141,35 +137,18 @@ long sc_getpgrp(void) { return get_current_process()->pgid; }
 // Resource limits (see rlimit.h)
 //============================================================================
 
-long sc_setrlimit(uint32_t resource, uint32_t ulim) {
-    uint32_t lim[2];
-    if (copy_from_user(lim, (const void *)ulim, sizeof(lim)) != 0) return -EFAULT;
-    return rlimit_set(get_current_process(), resource, lim[0], lim[1]);
-}
-
-long sc_ugetrlimit(uint32_t resource, uint32_t ulim) {
-    uint32_t lim[2];
-    long err = rlimit_get(get_current_process(), resource, &lim[0], &lim[1]);
-    if (err) return err;
-    return copy_to_user((void *)ulim, lim, sizeof(lim)) ? -EFAULT : 0;
-}
-
-/* 64-bit limits; a finite value that does not fit in 32 bits counts as unlimited. */
-static uint32_t rlim_narrow(uint64_t v) { return v >= RLIM_INFINITY ? RLIM_INFINITY : (uint32_t)v; }
-static uint64_t rlim_widen(uint32_t v) { return v == RLIM_INFINITY ? ~0ull : v; }
-
-long sc_prlimit64(uint32_t pid, uint32_t resource, uint32_t unew, uint32_t uold) {
+/* getrlimit, setrlimit and prlimit64 all use the 64-bit struct rlimit { cur, max }. */
+long sc_prlimit64(uint32_t pid, uint32_t resource, uintptr_t unew, uintptr_t uold) {
     pcb_t *t = target_process(pid);
-    uint64_t nl[2];
-    uint32_t cur, max;
+    uint64_t nl[2], ol[2];
 
     if (!t) return -ESRCH;
     if (unew && copy_from_user(nl, (const void *)unew, sizeof(nl)) != 0) return -EFAULT;
-    long err = rlimit_get(t, resource, &cur, &max);
+    long err = rlimit_get(t, resource, &ol[0], &ol[1]);
     if (err) return err;
-    if (uold) {
-        uint64_t ol[2] = { rlim_widen(cur), rlim_widen(max) };
-        if (copy_to_user((void *)uold, ol, sizeof(ol)) != 0) return -EFAULT;
-    }
-    return unew ? rlimit_set(t, resource, rlim_narrow(nl[0]), rlim_narrow(nl[1])) : 0;
+    if (uold && copy_to_user((void *)uold, ol, sizeof(ol)) != 0) return -EFAULT;
+    return unew ? rlimit_set(t, resource, nl[0], nl[1]) : 0;
 }
+
+long sc_getrlimit(uint32_t resource, uintptr_t ulim) { return sc_prlimit64(0, resource, 0, ulim); }
+long sc_setrlimit(uint32_t resource, uintptr_t ulim) { return sc_prlimit64(0, resource, ulim, 0); }

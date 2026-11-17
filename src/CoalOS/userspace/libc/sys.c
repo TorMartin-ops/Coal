@@ -1,4 +1,4 @@
-/* System call wrappers. Failures return -1 and set errno (Linux i386 ABI). */
+/* System call wrappers. Failures return -1 and set errno (Linux x86_64 ABI). */
 
 #include <libc/syscall.h>
 #include <libc/errno.h>
@@ -20,10 +20,6 @@
 
 int errno;
 char **environ;
-
-/* The fallback entry for programs started without AT_SYSINFO; __libc_start replaces it. */
-__attribute__((naked)) static void int80_entry(void) { __asm__("int $0x80; ret"); }
-void (*__vsyscall)(void) = int80_entry;
 
 long __syscall_ret(long r) {
     if ((unsigned long)r > (unsigned long)-4096) {
@@ -58,7 +54,7 @@ int statfs(const char *p, struct statfs *s)    { RET(__SC3(SYS_STATFS, p, s, 0))
 int socketpair(int d, int t, int p, int fds[2]) { RET(__sc(SYS_SOCKETPAIR, d, t, p, (long)fds, 0)); }
 
 int select(int n, fd_set *r, fd_set *w, fd_set *e, struct timeval *tv) {
-    RET(__sc(SYS_NEWSELECT, n, (long)r, (long)w, (long)e, (long)tv));
+    RET(__sc(SYS_SELECT, n, (long)r, (long)w, (long)e, (long)tv));
 }
 
 int ioctl(int fd, unsigned long req, ...) {
@@ -82,16 +78,16 @@ int fcntl(int fd, int cmd, ...) {
     __builtin_va_start(ap, cmd);
     long arg = __builtin_va_arg(ap, long);
     __builtin_va_end(ap);
-    RET(__SC3(SYS_FCNTL64, fd, cmd, arg));
+    RET(__SC3(SYS_FCNTL, fd, cmd, arg));
 }
 
 char *getcwd(char *buf, size_t n) {
     return __syscall_ret(__SC3(SYS_GETCWD, buf, n, 0)) < 0 ? NULL : buf;
 }
 
-int stat(const char *p, struct stat *s)   { RET(__SC3(SYS_STAT64, p, s, 0)); }
-int lstat(const char *p, struct stat *s)  { RET(__SC3(SYS_LSTAT64, p, s, 0)); }
-int fstat(int fd, struct stat *s)         { RET(__SC3(SYS_FSTAT64, fd, s, 0)); }
+int stat(const char *p, struct stat *s)   { RET(__SC3(SYS_STAT, p, s, 0)); }
+int lstat(const char *p, struct stat *s)  { RET(__SC3(SYS_LSTAT, p, s, 0)); }
+int fstat(int fd, struct stat *s)         { RET(__SC3(SYS_FSTAT, fd, s, 0)); }
 int uname(struct utsname *u)              { RET(__SC1(SYS_UNAME, u)); }
 
 pid_t fork(void)                          { RET(__SC1(SYS_FORK, 0)); }
@@ -105,9 +101,14 @@ int nanosleep(const struct timespec *r, struct timespec *m) { RET(__SC3(SYS_NANO
 
 /* Adds inc to the nice value and returns the new one; the kernel's getpriority answers 20 - nice. */
 int nice(int inc) {
-    long r = __SC1(SYS_NICE, inc);
+    long r = __SC3(SYS_GETPRIORITY, 0, 0, 0);
+    int n;
     if (r < 0) { errno = (int)-r; return -1; }
-    return 20 - (int)__SC3(SYS_GETPRIORITY, 0, 0, 0);
+    n = 20 - (int)r + inc;
+    n = n < -20 ? -20 : n > 19 ? 19 : n;
+    r = __SC3(SYS_SETPRIORITY, 0, 0, n);
+    if (r < 0) { errno = (int)-r; return -1; }
+    return n;
 }
 
 pid_t waitpid(pid_t pid, int *status, int options) {
@@ -173,7 +174,7 @@ int tcsetattr(int fd, int when, const struct termios *t) {
 }
 
 /* rt_sigaction needs a restorer that calls rt_sigreturn. */
-__asm__(".text\n__sigreturn:\n\tmovl $173, %eax\n\tint $0x80\n");
+__asm__(".text\n__sigreturn:\n\tmovl $15, %eax\n\tsyscall\n");        /* SYS_RT_SIGRETURN */
 extern void __sigreturn(void);
 
 struct ksigaction {

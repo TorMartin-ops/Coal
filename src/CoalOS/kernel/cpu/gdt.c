@@ -1,46 +1,59 @@
 #include <kernel/cpu/gdt.h>
-#include <kernel/cpu/tss.h>
-#include <kernel/drivers/display/terminal.h>
-#include <kernel/core/types.h>
+#include <kernel/cpu/percpu.h>
+#include <kernel/lib/string.h>
 
-extern void gdt_flush(uint32_t gdt_ptr);
-extern void tss_flush(uint32_t tss_selector);
+/* Flat 64-bit segments (base and limit are ignored in long mode). */
+#define SEG_KERNEL_CODE 0x00AF9A000000FFFFull
+#define SEG_KERNEL_DATA 0x00CF92000000FFFFull
+#define SEG_USER_CODE32 0x00CFFA000000FFFFull
+#define SEG_USER_DATA   0x00CFF2000000FFFFull
+#define SEG_USER_CODE64 0x00AFFA000000FFFFull
 
-#define GDT_ENTRIES 7
+struct __attribute__((packed)) gdt_ptr {
+    uint16_t limit;
+    uint64_t base;
+};
 
-static struct gdt_entry gdt_entries[GDT_ENTRIES];
-static struct gdt_ptr   gp;
+/* A 64-bit TSS descriptor takes two GDT slots. */
+static void set_tss_descriptor(uint64_t *slot, const struct tss *tss) {
+    uint64_t base = (uint64_t)tss, limit = sizeof(*tss) - 1;
 
-static void gdt_set_gate(int idx, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran) {
-    gdt_entries[idx].base_low    = (uint16_t)(base & 0xFFFF);
-    gdt_entries[idx].base_middle = (uint8_t)((base >> 16) & 0xFF);
-    gdt_entries[idx].base_high   = (uint8_t)((base >> 24) & 0xFF);
-    gdt_entries[idx].limit_low   = (uint16_t)(limit & 0xFFFF);
-    gdt_entries[idx].granularity = (uint8_t)(((limit >> 16) & 0x0F) | (gran & 0xF0));
-    gdt_entries[idx].access      = access;
+    slot[0] = (limit & 0xFFFF) | ((base & 0xFFFFFF) << 16) | (0x89ull << 40) |
+              (((limit >> 16) & 0xF) << 48) | (((base >> 24) & 0xFF) << 56);
+    slot[1] = base >> 32;
 }
 
-void gdt_init(void) {
-    gp.limit = (uint16_t)(sizeof(gdt_entries) - 1);
-    gp.base  = (uint32_t)&gdt_entries[0];
+void gdt_init(struct percpu *cpu) {
+    struct gdt_ptr gp = { sizeof(cpu->gdt) - 1, (uint64_t)cpu->gdt };
 
-    // Flat 4 GiB segments: access 0x9A/0x92 = ring 0 code/data, 0xFA/0xF2 = ring 3.
-    // Granularity 0xC0 = 4 KiB pages, 32-bit.
-    gdt_set_gate(0, 0, 0, 0, 0);
-    gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xC0);
-    gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xC0);
-    gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xC0);
-    gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xC0);
-    // 32-bit available TSS, byte granularity.
-    gdt_set_gate(5, (uint32_t)&tss, sizeof(struct tss_entry) - 1, 0x89, 0x00);
-    // TLS segment: ring 3 data, base set per process by set_thread_area.
-    gdt_set_gate(6, 0, 0, 0xF2, 0xC0);
+    cpu->gdt[0] = 0;
+    cpu->gdt[1] = SEG_KERNEL_CODE;
+    cpu->gdt[2] = SEG_KERNEL_DATA;
+    cpu->gdt[3] = SEG_USER_CODE32;
+    cpu->gdt[4] = SEG_USER_DATA;
+    cpu->gdt[5] = SEG_USER_CODE64;
+    set_tss_descriptor(&cpu->gdt[6], &cpu->tss);
 
-    gdt_flush((uint32_t)&gp);
-    tss_init();
-    tss_flush(GDT_TSS_SELECTOR);
-}
+    memset(&cpu->tss, 0, sizeof(cpu->tss));
+    cpu->tss.iomap_base = sizeof(cpu->tss);             /* no I/O bitmap */
+    for (unsigned i = 0; i < 3; i++)
+        cpu->tss.ist[i] = (uint64_t)cpu->ist_stacks[i] + IST_STACK_SIZE;
 
-void gdt_set_tls_base(uint32_t base, uint32_t limit_pages) {
-    gdt_set_gate(6, base, limit_pages, 0xF2, 0xC0);
+    asm volatile("lgdt %0\n\t"
+                 "pushq %1\n\t"
+                 "leaq 1f(%%rip), %%rax\n\t"
+                 "pushq %%rax\n\t"
+                 "lretq\n"
+                 "1:\n\t"
+                 "movw %2, %%ax\n\t"
+                 "movw %%ax, %%ds\n\t"
+                 "movw %%ax, %%es\n\t"
+                 "movw %%ax, %%ss\n\t"
+                 "xorl %%eax, %%eax\n\t"
+                 "movw %%ax, %%fs\n\t"
+                 "movw %%ax, %%gs\n\t"
+                 "movw %3, %%ax\n\t"
+                 "ltr %%ax"
+                 : : "m"(gp), "i"(KERNEL_CODE_SELECTOR), "i"(KERNEL_DATA_SELECTOR), "i"(GDT_TSS_SELECTOR)
+                 : "rax", "memory");
 }

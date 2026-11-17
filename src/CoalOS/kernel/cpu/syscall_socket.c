@@ -1,6 +1,6 @@
 /**
  * @file syscall_socket.c
- * @brief Socket system calls: the direct i386 calls (359..373) and socketcall(2).
+ * @brief Socket system calls: the direct socket calls.
  *
  * Marshals sockaddr, msghdr, iovec and option values across the user boundary
  * and forwards to kernel/net/socket.c, which only sees kernel buffers.
@@ -17,7 +17,13 @@
 #define IOV_MAX     16
 
 struct linux_msghdr {
-    uint32_t name, namelen, iov, iovlen, control, controllen, flags;
+    uintptr_t name;
+    uint32_t namelen, pad0;
+    uintptr_t iov;
+    size_t iovlen;
+    uintptr_t control;
+    size_t controllen;
+    uint32_t flags, pad1;
 };
 
 /* The socket behind fd, with a reference held in *sf (release with sys_file_put). */
@@ -37,14 +43,14 @@ static bool is_socketpair(uint32_t fd) {
     return pair;
 }
 
-static long get_addr(uint32_t uaddr, uint32_t len, struct sockaddr_in *sa) {
+static long get_addr(uintptr_t uaddr, uint32_t len, struct sockaddr_in *sa) {
     if (len < sizeof(*sa)) return -EINVAL;
     if (copy_from_user(sa, (const void *)uaddr, sizeof(*sa)) != 0) return -EFAULT;
     return sa->sin_family == AF_INET ? 0 : -EAFNOSUPPORT;
 }
 
 /* Stores sa and its length through the user's (addr, addrlen) pair; both may be NULL. */
-static long put_addr(uint32_t uaddr, uint32_t ulen, const struct sockaddr_in *sa) {
+static long put_addr(uintptr_t uaddr, uintptr_t ulen, const struct sockaddr_in *sa) {
     uint32_t len;
 
     if (!uaddr || !ulen) return 0;
@@ -55,7 +61,7 @@ static long put_addr(uint32_t uaddr, uint32_t ulen, const struct sockaddr_in *sa
 }
 
 /* Sends len user bytes in chunks; a stream is written completely unless the socket is non-blocking. */
-static long send_user(struct sock *s, uint32_t ubuf, uint32_t len, int flags, const struct sockaddr_in *to) {
+static long send_user(struct sock *s, uintptr_t ubuf, size_t len, int flags, const struct sockaddr_in *to) {
     long total = 0;
     size_t chunk = len < SEND_CHUNK ? len : SEND_CHUNK;
     uint8_t *kbuf = kmalloc(chunk ? chunk : 1);
@@ -67,12 +73,12 @@ static long send_user(struct sock *s, uint32_t ubuf, uint32_t len, int flags, co
         if (r < 0) { if (!total) total = r; break; }
         total += r;
         if ((size_t)r < n || s->type != SOCK_STREAM) break;
-    } while ((uint32_t)total < len);
+    } while ((size_t)total < len);
     kfree(kbuf);
     return total;
 }
 
-static long recv_user(struct sock *s, uint32_t ubuf, uint32_t len, int flags, struct sockaddr_in *from) {
+static long recv_user(struct sock *s, uintptr_t ubuf, size_t len, int flags, struct sockaddr_in *from) {
     size_t n = len < SEND_CHUNK ? len : SEND_CHUNK;
     uint8_t *kbuf = kmalloc(n ? n : 1);
     long r;
@@ -91,7 +97,7 @@ long sc_socket(uint32_t domain, uint32_t type, uint32_t protocol) {
 }
 
 /* socketpair(AF_UNIX, SOCK_STREAM): two connected descriptors backed by a pair of pipes. */
-long sc_socketpair(uint32_t domain, uint32_t type, uint32_t protocol, uint32_t usv) {
+long sc_socketpair(uint32_t domain, uint32_t type, uint32_t protocol, uintptr_t usv) {
     int fds[2];
 
     if (domain != AF_UNIX) return -EAFNOSUPPORT;
@@ -108,7 +114,7 @@ long sc_socketpair(uint32_t domain, uint32_t type, uint32_t protocol, uint32_t u
     return 0;
 }
 
-long sc_bind(uint32_t fd, uint32_t uaddr, uint32_t len) {
+long sc_bind(uint32_t fd, uintptr_t uaddr, uint32_t len) {
     struct sockaddr_in sa;
     sys_file_t *sf;
     long r = 0;
@@ -121,7 +127,7 @@ long sc_bind(uint32_t fd, uint32_t uaddr, uint32_t len) {
     return r;
 }
 
-long sc_connect(uint32_t fd, uint32_t uaddr, uint32_t len) {
+long sc_connect(uint32_t fd, uintptr_t uaddr, uint32_t len) {
     struct sockaddr_in sa;
     sys_file_t *sf;
     long r = 0;
@@ -145,7 +151,7 @@ long sc_listen(uint32_t fd, uint32_t backlog) {
     return r;
 }
 
-long sc_accept4(uint32_t fd, uint32_t uaddr, uint32_t ulen, uint32_t flags) {
+long sc_accept4(uint32_t fd, uintptr_t uaddr, uintptr_t ulen, uint32_t flags) {
     struct sockaddr_in sa;
     uint32_t addr;
     uint16_t port;
@@ -164,7 +170,7 @@ long sc_accept4(uint32_t fd, uint32_t uaddr, uint32_t ulen, uint32_t flags) {
     return r;
 }
 
-static long name_of(uint32_t fd, uint32_t uaddr, uint32_t ulen, bool peer) {
+static long name_of(uint32_t fd, uintptr_t uaddr, uintptr_t ulen, bool peer) {
     struct sockaddr_in sa;
     sys_file_t *sf;
     long r = 0;
@@ -177,10 +183,10 @@ static long name_of(uint32_t fd, uint32_t uaddr, uint32_t ulen, bool peer) {
     return r;
 }
 
-long sc_getsockname(uint32_t fd, uint32_t uaddr, uint32_t ulen) { return name_of(fd, uaddr, ulen, false); }
-long sc_getpeername(uint32_t fd, uint32_t uaddr, uint32_t ulen) { return name_of(fd, uaddr, ulen, true); }
+long sc_getsockname(uint32_t fd, uintptr_t uaddr, uintptr_t ulen) { return name_of(fd, uaddr, ulen, false); }
+long sc_getpeername(uint32_t fd, uintptr_t uaddr, uintptr_t ulen) { return name_of(fd, uaddr, ulen, true); }
 
-long sc_sendto(uint32_t fd, uint32_t buf, uint32_t len, uint32_t flags, uint32_t uaddr, uint32_t alen) {
+long sc_sendto(uint32_t fd, uintptr_t buf, size_t len, uint32_t flags, uintptr_t uaddr, uint32_t alen) {
     struct sockaddr_in sa;
     sys_file_t *sf;
     long r = 0;
@@ -193,7 +199,7 @@ long sc_sendto(uint32_t fd, uint32_t buf, uint32_t len, uint32_t flags, uint32_t
     return r;
 }
 
-long sc_recvfrom(uint32_t fd, uint32_t buf, uint32_t len, uint32_t flags, uint32_t uaddr, uint32_t ulen) {
+long sc_recvfrom(uint32_t fd, uintptr_t buf, size_t len, uint32_t flags, uintptr_t uaddr, uintptr_t ulen) {
     struct sockaddr_in sa;
     sys_file_t *sf;
     long r = 0;
@@ -206,13 +212,13 @@ long sc_recvfrom(uint32_t fd, uint32_t buf, uint32_t len, uint32_t flags, uint32
     return r;
 }
 
-static long load_msg(uint32_t umsg, struct linux_msghdr *m, struct linux_iovec *iov) {
+static long load_msg(uintptr_t umsg, struct linux_msghdr *m, struct linux_iovec *iov) {
     if (copy_from_user(m, (const void *)umsg, sizeof(*m)) != 0) return -EFAULT;
     if (m->iovlen > IOV_MAX) return -EMSGSIZE;
     return copy_from_user(iov, (const void *)m->iov, m->iovlen * sizeof(*iov)) ? -EFAULT : 0;
 }
 
-long sc_sendmsg(uint32_t fd, uint32_t umsg, uint32_t flags) {
+long sc_sendmsg(uint32_t fd, uintptr_t umsg, uint32_t flags) {
     struct linux_msghdr m;
     struct linux_iovec iov[IOV_MAX];
     struct sockaddr_in sa;
@@ -222,17 +228,17 @@ long sc_sendmsg(uint32_t fd, uint32_t umsg, uint32_t flags) {
 
     if (!s) return r;
     if ((r = load_msg(umsg, &m, iov)) == 0 && m.name) r = get_addr(m.name, m.namelen, &sa);
-    for (uint32_t i = 0; !r && i < m.iovlen; i++) {
+    for (size_t i = 0; !r && i < m.iovlen; i++) {
         long n = send_user(s, iov[i].iov_base, iov[i].iov_len, (int)flags, m.name ? &sa : NULL);
         if (n < 0) { r = total ? 0 : n; if (!total) total = n; break; }
         total += n;
-        if ((uint32_t)n < iov[i].iov_len || s->type != SOCK_STREAM) break;
+        if ((size_t)n < iov[i].iov_len || s->type != SOCK_STREAM) break;
     }
     sys_file_put(sf);
     return r ? r : total;
 }
 
-long sc_recvmsg(uint32_t fd, uint32_t umsg, uint32_t flags) {
+long sc_recvmsg(uint32_t fd, uintptr_t umsg, uint32_t flags) {
     struct linux_msghdr m;
     struct linux_iovec iov[IOV_MAX];
     struct sockaddr_in sa;
@@ -242,7 +248,7 @@ long sc_recvmsg(uint32_t fd, uint32_t umsg, uint32_t flags) {
 
     if (!s) return r;
     if ((r = load_msg(umsg, &m, iov)) == 0) {
-        uint32_t first = 0;
+        size_t first = 0;
         while (first < m.iovlen && !iov[first].iov_len) first++;
         r = first < m.iovlen ? recv_user(s, iov[first].iov_base, iov[first].iov_len, (int)flags, &sa) : 0;
     }
@@ -271,7 +277,7 @@ long sc_shutdown(uint32_t fd, uint32_t how) {
     return r;
 }
 
-long sc_setsockopt(uint32_t fd, uint32_t level, uint32_t name, uint32_t uval, uint32_t len) {
+long sc_setsockopt(uint32_t fd, int level, int name, uintptr_t uval, uint32_t len) {
     uint8_t val[OPT_MAX];
     sys_file_t *sf;
     long r = 0;
@@ -285,7 +291,7 @@ long sc_setsockopt(uint32_t fd, uint32_t level, uint32_t name, uint32_t uval, ui
     return r;
 }
 
-long sc_getsockopt(uint32_t fd, uint32_t level, uint32_t name, uint32_t uval, uint32_t ulen) {
+long sc_getsockopt(uint32_t fd, int level, int name, uintptr_t uval, uintptr_t ulen) {
     uint8_t val[OPT_MAX];
     uint32_t len;
     size_t n;
@@ -305,32 +311,4 @@ long sc_getsockopt(uint32_t fd, uint32_t level, uint32_t name, uint32_t uval, ui
     return r;
 }
 
-/* socketcall(2): the one i386 entry point of old libcs. Arguments are an array of 32-bit words. */
-long sc_socketcall(uint32_t call, uint32_t uargs) {
-    static const uint8_t nargs[] = { 0, 3, 3, 3, 2, 3, 3, 3, 4, 4, 4, 6, 6, 2, 5, 5, 3, 3, 4 };
-    uint32_t a[6] = { 0 };
-
-    if (call < 1 || call >= sizeof(nargs)) return -EINVAL;
-    if (copy_from_user(a, (const void *)uargs, nargs[call] * sizeof(a[0])) != 0) return -EFAULT;
-    switch (call) {
-    case 1:  return sc_socket(a[0], a[1], a[2]);
-    case 2:  return sc_bind(a[0], a[1], a[2]);
-    case 3:  return sc_connect(a[0], a[1], a[2]);
-    case 4:  return sc_listen(a[0], a[1]);
-    case 5:  return sc_accept4(a[0], a[1], a[2], 0);
-    case 6:  return sc_getsockname(a[0], a[1], a[2]);
-    case 7:  return sc_getpeername(a[0], a[1], a[2]);
-    case 9:  return sc_sendto(a[0], a[1], a[2], a[3], 0, 0);
-    case 10: return sc_recvfrom(a[0], a[1], a[2], a[3], 0, 0);
-    case 11: return sc_sendto(a[0], a[1], a[2], a[3], a[4], a[5]);
-    case 12: return sc_recvfrom(a[0], a[1], a[2], a[3], a[4], a[5]);
-    case 13: return sc_shutdown(a[0], a[1]);
-    case 14: return sc_setsockopt(a[0], a[1], a[2], a[3], a[4]);
-    case 15: return sc_getsockopt(a[0], a[1], a[2], a[3], a[4]);
-    case 16: return sc_sendmsg(a[0], a[1], a[2]);
-    case 17: return sc_recvmsg(a[0], a[1], a[2]);
-    case 18: return sc_accept4(a[0], a[1], a[2], a[3]);
-    case 8:  return sc_socketpair(a[0], a[1], a[2], a[3]);
-    default: return -EOPNOTSUPP;
-    }
-}
+long sc_accept(uint32_t fd, uintptr_t uaddr, uintptr_t ulen) { return sc_accept4(fd, uaddr, ulen, 0); }

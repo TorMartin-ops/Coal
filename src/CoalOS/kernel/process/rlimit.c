@@ -23,7 +23,7 @@ static int slot(uint32_t resource) {
     }
 }
 
-static uint32_t limit_ms(uint32_t seconds) {
+static uint32_t limit_ms(uint64_t seconds) {
     return seconds == RLIM_INFINITY || seconds > NEVER / 1000 ? NEVER : seconds * 1000;
 }
 
@@ -45,7 +45,7 @@ void rlimit_fork(pcb_t *child, const pcb_t *parent) {
     child->cpu_next = cpu_deadline(child, 0);
 }
 
-int rlimit_set(pcb_t *p, uint32_t resource, uint32_t cur, uint32_t max) {
+int rlimit_set(pcb_t *p, uint32_t resource, uint64_t cur, uint64_t max) {
     int i = slot(resource);
     if (resource >= RLIMIT_NLIMITS || i < 0) return -EINVAL;
     if (cur > max) return -EINVAL;
@@ -58,7 +58,7 @@ int rlimit_set(pcb_t *p, uint32_t resource, uint32_t cur, uint32_t max) {
     return 0;
 }
 
-int rlimit_get(const pcb_t *p, uint32_t resource, uint32_t *cur, uint32_t *max) {
+int rlimit_get(const pcb_t *p, uint32_t resource, uint64_t *cur, uint64_t *max) {
     if (resource >= RLIMIT_NLIMITS) return -EINVAL;
     int i = slot(resource);
     *cur = i < 0 ? RLIM_INFINITY : p->rlim[i].cur;
@@ -96,7 +96,7 @@ void rlimit_exit(pcb_t *p) {
 }
 
 bool rlimit_fork_allowed(pcb_t *parent) {
-    uint32_t limit = parent->rlim[RL_NPROC].cur;
+    uint64_t limit = parent->rlim[RL_NPROC].cur;
     if (limit == RLIM_INFINITY) return true;
     uint32_t n = 0;
     for (pcb_t *p = process_all(); p; p = p->all_next)
@@ -107,7 +107,7 @@ bool rlimit_fork_allowed(pcb_t *parent) {
 }
 
 bool rlimit_vm_allowed(pcb_t *p, size_t grow) {
-    uint32_t limit = p->rlim[RL_AS].cur;
+    uint64_t limit = p->rlim[RL_AS].cur;
     if (limit == RLIM_INFINITY || !p->mm) return true;
     size_t total = mm_total_vm(p->mm);
     if (total <= limit && grow <= limit - total) return true;

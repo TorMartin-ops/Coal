@@ -18,22 +18,23 @@ extern void *__vdso_base;
 #define DT_STRTAB  5
 #define DT_SYMTAB  6
 
-struct phdr { uint32_t type, offset, vaddr, paddr, filesz, memsz, flags, align; };
-struct sym  { uint32_t name, value, size; uint8_t info, other; uint16_t shndx; };
+struct phdr { uint32_t type, flags; uint64_t offset, vaddr, paddr, filesz, memsz, align; };
+struct sym  { uint32_t name; uint8_t info, other; uint16_t shndx; uint64_t value, size; };
 
 static void *vdso_sym(const char *name, void *fallback) {
     const uint8_t *eh = __vdso_base;
     const struct phdr *ph;
-    const uint32_t *dyn = NULL, *hash = NULL;
+    const uint64_t *dyn = NULL;
+    const uint32_t *hash = NULL;
     const struct sym *syms = NULL;
     const char *strs = NULL;
-    uint32_t off = 0;
+    uintptr_t off = 0;
 
-    if (!eh || memcmp(eh, "\177ELF\1", 5)) return fallback;
-    ph = (const struct phdr *)(eh + *(const uint32_t *)(eh + 28));          /* e_phoff */
-    for (unsigned i = 0; i < *(const uint16_t *)(eh + 44); i++) {           /* e_phnum */
-        if (ph[i].type == PT_LOAD) off = (uint32_t)eh + ph[i].offset - ph[i].vaddr;
-        else if (ph[i].type == PT_DYNAMIC) dyn = (const uint32_t *)(eh + ph[i].offset);
+    if (!eh || memcmp(eh, "\177ELF\2", 5)) return fallback;
+    ph = (const struct phdr *)(eh + *(const uint64_t *)(eh + 32));          /* e_phoff */
+    for (unsigned i = 0; i < *(const uint16_t *)(eh + 56); i++) {           /* e_phnum */
+        if (ph[i].type == PT_LOAD) off = (uintptr_t)eh + ph[i].offset - ph[i].vaddr;
+        else if (ph[i].type == PT_DYNAMIC) dyn = (const uint64_t *)(eh + ph[i].offset);
     }
     for (; dyn && dyn[0]; dyn += 2) {
         if (dyn[0] == DT_HASH) hash = (const uint32_t *)(dyn[1] + off);

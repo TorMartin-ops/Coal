@@ -139,7 +139,7 @@ static int pipe_close(vnode_t *v) {
     return 0;
 }
 
-static int pipe_getattr(vnode_t *v, struct kstat64 *st) {
+static int pipe_getattr(vnode_t *v, struct kstat *st) {
     st->st_mode = v->type | 0600;
     st->st_nlink = 1;
     st->st_blksize = PAGE_SIZE;

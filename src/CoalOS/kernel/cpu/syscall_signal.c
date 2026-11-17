@@ -1,11 +1,10 @@
 /**
  * @file syscall_signal.c
- * @brief Signal handlers: rt_sigaction, rt_sigprocmask, delivery of one
- *        pending signal to a user handler on an rt signal frame, rt_sigreturn.
+ * @brief Signal handlers: rt_sigaction, rt_sigprocmask, sigaltstack, delivery of one pending signal to a
+ *        user handler on an x86_64 rt signal frame, rt_sigreturn.
  *
- * Delivery happens when a system call returns to user mode. Default actions
- * (and the decision to hold a signal) stay in kernel/process/signal.c, which
- * asks signal_disposition() below.
+ * Delivery happens when a system call returns to user mode. Default actions (and the decision to hold a
+ * signal) stay in kernel/process/signal.c, which asks signal_disposition() below.
  */
 
 #include "syscall_internal.h"
@@ -13,96 +12,124 @@
 #include <kernel/process/fpu.h>
 
 #define KSIGSET_SIZE    8                       /* bytes in the kernel sigset_t */
-#define UNBLOCKABLE     ((1u << SIGKILL) | (1u << SIGSTOP))
-#define EFLAGS_USER     0x00000DD5u             /* CF PF AF ZF SF TF DF OF */
+#define UNBLOCKABLE     (SIGBIT(SIGKILL) | SIGBIT(SIGSTOP))
+#define EFLAGS_USER     0x00040DD5u             /* CF PF AF ZF SF TF DF OF AC */
 #define EFLAGS_IF       0x00000200u
-
-/* Signal numbers are bit n of the internal masks; the user's sigset has bit n-1. */
-static uint32_t mask_from_user(uint32_t m) { return (m << 1) & ~UNBLOCKABLE; }
-static uint32_t mask_to_user(uint32_t m)   { return m >> 1; }
+#define EFLAGS_ENTRY    0x00040500u             /* DF, TF and AC are cleared on handler entry */
+#define RED_ZONE        128
+#define SA_ONSTACK      0x08000000u
+#define SS_ONSTACK      1
+#define SS_DISABLE      2
+#define MINSIGSTKSZ     2048
 
 struct sigcontext {
-    uint32_t gs, fs, es, ds, edi, esi, ebp, esp, ebx, edx, ecx, eax;
-    uint32_t trapno, err, eip, cs, eflags, esp_at_signal, ss, fpstate, oldmask, cr2;
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15, rdi, rsi, rbp, rbx, rdx, rax, rcx, rsp, rip, eflags;
+    uint16_t cs, gs, fs, ss;
+    uint64_t err, trapno, oldmask, cr2, fpstate, reserved[8];
+};
+
+struct linux_stack { uintptr_t sp; int32_t flags, pad; size_t size; };
+
+struct ucontext {
+    uint64_t uc_flags, uc_link;
+    struct linux_stack uc_stack;
+    struct sigcontext sc;
+    uint64_t sigmask;
 };
 
 struct rt_sigframe {
-    uint32_t pretcode;
-    int32_t  sig;
-    uint32_t pinfo, puc;
+    uint64_t pretcode;                          /* the handler "returns" into the user's SA_RESTORER stub */
+    struct ucontext uc;
     uint8_t  info[128];                         /* siginfo_t: only si_signo is filled */
-    struct {
-        uint32_t uc_flags, uc_link;
-        uint32_t ss_sp, ss_flags, ss_size;
-        struct sigcontext sc;
-        uint32_t sigmask[2];
-    } uc;
-    uint8_t  retcode[8];                        /* mov eax, __NR_rt_sigreturn; int 0x80 */
-    uint8_t  fpstate[FPU_AREA_SIZE];            /* FXSAVE image of the interrupted code (sc.fpstate points here) */
 };
 
+_Static_assert(sizeof(struct sigcontext) == 256 && sizeof(struct ucontext) == 304, "x86_64 ucontext layout");
+
 int signal_disposition(struct pcb *p, int sig) {
-    uint32_t h;
+    uintptr_t h;
 
     if (sig == SIGKILL || sig == SIGSTOP) return SIGDISP_DEFAULT;
     h = p->sigact[sig].handler;
     if (h == SIG_IGN) return SIGDISP_IGNORE;
-    return (p->sig_blocked & (1u << sig)) || h > SIG_IGN ? SIGDISP_HOLD : SIGDISP_DEFAULT;
+    return (p->sig_blocked & SIGBIT(sig)) || h > SIG_IGN ? SIGDISP_HOLD : SIGDISP_DEFAULT;
 }
 
-long sc_rt_sigaction(uint32_t sig, uint32_t uact, uint32_t uoact, uint32_t size) {
+long sc_rt_sigaction(uint32_t sig, uintptr_t uact, uintptr_t uoact, size_t size) {
     pcb_t *ps = get_current_process();
     struct linux_sigaction act;
 
-    if (size != KSIGSET_SIZE || sig == 0 || sig >= NSIG) return -EINVAL;
+    if (size != KSIGSET_SIZE || sig == 0 || sig > NSIG) return -EINVAL;
     if (uact) {
         if (sig == SIGKILL || sig == SIGSTOP) return -EINVAL;
         if (copy_from_user(&act, (const void *)uact, sizeof(act)) != 0) return -EFAULT;
+        if (act.handler > SIG_IGN && !(act.flags & SA_RESTORER)) return -EINVAL;   /* there is no default trampoline */
     }
-    if (uoact) {
-        struct sigact *o = &ps->sigact[sig];
-        struct linux_sigaction old = { o->handler, o->flags, o->restorer, { o->mask, 0 } };
-        if (copy_to_user((void *)uoact, &old, sizeof(old)) != 0) return -EFAULT;
-    }
+    if (uoact && copy_to_user((void *)uoact, &ps->sigact[sig], sizeof(act)) != 0) return -EFAULT;
     if (uact) {
-        ps->sigact[sig] = (struct sigact){ act.handler, act.flags, act.restorer, act.mask[0] };
-        if (act.handler == SIG_IGN) get_current_process()->pending_signals &= ~(1u << sig);
+        ps->sigact[sig] = (struct sigact){ act.handler, act.flags, act.restorer, act.mask };
+        if (act.handler == SIG_IGN) ps->pending_signals &= ~SIGBIT(sig);
     }
     return 0;
 }
 
-long sc_rt_sigprocmask(uint32_t how, uint32_t uset, uint32_t uoset, uint32_t size) {
+long sc_rt_sigprocmask(uint32_t how, uintptr_t uset, uintptr_t uoset, size_t size) {
     pcb_t *ps = get_current_process();
-    uint32_t set[2] = {0, 0}, old = ps->sig_blocked;
+    uint64_t set = 0, old = ps->sig_blocked;
 
     if (size != KSIGSET_SIZE) return -EINVAL;
     if (uset) {
-        if (copy_from_user(set, (const void *)uset, sizeof(set)) != 0) return -EFAULT;
-        uint32_t m = mask_from_user(set[0]);
+        if (copy_from_user(&set, (const void *)uset, sizeof(set)) != 0) return -EFAULT;
+        set &= ~UNBLOCKABLE;
         switch (how) {
-        case SIG_BLOCK:   ps->sig_blocked |= m; break;
-        case SIG_UNBLOCK: ps->sig_blocked &= ~m; break;
-        case SIG_SETMASK: ps->sig_blocked = m; break;
+        case SIG_BLOCK:   ps->sig_blocked |= set; break;
+        case SIG_UNBLOCK: ps->sig_blocked &= ~set; break;
+        case SIG_SETMASK: ps->sig_blocked = set; break;
         default:          return -EINVAL;
         }
     }
-    if (uoset) {
-        uint32_t out[2] = { mask_to_user(old), 0 };
-        if (copy_to_user((void *)uoset, out, sizeof(out)) != 0) return -EFAULT;
-    }
+    if (uoset && copy_to_user((void *)uoset, &old, sizeof(old)) != 0) return -EFAULT;
     return 0;
 }
 
-/* pselect6: run with the caller's temporary mask; the old one comes back when the call ends or the handler returns. */
-long signal_mask_swap(uint32_t uset, uint32_t size) {
+/* The alternate stack counts as in use while sp lies on it. */
+static bool on_altstack(const pcb_t *p, uintptr_t sp) {
+    return p->sigaltstack_sp && sp > p->sigaltstack_sp && sp <= p->sigaltstack_sp + p->sigaltstack_size;
+}
+
+long sc_sigaltstack(uintptr_t unew, uintptr_t uold) {
     pcb_t *p = get_current_process();
-    uint32_t set[2];
+    isr_frame_t *regs = user_regs();
+    struct linux_stack ss;
+
+    if (uold) {
+        struct linux_stack old = { p->sigaltstack_sp, p->sigaltstack_sp ? (on_altstack(p, regs->rsp) ? SS_ONSTACK : 0) : SS_DISABLE, 0,
+                                   p->sigaltstack_size };
+        if (copy_to_user((void *)uold, &old, sizeof(old)) != 0) return -EFAULT;
+    }
+    if (!unew) return 0;
+    if (copy_from_user(&ss, (const void *)unew, sizeof(ss)) != 0) return -EFAULT;
+    if (on_altstack(p, regs->rsp)) return -EPERM;
+    if (ss.flags & SS_DISABLE) {
+        p->sigaltstack_sp = 0;
+        p->sigaltstack_size = 0;
+        return 0;
+    }
+    if (ss.size < MINSIGSTKSZ) return -ENOMEM;
+    p->sigaltstack_sp = ss.sp;
+    p->sigaltstack_size = ss.size;
+    return 0;
+}
+
+/* pselect6/ppoll: run with the caller's temporary mask; the old one comes back when the call ends or the handler returns. */
+long signal_mask_swap(uintptr_t uset, size_t size) {
+    pcb_t *p = get_current_process();
+    uint64_t set;
 
     if (size != KSIGSET_SIZE) return -EINVAL;
-    if (copy_from_user(set, (const void *)uset, sizeof(set)) != 0) return -EFAULT;
+    if (copy_from_user(&set, (const void *)uset, sizeof(set)) != 0) return -EFAULT;
     p->sig_saved = p->sig_blocked;
     p->sig_restore = true;
-    p->sig_blocked = mask_from_user(set[0]);
+    p->sig_blocked = set & ~UNBLOCKABLE;
     return 0;
 }
 
@@ -117,74 +144,83 @@ void signal_mask_restore(void) {
 
 void signal_deliver(isr_frame_t *regs, uint32_t restart_nr) {
     pcb_t *p = get_current_process();
-    uint32_t ready;
+    uint64_t ready;
     int sig;
 
     if (!(ready = p->pending_signals & ~p->sig_blocked)) return;
-    for (sig = 1; sig < NSIG; sig++)
-        if ((ready & (1u << sig)) && p->sigact[sig].handler > SIG_IGN) break;
-    if (sig == NSIG) return;
+    for (sig = 1; sig <= NSIG; sig++)
+        if ((ready & SIGBIT(sig)) && p->sigact[sig].handler > SIG_IGN) break;
+    if (sig > NSIG) return;
 
     struct sigact act = p->sigact[sig];
     struct rt_sigframe f;
 
-    if (restart_nr && (act.flags & SA_RESTART)) {   /* the saved context re-executes "int 0x80" with the same arguments */
-        regs->eax = restart_nr;
-        regs->eip -= 2;
+    if (restart_nr && (act.flags & SA_RESTART)) {   /* the saved context re-executes "syscall" with the same arguments */
+        regs->rax = restart_nr;
+        regs->rip -= 2;
     }
     memset(&f, 0, sizeof(f));
 
-    uint32_t sp = ((regs->useresp - sizeof(f)) & ~0xFu) - 4;    /* esp + 4 is 16-byte aligned at entry */
-    f.pretcode = (act.flags & SA_RESTORER) ? act.restorer : sp + offsetof(struct rt_sigframe, retcode);
-    f.sig = sig;
-    f.pinfo = sp + offsetof(struct rt_sigframe, info);
-    f.puc = sp + offsetof(struct rt_sigframe, uc);
+    /* Below the red zone, or on the alternate stack; the FXSAVE image sits above the frame. */
+    uintptr_t top = regs->rsp - RED_ZONE;
+    if ((act.flags & SA_ONSTACK) && p->sigaltstack_sp && !on_altstack(p, regs->rsp))
+        top = p->sigaltstack_sp + p->sigaltstack_size;
+    uintptr_t fp = (top - FPU_AREA_SIZE) & ~(uintptr_t)63;
+    uintptr_t sp = ((fp - sizeof(f)) & ~(uintptr_t)15) - 8;     /* rsp + 8 is 16-byte aligned at handler entry */
+
+    f.pretcode = act.restorer;
     *(int32_t *)f.info = sig;
-    memcpy(f.retcode, (uint8_t[]){0xB8, SYS_RT_SIGRETURN, 0, 0, 0, 0xCD, 0x80}, 7);
-    uint32_t old_mask = p->sig_restore ? p->sig_saved : p->sig_blocked;     /* what sigreturn restores */
+    uint64_t old_mask = p->sig_restore ? p->sig_saved : p->sig_blocked;     /* what sigreturn restores */
     p->sig_restore = false;
-    f.uc.sigmask[0] = mask_to_user(old_mask);
+    f.uc.sigmask = old_mask;
+    f.uc.uc_stack = (struct linux_stack){ p->sigaltstack_sp, p->sigaltstack_sp ? (on_altstack(p, regs->rsp) ? SS_ONSTACK : 0) : SS_DISABLE, 0,
+                                          p->sigaltstack_size };
     f.uc.sc = (struct sigcontext){
-        .gs = regs->gs, .fs = regs->fs, .es = regs->es, .ds = regs->ds,
-        .edi = regs->edi, .esi = regs->esi, .ebp = regs->ebp, .esp = regs->useresp,
-        .ebx = regs->ebx, .edx = regs->edx, .ecx = regs->ecx, .eax = regs->eax,
-        .eip = regs->eip, .cs = regs->cs, .eflags = regs->eflags,
-        .esp_at_signal = regs->useresp, .ss = regs->ss, .oldmask = mask_to_user(old_mask),
+        .r8 = regs->r8, .r9 = regs->r9, .r10 = regs->r10, .r11 = regs->r11, .r12 = regs->r12, .r13 = regs->r13,
+        .r14 = regs->r14, .r15 = regs->r15, .rdi = regs->rdi, .rsi = regs->rsi, .rbp = regs->rbp, .rbx = regs->rbx,
+        .rdx = regs->rdx, .rax = regs->rax, .rcx = regs->rcx, .rsp = regs->rsp, .rip = regs->rip,
+        .eflags = regs->rflags, .cs = regs->cs, .ss = regs->ss, .oldmask = old_mask,
     };
 
-    if (fpu_save_current()) {                   /* the handler may use the FPU: keep the interrupted state in the frame */
-        memcpy(f.fpstate, fpu_area(p), FPU_AREA_SIZE);
-        f.uc.sc.fpstate = sp + offsetof(struct rt_sigframe, fpstate);
-    }
-    p->pending_signals &= ~(1u << sig);
-    if (copy_to_user((void *)sp, &f, sizeof(f)) != 0)
+    bool have_fpu = fpu_save_current();         /* the handler may use the FPU: keep the interrupted state in the frame */
+    if (have_fpu) f.uc.sc.fpstate = fp;
+    p->pending_signals &= ~SIGBIT(sig);
+    if (copy_to_user((void *)sp, &f, sizeof(f)) != 0 ||
+        (have_fpu && copy_to_user((void *)fp, fpu_area(p), FPU_AREA_SIZE) != 0))
         process_exit(SIGSEGV);                  /* no usable stack: Linux forces SIGSEGV */
 
-    p->sig_blocked |= mask_from_user(act.mask) | ((act.flags & SA_NODEFER) ? 0 : 1u << sig);
+    p->sig_blocked |= (act.mask | ((act.flags & SA_NODEFER) ? 0 : SIGBIT(sig))) & ~UNBLOCKABLE;
     if (act.flags & SA_RESETHAND) p->sigact[sig] = (struct sigact){0};
-    regs->eip = act.handler;
-    regs->useresp = sp;
-    regs->eflags &= ~0x500u;                    /* DF and TF clear on handler entry */
+    regs->rip = act.handler;
+    regs->rsp = sp;
+    regs->rdi = sig;
+    regs->rsi = sp + offsetof(struct rt_sigframe, info);
+    regs->rdx = sp + offsetof(struct rt_sigframe, uc);
+    regs->rax = 0;
+    regs->rflags &= ~(uint64_t)EFLAGS_ENTRY;
 }
 
-long sc_rt_sigreturn(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t ebp_arg, isr_frame_t *regs) {
-    (void)a; (void)b; (void)c; (void)d; (void)e; (void)ebp_arg;
+long sc_rt_sigreturn(void) {
     pcb_t *ps = get_current_process();
+    isr_frame_t *regs = user_regs();
     struct rt_sigframe f;
-    uint32_t frame = regs->useresp - 4;         /* the handler's ret popped pretcode: esp is one word past the frame start */
+    uintptr_t frame = regs->rsp - 8;            /* the handler's ret popped pretcode */
 
     if (copy_from_user(&f, (const void *)frame, sizeof(f)) != 0)
         process_exit(SIGSEGV);
 
     struct sigcontext *sc = &f.uc.sc;
-    regs->edi = sc->edi; regs->esi = sc->esi; regs->ebp = sc->ebp;
-    regs->ebx = sc->ebx; regs->edx = sc->edx; regs->ecx = sc->ecx;
-    regs->eax = sc->eax;
-    regs->eip = sc->eip;
-    regs->useresp = sc->esp;
-    regs->eflags = (sc->eflags & EFLAGS_USER) | EFLAGS_IF | 0x2;
-    ps->sig_blocked = mask_from_user(f.uc.sigmask[0]);
-    if (sc->fpstate == frame + offsetof(struct rt_sigframe, fpstate))
-        fpu_restore_current(f.fpstate);
-    return regs->eax;                           /* the dispatcher stores this back into eax */
+    regs->r8 = sc->r8; regs->r9 = sc->r9; regs->r10 = sc->r10; regs->r11 = sc->r11;
+    regs->r12 = sc->r12; regs->r13 = sc->r13; regs->r14 = sc->r14; regs->r15 = sc->r15;
+    regs->rdi = sc->rdi; regs->rsi = sc->rsi; regs->rbp = sc->rbp; regs->rbx = sc->rbx;
+    regs->rdx = sc->rdx; regs->rax = sc->rax; regs->rcx = sc->rcx;
+    regs->rip = sc->rip;
+    regs->rsp = sc->rsp;
+    regs->rflags = (sc->eflags & EFLAGS_USER) | EFLAGS_IF | 0x2;
+    ps->sig_blocked = f.uc.sigmask & ~UNBLOCKABLE;
+    if (sc->fpstate) {
+        uint8_t fx[FPU_AREA_SIZE] __attribute__((aligned(16)));
+        if (copy_from_user(fx, (const void *)sc->fpstate, sizeof(fx)) == 0) fpu_restore_current(fx);
+    }
+    return regs->rax;                           /* the dispatcher stores this back into rax */
 }

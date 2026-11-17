@@ -46,16 +46,6 @@ static void msleep(long ms) {
     nanosleep(&ts, NULL);
 }
 
-/* A system call with six arguments (the sixth goes in ebp). */
-static long sc6(long n, long a, long b, long c, long d, long e, long f) {
-    long r;
-    __asm__ volatile("pushl %[f]\n\tpushl %%ebp\n\tmovl 4(%%esp), %%ebp\n\tint $0x80\n\tpopl %%ebp\n\taddl $4, %%esp"
-                     : "=a"(r)
-                     : "0"(n), "b"(a), "c"(b), "d"(c), "S"(d), "D"(e), [f] "m"(f)
-                     : "memory", "cc");
-    return r;
-}
-
 static long now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -149,7 +139,7 @@ static void test_sa_restart(void) {
     hits = 0;
     kid = signaller(SIGUSR1, 100, 300);
     unsigned rset = 1u << fds[0];
-    CHECK(__sc(SYS_NEWSELECT, fds[0] + 1, (long)&rset, 0, 0, 0) == -EINTR && hits == 1);
+    CHECK(__sc(SYS_SELECT, fds[0] + 1, (long)&rset, 0, 0, 0) == -EINTR && hits == 1);
     waitpid(kid, NULL, 0);
     close(fds[0]);
     close(fds[1]);
@@ -272,7 +262,7 @@ struct ts { long sec, nsec; };
 
 static long select_one(int fd, int write_set, struct tv *tv) {
     unsigned set = 1u << fd;
-    long r = __sc(SYS_NEWSELECT, fd + 1, write_set ? 0 : (long)&set, write_set ? (long)&set : 0, 0, (long)tv);
+    long r = __sc(SYS_SELECT, fd + 1, write_set ? 0 : (long)&set, write_set ? (long)&set : 0, 0, (long)tv);
     return r > 0 && !(set & (1u << fd)) ? -1000 : r;
 }
 
@@ -298,14 +288,14 @@ static void test_select(void) {
 
     /* a descriptor that is not open is EBADF; unused sets are skipped */
     unsigned bad = 1u << 20;
-    CHECK(__sc(SYS_NEWSELECT, 21, (long)&bad, 0, 0, (long)&tv) == -EBADF);
-    CHECK(__sc(SYS_NEWSELECT, 2000, 0, 0, 0, 0) == -EINVAL);
+    CHECK(__sc(SYS_SELECT, 21, (long)&bad, 0, 0, (long)&tv) == -EBADF);
+    CHECK(__sc(SYS_SELECT, 2000, 0, 0, 0, 0) == -EINVAL);
 
     /* blocks without a timeout until a child writes */
     pid_t kid = fork();
     if (kid == 0) { msleep(100); write(fds[1], "k", 1); _exit(0); }
     unsigned set = 1u << fds[0];
-    CHECK(__sc(SYS_NEWSELECT, fds[0] + 1, (long)&set, 0, 0, 0) == 1 && set == (1u << fds[0]));
+    CHECK(__sc(SYS_SELECT, fds[0] + 1, (long)&set, 0, 0, 0) == 1 && set == (1u << fds[0]));
     waitpid(kid, NULL, 0);
     read(fds[0], &c, 1);
 
@@ -320,7 +310,7 @@ static void test_select(void) {
     struct ts tsp = { 0, 100 * 1000000 };
     set = 1u << fds[0];
     t0 = now_ms();
-    CHECK(sc6(SYS_PSELECT6, fds[0] + 1, (long)&set, 0, 0, (long)&tsp, 0) == 0);
+    CHECK(__sc6(SYS_PSELECT6, fds[0] + 1, (long)&set, 0, 0, (long)&tsp, 0) == 0);
     CHECK(now_ms() - t0 >= 90);
 
     /* pselect6 unblocks a signal atomically: it returns EINTR with the handler run, and the old mask is back */
@@ -335,7 +325,7 @@ static void test_select(void) {
     kid = signaller(SIGUSR1, 100, 0);
     set = 1u << fds[0];
     t0 = now_ms();
-    CHECK(sc6(SYS_PSELECT6, fds[0] + 1, (long)&set, 0, 0, (long)&five, (long)sigarg) == -EINTR);
+    CHECK(__sc6(SYS_PSELECT6, fds[0] + 1, (long)&set, 0, 0, (long)&five, (long)sigarg) == -EINTR);
     CHECK(hits == 1 && now_ms() - t0 < 2000);
     waitpid(kid, NULL, 0);
     __sc(SYS_RT_SIGPROCMASK, 0, 0, (long)cur, 8, 0);
@@ -344,7 +334,7 @@ static void test_select(void) {
     hits = 0;                                       /* without a mask the signal waits */
     kid = signaller(SIGUSR1, 50, 0);
     set = 1u << fds[0];
-    CHECK(sc6(SYS_PSELECT6, fds[0] + 1, (long)&set, 0, 0, (long)&brief, 0) == 0 && hits == 0);
+    CHECK(__sc6(SYS_PSELECT6, fds[0] + 1, (long)&set, 0, 0, (long)&brief, 0) == 0 && hits == 0);
     waitpid(kid, NULL, 0);
     sigprocmask_set(1 /* SIG_UNBLOCK */, usr1);
     CHECK(hits == 1);
@@ -366,10 +356,10 @@ static void test_socketpair(void) {
 
     unsigned set = 1u << sv[0];
     struct tv tv = { 0, 0 };
-    CHECK(__sc(SYS_NEWSELECT, sv[0] + 1, (long)&set, 0, 0, (long)&tv) == 0);       /* nothing to read yet */
+    CHECK(__sc(SYS_SELECT, sv[0] + 1, (long)&set, 0, 0, (long)&tv) == 0);       /* nothing to read yet */
     CHECK(write(sv[1], "q", 1) == 1);
     set = 1u << sv[0];
-    CHECK(__sc(SYS_NEWSELECT, sv[0] + 1, (long)&set, 0, 0, (long)&tv) == 1);
+    CHECK(__sc(SYS_SELECT, sv[0] + 1, (long)&set, 0, 0, (long)&tv) == 1);
     CHECK(read(sv[0], buf, 1) == 1);
 
     /* shutdown(SHUT_WR) is the peer's end of file, but the other direction keeps working */
@@ -571,26 +561,25 @@ static void test_exec_script(void) {
 }
 
 static void test_statfs_links(void) {
-    struct { unsigned type, bsize; unsigned long long blocks, bfree, bavail, files, ffree; int fsid[2]; unsigned namelen, frsize, flags, spare[4]; }
-        __attribute__((packed)) sf;
+    struct { long type, bsize; unsigned long blocks, bfree, bavail, files, ffree; int fsid[2]; long namelen, frsize, flags, spare[4]; } sf;
     char path[8];
 
     memset(&sf, 0xAA, sizeof sf);
-    CHECK(__sc(SYS_STATFS64, (long)"/", sizeof sf, (long)&sf, 0, 0) == 0);
+    CHECK(__sc(SYS_STATFS, (long)"/", (long)&sf, 0, 0, 0) == 0);
     CHECK(sf.type == 0x4d44 && sf.bsize >= 512 && sf.blocks > 0 && sf.bfree <= sf.blocks && sf.namelen >= 255);
-    CHECK(__sc(SYS_STATFS64, (long)"/", 80, (long)&sf, 0, 0) == -EINVAL);
-    CHECK(__sc(SYS_STATFS64, (long)"/nonexistent", sizeof sf, (long)&sf, 0, 0) == -ENOENT);
-    unsigned long long free_before = sf.bfree;
+    CHECK(__sc(SYS_STATFS, (long)"/", 0, 0, 0, 0) == -EFAULT);
+    CHECK(__sc(SYS_STATFS, (long)"/nonexistent", (long)&sf, 0, 0, 0) == -ENOENT);
+    unsigned long free_before = sf.bfree;
     write_file("/tmp/k6big", "x");
     int fd = open("/tmp/k6big", O_WRONLY | O_APPEND);
     char blk[8192];
     memset(blk, 1, sizeof blk);
     CHECK(write(fd, blk, sizeof blk) == sizeof blk);
     memset(&sf, 0, sizeof sf);
-    CHECK(__sc(SYS_FSTATFS64, fd, sizeof sf, (long)&sf, 0, 0) == 0 && sf.bfree < free_before);   /* free space shrank */
+    CHECK(__sc(SYS_FSTATFS, fd, (long)&sf, 0, 0, 0) == 0 && sf.bfree < free_before);   /* free space shrank */
     close(fd);
     unlink("/tmp/k6big");
-    CHECK(__sc(SYS_STATFS64, (long)"/proc", sizeof sf, (long)&sf, 0, 0) == 0 && sf.type == 0x9fa0);
+    CHECK(__sc(SYS_STATFS, (long)"/proc", sizeof sf, (long)&sf, 0, 0) == 0 && sf.type == 0x9fa0);
     unsigned old[16];
     CHECK(__sc(SYS_STATFS, (long)"/", (long)old, 0, 0, 0) == 0 && old[0] == 0x4d44 && old[2] > 0);
 
@@ -722,7 +711,7 @@ static long set_limit(int res, unsigned long cur, unsigned long max) {
     return __sc(SYS_SETRLIMIT, res, (long)&l, 0, 0, 0);
 }
 
-static long get_limit(int res, struct krlimit *l) { return __sc(SYS_UGETRLIMIT, res, (long)l, 0, 0, 0); }
+static long get_limit(int res, struct krlimit *l) { return __sc(SYS_GETRLIMIT, res, (long)l, 0, 0, 0); }
 
 static int count_procs(void) {
     char buf[1024];
@@ -783,8 +772,8 @@ static void test_rlimit(void) {
     if (kid == 0) {
         long cur = __sc(SYS_BRK, 0, 0, 0, 0, 0);
         set_limit(RLIMIT_AS, 64 * MB, 64 * MB);
-        long big = __sc(SYS_MMAP2, 0, 128 * MB, 3, 0x22, -1);
-        long small = __sc(SYS_MMAP2, 0, 64 << 10, 3, 0x22, -1);
+        long big = __sc6(SYS_MMAP, 0, 128 * MB, 3, 0x22, -1, 0);
+        long small = __sc6(SYS_MMAP, 0, 64 << 10, 3, 0x22, -1, 0);
         long grown = __sc(SYS_BRK, cur + 128 * MB, 0, 0, 0, 0);
         _exit(big == -ENOMEM && small > 0 && grown == cur && hit_recorded("as") ? 0 : 1);
     }
@@ -821,7 +810,7 @@ static void test_rlimit(void) {
         pid_t g = fork();
         if (g == 0) {
             set_limit(RLIMIT_AS, 64 * MB, 64 * MB);
-            __sc(SYS_MMAP2, 0, 128 * MB, 3, 0x22, -1);
+            __sc6(SYS_MMAP, 0, 128 * MB, 3, 0x22, -1, 0);
             _exit(0);
         }
         int before = hit_recorded("as");
@@ -839,7 +828,7 @@ static void test_oom(void) {
     CHECK(mb >= 16);
     for (int i = 0; i < 2; i++) {
         if (fork() == 0) {
-            volatile char *m = (volatile char *)__sc(SYS_MMAP2, 0, mb << 20, 3, 0x22, -1);
+            volatile char *m = (volatile char *)(long)__sc6(SYS_MMAP, 0, (long)mb << 20, 3, 0x22, -1, 0);
             for (long off = 0; off < mb << 20; off += 4096) m[off] = (char)(off >> 12);
             sleep(1);
             for (long off = 0; off < mb << 20; off += 4096)
@@ -858,12 +847,10 @@ static void test_oom(void) {
     CHECK(getpid() > 0 && write(1, "", 0) == 0);    /* the parent never noticed */
 }
 
-/* --- vDSO: __kernel_vsyscall (sysenter), the time page and the TF/signal corner cases --- */
+/* --- vDSO: the time page and the TF/signal corner cases --- */
 
-#define AT_SYSINFO      32
 #define AT_SYSINFO_EHDR 33
 #define SIGTRAP_NR      5
-#define EFLAGS_TF       0x100
 
 static unsigned long auxv_value(unsigned long type) {
     char **e = environ;
@@ -873,46 +860,22 @@ static unsigned long auxv_value(unsigned long type) {
     return 0;
 }
 
-/* Calls __kernel_vsyscall with the sixth argument in ebp and checks that ecx, edx and ebp survive. */
-static long vsc6(long n, long a, long b, long c, long d, long e, long f, int *regs_kept) {
-    long r, ecx_out, edx_out;
-    unsigned char ebp_kept;
-
-    __asm__ volatile("pushl %[f]\n\t"
-                     "pushl %%ebp\n\t"
-                     "movl 4(%%esp), %%ebp\n\t"
-                     "call *%[entry]\n\t"
-                     "cmpl 4(%%esp), %%ebp\n\t"
-                     "popl %%ebp\n\t"
-                     "leal 4(%%esp), %%esp\n\t"          /* none of these touch the flags */
-                     "sete %[kept]"
-                     : "=a"(r), "=c"(ecx_out), "=d"(edx_out), [kept] "=m"(ebp_kept)
-                     : "0"(n), "b"(a), "1"(b), "2"(c), "S"(d), "D"(e), [f] "m"(f), [entry] "m"(__vsyscall)
-                     : "memory", "cc");
-    *regs_kept = ebp_kept && ecx_out == b && edx_out == c;
-    return r;
-}
-
 static volatile int traps;
 static void on_trap(int sig) { traps++; }
 
 static void test_vdso(void) {
-    unsigned long sysinfo = auxv_value(AT_SYSINFO), ehdr = auxv_value(AT_SYSINFO_EHDR);
+    unsigned long ehdr = auxv_value(AT_SYSINFO_EHDR);
     const unsigned char *elf = (const unsigned char *)ehdr;
-    int kept = 0;
 
-    CHECK(sysinfo && ehdr && sysinfo > ehdr && sysinfo < ehdr + 4096);
-    CHECK(elf && !memcmp(elf, "\177ELF\1", 5) && (unsigned long)__vsyscall == sysinfo);
+    CHECK(ehdr && !memcmp(elf, "\177ELF\2", 5));
 
     long pid = getpid();
-    CHECK(pid > 0 && vsc6(SYS_GETPID, 0, 0x11111111, 0x22222222, 0x33333333, 0x44444444, 0x55555555, &kept) == pid);
-    CHECK(kept);
-    CHECK(sc6(SYS_GETPID, 0, 0, 0, 0, 0, 0) == pid);                   /* int 0x80 still works next to the vDSO */
+    CHECK(pid > 0 && __sc6(SYS_GETPID, 0, 0, 0, 0, 0, 0) == pid);
 
     /* the sixth argument reaches the kernel: pselect6's sigmask pointer is checked */
     struct timespec zero = { 0, 0 };
-    CHECK(vsc6(SYS_PSELECT6, 0, 0, 0, 0, (long)&zero, 0, &kept) == 0);
-    CHECK(vsc6(SYS_PSELECT6, 0, 0, 0, 0, (long)&zero, 0x10, &kept) == -EFAULT && kept);
+    CHECK(__sc6(SYS_PSELECT6, 0, 0, 0, 0, (long)&zero, 0) == 0);
+    CHECK(__sc6(SYS_PSELECT6, 0, 0, 0, 0, (long)&zero, 0x10) == -EFAULT);
 
     /* time: nanosecond resolution, monotonic, and the same clock as the system call */
     struct timespec a, b, c;
@@ -940,14 +903,14 @@ static void test_vdso(void) {
     CHECK(clock_gettime(7777, &rt) == -1 && errno == EINVAL);          /* another clock goes to the kernel */
 
     /* a program that single-steps through a system call (TF set) is trapped between the instructions,
-     * and the call itself still works: sysenter and sysexit must not trip over TF */
+     * and the call itself still works: SYSCALL and SYSRET must not trip over TF */
     set_handler(SIGTRAP_NR, on_trap, 0);
     long r;
     traps = 0;
-    __asm__ volatile("pushfl\n\torl $0x100, (%%esp)\n\tpopfl\n\tnop\n\t"
-                     "call *%[entry]\n\t"
-                     "pushfl\n\tandl $~0x100, (%%esp)\n\tpopfl"
-                     : "=a"(r) : "0"(SYS_GETPID), [entry] "m"(__vsyscall) : "memory", "cc");
+    __asm__ volatile("pushfq\n\torq $0x100, (%%rsp)\n\tpopfq\n\tnop\n\t"
+                     "syscall\n\t"
+                     "pushfq\n\tandq $~0x100, (%%rsp)\n\tpopfq"
+                     : "=a"(r) : "0"((long)SYS_GETPID) : "rcx", "r11", "memory", "cc");
     CHECK(r == pid && traps >= 8);
     set_handler(SIGTRAP_NR, NULL, 0);
 
@@ -955,10 +918,10 @@ static void test_vdso(void) {
      * entered on the iret path of the call */
     set_handler(SIGUSR1, on_signal, 0);
     hits = 0;
-    __asm__ volatile("pushfl\n\torl $0x4000, (%%esp)\n\tpopfl\n\t"
-                     "call *%[entry]\n\t"
-                     "pushfl\n\tandl $~0x4000, (%%esp)\n\tpopfl"
-                     : "=a"(r) : "0"(SYS_KILL), "b"(pid), "c"(SIGUSR1), [entry] "m"(__vsyscall) : "memory", "cc");
+    __asm__ volatile("pushfq\n\torq $0x4000, (%%rsp)\n\tpopfq\n\t"
+                     "syscall\n\t"
+                     "pushfq\n\tandq $~0x4000, (%%rsp)\n\tpopfq"
+                     : "=a"(r) : "0"((long)SYS_KILL), "D"(pid), "S"((long)SIGUSR1) : "rcx", "r11", "memory", "cc");
     CHECK(r == 0 && hits == 1);
 }
 

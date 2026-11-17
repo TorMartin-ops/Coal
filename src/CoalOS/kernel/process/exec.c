@@ -1,6 +1,6 @@
 /**
  * Program images: builds an address space from an ELF file plus the initial
- * user stack laid out like Linux i386 (argc, argv, envp, auxv, strings), and
+ * user stack laid out like Linux x86_64 (argc, argv, envp, auxv, strings), and
  * implements execve on top of it.
  */
 #include <kernel/process/exec.h>
@@ -11,8 +11,10 @@
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/fs/vfs/read_file.h>
 #include <kernel/lib/string.h>
+#include <kernel/lib/random.h>
+#include <kernel/cpu/percpu.h>
+#include <kernel/cpu/msr.h>
 #include <kernel/memory/frame.h>
-#include <kernel/memory/kmap.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/memory/paging_process.h>
 
@@ -34,42 +36,29 @@
 #define AT_CLKTCK 17
 #define AT_SECURE 23
 #define AT_RANDOM 25
+#define AT_HWCAP2 26
 #define AT_EXECFN 31
-#define AT_SYSINFO 32
 #define AT_SYSINFO_EHDR 33
+#define AT_MINSIGSTKSZ 51
 
-#define NAUX        20          /* pairs, including AT_NULL */
+#define NAUX        22          /* pairs, including AT_NULL */
 #define MAX_ARGS    4096
 
-static uint32_t nx_flag(void) {
-    return g_nx_supported ? PAGE_NX_BIT : 0;
-}
-
-static void fill_random(uint8_t *out, size_t n) {
-    uint32_t x = 0x9E3779B9u;
-
-    for (size_t i = 0; i < n; i++) {
-        uint32_t lo, hi;
-        asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
-        x ^= lo + hi;
-        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-        out[i] = (uint8_t)x;
-    }
-}
+#define MINSIGSTKSZ 2048
 
 static int new_address_space(mm_struct_t **out) {
     uintptr_t pd = paging_new_directory();
     mm_struct_t *mm;
 
     if (!pd) return -ENOMEM;
-    mm = create_mm((uint32_t *)pd);
+    mm = create_mm((void *)pd);
     if (!mm) { put_frame(pd); return -ENOMEM; }
     *out = mm;
     return 0;
 }
 
 void exec_free_mm(mm_struct_t *mm) {
-    uint32_t *pd = mm->pgd_phys;
+    void *pd = mm->pgd_phys;
 
     destroy_mm(mm);                      /* releases the user pages and page tables */
     put_frame((uintptr_t)pd);
@@ -79,62 +68,63 @@ void exec_release_mm(pcb_t *p) {
     mm_struct_t *mm = p->mm;
 
     if (!mm) return;
-    asm volatile("mov %0, %%cr3" : : "r"(g_kernel_page_directory_phys) : "memory");
+    write_cr3(g_kernel_page_directory_phys);
     p->mm = NULL;
     p->page_directory_phys = NULL;
     exec_free_mm(mm);
 }
 
 /**
- * Builds the Linux i386 initial stack (low to high): argc, argv[], NULL,
+ * Builds the Linux x86_64 initial stack (low to high): argc, argv[], NULL,
  * envp[], NULL, auxv[], padding, AT_PLATFORM/AT_RANDOM data, strings, and a
  * zero word at the very top. The image is assembled in a kernel buffer and
  * then copied into freshly mapped user pages.
  */
 static int build_stack(mm_struct_t *mm, const char *path, const char *const *argv,
-                       const char *const *envp, const elf_info_t *ei, uint32_t *sp_out) {
-    static const char platform[] = "i686";
+                       const char *const *envp, const elf_info_t *ei, uintptr_t *sp_out) {
+    static const char platform[] = "x86_64";
     size_t argc = 0, envc = 0, strsz, vecsz, size, off, vo;
-    uint32_t base, *vec, hwcap, a = 0, execfn, plat, rnd;
+    uintptr_t base, *vec, a = 0, execfn, plat, rnd;
+    uint32_t hwcap;
     uint8_t *buf;
     int ret = 0;
 
     while (argv && argv[argc]) if (++argc > MAX_ARGS) return -E2BIG;
     while (envp && envp[envc]) if (++envc > MAX_ARGS) return -E2BIG;
-    strsz = 4 + strlen(path) + 1 + sizeof(platform) + 16;
+    strsz = 8 + strlen(path) + 1 + sizeof(platform) + 16;
     for (size_t i = 0; i < argc; i++) strsz += strlen(argv[i]) + 1;
     for (size_t i = 0; i < envc; i++) strsz += strlen(envp[i]) + 1;
     if (strsz > USER_ARG_MAX) return -E2BIG;
 
-    vecsz = (1 + argc + 1 + envc + 1 + 2 * NAUX) * sizeof(uint32_t);
+    vecsz = (1 + argc + 1 + envc + 1 + 2 * NAUX) * sizeof(uintptr_t);
     size = PAGE_ALIGN_UP(strsz + vecsz + 32);
-    base = USER_STACK_TOP_VIRT_ADDR - size;
+    base = USER_STACK_TOP - size;
     buf = kmalloc(size);
     vec = kmalloc(vecsz);
     if (!buf || !vec) { ret = -ENOMEM; goto out; }
     memset(buf, 0, size);
     memset(vec, 0, vecsz);
 
-    off = size - 4;                                       /* zero word at the top */
+    off = size - 8;                                       /* zero word at the top */
 #define PUT(s) ({ size_t l_ = strlen(s) + 1; off -= l_; memcpy(buf + off, (s), l_); base + off; })
     execfn = PUT(path);
     for (size_t i = envc; i-- > 0; ) vec[2 + argc + i] = PUT(envp[i]);
     for (size_t i = argc; i-- > 0; ) vec[1 + i] = PUT(argv[i]);
     off -= sizeof(platform); memcpy(buf + off, platform, sizeof(platform)); plat = base + off;
-    off -= 16; fill_random(buf + off, 16); rnd = base + off;
+    off -= 16; random_bytes(buf + off, 16); rnd = base + off;
 #undef PUT
     off &= ~(size_t)15;
 
     vec[0] = argc;
     asm volatile("cpuid" : "=d"(hwcap) : "a"(1) : "ebx", "ecx");
-    uint32_t *aux = &vec[1 + argc + 1 + envc + 1];
+    uintptr_t *aux = &vec[1 + argc + 1 + envc + 1];
 #define AUX(t, v) do { aux[a++] = (t); aux[a++] = (v); } while (0)
     AUX(AT_PHDR, ei->phdr); AUX(AT_PHENT, ei->phent); AUX(AT_PHNUM, ei->phnum);
     AUX(AT_PAGESZ, PAGE_SIZE); AUX(AT_BASE, 0); AUX(AT_FLAGS, 0); AUX(AT_ENTRY, ei->entry);
     AUX(AT_UID, 0); AUX(AT_EUID, 0); AUX(AT_GID, 0); AUX(AT_EGID, 0);
-    AUX(AT_HWCAP, hwcap); AUX(AT_CLKTCK, 100); AUX(AT_SECURE, 0);
+    AUX(AT_HWCAP, hwcap); AUX(AT_HWCAP2, 0); AUX(AT_CLKTCK, 100); AUX(AT_SECURE, 0);
     AUX(AT_RANDOM, rnd); AUX(AT_PLATFORM, plat); AUX(AT_EXECFN, execfn);
-    AUX(AT_SYSINFO, VDSO_VSYSCALL); AUX(AT_SYSINFO_EHDR, VDSO_BASE); AUX(AT_NULL, 0);
+    AUX(AT_SYSINFO_EHDR, VDSO_BASE); AUX(AT_MINSIGSTKSZ, MINSIGSTKSZ); AUX(AT_NULL, 0);
 #undef AUX
 
     vo = (off - vecsz) & ~(size_t)15;                     /* argc sits on a 16-byte boundary */
@@ -143,13 +133,10 @@ static int build_stack(mm_struct_t *mm, const char *path, const char *const *arg
 
     for (size_t pg = 0; pg < size; pg += PAGE_SIZE) {
         uintptr_t phys = frame_alloc_user();
-        void *v;
         if (!phys) { ret = -ENOMEM; goto out; }
-        v = kmap(phys);
-        memcpy(v, buf + pg, PAGE_SIZE);
-        kunmap(v);
+        memcpy(phys_to_virt(phys), buf + pg, PAGE_SIZE);
         if (paging_map_single_4k(mm->pgd_phys, base + pg, phys,
-                                 PAGE_PRESENT | PAGE_RW | PAGE_USER | nx_flag())) {
+                                 PTE_USER_DATA_FLAGS)) {
             put_frame(phys);
             ret = -ENOMEM;
             goto out;
@@ -224,8 +211,8 @@ static int build_image(const char *path, const char *const *argv, const char *co
     if (ret) goto fail;
 
     mm->start_brk = mm->end_brk = ei.brk;
-    mm->start_stack = USER_STACK_TOP_VIRT_ADDR;
-    if (!insert_vma(mm, USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR,
+    mm->start_stack = USER_STACK_TOP;
+    if (!insert_vma(mm, USER_STACK_BOTTOM, USER_STACK_TOP,
                     VM_READ | VM_WRITE | VM_USER | VM_GROWS_DOWN | VM_ANONYMOUS)) {
         ret = -ENOMEM;
         goto fail;
@@ -280,12 +267,14 @@ int process_execve(const char *path, const char *const *argv, const char *const 
     old = p->mm;
     p->mm = img.mm;
     p->page_directory_phys = img.mm->pgd_phys;
-    asm volatile("mov %0, %%cr3" : : "r"(img.mm->pgd_phys) : "memory");
+    write_cr3((uint64_t)img.mm->pgd_phys);
     local_irq_restore(flags);
 
     if (old) exec_free_mm(old);
     fpu_exec_reset(p);
     exec_set_name(p, path, argv);
+    p->fs_base = p->gs_base = 0;
+    cpu_set_user_bases(0, 0);
     process_init_user_frame(regs, img.entry, img.sp);
     return 0;
 }

@@ -1,27 +1,25 @@
 /**
  * @file fpu.c
- * @brief Lazy x87 switching. The registers belong to fpu_owner; CR0.TS is set whenever the running
- *        task is not the owner, so its first FPU instruction raises #NM and swaps the state in.
- *        SSE stays disabled (CR4.OSFXSR is clear): SSE code raises #UD.
+ * @brief Lazy x87/SSE switching. The registers belong to fpu_owner; CR0.TS is set whenever the running
+ *        task is not the owner, so its first FPU or SSE instruction raises #NM and swaps the state in.
  *
- * Invariant: while a process runs, CR0.TS is clear exactly when it is fpu_owner. The kernel itself
- * never uses the FPU.
+ * Invariant: while a process runs, CR0.TS is clear exactly when it is fpu_owner. The kernel itself is built
+ * with -mgeneral-regs-only and never touches these registers.
  */
 #include <kernel/process/fpu.h>
 #include <kernel/cpu/idt.h>
+#include <kernel/cpu/msr.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/lib/string.h>
 
-#define CR0_MP   (1u << 1)
-#define CR0_EM   (1u << 2)
-#define CR0_TS   (1u << 3)
 #define NM_VECTOR 7
+#define FCW_DEFAULT   0x037F
+#define MXCSR_DEFAULT 0x1F80
 
 static pcb_t *fpu_owner;
-static bool have_fxsr;
 
-static inline uint32_t read_cr0(void) { uint32_t v; asm volatile("mov %%cr0, %0" : "=r"(v)); return v; }
-static inline void write_cr0(uint32_t v) { asm volatile("mov %0, %%cr0" : : "r"(v)); }
+static uint8_t fpu_init_image[FPU_AREA_SIZE] __attribute__((aligned(16)));   /* the state of a new process */
+
 static inline void set_ts(void) { write_cr0(read_cr0() | CR0_TS); }
 
 static uint8_t *area_of(pcb_t *p) {
@@ -33,15 +31,8 @@ static uint8_t *area_of(pcb_t *p) {
     return p->fpu;
 }
 
-static void store(uint8_t *area) {
-    if (have_fxsr) asm volatile("fxsave (%0)" : : "r"(area) : "memory");
-    else asm volatile("fnsave (%0)\n\tfrstor (%0)" : : "r"(area) : "memory");      /* fnsave resets the FPU */
-}
-
-static void load(const uint8_t *area) {
-    if (have_fxsr) asm volatile("fxrstor (%0)" : : "r"(area) : "memory");
-    else asm volatile("frstor (%0)" : : "r"(area) : "memory");
-}
+static void store(uint8_t *area) { asm volatile("fxsave64 (%0)" : : "r"(area) : "memory"); }
+static void load(const uint8_t *area) { asm volatile("fxrstor64 (%0)" : : "r"(area) : "memory"); }
 
 /* #NM: the running process wants the FPU. */
 static void device_not_available(isr_frame_t *frame) {
@@ -55,17 +46,15 @@ static void device_not_available(isr_frame_t *frame) {
         if (a) { store(a); fpu_owner->fpu_valid = true; }
     }
     fpu_owner = cur;
-    if (cur->fpu_valid) load(cur->fpu);
-    else asm volatile("fninit");
+    load(cur->fpu_valid ? cur->fpu : fpu_init_image);
 }
 
 void fpu_init(void) {
-    uint32_t edx;
-
-    asm volatile("cpuid" : "=d"(edx) : "a"(1) : "ebx", "ecx");
-    have_fxsr = (edx >> 24) & 1;
+    write_cr4(read_cr4() | CR4_OSFXSR | CR4_OSXMMEXCPT);
     write_cr0((read_cr0() & ~CR0_EM) | CR0_MP);
-    asm volatile("fninit");
+    *(uint16_t *)fpu_init_image = FCW_DEFAULT;
+    *(uint32_t *)(fpu_init_image + 24) = MXCSR_DEFAULT;
+    set_ts();
     register_int_handler(NM_VECTOR, device_not_available, NULL);
 }
 
@@ -110,7 +99,7 @@ void fpu_exec_reset(pcb_t *p) {
     p->fpu_valid = false;
     if (fpu_owner == p) {
         fpu_owner = NULL;
-        set_ts();                                   /* the next FPU instruction starts from fninit */
+        set_ts();                                   /* the next FPU instruction starts from the initial state */
     }
 }
 

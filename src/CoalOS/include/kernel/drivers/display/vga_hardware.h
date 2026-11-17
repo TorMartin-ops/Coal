@@ -6,8 +6,9 @@
 #define KERNEL_DRIVERS_DISPLAY_VGA_HARDWARE_H
 
 #include <kernel/core/types.h>
+#include <kernel/memory/paging.h>
 
-#define VGA_ADDRESS 0xB8000
+#define VGA_ADDRESS VGA_VIRT_ADDR       /* through the direct map */
 #define VGA_COLS    80
 #define VGA_ROWS    25
 

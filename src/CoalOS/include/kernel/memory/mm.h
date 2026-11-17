@@ -5,7 +5,7 @@
  * A VMA describes a page-aligned user range [vm_start, vm_end) with
  * permissions. Pages are mapped lazily: the first touch of an anonymous page
  * allocates a zeroed frame. File-backed VMAs are not implemented (their faults
- * are rejected). VMAs never overlap and never cover the first 4 MiB or kernel
+ * are rejected). VMAs never overlap and never cover the first 64 KiB or kernel
  * space. Functions taking an mm lock mm->lock themselves.
  *
  * Return values: 0 or a positive result on success, negative errno on failure.
@@ -29,23 +29,23 @@
 #define VM_HEAP         0x00000100
 #define VM_STACK        0x00000200
 
-#define MM_STACK_MAX    (8u * 1024 * 1024)      /* a VM_GROWS_DOWN VMA may grow to this size */
-#define MM_BRK_MAX      (256u * 1024 * 1024)
-#define MM_MMAP_BASE    0x40000000u             /* anonymous mmap placement window */
-#define MM_MMAP_LIMIT   0xB0000000u
+#define MM_STACK_MAX    (8ul * 1024 * 1024)     /* a VM_GROWS_DOWN VMA may grow to this size */
+#define MM_BRK_MAX      (256ul * 1024 * 1024)
+#define MM_MMAP_BASE    0x00007F0000000000ul    /* anonymous mmap placement window */
+#define MM_MMAP_LIMIT   0x00007FFF00000000ul
 
 typedef struct vma_struct {
     uintptr_t vm_start;         /* inclusive, page aligned */
     uintptr_t vm_end;           /* exclusive, page aligned */
     uint32_t vm_flags;
-    uint32_t page_prot;         /* PTE flags, derived from vm_flags */
+    uint64_t page_prot;         /* PTE flags, derived from vm_flags */
     struct rb_node rb_node;
     struct mm_struct *vm_mm;
 } vma_struct_t;
 
 typedef struct mm_struct {
     struct rb_tree vma_tree;    /* ordered by vm_start */
-    uint32_t *pgd_phys;         /* physical address of the page directory */
+    void *pgd_phys;             /* physical address of the PML4 */
     spinlock_t lock;            /* protects the VMA tree */
     int map_count;
     uintptr_t start_code, end_code;
@@ -55,18 +55,22 @@ typedef struct mm_struct {
 } mm_struct_t;
 
 /** New empty address space around an existing page directory. */
-mm_struct_t *create_mm(uint32_t *pgd_phys);
+mm_struct_t *create_mm(void *pgd_phys);
 
 /** Free all VMAs, user pages and user page tables and the mm itself. The page
  *  directory frame is not freed; its owner releases it with put_frame(). */
 void destroy_mm(mm_struct_t *mm);
 
 /** Add a VMA. start and end must be page aligned with start < end and lie in
- *  [4 MiB, KERNEL_SPACE_VIRT_START). NULL on overlap, bad range or OOM. */
+ *  [USER_SPACE_MIN, USER_SPACE_MAX). NULL on overlap, bad range or OOM. */
 vma_struct_t *insert_vma(mm_struct_t *mm, uintptr_t start, uintptr_t end, uint32_t vm_flags);
 
 /** munmap: unmap and free [start, start+length), splitting or trimming VMAs. */
 int remove_vma_range(mm_struct_t *mm, uintptr_t start, size_t length);
+
+/** mprotect: give [start, start+length) the VM_READ/VM_WRITE/VM_EXEC rights in prot_flags (0: none). Splits VMAs;
+ *  -ENOMEM if part of the range is not mapped. */
+int mm_protect(mm_struct_t *mm, uintptr_t start, size_t length, uint32_t prot_flags);
 
 /** Bytes of address space covered by the VMAs (for RLIMIT_AS). */
 size_t mm_total_vm(mm_struct_t *mm);

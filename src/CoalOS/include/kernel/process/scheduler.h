@@ -28,7 +28,7 @@ enum { RQ_NONE, RQ_READY, RQ_PENDING };
 typedef struct tcb {
     struct rb_node rb;          /* node of the run queue tree named by `queue` */
     struct pcb  *process;
-    uint32_t    *context;       /* saved kernel ESP (see switch.asm) */
+    uint64_t    *context;       /* saved kernel RSP (see switch.asm) */
     task_state_t state;
     int8_t       nice;
     uint8_t      queue;         /* RQ_* */
@@ -90,12 +90,12 @@ extern volatile bool g_need_reschedule;   /* polled by syscall.asm and the inter
 
 /**
  * Lays out a first-run switch frame just below frame_top so that switching to
- * the returned context "returns" into entry with the given EFLAGS.
+ * the returned context "returns" into entry with the given RFLAGS.
  */
-uint32_t *scheduler_make_context(void *frame_top, void (*entry)(void), uint32_t eflags);
+uint64_t *scheduler_make_context(void *frame_top, void (*entry)(void), uint64_t rflags);
 
-/* switch.asm */
-void simple_switch(uint32_t **save_esp, uint32_t *new_esp);
+/* switch.asm, isr_stubs.asm */
+void simple_switch(uint64_t **save_rsp, uint64_t *new_rsp);
 void ret_from_fork(void);
 
 #endif

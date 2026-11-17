@@ -114,7 +114,7 @@ static void calibrate(void) {
 /* --- helpers -------------------------------------------------------------------- */
 
 static void *map_anon(size_t len) {
-    long r = __sc(SYS_MMAP2, 0, (long)len, 3 /* RW */, 0x22 /* PRIVATE|ANON */, -1);
+    long r = __sc6(SYS_MMAP, 0, (long)len, 3 /* RW */, 0x22 /* PRIVATE|ANON */, -1, 0);
     return (unsigned long)r > (unsigned long)-4096 ? NULL : (void *)r;
 }
 

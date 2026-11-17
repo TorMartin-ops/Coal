@@ -1,6 +1,7 @@
 #pragma once
 
-typedef unsigned int size_t;
+typedef unsigned long size_t;
+typedef long          ptrdiff_t;
 
 #ifndef NULL
 #define NULL ((void *)0)

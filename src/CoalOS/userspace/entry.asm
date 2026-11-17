@@ -1,7 +1,7 @@
-; _start: the kernel enters with esp -> argc, argv[], NULL, envp[], NULL, auxv
-; exactly like Linux i386. __libc_start() never returns.
+; _start: the kernel enters with rsp -> argc, argv[], NULL, envp[], NULL, auxv
+; exactly like Linux x86_64. __libc_start() never returns.
 
-bits 32
+bits 64
 
 global _start
 extern __libc_start
@@ -10,9 +10,8 @@ section .text
 
 _start:
     xor ebp, ebp
-    mov eax, esp
-    and esp, -16
-    push eax
+    mov rdi, rsp
+    and rsp, -16
     call __libc_start
 .hang:
     hlt

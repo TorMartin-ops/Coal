@@ -248,11 +248,11 @@ static void dma_probe(void) {
     g_bm_base[1] = (uint16_t)((bar & ~3u) + 8);
 }
 
-/* Memory the controller can reach: the direct map of lowmem. */
+/* Memory the controller can reach: the direct map below 4 GiB. */
 static bool dma_ok(const blk_seg_t *segs, unsigned nseg) {
     for (unsigned i = 0; i < nseg; i++) {
         uintptr_t a = (uintptr_t)segs[i].buf;
-        if (a < KERNEL_SPACE_VIRT_START || a >= KERNEL_SPACE_VIRT_START + HIGHMEM_START_PHYS || (a & 1)) return false;
+        if (a < PHYS_OFFSET || a >= PHYS_OFFSET + ZONE_HIGH_START_PHYS || (a & 1)) return false;
     }
     return true;
 }

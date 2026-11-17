@@ -5,8 +5,8 @@
  */
 #include <kernel/cpu/exception_table.h>
 
-uint32_t find_exception_fixup(uint32_t fault_eip) {
+uint64_t find_exception_fixup(uint64_t fault_rip) {
     for (exception_entry_t *e = __start_ex_table; e < __stop_ex_table; e++)
-        if (e->fault_addr == fault_eip) return e->fixup_addr;
+        if (e->fault_addr == fault_rip) return e->fixup_addr;
     return 0;
 }

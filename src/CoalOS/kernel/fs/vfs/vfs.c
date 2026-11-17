@@ -294,7 +294,7 @@ ssize_t vfs_write(file_t *f, const void *buf, size_t len) {
     if (v->type == S_IFDIR) return -EISDIR;
     if (!v->fs_driver->write) return -EINVAL;
     if (f->flags & O_APPEND) {
-        struct kstat64 st;
+        struct kstat st;
         int rc = vfs_fstat(f, &st);
         if (rc < 0) return rc;
         f->offset = (off_t)st.st_size;
@@ -316,7 +316,7 @@ off_t vfs_lseek(file_t *f, off_t off, int whence) {
     case SEEK_SET: base = 0; break;
     case SEEK_CUR: base = f->offset; break;
     case SEEK_END: {
-        struct kstat64 st;
+        struct kstat st;
         int rc = vfs_fstat(f, &st);
         if (rc < 0) return rc;
         base = st.st_size;
@@ -356,16 +356,15 @@ int vfs_getdents64(file_t *f, void *buf, size_t len) {
     return (int)used;
 }
 
-int vfs_fstat(file_t *f, struct kstat64 *st) {
+int vfs_fstat(file_t *f, struct kstat *st) {
     vnode_t *v = f->vnode;
     if (!v->fs_driver->getattr) return -ENOSYS;
     memset(st, 0, sizeof(*st));
     int rc = v->fs_driver->getattr(v, st);
-    st->__st_ino = (uint32_t)st->st_ino;
     return rc;
 }
 
-int vfs_fstatfs(file_t *f, struct kstatfs64 *st) {
+int vfs_fstatfs(file_t *f, struct kstatfs *st) {
     vnode_t *v = f->vnode;
     int rc = 0;
 
@@ -377,7 +376,7 @@ int vfs_fstatfs(file_t *f, struct kstatfs64 *st) {
     return rc;
 }
 
-int vfs_statfs(const char *path, struct kstatfs64 *st) {
+int vfs_statfs(const char *path, struct kstatfs *st) {
     file_t *f;
     int rc = vfs_open(path, O_RDONLY, 0, &f);
     if (rc < 0) return rc;
@@ -411,7 +410,7 @@ int vfs_ioctl(file_t *f, uint32_t cmd, void *arg) {
 
 /* ---- Namespace operations ------------------------------------------------- */
 
-int vfs_stat(const char *path, struct kstat64 *st) {
+int vfs_stat(const char *path, struct kstat *st) {
     file_t *f;
     int rc = vfs_open(path, O_RDONLY, 0, &f);
     if (rc < 0) return rc;

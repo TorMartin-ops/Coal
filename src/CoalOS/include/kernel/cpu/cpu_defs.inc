@@ -1,34 +1,76 @@
-; Selectors and the common interrupt frame shared by the assembly stubs.
-; The frame layout must match isr_frame_t (include/kernel/cpu/isr_frame.h).
+; Selectors, the interrupt frame and per-CPU offsets shared by the assembly sources.
+; They must match gdt.h, isr_frame.h and percpu.h (checked there with static assertions).
 
 KERNEL_CS   equ 0x08
 KERNEL_DS   equ 0x10
-USER_CS     equ 0x1B        ; ring 3 selectors, see gdt.h
-USER_DS     equ 0x23
-VDSO_LANDING equ 0xBFFFF409 ; the sysenter return address; must match vdso_abi.h
+USER_DS     equ 0x23        ; ring 3 selectors, see gdt.h
+USER_CS     equ 0x2B
 IRQ_BASE    equ 32          ; first PIC vector, see include/kernel/cpu/idt.h
 
-; Push segments and general registers, then load the kernel data segments.
-; On entry the stack holds [int_no, err_code, eip, cs, eflags, ...].
-%macro SAVE_FRAME 0
-    push    ds
-    push    es
-    push    fs
-    push    gs
-    pusha
-    mov     ax, KERNEL_DS
-    mov     ds, ax
-    mov     es, ax
-    mov     fs, ax
-    mov     gs, ax
+MSR_GS_BASE equ 0xC0000101
+
+; isr_frame_t: 15 general registers, int_no, err_code, then what the CPU pushed.
+F_R15       equ 0
+F_RBP       equ 64
+F_RAX       equ 112
+F_INT_NO    equ 120
+F_ERR       equ 128
+F_RIP       equ 136
+F_CS        equ 144
+F_RFLAGS    equ 152
+F_RSP       equ 160
+F_SS        equ 168
+FRAME_SIZE  equ 176
+
+; struct percpu offsets
+PC_KERNEL_RSP equ 8
+PC_USER_RSP   equ 16
+
+EFLAGS_TF   equ 0x100
+EFLAGS_RF   equ 0x10000
+EFAULT      equ 14
+
+; Push the 15 general registers in isr_frame_t order (rax first, r15 ends up lowest).
+%macro PUSH_GPRS 0
+    push    rax
+    push    rbx
+    push    rcx
+    push    rdx
+    push    rsi
+    push    rdi
+    push    rbp
+    push    r8
+    push    r9
+    push    r10
+    push    r11
+    push    r12
+    push    r13
+    push    r14
+    push    r15
 %endmacro
 
-; Undo SAVE_FRAME and drop int_no and err_code.
-%macro RESTORE_FRAME 0
-    popa
-    pop     gs
-    pop     fs
-    pop     es
-    pop     ds
-    add     esp, 8
+%macro POP_GPRS 0
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     r11
+    pop     r10
+    pop     r9
+    pop     r8
+    pop     rbp
+    pop     rdi
+    pop     rsi
+    pop     rdx
+    pop     rcx
+    pop     rbx
+    pop     rax
+%endmacro
+
+; Exception table entry: a faulting instruction and where to resume (kernel/cpu/exception_table.c).
+%macro EX_TABLE 2
+    section .ex_table progbits alloc noexec nowrite align=8
+    dq %1
+    dq %2
+    section .text
 %endmacro

@@ -17,12 +17,6 @@ extern "C" {
 #define MAX_FILENAME_LEN 255
 #endif
 
-struct dirent {
-    char     d_name[MAX_FILENAME_LEN + 1];
-    uint32_t d_ino;       /* cluster number or other unique ID */
-    uint8_t  d_type;      /* DT_REG, DT_DIR, ... */
-};
-
 /*---------------------------------------------------------------------------
  * Basic Utility Macros
  *--------------------------------------------------------------------------*/
@@ -39,7 +33,7 @@ struct dirent {
  * ssize_t: Signed integer type for byte counts and error codes.
  */
 #ifndef _SSIZE_T_DEFINED
-typedef int ssize_t;
+typedef long ssize_t;
 #define _SSIZE_T_DEFINED
 #endif
 
@@ -63,7 +57,7 @@ typedef unsigned int mode_t;
  * dev_t: Device number type.
  */
 #ifndef _DEV_T_DEFINED
-typedef unsigned int dev_t;
+typedef unsigned long dev_t;
 #define _DEV_T_DEFINED
 #endif
 
@@ -71,7 +65,7 @@ typedef unsigned int dev_t;
  * ino_t: Inode number type.
  */
 #ifndef _INO_T_DEFINED
-typedef unsigned int ino_t;
+typedef unsigned long ino_t;
 #define _INO_T_DEFINED
 #endif
 

@@ -26,7 +26,7 @@ static unsigned check(volatile uint32_t *mem, unsigned pages, unsigned seed) {
 
 static int worker(unsigned mb, unsigned seed) {
     unsigned pages = mb * (1024 * 1024 / PAGE);
-    long r = __sc(SYS_MMAP2, 0, (long)mb << 20, 3, 0x22, -1)   /* PROT_RW, MAP_PRIVATE|MAP_ANON */;
+    long r = __sc6(SYS_MMAP, 0, (long)mb << 20, 3, 0x22, -1, 0)   /* PROT_RW, MAP_PRIVATE|MAP_ANON */;
     if (r < 0 && r > -4096) { printf("memtest: mmap failed (%ld)\n", r); return 2; }
     volatile uint32_t *mem = (volatile uint32_t *)r;
 

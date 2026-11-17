@@ -66,7 +66,7 @@ static size_t render(const struct node *n, char *out) {
     uint32_t ms = (uint32_t)timer_uptime_ms();
     switch (n->kind) {
     case K_MEMINFO: {
-        uint32_t lt = (uint32_t)buddy_total_pages(ZONE_NORMAL), lf = (uint32_t)(buddy_free_pages_count(ZONE_NORMAL) + frame_pool_pages(ZONE_NORMAL));
+        uint32_t lt = (uint32_t)buddy_total_pages(ZONE_LOW), lf = (uint32_t)(buddy_free_pages_count(ZONE_LOW) + frame_pool_pages(ZONE_LOW));
         uint32_t ht = (uint32_t)buddy_total_pages(ZONE_HIGH), hf = (uint32_t)(buddy_free_pages_count(ZONE_HIGH) + frame_pool_pages(ZONE_HIGH));
         const uint32_t kb = PAGE_SIZE / 1024;
         return (size_t)pf(out, SNAPSHOT_MAX,
@@ -237,7 +237,7 @@ static int procfs_readdir(vnode_t *v, off_t *pos, struct vfs_dirent *out) {
     return 1;
 }
 
-static int procfs_getattr(vnode_t *v, struct kstat64 *st) {
+static int procfs_getattr(vnode_t *v, struct kstat *st) {
     struct node *n = v->data;
     bool dir = n->kind < K_MEMINFO;
     st->st_mode = dir ? S_IFDIR | 0555 : S_IFREG | 0444;

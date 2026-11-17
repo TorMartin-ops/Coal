@@ -5,6 +5,9 @@
 
 #include <kernel/cpu/idt.h>
 #include <kernel/cpu/gdt.h>
+#include <kernel/cpu/msr.h>
+#include <kernel/cpu/percpu.h>
+#include <kernel/memory/paging.h>
 #include <kernel/core/types.h>
 #include <kernel/process/signal.h>
 #include <kernel/process/process.h>
@@ -13,9 +16,8 @@
 #include <kernel/lib/assert.h>
 #include <kernel/drivers/storage/block_device.h>
 
-#define IDT_FLAG_INTERRUPT_GATE 0x8E   // ring 0, present, 32-bit interrupt gate
-#define IDT_FLAG_USER_INT_GATE  0xEE   // int3 and into may be executed from ring 3
-#define IDT_FLAG_SYSCALL_GATE   0xEF   // ring 3 callable trap gate: system calls run with interrupts on
+#define IDT_FLAG_INTERRUPT_GATE 0x8E   // ring 0, present, 64-bit interrupt gate
+#define IDT_FLAG_USER_INT_GATE  0xEE   // int3 may be executed from ring 3
 
 #define ICW1_INIT   0x10
 #define ICW1_ICW4   0x01
@@ -23,15 +25,12 @@
 #define PIC_READ_ISR 0x0B              // OCW3: read the in-service register
 
 static struct idt_entry idt_entries[IDT_ENTRIES] __attribute__((aligned(16)));
-static struct idt_ptr idtp;
 static interrupt_handler_info_t interrupt_c_handlers[IDT_ENTRIES];
 
 // Entry points for vectors 0..63 (0 = none), from isr_stubs.asm.
 #define STUB_VECTORS 64
 static uint32_t irq_counts[STUB_VECTORS];
 extern void (*const isr_stub_table[STUB_VECTORS])(void);
-extern void syscall_entry(void);
-extern void idt_flush(uintptr_t idt_ptr_addr);
 
 //============================================================================
 // PIC
@@ -86,13 +85,12 @@ static void spurious_irq_handler(isr_frame_t *frame) {
 //============================================================================
 // IDT
 //============================================================================
-static void idt_set_gate(uint8_t num, void (*handler)(void), uint8_t flags) {
-    uint32_t base = (uint32_t)handler;
-    idt_entries[num].base_low  = (uint16_t)(base & 0xFFFF);
-    idt_entries[num].sel       = KERNEL_CODE_SELECTOR;
-    idt_entries[num].null      = 0;
-    idt_entries[num].flags     = flags;
-    idt_entries[num].base_high = (uint16_t)(base >> 16);
+static void idt_set_gate(uint8_t num, void (*handler)(void), uint8_t flags, uint8_t ist) {
+    uint64_t base = (uint64_t)handler;
+    idt_entries[num] = (struct idt_entry){
+        .base_low = (uint16_t)base, .sel = KERNEL_CODE_SELECTOR, .ist = ist, .flags = flags,
+        .base_mid = (uint16_t)(base >> 16), .base_high = (uint32_t)(base >> 32),
+    };
 }
 
 void register_int_handler(int vector, int_handler_t handler, void *data) {
@@ -103,20 +101,19 @@ void register_int_handler(int vector, int_handler_t handler, void *data) {
 }
 
 static void dump_frame(const isr_frame_t *f) {
-    kprintf("\n*** KERNEL PANIC: unhandled exception %u ***", f->int_no);
-    kprintf(" err=%#x eip=%#010x cs=%#x eflags=%#x", f->err_code, f->eip, f->cs, f->eflags);
-    if (f->cs & 3) kprintf(" user esp=%#010x ss=%#x", f->useresp, f->ss);
-    kprintf(" eax=%08x ebx=%08x ecx=%08x edx=%08x", f->eax, f->ebx, f->ecx, f->edx);
-    kprintf(" esi=%08x edi=%08x ebp=%08x", f->esi, f->edi, f->ebp);
+    kprintf("\n*** KERNEL PANIC: unhandled exception %lu ***", (unsigned long)f->int_no);
+    kprintf(" err=%#lx rip=%#018lx cs=%#lx rflags=%#lx rsp=%#018lx", (unsigned long)f->err_code, (unsigned long)f->rip,
+            (unsigned long)f->cs, (unsigned long)f->rflags, (unsigned long)f->rsp);
+    kprintf(" rax=%016lx rbx=%016lx rcx=%016lx rdx=%016lx", (unsigned long)f->rax, (unsigned long)f->rbx,
+            (unsigned long)f->rcx, (unsigned long)f->rdx);
+    kprintf(" rsi=%016lx rdi=%016lx rbp=%016lx cr2=%016lx", (unsigned long)f->rsi, (unsigned long)f->rdi,
+            (unsigned long)f->rbp, (unsigned long)read_cr2());
 }
 
-// Page fault in kernel mode that no exception-table entry covers.
+// Kernel-mode fault that nothing expected.
 void kernel_fault_panic(isr_frame_t *frame) {
-    uint32_t cr2;
-    asm volatile("mov %%cr2, %0" : "=r"(cr2));
     asm volatile("cli");
     dump_frame(frame);
-    kprintf(" cr2=%08x", cr2);
     for (;;)
         asm volatile("hlt");
 }
@@ -127,8 +124,8 @@ static int exception_signal(uint32_t vector) {
     case 0: case 7: case 16: case 19: return SIGFPE;    // divide, no FPU, x87 and SIMD errors
     case 1: case 3:                   return SIGTRAP;   // debug, int3
     case 6:                           return SIGILL;    // ud2 and unknown opcodes
-    case 11: case 12: case 17: case 18: return SIGBUS;  // not present, stack, alignment, machine check
-    default:                          return SIGSEGV;   // #GP, #TS, into, bound, ...
+    case 11: case 12: case 17:        return SIGBUS;    // not present, stack, alignment
+    default:                          return SIGSEGV;   // #GP, #TS, ...
     }
 }
 
@@ -147,14 +144,11 @@ void isr_common_handler(isr_frame_t *frame) {
         pic_send_eoi(frame->int_no);    // no driver for this IRQ: acknowledge and ignore
     } else if (frame->cs & 3) {
         if (frame->int_no != 1)         /* a single-stepping program traps after every instruction */
-            KLOG_WARN("idt", "pid %u: exception %u at %#x", (unsigned)get_current_process()->pid,
-                      (unsigned)frame->int_no, (unsigned)frame->eip);
+            KLOG_WARN("idt", "pid %u: exception %u at %#lx", (unsigned)get_current_process()->pid,
+                      (unsigned)frame->int_no, (unsigned long)frame->rip);
         signal_force(exception_signal(frame->int_no));
     } else {
-        asm volatile("cli");
-        dump_frame(frame);
-        for (;;)
-            asm volatile("hlt");
+        kernel_fault_panic(frame);
     }
     if (frame->cs & 3) {
         if (g_need_reschedule) schedule();          // an interrupt made a better task runnable
@@ -162,24 +156,34 @@ void isr_common_handler(isr_frame_t *frame) {
     }
 }
 
+// NMI, double fault and machine check run on their own stacks and never return to a task.
+void isr_paranoid_handler(isr_frame_t *frame) {
+    if (frame->int_no == 2) {
+        irq_counts[2]++;                    // nothing in this system raises one: count it and carry on
+        return;
+    }
+    kernel_fault_panic(frame);
+}
+
 void idt_init(void) {
+    struct { uint16_t limit; uint64_t base; } __attribute__((packed)) idtp = { sizeof(idt_entries) - 1, (uint64_t)idt_entries };
+
     memset(idt_entries, 0, sizeof(idt_entries));
     memset(interrupt_c_handlers, 0, sizeof(interrupt_c_handlers));
-    idtp.limit = sizeof(idt_entries) - 1;
-    idtp.base  = (uintptr_t)&idt_entries[0];
 
     pic_remap();
 
     for (int v = 0; v < STUB_VECTORS; v++) {
+        uint8_t ist = v == 8 ? IST_DOUBLE_FAULT : v == 2 ? IST_NMI : v == 18 ? IST_MACHINE_CHECK : 0;
         if (isr_stub_table[v])
-            idt_set_gate(v, isr_stub_table[v], v == 3 || v == 4 ? IDT_FLAG_USER_INT_GATE : IDT_FLAG_INTERRUPT_GATE);
+            idt_set_gate(v, isr_stub_table[v], v == 3 ? IDT_FLAG_USER_INT_GATE : IDT_FLAG_INTERRUPT_GATE, ist);
     }
-    idt_set_gate(SYSCALL_VECTOR, syscall_entry, IDT_FLAG_SYSCALL_GATE);
 
     register_int_handler(IRQ7_VECTOR, spurious_irq_handler, NULL);
     register_int_handler(IRQ15_VECTOR, spurious_irq_handler, NULL);
     register_int_handler(IRQ14_VECTOR, ata_primary_irq_handler, NULL);
+    register_int_handler(PF_VECTOR, page_fault_handler, NULL);
 
-    idt_flush((uintptr_t)&idtp);
+    asm volatile("lidt %0" : : "m"(idtp));
     pic_unmask_required_irqs();
 }

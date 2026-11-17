@@ -11,8 +11,8 @@
 #include <kernel/cpu/linux_abi.h>
 #include <kernel/fs/vfs/fs_errno.h>
 
-#define IGNORED_BY_DEFAULT ((1u << SIGCHLD) | (1u << SIGCONT) | (1u << SIGURG) | (1u << SIGWINCH) | \
-                            (1u << SIGSTOP) | (1u << SIGTSTP) | (1u << SIGTTIN) | (1u << SIGTTOU))
+#define IGNORED_BY_DEFAULT (SIGBIT(SIGCHLD) | SIGBIT(SIGCONT) | SIGBIT(SIGURG) | SIGBIT(SIGWINCH) | \
+                            SIGBIT(SIGSTOP) | SIGBIT(SIGTSTP) | SIGBIT(SIGTTIN) | SIGBIT(SIGTTOU))
 
 bool signal_pending(void) {
     pcb_t *p = get_current_process();
@@ -21,12 +21,12 @@ bool signal_pending(void) {
 
 void signal_return_to_user(isr_frame_t *regs, uint32_t restart_nr) {
     pcb_t *p = get_current_process();
-    uint32_t pending = p->pending_signals;
+    uint64_t pending = p->pending_signals;
 
     if (!pending) return;
-    for (int sig = 1; pending && sig < NSIG; sig++) {
-        if ((pending & (1u << sig)) && signal_disposition(p, sig) == SIGDISP_DEFAULT) {
-            p->pending_signals &= ~(1u << sig);
+    for (int sig = 1; pending && sig <= NSIG; sig++) {
+        if ((pending & SIGBIT(sig)) && signal_disposition(p, sig) == SIGDISP_DEFAULT) {
+            p->pending_signals &= ~SIGBIT(sig);
             asm volatile("sti");            /* exiting may block; interrupt and exception gates enter with IRQs off */
             process_exit(sig);              /* wait status of a signalled process is the signal number */
         }
@@ -37,20 +37,20 @@ void signal_return_to_user(isr_frame_t *regs, uint32_t restart_nr) {
 void signal_force(int sig) {
     pcb_t *p = get_current_process();
 
-    if (p->sigact[sig].handler <= SIG_IGN || (p->sig_blocked & (1u << sig))) {
+    if (p->sigact[sig].handler <= SIG_IGN || (p->sig_blocked & SIGBIT(sig))) {
         p->sigact[sig] = (struct sigact){0};
-        p->sig_blocked &= ~(1u << sig);
+        p->sig_blocked &= ~SIGBIT(sig);
     }
-    p->pending_signals |= 1u << sig;
+    p->pending_signals |= SIGBIT(sig);
 }
 
 void signal_send(pcb_t *p, int sig) {
     int disp = signal_disposition(p, sig);
 
     if (p->task.state == TASK_ZOMBIE || disp == SIGDISP_IGNORE ||
-        (disp == SIGDISP_DEFAULT && ((1u << sig) & IGNORED_BY_DEFAULT))) return;
-    p->pending_signals |= 1u << sig;
-    if (!(p->sig_blocked & (1u << sig)))
+        (disp == SIGDISP_DEFAULT && (SIGBIT(sig) & IGNORED_BY_DEFAULT))) return;
+    p->pending_signals |= SIGBIT(sig);
+    if (!(p->sig_blocked & SIGBIT(sig)))
         scheduler_wake(&p->task);           /* a blocked call returns -EINTR */
 }
 
@@ -58,7 +58,7 @@ int process_kill(int pid, int sig) {
     pcb_t *me = get_current_process(), *p;
     int hits = 0;
 
-    if (sig < 0 || sig >= NSIG) return -EINVAL;
+    if (sig < 0 || sig > NSIG) return -EINVAL;
     if (pid == 0 && !me) return -ESRCH;
     if (pid > 0) {
         p = process_find((uint32_t)pid);

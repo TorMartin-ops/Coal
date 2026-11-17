@@ -8,6 +8,8 @@
 #include <kernel/core/types.h>
 #include <kernel/cpu/isr_frame.h>
 #include <kernel/memory/paging.h>
+#include <kernel/memory/mm.h>
+#include <kernel/cpu/vdso_abi.h>
 #include <kernel/process/rlimit.h>
 #include <kernel/process/scheduler.h>
 #include <kernel/sync/spinlock.h>
@@ -15,14 +17,15 @@
 struct mm_struct;
 struct sys_file;
 
+#define NSIG 64
+
 #define MAX_FD              32
 #define KSTACK_PAGES        4
 #define PROCESS_KSTACK_SIZE (KSTACK_PAGES * PAGE_SIZE)
 
-/* User address space layout. The stack VMA grows down from the top. */
-#define USER_SPACE_MIN          0x00400000u   /* PDE 0 is the shared kernel identity map */
-#define USER_STACK_TOP_VIRT_ADDR 0xBFFF0000u
-#define USER_STACK_BOTTOM_VIRT   0xBF000000u
+/* User address space layout (see paging.h and vdso_abi.h). The stack VMA grows down from the top. */
+#define USER_STACK_TOP          VVAR_BASE
+#define USER_STACK_BOTTOM       (USER_STACK_TOP - MM_STACK_MAX)
 #define USER_ARG_MAX            (128 * 1024)
 
 /* waitpid options */
@@ -30,7 +33,7 @@ struct sys_file;
 
 #define CWD_MAX 256
 
-struct sigact { uint32_t handler, flags, restorer, mask; };
+struct sigact { uintptr_t handler; uint64_t flags; uintptr_t restorer; uint64_t mask; };    /* = struct linux_sigaction */
 
 typedef struct pcb {
     tcb_t task;                       /* scheduling state; task.process == this */
@@ -45,23 +48,25 @@ typedef struct pcb {
     bool     exiting;                 /* process_exit() has started */
     uint8_t  *fpu_raw, *fpu;          /* FPU save area (fpu is 16-byte aligned inside fpu_raw), see fpu.c */
     bool     fpu_valid;               /* the save area holds state to load on first FPU use */
-    uint32_t pending_signals;
-    uint32_t sig_blocked;             /* blocked signal mask (bit n = signal n) */
-    uint32_t sig_saved;               /* mask to restore when sig_restore is set (pselect6) */
+    uint64_t pending_signals;
+    uint64_t sig_blocked;             /* blocked signal mask (bit n-1 = signal n) */
+    uint64_t sig_saved;               /* mask to restore when sig_restore is set (pselect6) */
     bool     sig_restore;
-    struct sigact sigact[32];         /* NSIG entries */
+    struct sigact sigact[NSIG + 1];   /* indexed by signal number */
 
     struct rlim rlim[RL_COUNT];       /* resource limits, see rlimit.h */
     uint32_t cpu_ms, cpu_next;        /* CPU time used; the time at which rlimit_charge() has to act */
     uint32_t cpu_ns_rem;              /* nanoseconds below one millisecond of cpu_ms */
     uint32_t rl_hits;                 /* RL_HIT() mask of limits that stopped this process or a child */
 
-    uint32_t tls_base, tls_pages;     /* set_thread_area descriptor, loaded on every switch */
+    uint64_t fs_base, gs_base;        /* user FS and GS bases (arch_prctl), loaded on every switch */
+    uintptr_t sigaltstack_sp;         /* sigaltstack: 0 when none */
+    size_t   sigaltstack_size;
     char     cwd[CWD_MAX];
     uint32_t cloexec;                 /* bit n: descriptor n is closed by execve */
 
     struct mm_struct *mm;
-    uint32_t *page_directory_phys;    /* 0 for the idle task: runs on any directory */
+    void    *page_directory_phys;     /* PML4, physical; NULL for kernel tasks: they run on any directory */
 
     struct sys_file *fd_table[MAX_FD];
     spinlock_t       fd_table_lock;
@@ -70,10 +75,13 @@ typedef struct pcb {
     char     cmdline[128];            /* argv, NUL separated (for /proc) */
     uint32_t cmdline_len;
 
-    uint32_t *kernel_stack_vaddr_top;
+    void    *kernel_stack_vaddr_top;
 } pcb_t;
 
 pcb_t *get_current_process(void);
+
+/** The register frame the current task entered the kernel with (a system call or interrupt from user mode). */
+static inline isr_frame_t *user_regs_of(pcb_t *p) { return (isr_frame_t *)p->kernel_stack_vaddr_top - 1; }
 pcb_t *process_find(uint32_t pid);
 pcb_t *process_all(void);           /* head of the list linked by all_next */
 
@@ -86,7 +94,7 @@ pcb_t *process_spawn_kernel(const char *name, void (*entry)(void));
 /**
  * Linux fork(): duplicates the address space (copy-on-write through
  * paging_clone_directory) and shares the open files. The child resumes from
- * the same frame with eax = 0.
+ * the same frame with rax = 0.
  * @return child pid, or -errno
  */
 int process_fork(const isr_frame_t *regs);

@@ -4,21 +4,21 @@
 
 /* --- Memory Manipulation Functions --- */
 
-/* Whole dwords with rep movsl/stosl, then at most three tail bytes. */
+/* Whole qwords with rep movsq/stosq, then at most seven tail bytes. */
 
 void *memset(void *dest, int c, size_t n) {
     void *d = dest;
-    size_t words = n >> 2, tail = n & 3;
-    uint32_t v = (uint8_t)c * 0x01010101u;
-    asm volatile("rep stosl" : "+D"(d), "+c"(words) : "a"(v) : "memory");
+    size_t words = n >> 3, tail = n & 7;
+    uint64_t v = (uint8_t)c * 0x0101010101010101ull;
+    asm volatile("rep stosq" : "+D"(d), "+c"(words) : "a"(v) : "memory");
     asm volatile("rep stosb" : "+D"(d), "+c"(tail) : "a"(v) : "memory");
     return dest;
 }
 
 void *memcpy(void *dest, const void *src, size_t n) {
     void *d = dest;
-    size_t words = n >> 2, tail = n & 3;
-    asm volatile("rep movsl" : "+D"(d), "+S"(src), "+c"(words) : : "memory");
+    size_t words = n >> 3, tail = n & 7;
+    asm volatile("rep movsq" : "+D"(d), "+S"(src), "+c"(words) : : "memory");
     asm volatile("rep movsb" : "+D"(d), "+S"(src), "+c"(tail) : : "memory");
     return dest;
 }
@@ -29,11 +29,11 @@ void *memmove(void *dest, const void *src, size_t n) {
         return memcpy(dest, src, n);
 
     /* Overlap with dest above src: copy backwards, tail bytes first. */
-    size_t words = n >> 2, tail = n & 3;
+    size_t words = n >> 3, tail = n & 7;
     d += n - 1;
     s += n - 1;
-    asm volatile("std\n\trep movsb\n\tsubl $3, %%edi\n\tsubl $3, %%esi\n\t"
-                 "movl %3, %%ecx\n\trep movsl\n\tcld"
+    asm volatile("std\n\trep movsb\n\tsubq $7, %%rdi\n\tsubq $7, %%rsi\n\t"
+                 "movq %3, %%rcx\n\trep movsq\n\tcld"
                  : "+D"(d), "+S"(s), "+c"(tail)
                  : "r"(words) : "memory", "cc");
     return dest;

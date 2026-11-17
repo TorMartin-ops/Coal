@@ -8,7 +8,7 @@
 
 // --- Constants ---
 #define IDT_ENTRIES 256
-#define SYSCALL_VECTOR 0x80
+#define PF_VECTOR      14
 
 // --- PIC Ports ---
 #define PIC1         0x20      /* IO base address for master PIC */
@@ -44,19 +44,15 @@
 
 // --- IDT Structure Definitions ---
 
-// Defines an entry in the Interrupt Descriptor Table.
+// Defines an entry in the Interrupt Descriptor Table (a 64-bit gate takes 16 bytes).
 struct idt_entry {
-    uint16_t base_low;  // Lower 16 bits of the handler function address.
-    uint16_t sel;       // Kernel segment selector (usually 0x08 for code).
-    uint8_t  null;      // Always zero.
-    uint8_t  flags;     // Type and attributes flags (e.g., 0x8E for 32-bit interrupt gate).
-    uint16_t base_high; // Upper 16 bits of the handler function address.
-} __attribute__((packed));
-
-// Defines the structure for the IDTR register (used with lidt).
-struct idt_ptr {
-    uint16_t limit; // Size of the IDT minus 1.
-    uint32_t base;  // Base address of the IDT entries array.
+    uint16_t base_low;  // Handler address bits 0..15.
+    uint16_t sel;       // Kernel code selector.
+    uint8_t  ist;       // Interrupt stack table index (0: stay on the current stack).
+    uint8_t  flags;     // Present, DPL and gate type (0x8E: ring 0 interrupt gate).
+    uint16_t base_mid;  // Bits 16..31.
+    uint32_t base_high; // Bits 32..63.
+    uint32_t zero;
 } __attribute__((packed));
 
 
@@ -85,6 +81,9 @@ void idt_init(void);
  * @param data Optional pointer to pass to the handler.
  */
 void register_int_handler(int num, int_handler_t handler, void* data);
+
+/** Prints the frame and halts: a kernel-mode exception nothing expected. */
+void kernel_fault_panic(isr_frame_t *frame) __attribute__((noreturn));
 
 
 /** Number of interrupts taken on a vector (0..63) since boot. */

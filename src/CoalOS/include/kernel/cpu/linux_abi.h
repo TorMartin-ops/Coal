@@ -1,6 +1,6 @@
 /*
- * Linux i386 ABI structures and constants used by the system call layer.
- * Layouts match what a static Linux/i386 binary expects.
+ * Linux x86_64 ABI structures and constants used by the system call layer.
+ * Layouts match what a static Linux/x86_64 binary expects.
  */
 #ifndef KERNEL_CPU_LINUX_ABI_H
 #define KERNEL_CPU_LINUX_ABI_H
@@ -54,23 +54,20 @@
 #define CLOCK_REALTIME  0
 #define CLOCK_MONOTONIC 1
 
-struct linux_timespec { int32_t tv_sec; int32_t tv_nsec; };
-struct linux_timeval  { int32_t tv_sec; int32_t tv_usec; };
+struct linux_timespec { int64_t tv_sec; int64_t tv_nsec; };
+struct linux_timeval  { int64_t tv_sec; int64_t tv_usec; };
 
 struct linux_utsname {
     char sysname[65], nodename[65], release[65], version[65], machine[65], domainname[65];
 };
 
-struct linux_iovec { uint32_t iov_base; uint32_t iov_len; };
+struct linux_iovec { uintptr_t iov_base; size_t iov_len; };
 
-struct linux_user_desc {
-    uint32_t entry_number, base_addr, limit;
-    uint32_t flags;                     /* bit 4: limit_in_pages */
-};
-
-struct linux_sigaction {                /* i386 kernel struct sigaction */
-    uint32_t handler, flags, restorer;
-    uint32_t mask[2];
+struct linux_sigaction {                /* the kernel's struct sigaction, as rt_sigaction takes it */
+    uintptr_t handler;
+    unsigned long flags;
+    uintptr_t restorer;
+    uint64_t mask;
 };
 
 #define SA_NOCLDSTOP    0x00000001
@@ -78,7 +75,7 @@ struct linux_sigaction {                /* i386 kernel struct sigaction */
 #define SA_RESTART      0x10000000
 #define SA_RESTORER     0x04000000
 #define SA_NODEFER      0x40000000
-#define SA_RESETHAND    0x80000000u
+#define SA_RESETHAND    0x80000000ul
 #define SIG_DFL         0
 #define SIG_IGN         1
 #define SIG_BLOCK       0

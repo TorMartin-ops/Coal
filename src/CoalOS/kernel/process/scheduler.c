@@ -23,8 +23,8 @@
 #include <kernel/process/rlimit.h>
 #include <kernel/process/fpu.h>
 #include <kernel/process/exec.h>
-#include <kernel/cpu/tss.h>
-#include <kernel/cpu/gdt.h>
+#include <kernel/cpu/percpu.h>
+#include <kernel/cpu/msr.h>
 #include <kernel/drivers/timer/pit.h>
 #include <kernel/lib/div64.h>
 #include <kernel/lib/string.h>
@@ -48,10 +48,9 @@ static const uint32_t prio_to_weight[40] = {
 };
 
 struct switch_frame {            /* mirrors simple_switch in switch.asm */
-    uint32_t gs, fs, es, ds;
-    uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax;
-    uint32_t eflags;
-    uint32_t ret;
+    uint64_t r15, r14, r13, r12, rbp, rbx;
+    uint64_t rflags;
+    uint64_t ret;
 };
 
 volatile bool g_need_reschedule;
@@ -64,19 +63,19 @@ static struct {
     uint64_t origin;             /* reference point for the offsets; moved when they grow */
 } rq = { .origin = 1ull << 62 };   /* far from 0, so v - lag never wraps */
 
-static tcb_t *volatile g_current;
+#define g_current cpu_current()           /* the task on this CPU (percpu.h) */
 static bool g_started;
 
 static pcb_t idle_pcb;
 #define IDLE (&idle_pcb.task)
 
-uint32_t *scheduler_make_context(void *frame_top, void (*entry)(void), uint32_t eflags) {
-    struct switch_frame *f = (struct switch_frame *)frame_top - 1;
+/* The slot above the frame keeps the stack 16-byte aligned for `entry` (ret_from_fork skips it). */
+uint64_t *scheduler_make_context(void *frame_top, void (*entry)(void), uint64_t rflags) {
+    struct switch_frame *f = (struct switch_frame *)((char *)frame_top - 8) - 1;
     memset(f, 0, sizeof(*f));
-    f->gs = f->fs = f->es = f->ds = 0x10;    /* kernel data selector */
-    f->eflags = eflags;
-    f->ret = (uint32_t)entry;
-    return (uint32_t *)f;
+    f->rflags = rflags;
+    f->ret = (uint64_t)entry;
+    return (uint64_t *)f;
 }
 
 /* ---- virtual time ------------------------------------------------------------------- */
@@ -88,11 +87,8 @@ static int64_t offset(const tcb_t *t) {
 /* V, the weighted average of v. The quotient is the mean offset, which rebase() keeps far below 2^31,
  * so one IDIV does it; the remainder fixes the rounding toward zero into a floor. */
 static uint64_t avg_vruntime(void) {
-    int32_t q, r;
-
     if (!rq.load) return rq.origin;
-    asm("idivl %4" : "=a"(q), "=d"(r) : "0"((uint32_t)rq.lag_sum), "1"((int32_t)(rq.lag_sum >> 32)), "r"(rq.load));
-    return rq.origin + (uint64_t)(int64_t)(r < 0 ? q - 1 : q);
+    return rq.origin + (uint64_t)div64_s32_floor(rq.lag_sum, rq.load);
 }
 
 static bool eligible(const tcb_t *t) {
@@ -248,20 +244,18 @@ static void unplace(tcb_t *t) {
 /* ---- switching ---------------------------------------------------------------------- */
 
 static void switch_to(tcb_t *prev, tcb_t *next) {
-    static uint32_t *boot_context;           /* sink for the boot stack */
+    static uint64_t *boot_context;           /* sink for the boot stack */
     pcb_t *np = next->process;
-    uint32_t cr3;
 
-    g_current = next;
-    if (!prev || np->tls_base != prev->process->tls_base || np->tls_pages != prev->process->tls_pages)
-        gdt_set_tls_base(np->tls_base, np->tls_pages);
-    tss_set_kernel_stack((uint32_t)np->kernel_stack_vaddr_top);
-    fpu_task_switch(np);
-    if (np->page_directory_phys) {
-        asm volatile("mov %%cr3, %0" : "=r"(cr3));
-        if (cr3 != (uint32_t)np->page_directory_phys)
-            asm volatile("mov %0, %%cr3" : : "r"(np->page_directory_phys) : "memory");
+    cpu_set_current(next);
+    if (np->pid) {                           /* the user FS and GS bases belong to the process */
+        if (prev) cpu_get_user_bases(&prev->process->fs_base, &prev->process->gs_base);
+        cpu_set_user_bases(np->fs_base, np->gs_base);
     }
+    cpu_set_kernel_stack((uint64_t)np->kernel_stack_vaddr_top);
+    fpu_task_switch(np);
+    if (np->page_directory_phys && read_cr3() != (uint64_t)np->page_directory_phys)
+        write_cr3((uint64_t)np->page_directory_phys);
     simple_switch(prev ? &prev->context : &boot_context, next->context);
 }
 
@@ -338,7 +332,7 @@ void scheduler_init(void) {
 
     if (!stack) KERNEL_PANIC_HALT("no memory for the idle stack");
     idle_pcb.task.process = &idle_pcb;
-    idle_pcb.kernel_stack_vaddr_top = (uint32_t *)(stack + IDLE_STACK_SIZE - 16);
+    idle_pcb.kernel_stack_vaddr_top = stack + IDLE_STACK_SIZE - 16;
     idle_pcb.task.context = scheduler_make_context(idle_pcb.kernel_stack_vaddr_top, idle_loop, 0x202);
     idle_pcb.task.state = TASK_READY;
 }

@@ -4,7 +4,7 @@
 #include <libc/stddef.h>
 #include <libc/stdarg.h>
 
-typedef int ssize_t;    /* same as the kernel's */
+#include <libc/sys/types.h>
 
 #define EOF (-1)
 #define BUFSIZ 1024

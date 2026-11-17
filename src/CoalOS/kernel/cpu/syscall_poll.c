@@ -1,6 +1,6 @@
 /**
  * @file syscall_poll.c
- * @brief poll, select, _newselect and pselect6 on one wait loop.
+ * @brief poll, select and pselect6 on one wait loop.
  *
  * Readiness comes from the drivers' poll() hooks; the caller sleeps on
  * drv_poll_queue, which every wake-up of any wait queue also wakes. None of
@@ -68,15 +68,15 @@ static long poll_scan(void *arg) {
     return ready;
 }
 
-long sc_poll(uint32_t ufds, uint32_t nfds, int32_t timeout_ms) {
+long sc_poll(uintptr_t ufds, unsigned long nfds, int32_t timeout_ms) {
     struct linux_pollfd fds[POLL_MAX];
-    struct poll_ctx c = { fds, nfds };
+    struct poll_ctx c = { fds, (uint32_t)nfds };
 
     if (nfds > POLL_MAX) return -EINVAL;
     if (copy_from_user(fds, (const void *)ufds, nfds * sizeof(fds[0])) != 0) return -EFAULT;
     long ready = poll_wait(poll_scan, &c, timeout_ms);
     if (ready < 0) return ready;
-    for (uint32_t i = 0; i < nfds; i++)
+    for (uint32_t i = 0; i < c.nfds; i++)
         if (copy_to_user(&((struct linux_pollfd *)ufds)[i].revents, &fds[i].revents, sizeof(int16_t)) != 0)
             return -EFAULT;
     return ready;
@@ -120,7 +120,7 @@ static long select_scan(void *arg) {
 }
 
 /* Waits up to timeout_ms (< 0: for ever); *left_ms receives what remains of a finite timeout. */
-static long do_select(int32_t n, const uint32_t uset[3], int32_t timeout_ms, int32_t *left_ms) {
+static long do_select(int32_t n, const uintptr_t uset[3], int32_t timeout_ms, int32_t *left_ms) {
     struct select_ctx c;
     size_t bytes;
 
@@ -144,14 +144,14 @@ static long do_select(int32_t n, const uint32_t uset[3], int32_t timeout_ms, int
 }
 
 /* Milliseconds for a seconds + sub-second pair, rounded up; saturates at "no limit". */
-static int32_t to_ms(int32_t sec, int32_t sub, int32_t sub_per_ms) {
-    if (sec < 0 || sub < 0) return -2;
+static int32_t to_ms(int64_t sec, int64_t sub, int32_t sub_per_ms) {
+    if (sec < 0 || sub < 0 || sub >= 1000 * (int64_t)sub_per_ms) return -2;
     if (sec >= 0x7FFFFFFF / 1000 - 1) return -1;
-    return sec * 1000 + (sub + sub_per_ms - 1) / sub_per_ms;
+    return (int32_t)(sec * 1000 + (sub + sub_per_ms - 1) / sub_per_ms);
 }
 
-long sc_newselect(uint32_t n, uint32_t r, uint32_t w, uint32_t e, uint32_t utv) {
-    uint32_t sets[3] = { r, w, e };
+long sc_select(int n, uintptr_t r, uintptr_t w, uintptr_t e, uintptr_t utv) {
+    uintptr_t sets[3] = { r, w, e };
     struct linux_timeval tv;
     int32_t timeout = -1, left = 0;
 
@@ -159,7 +159,7 @@ long sc_newselect(uint32_t n, uint32_t r, uint32_t w, uint32_t e, uint32_t utv) 
         if (copy_from_user(&tv, (const void *)utv, sizeof(tv)) != 0) return -EFAULT;
         if ((timeout = to_ms(tv.tv_sec, tv.tv_usec, 1000)) == -2) return -EINVAL;
     }
-    long ready = do_select((int32_t)n, sets, timeout, &left);
+    long ready = do_select(n, sets, timeout, &left);
     if (ready >= 0 && timeout > 0) {                        /* Linux reports the time left */
         tv = (struct linux_timeval){ left / 1000, left % 1000 * 1000 };
         if (copy_to_user((void *)utv, &tv, sizeof(tv)) != 0) return -EFAULT;
@@ -167,32 +167,24 @@ long sc_newselect(uint32_t n, uint32_t r, uint32_t w, uint32_t e, uint32_t utv) 
     return ready;
 }
 
-/* The original select(2): one pointer to the five arguments. */
-long sc_oldselect(uint32_t uargs) {
-    uint32_t a[5];
-
-    if (copy_from_user(a, (const void *)uargs, sizeof(a)) != 0) return -EFAULT;
-    return sc_newselect(a[0], a[1], a[2], a[3], a[4]);
-}
-
-long sc_pselect6(uint32_t n, uint32_t r, uint32_t w, uint32_t e, uint32_t uts, uint32_t usig) {
-    uint32_t sets[3] = { r, w, e };
+long sc_pselect6(int n, uintptr_t r, uintptr_t w, uintptr_t e, uintptr_t uts, uintptr_t usig) {
+    uintptr_t sets[3] = { r, w, e };
     struct linux_timespec ts;
     int32_t timeout = -1, left = 0;
 
     if (uts) {
         if (copy_from_user(&ts, (const void *)uts, sizeof(ts)) != 0) return -EFAULT;
-        if ((timeout = to_ms(ts.tv_sec, ts.tv_nsec, 1000000)) == -2 || ts.tv_nsec >= 1000000000) return -EINVAL;
+        if ((timeout = to_ms(ts.tv_sec, ts.tv_nsec, 1000000)) == -2 || false) return -EINVAL;
     }
     if (usig) {                                             /* { const sigset_t *mask; size_t size; } */
-        uint32_t sig[2];
+        uintptr_t sig[2];
         if (copy_from_user(sig, (const void *)usig, sizeof(sig)) != 0) return -EFAULT;
         if (sig[0]) {
             long rc = signal_mask_swap(sig[0], sig[1]);
             if (rc) return rc;
         }
     }
-    long ready = do_select((int32_t)n, sets, timeout, &left);
+    long ready = do_select(n, sets, timeout, &left);
     if (ready >= 0 && timeout > 0) {
         ts = (struct linux_timespec){ left / 1000, left % 1000 * 1000000 };
         if (copy_to_user((void *)uts, &ts, sizeof(ts)) != 0) return -EFAULT;

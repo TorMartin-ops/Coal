@@ -1,43 +1,33 @@
-; Kernel context switch and the first-run trampoline.
+; Kernel context switch.
 ;
-; simple_switch saves flags, all registers and the data segments on the old
-; kernel stack, stores that stack pointer, loads the new one and unwinds the
-; same frame. The frame layout (low to high) is struct switch_frame in
-; process.c: gs fs es ds | edi esi ebp esp ebx edx ecx eax | eflags | return.
+; simple_switch saves the callee-saved registers and the flags on the old kernel stack, stores that stack
+; pointer, loads the new one and unwinds the same frame. The frame layout (low to high) is struct
+; switch_frame in scheduler.c: r15 r14 r13 r12 rbp rbx | rflags | return address.
+
+bits 64
+default rel
 
 section .text
 global simple_switch
-global ret_from_fork
 
-; void simple_switch(uint32_t **save_esp, uint32_t *new_esp)
+; void simple_switch(uint64_t **save_rsp, uint64_t *new_rsp)
 simple_switch:
-    mov eax, [esp + 4]
-    mov edx, [esp + 8]
-    pushfd
-    pushad
-    push ds
-    push es
-    push fs
-    push gs
-    mov [eax], esp
-    mov esp, edx
-    pop gs
-    pop fs
-    pop es
-    pop ds
-    popad
-    popfd
+    pushfq
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     [rdi], rsp
+    mov     rsp, rsi
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    popfq
     ret
-
-; New tasks "return" here with an isr_frame_t on the stack (same layout the
-; syscall entry builds), so the first run is an ordinary return to user mode.
-ret_from_fork:
-    popad
-    pop gs
-    pop fs
-    pop es
-    pop ds
-    add esp, 8              ; int_no, err_code
-    iret
 
 section .note.GNU-stack noalloc noexec nowrite progbits

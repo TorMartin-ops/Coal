@@ -18,7 +18,7 @@
 #define SEEK_CUR 1
 #define SEEK_END 2
 
-/* open(2) flags, Linux i386 values */
+/* open(2) flags, Linux x86_64 values */
 #define O_ACCMODE   0x0003
 #define O_RDONLY    0x0000
 #define O_WRONLY    0x0001
@@ -55,33 +55,32 @@
 #define DT_DIR     4
 #define DT_REG     8
 
-/** Layout of Linux i386 struct stat64 (what fstat64/stat64 copy to user). */
-struct kstat64 {
+/** Layout of Linux x86_64 struct stat (144 bytes; what stat/fstat copy to user). */
+struct kstat {
     uint64_t st_dev;
-    uint32_t __pad0;
-    uint32_t __st_ino;
+    uint64_t st_ino;
+    uint64_t st_nlink;
     uint32_t st_mode;
-    uint32_t st_nlink;
     uint32_t st_uid;
     uint32_t st_gid;
+    uint32_t __pad0;
     uint64_t st_rdev;
-    uint32_t __pad3;
     int64_t  st_size;
-    uint32_t st_blksize;
-    uint64_t st_blocks;
-    uint32_t st_atime, st_atime_nsec;
-    uint32_t st_mtime, st_mtime_nsec;
-    uint32_t st_ctime, st_ctime_nsec;
-    uint64_t st_ino;
-} __attribute__((packed));
+    int64_t  st_blksize;
+    int64_t  st_blocks;
+    int64_t  st_atime, st_atime_nsec;
+    int64_t  st_mtime, st_mtime_nsec;
+    int64_t  st_ctime, st_ctime_nsec;
+    int64_t  __unused[3];
+};
 
-/** Layout of Linux struct statfs64 on i386 (84 bytes). */
-struct kstatfs64 {
-    uint32_t f_type, f_bsize;
+/** Layout of Linux x86_64 struct statfs (120 bytes). */
+struct kstatfs {
+    int64_t  f_type, f_bsize;
     uint64_t f_blocks, f_bfree, f_bavail, f_files, f_ffree;
     int32_t  f_fsid[2];
-    uint32_t f_namelen, f_frsize, f_flags, f_spare[4];
-} __attribute__((packed));
+    int64_t  f_namelen, f_frsize, f_flags, f_spare[4];
+};
 
 /** Layout of Linux struct linux_dirent64 (getdents64 records). */
 struct linux_dirent64 {
@@ -127,7 +126,7 @@ struct vfs_driver {
     const char *fs_name;
     uint32_t magic;                                 /* statfs f_type */
     /** Space figures of the file system; without it statfs reports 0 blocks. */
-    int   (*statfs)(void *fs, struct kstatfs64 *st);
+    int   (*statfs)(void *fs, struct kstatfs *st);
     void *(*mount)(const char *device);
     int   (*unmount)(void *fs);                     /* -EBUSY if still in use */
     /** Open or create. Must honour O_CREAT/O_EXCL; fills v->data and v->type. */
@@ -137,7 +136,7 @@ struct vfs_driver {
     ssize_t (*write)(vnode_t *v, off_t pos, const void *buf, size_t len);
     /** Returns 1 and advances *pos for each entry, 0 at the end. */
     int   (*readdir)(vnode_t *dir, off_t *pos, struct vfs_dirent *out);
-    int   (*getattr)(vnode_t *v, struct kstat64 *st);
+    int   (*getattr)(vnode_t *v, struct kstat *st);
     int   (*truncate)(vnode_t *v, off_t len);
     int   (*fsync)(vnode_t *v);
     int   (*sync)(void *fs);                        /* flush the whole file system */
@@ -172,16 +171,16 @@ ssize_t vfs_read(file_t *f, void *buf, size_t len);
 ssize_t vfs_write(file_t *f, const void *buf, size_t len);
 off_t   vfs_lseek(file_t *f, off_t off, int whence);
 int     vfs_getdents64(file_t *f, void *buf, size_t len);
-int     vfs_fstat(file_t *f, struct kstat64 *st);
-int     vfs_fstatfs(file_t *f, struct kstatfs64 *st);
+int     vfs_fstat(file_t *f, struct kstat *st);
+int     vfs_fstatfs(file_t *f, struct kstatfs *st);
 int     vfs_ftruncate(file_t *f, off_t len);
 int     vfs_fsync(file_t *f);
 int     vfs_ioctl(file_t *f, uint32_t cmd, void *arg);
 uint32_t vfs_poll(file_t *f);
 
 /* Namespace operations */
-int  vfs_stat(const char *path, struct kstat64 *st);
-int  vfs_statfs(const char *path, struct kstatfs64 *st);
+int  vfs_stat(const char *path, struct kstat *st);
+int  vfs_statfs(const char *path, struct kstatfs *st);
 int  vfs_unlink(const char *path);
 int  vfs_mkdir(const char *path, mode_t mode);
 int  vfs_rmdir(const char *path);

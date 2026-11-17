@@ -223,7 +223,7 @@ static int fat_utime(vnode_t *v, uint32_t atime, uint32_t mtime) {
 
 static int fat_fsync(vnode_t *v) { return fat_sync(((fat_node_t *)v->data)->fs); }
 
-static int fat_getattr(vnode_t *v, struct kstat64 *st) {
+static int fat_getattr(vnode_t *v, struct kstat *st) {
     fat_node_t *n = v->data;
     fat_fs_t *fs = n->fs;
     bool dir = is_dir(n);
@@ -433,7 +433,7 @@ static int fat_rename(void *ctx, const char *from, const char *to) {
     return rc;
 }
 
-static int fat_statfs(void *ctx, struct kstatfs64 *st) {
+static int fat_statfs(void *ctx, struct kstatfs *st) {
     fat_fs_t *fs = ctx;
 
     fat_lock(fs);

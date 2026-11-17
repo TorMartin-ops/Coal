@@ -1,5 +1,5 @@
 ; The vDSO ELF image built by CMake (userspace/vdso/vdso.c); vdso.c copies it into a user-visible page.
-bits 32
+bits 64
 
 section .rodata
 global vdso_image, vdso_image_end

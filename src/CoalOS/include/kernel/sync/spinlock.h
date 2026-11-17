@@ -13,20 +13,20 @@ typedef struct {
 
 void spinlock_init(spinlock_t *lock);
 
-/** Disables interrupts, takes the lock, returns the previous EFLAGS. */
+/** Disables interrupts, takes the lock, returns the previous RFLAGS. */
 uintptr_t spinlock_acquire_irqsave(spinlock_t *lock);
 
-/** Drops the lock and restores the EFLAGS returned by acquire. */
+/** Drops the lock and restores the RFLAGS returned by acquire. */
 void spinlock_release_irqrestore(spinlock_t *lock, uintptr_t flags);
 
 static inline uintptr_t local_irq_save(void) {
     uintptr_t flags;
-    asm volatile("pushfl\n\tpopl %0\n\tcli" : "=r"(flags) : : "memory");
+    asm volatile("pushfq\n\tpopq %0\n\tcli" : "=r"(flags) : : "memory");
     return flags;
 }
 
 static inline void local_irq_restore(uintptr_t flags) {
-    asm volatile("pushl %0\n\tpopfl" : : "r"(flags) : "memory", "cc");
+    asm volatile("pushq %0\n\tpopfq" : : "r"(flags) : "memory", "cc");
 }
 
 #endif

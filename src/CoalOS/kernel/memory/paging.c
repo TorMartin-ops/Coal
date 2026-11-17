@@ -1,52 +1,72 @@
 /**
  * @file paging.c
- * @brief Page-table walker, mapping operations and per-process directories.
+ * @brief Page-table walker, mapping operations and per-process address spaces.
  *
- * All directories and tables are frames from the allocator and are reached
- * through the kernel direct map, so there is exactly one walker: paging_pte().
+ * All tables are frames from the allocator and are reached through the kernel direct map, so there is
+ * exactly one walker: paging_pte(). Only 4 KiB leaf mappings are created after boot; the 2 MiB pages of
+ * the direct map are never split.
  */
 
 #include <kernel/memory/paging.h>
 #include <kernel/memory/frame.h>
+#include <kernel/cpu/msr.h>
 #include <kernel/lib/string.h>
 
-bool g_nx_supported = false;
-uint32_t *g_kernel_page_directory_virt;
-uint32_t g_kernel_page_directory_phys;
+void *g_kernel_page_directory_virt;
+uintptr_t g_kernel_page_directory_phys;
 
-static inline uint32_t *table_at(uint32_t entry) {
+static const uintptr_t LEVEL_SHIFT[4] = { 12, 21, 30, 39 };     /* PT, PD, PDPT, PML4 */
+
+static inline pte_t *table_at(pte_t entry) {
     return phys_to_virt(entry & PAGING_ADDR_MASK);
 }
 
-void paging_flush_tlb(void) {
-    uintptr_t cr3;
-    asm volatile("mov %%cr3, %0; mov %0, %%cr3" : "=r"(cr3) :: "memory");
+static inline unsigned index_at(uintptr_t vaddr, unsigned level) {
+    return (vaddr >> LEVEL_SHIFT[level]) & 0x1FF;
 }
 
-uint32_t *paging_pte(uint32_t *pd, uintptr_t vaddr, bool create) {
-    uint32_t *pde = (uint32_t *)phys_to_virt((uintptr_t)pd) + PDE_INDEX(vaddr);
+static inline pte_t *root_of(void *pd) {
+    return phys_to_virt((uintptr_t)pd);
+}
 
-    if (!(*pde & PAGE_PRESENT)) {
+void paging_flush_tlb(void) {
+    write_cr3(read_cr3());
+}
+
+/* The table that `entry` points to, allocating a zeroed one if absent and `create` is set. */
+static pte_t *next_table(pte_t *entry, uintptr_t vaddr, bool create) {
+    if (!(*entry & PAGE_PRESENT)) {
         if (!create)
             return NULL;
-        uintptr_t pt = frame_alloc_zeroed();
-        if (!pt)
+        uintptr_t table = frame_alloc_zeroed();
+        if (!table)
             return NULL;
-        /* The PDE is published only once the table is zeroed. */
-        *pde = pt | PAGE_PRESENT | PAGE_RW | (vaddr < KERNEL_SPACE_VIRT_START ? PAGE_USER : 0);
+        /* Published only once the table is zeroed. */
+        *entry = table | PAGE_PRESENT | PAGE_RW | (vaddr < USER_SPACE_MAX ? PAGE_USER : 0);
     }
-    return table_at(*pde) + PTE_INDEX(vaddr);
+    return (*entry & PAGE_HUGE) ? NULL : table_at(*entry);
 }
 
-int paging_map_single_4k(uint32_t *pd, uintptr_t vaddr, uintptr_t paddr, uint32_t flags) {
-    if (((vaddr | paddr) & PAGING_OFFSET_MASK) || vaddr < IDENTITY_MAP_SIZE)
+pte_t *paging_pte(void *pd, uintptr_t vaddr, bool create) {
+    pte_t *table = root_of(pd);
+
+    for (unsigned level = 3; level > 0; level--) {
+        table = next_table(&table[index_at(vaddr, level)], vaddr, create);
+        if (!table)
+            return NULL;
+    }
+    return &table[index_at(vaddr, 0)];
+}
+
+int paging_map_single_4k(void *pd, uintptr_t vaddr, uintptr_t paddr, uint64_t flags) {
+    if (((vaddr | paddr) & PAGING_OFFSET_MASK) || (vaddr < USER_SPACE_MIN))
         return -1;
 
-    uint32_t *pte = paging_pte(pd, vaddr, true);
+    pte_t *pte = paging_pte(pd, vaddr, true);
     if (!pte)
         return -1;
 
-    uint32_t old = *pte;
+    pte_t old = *pte;
     *pte = paddr | (flags & PAGING_FLAG_MASK) | PAGE_PRESENT;
     if (old & PAGE_PRESENT) {
         paging_invalidate_page((void *)vaddr);
@@ -55,44 +75,54 @@ int paging_map_single_4k(uint32_t *pd, uintptr_t vaddr, uintptr_t paddr, uint32_
     return 0;
 }
 
-static bool table_is_empty(const uint32_t *pt) {
-    for (unsigned i = 0; i < 1024; i++)
+static bool table_is_empty(const pte_t *pt) {
+    for (unsigned i = 0; i < PTES_PER_TABLE; i++)
         if (pt[i] & PAGE_PRESENT)
             return false;
     return true;
 }
 
-int paging_unmap_range(uint32_t *pd, uintptr_t vaddr, size_t size) {
+/* The page-directory entry that maps vaddr's 2 MiB span, or NULL if a table above it is absent. */
+static pte_t *pde_for(void *pd, uintptr_t vaddr) {
+    pte_t *table = root_of(pd);
+
+    for (unsigned level = 3; level > 1; level--) {
+        pte_t e = table[index_at(vaddr, level)];
+        if (!(e & PAGE_PRESENT) || (e & PAGE_HUGE))
+            return NULL;
+        table = table_at(e);
+    }
+    return &table[index_at(vaddr, 1)];
+}
+
+int paging_unmap_range(void *pd, uintptr_t vaddr, size_t size) {
     if (vaddr & PAGING_OFFSET_MASK)
         return -1;
     uintptr_t end = vaddr + PAGE_ALIGN_UP(size);
-    if (end < vaddr && end != 0)
+    if (end < vaddr)
         return -1;                      /* wrapped past the top of the address space */
 
-    uint32_t *pd_virt = phys_to_virt((uintptr_t)pd);
-    for (uintptr_t a = vaddr; a != end;) {
-        uint32_t *pde = &pd_virt[PDE_INDEX(a)];
-        uintptr_t chunk_end = (a | 0x3FFFFFu) + 1;       /* end of this 4 MiB span */
-        if (chunk_end == 0 || (end != 0 && chunk_end > end))
+    for (uintptr_t a = vaddr; a < end;) {
+        uintptr_t chunk_end = (a | 0x1FFFFFul) + 1;      /* end of this 2 MiB span */
+        if (chunk_end > end || chunk_end < a)
             chunk_end = end;
 
-        if (*pde & PAGE_PRESENT) {
-            uint32_t *pt = table_at(*pde);
+        pte_t *pde = pde_for(pd, a);
+        if (pde && (*pde & PAGE_PRESENT) && !(*pde & PAGE_HUGE)) {
+            pte_t *pt = table_at(*pde);
             for (; a != chunk_end; a += PAGE_SIZE) {
-                uint32_t *pte = &pt[PTE_INDEX(a)];
+                pte_t *pte = &pt[PT_INDEX(a)];
                 if (*pte & PAGE_PRESENT) {
-                    uint32_t old = *pte;
+                    pte_t old = *pte;
                     *pte = 0;
                     paging_invalidate_page((void *)a);
                     put_frame(old);
                 }
             }
-            /* Release a user table that no longer maps anything. The shared
-             * kernel and identity tables are never freed. */
-            uintptr_t span = (a - 1) & ~0x3FFFFFu;
-            if (span >= IDENTITY_MAP_SIZE && span < KERNEL_SPACE_VIRT_START && table_is_empty(pt)) {
+            /* Release a user table that no longer maps anything; kernel tables are shared and stay. */
+            if (chunk_end <= USER_SPACE_MAX && table_is_empty(pt)) {
+                put_frame(*pde);
                 *pde = 0;
-                put_frame((uintptr_t)pt - KERNEL_SPACE_VIRT_START);
             }
         }
         a = chunk_end;
@@ -100,9 +130,8 @@ int paging_unmap_range(uint32_t *pd, uintptr_t vaddr, size_t size) {
     return 0;
 }
 
-int paging_get_physical_address_and_flags(uint32_t *pd, uintptr_t vaddr,
-                                          uintptr_t *paddr_out, uint32_t *flags_out) {
-    uint32_t *pte = paging_pte(pd, vaddr, false);
+int paging_get_physical_address_and_flags(void *pd, uintptr_t vaddr, uintptr_t *paddr_out, uint64_t *flags_out) {
+    pte_t *pte = paging_pte(pd, vaddr, false);
     if (!pte || !(*pte & PAGE_PRESENT))
         return -1;
     *paddr_out = (*pte & PAGING_ADDR_MASK) | (vaddr & PAGING_OFFSET_MASK);
@@ -110,70 +139,110 @@ int paging_get_physical_address_and_flags(uint32_t *pd, uintptr_t vaddr,
     return 0;
 }
 
-/* --- Per-process directories ---------------------------------------------- */
+/* --- Device registers ------------------------------------------------------- */
 
-void copy_kernel_pde_entries(uint32_t *new_pd_virt) {
-    new_pd_virt[0] = g_kernel_page_directory_virt[0];
-    for (uint32_t i = KERNEL_PDE_INDEX; i < RECURSIVE_PDE_INDEX; i++)
-        new_pd_virt[i] = g_kernel_page_directory_virt[i];
+void *ioremap(uintptr_t phys, size_t size) {
+    static uintptr_t next = KERNEL_MMIO_VADDR_START;
+    uintptr_t first = PAGE_ALIGN_DOWN(phys), last = PAGE_ALIGN_UP(phys + size);
+    uintptr_t va = next;
+
+    if (va + (last - first) > KERNEL_MMIO_VADDR_END)
+        return NULL;
+    for (uintptr_t off = 0; off < last - first; off += PAGE_SIZE)
+        if (paging_map_single_4k((void *)g_kernel_page_directory_phys, va + off, first + off,
+                                 PAGE_PRESENT | PAGE_RW | PAGE_PCD | PAGE_PWT | PAGE_NX | PAGE_GLOBAL) != 0)
+            return NULL;
+    next += last - first;
+    return (void *)(va + (phys - first));
 }
+
+/* --- Per-process address spaces -------------------------------------------- */
 
 uintptr_t paging_new_directory(void) {
     uintptr_t pd = frame_alloc_zeroed();
     if (!pd)
         return 0;
-    uint32_t *pd_virt = phys_to_virt(pd);
-    copy_kernel_pde_entries(pd_virt);
-    pd_virt[RECURSIVE_PDE_INDEX] = pd | PAGE_PRESENT | PAGE_RW;
+    pte_t *root = phys_to_virt(pd), *kernel = g_kernel_page_directory_virt;
+    for (unsigned i = KERNEL_PML4_FIRST; i < PTES_PER_TABLE; i++)
+        root[i] = kernel[i];
     return pd;
 }
 
-void paging_free_user_space(uint32_t *pd) {
-    uint32_t *pd_virt = phys_to_virt((uintptr_t)pd);
-    for (uint32_t i = 1; i < KERNEL_PDE_INDEX; i++) {   /* PDE 0 is the shared identity map */
-        if (!(pd_virt[i] & PAGE_PRESENT))
+/* Drops every frame below `table` (a table at `level`, 0 = page table) and the tables themselves. */
+static void free_table(pte_t *table, unsigned level) {
+    for (unsigned i = 0; i < PTES_PER_TABLE; i++) {
+        pte_t e = table[i];
+        if (!(e & PAGE_PRESENT))
             continue;
-        uint32_t *pt = table_at(pd_virt[i]);
-        for (unsigned j = 0; j < 1024; j++)
-            if (pt[j] & PAGE_PRESENT)
-                put_frame(pt[j]);
-        put_frame(pd_virt[i]);
-        pd_virt[i] = 0;
+        if (level)
+            free_table(table_at(e), level - 1);
+        put_frame(e);                           /* the leaf frame, or the table below */
+        table[i] = 0;
     }
 }
 
-uintptr_t paging_clone_directory(uint32_t *src_pd) {
-    uint32_t *src = phys_to_virt((uintptr_t)src_pd);
+void paging_free_user_space(void *pd) {
+    pte_t *root = root_of(pd);
+
+    for (unsigned i = 0; i < KERNEL_PML4_FIRST; i++) {
+        if (!(root[i] & PAGE_PRESENT))
+            continue;
+        free_table(table_at(root[i]), 2);
+        put_frame(root[i]);
+        root[i] = 0;
+    }
+}
+
+/* Copies the table `src` at `level` into `dst`; leaf frames are shared and made copy-on-write. */
+static bool clone_table(pte_t *dst, pte_t *src, unsigned level) {
+    for (unsigned i = 0; i < PTES_PER_TABLE; i++) {
+        pte_t e = src[i];
+        if (!(e & PAGE_PRESENT)) {
+            dst[i] = 0;
+            continue;
+        }
+        if (level == 0) {
+            if (e & PAGE_RW) {                  /* both sides copy on first write */
+                e = (e & ~PAGE_RW) | PAGE_COW;
+                src[i] = e;
+            }
+            get_frame(e);
+            dst[i] = e;
+            continue;
+        }
+        uintptr_t child = frame_alloc_zeroed();
+        if (!child)
+            return false;
+        dst[i] = child | (e & PAGING_FLAG_MASK);   /* owned now: freed with the rest if cloning fails below */
+        if (!clone_table(phys_to_virt(child), table_at(e), level - 1))
+            return false;
+    }
+    return true;
+}
+
+uintptr_t paging_clone_directory(void *src_pd) {
     uintptr_t child = paging_new_directory();
     if (!child)
         return 0;
-    uint32_t *dst = phys_to_virt(child);
+    pte_t *src = root_of(src_pd), *dst = phys_to_virt(child);
 
-    for (uint32_t i = 1; i < KERNEL_PDE_INDEX; i++) {
+    for (unsigned i = 0; i < KERNEL_PML4_FIRST; i++) {
         if (!(src[i] & PAGE_PRESENT))
             continue;
-        uintptr_t dpt_phys = frame_alloc();     /* every entry is written below */
-        if (!dpt_phys) {
-            paging_free_user_space((uint32_t *)child);
+        uintptr_t pdpt = frame_alloc_zeroed();
+        if (!pdpt) {
+            paging_free_user_space((void *)child);
             put_frame(child);
             paging_flush_tlb();
             return 0;
         }
-
-        uint32_t *spt = table_at(src[i]);
-        uint32_t *dpt = phys_to_virt(dpt_phys);
-        for (unsigned j = 0; j < 1024; j++) {
-            uint32_t pte = spt[j];
-            if (pte & PAGE_PRESENT) {
-                if (pte & PAGE_RW) {            /* both sides copy on first write */
-                    pte = (pte & ~PAGE_RW) | PAGE_COW;
-                    spt[j] = pte;
-                }
-                get_frame(pte);
-            }
-            dpt[j] = pte;
+        dst[i] = pdpt | (src[i] & PAGING_FLAG_MASK);
+        if (!clone_table(phys_to_virt(pdpt), table_at(src[i]), 2)) {
+            paging_free_user_space((void *)child);
+            put_frame(child);
+            paging_flush_tlb();
+            return 0;
         }
-        dst[i] = dpt_phys | (src[i] & PAGING_FLAG_MASK);
     }
     paging_flush_tlb();                         /* the parent's PTEs lost write access */
     return child;

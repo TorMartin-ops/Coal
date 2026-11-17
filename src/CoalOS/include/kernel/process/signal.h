@@ -1,6 +1,6 @@
 /**
  * @file signal.h
- * @brief Linux i386 signal numbers. Only default actions are implemented.
+ * @brief Linux signal numbers (x86_64). Only default actions are implemented.
  */
 #ifndef SIGNAL_H
 #define SIGNAL_H
@@ -31,7 +31,9 @@
 #define SIGURG   23
 #define SIGXCPU  24
 #define SIGWINCH 28
-#define NSIG     32
+
+/* Signal sets have Linux's layout: bit n-1 is signal n (1..64). */
+#define SIGBIT(sig) (1ull << ((sig) - 1))
 
 /* How the target treats a signal right now; answered by the system call layer. */
 #define SIGDISP_DEFAULT 0       /* default action */
@@ -44,6 +46,8 @@ int signal_disposition(struct pcb *p, int sig);
 struct isr_frame;
 void signal_deliver(struct isr_frame *regs, uint32_t restart_nr);
 
+/** Signal numbers are 1..NSIG; NSIG itself is defined in process.h. */
+
 /**
  * The one place signals take effect. Every return to ring 3 (system call exit,
  * interrupt or exception return) calls it: a pending signal with the default
@@ -55,7 +59,7 @@ void signal_deliver(struct isr_frame *regs, uint32_t restart_nr);
 void signal_return_to_user(struct isr_frame *regs, uint32_t restart_nr);
 
 /** pselect6: installs the user's sigset at uset as the blocked mask until signal_mask_restore() or a handler returns. */
-long signal_mask_swap(uint32_t uset, uint32_t size);
+long signal_mask_swap(uintptr_t uset, size_t size);
 /** Puts back the mask saved by signal_mask_swap() unless a handler frame took over that job. */
 void signal_mask_restore(void);
 

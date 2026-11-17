@@ -98,9 +98,9 @@ pc_page_t *pc_add(const void *owner, uint32_t key, uint32_t idx) {
     }
     if (!data) { kfree(p); return NULL; }
 
-    size_t low = buddy_total_pages(ZONE_NORMAL);
+    size_t low = buddy_total_pages(ZONE_LOW);
     uintptr_t fl = LOCK();
-    if (g_count >= low / MAX_DIV || buddy_free_pages_count(ZONE_NORMAL) < low / LOW_FREE_DIV) shrink_locked(1);
+    if (g_count >= low / MAX_DIV || buddy_free_pages_count(ZONE_LOW) < low / LOW_FREE_DIV) shrink_locked(1);
     p->data = data;
     p->owner = owner;
     p->key = key;
@@ -168,7 +168,7 @@ pc_page_t *pc_first_dirty(const void *owner) {
     return p;
 }
 
-bool pc_too_dirty(void) { return g_ndirty > buddy_total_pages(ZONE_NORMAL) / MAX_DIRTY_DIV; }
+bool pc_too_dirty(void) { return g_ndirty > buddy_total_pages(ZONE_LOW) / MAX_DIRTY_DIV; }
 
 size_t pc_shrink(size_t n) {
     uintptr_t fl = LOCK();

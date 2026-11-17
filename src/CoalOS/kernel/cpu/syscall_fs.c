@@ -16,8 +16,9 @@
 #define IO_CHUNK    PAGE_SIZE
 #define IOV_MAX     1024
 #define F_DUPFD_CLOEXEC 1030
+#define MAX_RW_COUNT    0x7ffff000ul    /* what Linux clamps a single read or write to */
 
-_Static_assert(sizeof(struct kstat64) == 96, "struct stat64 is 96 bytes on i386");
+_Static_assert(sizeof(struct kstat) == 144 && sizeof(struct kstatfs) == 120, "x86_64 struct stat and statfs sizes");
 
 static void set_cloexec(int fd, bool on) {
     pcb_t *p = get_current_process();
@@ -29,7 +30,7 @@ static void set_cloexec(int fd, bool on) {
 // Descriptors
 //============================================================================
 
-long sc_open(uint32_t path, uint32_t flags, uint32_t mode) {
+long sc_open(uintptr_t path, uint32_t flags, uint32_t mode) {
     char kpath[PATH_MAX_SYS];
     int err = user_path(path, kpath, sizeof(kpath));
     if (err) return err;
@@ -39,7 +40,7 @@ long sc_open(uint32_t path, uint32_t flags, uint32_t mode) {
     return fd;
 }
 
-long sc_openat(int dirfd, uint32_t path, uint32_t flags, uint32_t mode) {
+long sc_openat(int dirfd, uintptr_t path, uint32_t flags, uint32_t mode) {
     if (dirfd != AT_FDCWD) return -ENOSYS;          /* directory-relative lookup is not supported */
     return sc_open(path, flags, mode);
 }
@@ -78,7 +79,7 @@ static long dup_from(uint32_t fd, uint32_t min, bool cloexec) {
     return -EMFILE;
 }
 
-long sc_fcntl64(uint32_t fd, uint32_t cmd, uint32_t arg) {
+long sc_fcntl(uint32_t fd, uint32_t cmd, unsigned long arg) {
     sys_file_t *sf;
     long r;
 
@@ -111,7 +112,7 @@ long sc_fcntl64(uint32_t fd, uint32_t cmd, uint32_t arg) {
     }
 }
 
-long sc_pipe2(uint32_t ufds, uint32_t flags) {
+long sc_pipe2(uintptr_t ufds, uint32_t flags) {
     int fds[2];
 
     if (flags & ~(uint32_t)(LINUX_O_CLOEXEC | O_NONBLOCK)) return -EINVAL;
@@ -127,10 +128,10 @@ long sc_pipe2(uint32_t ufds, uint32_t flags) {
     return 0;
 }
 
-long sc_pipe(uint32_t fds) { return sc_pipe2(fds, 0); }
+long sc_pipe(uintptr_t fds) { return sc_pipe2(fds, 0); }
 
 /* The driver behind the descriptor reads and writes the user argument itself. */
-long sc_ioctl(uint32_t fd, uint32_t cmd, uint32_t arg) {
+long sc_ioctl(uint32_t fd, uint32_t cmd, uintptr_t arg) {
     return sys_ioctl(fd, cmd, (void *)arg);
 }
 
@@ -147,17 +148,17 @@ static bool regular_file(uint32_t fd) {
 }
 
 /* One read or write of up to count bytes through a bounce buffer. */
-static long transfer(uint32_t fd, uint32_t ubuf, uint32_t count, bool is_write) {
+static long transfer(uint32_t fd, uintptr_t ubuf, size_t count, bool is_write) {
     long total = 0;
 
-    if ((int32_t)count < 0) return -EINVAL;
+    if (count > MAX_RW_COUNT) count = MAX_RW_COUNT;
     if (count == 0) return 0;
 
     size_t chunk = count < IO_CHUNK ? count : IO_CHUNK;
     char *kbuf = kmalloc(chunk);
     if (!kbuf) return -ENOMEM;
 
-    while ((uint32_t)total < count) {
+    while ((size_t)total < count) {
         size_t n = count - total < chunk ? count - total : chunk;
         long r;
 
@@ -170,68 +171,59 @@ static long transfer(uint32_t fd, uint32_t ubuf, uint32_t count, bool is_write) 
         if (r < 0) { if (!total) total = r; break; }
         total += r;
         if ((size_t)r < n) break;                   /* short transfer: EOF, line, or full pipe */
-        if (!is_write && (uint32_t)total < count && !regular_file(fd)) break;   /* pipes, ttys, sockets: no refill */
+        if (!is_write && (size_t)total < count && !regular_file(fd)) break;   /* pipes, ttys, sockets: no refill */
     }
     kfree(kbuf);
     return total;
 }
 
-long sc_read(uint32_t fd, uint32_t buf, uint32_t count)  { return transfer(fd, buf, count, false); }
-long sc_write(uint32_t fd, uint32_t buf, uint32_t count) { return transfer(fd, buf, count, true); }
+long sc_read(uint32_t fd, uintptr_t buf, size_t count)  { return transfer(fd, buf, count, false); }
+long sc_write(uint32_t fd, uintptr_t buf, size_t count) { return transfer(fd, buf, count, true); }
 
-static long iov_transfer(uint32_t fd, uint32_t iov, uint32_t cnt, bool is_write) {
+static long iov_transfer(uint32_t fd, uintptr_t iov, unsigned long cnt, bool is_write) {
     long total = 0;
 
     if (cnt > IOV_MAX) return -EINVAL;
-    for (uint32_t i = 0; i < cnt; i++) {
+    for (unsigned long i = 0; i < cnt; i++) {
         struct linux_iovec v;
         if (copy_from_user(&v, (const struct linux_iovec *)iov + i, sizeof(v)) != 0)
             return total ? total : -EFAULT;
         long r = transfer(fd, v.iov_base, v.iov_len, is_write);
         if (r < 0) return total ? total : r;
         total += r;
-        if ((uint32_t)r < v.iov_len) break;
+        if ((size_t)r < v.iov_len) break;
     }
     return total;
 }
 
-long sc_readv(uint32_t fd, uint32_t iov, uint32_t cnt)  { return iov_transfer(fd, iov, cnt, false); }
-long sc_writev(uint32_t fd, uint32_t iov, uint32_t cnt) { return iov_transfer(fd, iov, cnt, true); }
+long sc_readv(uint32_t fd, uintptr_t iov, unsigned long cnt)  { return iov_transfer(fd, iov, cnt, false); }
+long sc_writev(uint32_t fd, uintptr_t iov, unsigned long cnt) { return iov_transfer(fd, iov, cnt, true); }
 
-long sc_lseek(uint32_t fd, int32_t off, uint32_t whence) {
+long sc_lseek(uint32_t fd, int64_t off, uint32_t whence) {
     return sys_lseek(fd, off, whence);
-}
-
-/* _llseek: 64-bit offset in two halves, new position stored through result. */
-long sc_llseek(uint32_t fd, uint32_t hi, uint32_t lo, uint32_t result, uint32_t whence) {
-    if (hi != 0 && hi != 0xFFFFFFFFu) return -EOVERFLOW;    /* files are below 2 GiB */
-    long pos = sys_lseek(fd, (int32_t)lo, whence);
-    if (pos < 0) return pos;
-    int64_t out = pos;
-    return copy_to_user((void *)result, &out, sizeof(out)) ? -EFAULT : 0;
 }
 
 //============================================================================
 // Paths
 //============================================================================
 
-static long path_op(uint32_t upath, int (*op)(const char *)) {
+static long path_op(uintptr_t upath, int (*op)(const char *)) {
     char kpath[PATH_MAX_SYS];
     int err = user_path(upath, kpath, sizeof(kpath));
     return err ? err : op(kpath);
 }
 
-long sc_unlink(uint32_t path) { return path_op(path, vfs_unlink); }
-long sc_rmdir(uint32_t path)  { return path_op(path, vfs_rmdir); }
+long sc_unlink(uintptr_t path) { return path_op(path, vfs_unlink); }
+long sc_rmdir(uintptr_t path)  { return path_op(path, vfs_rmdir); }
 
-long sc_mkdir(uint32_t path, uint32_t mode) {
+long sc_mkdir(uintptr_t path, uint32_t mode) {
     char kpath[PATH_MAX_SYS];
     int err = user_path(path, kpath, sizeof(kpath));
     return err ? err : vfs_mkdir(kpath, mode & 07777);
 }
 
 /* Two path buffers on the heap: PATH_MAX is too large for two on the kernel stack. */
-long sc_rename(uint32_t from, uint32_t to) {
+long sc_rename(uintptr_t from, uintptr_t to) {
     char *a = kmalloc(2 * PATH_MAX_SYS), *b = a + PATH_MAX_SYS;
     int err;
 
@@ -243,9 +235,9 @@ long sc_rename(uint32_t from, uint32_t to) {
     return err;
 }
 
-long sc_utime(uint32_t path, uint32_t utimes) {
+long sc_utime(uintptr_t path, uintptr_t utimes) {
     char kpath[PATH_MAX_SYS];
-    uint32_t t[2];
+    int64_t t[2];
     int err = user_path(path, kpath, sizeof(kpath));
 
     if (err) return err;
@@ -254,7 +246,7 @@ long sc_utime(uint32_t path, uint32_t utimes) {
     } else {
         t[0] = t[1] = vfs_time();
     }
-    return vfs_utime(kpath, t[0], t[1]);
+    return vfs_utime(kpath, (uint32_t)t[0], (uint32_t)t[1]);
 }
 
 long sc_sync(void) {
@@ -272,7 +264,7 @@ long sc_fsync(uint32_t fd) {
     return rc;
 }
 
-long sc_mount(uint32_t source, uint32_t target, uint32_t fstype) {
+long sc_mount(uintptr_t source, uintptr_t target, uintptr_t fstype) {
     char dev[16], fs[16];
     const char *name = NULL;
     char *dir = kmalloc(PATH_MAX_SYS);
@@ -283,7 +275,7 @@ long sc_mount(uint32_t source, uint32_t target, uint32_t fstype) {
     if (!err) err = copy_path_from_user((const char *)fstype, fs, sizeof(fs));
     if (!err) err = user_path(target, dir, PATH_MAX_SYS);
     if (!err) {
-        struct kstat64 st;
+        struct kstat st;
         err = vfs_stat(dir, &st);
         if (!err && !S_ISDIR(st.st_mode)) err = -ENOTDIR;
     }
@@ -297,14 +289,14 @@ long sc_mount(uint32_t source, uint32_t target, uint32_t fstype) {
     return err;
 }
 
-long sc_umount2(uint32_t target, uint32_t flags) {
+long sc_umount2(uintptr_t target, uint32_t flags) {
     (void)flags;
     return path_op(target, vfs_umount);
 }
 
-long sc_chdir(uint32_t path) {
+long sc_chdir(uintptr_t path) {
     char kpath[PATH_MAX_SYS];
-    struct kstat64 st;
+    struct kstat st;
     int err = user_path(path, kpath, sizeof(kpath));
 
     if (!err) err = vfs_stat(kpath, &st);
@@ -315,7 +307,7 @@ long sc_chdir(uint32_t path) {
     return 0;
 }
 
-long sc_getcwd(uint32_t buf, uint32_t size) {
+long sc_getcwd(uintptr_t buf, size_t size) {
     const char *cwd = get_current_process()->cwd;
     size_t len = strlen(cwd) + 1;
 
@@ -323,8 +315,8 @@ long sc_getcwd(uint32_t buf, uint32_t size) {
     return copy_to_user((void *)buf, cwd, len) ? -EFAULT : (long)len;   /* Linux returns the length */
 }
 
-long sc_access(uint32_t path, uint32_t mode) {
-    struct kstat64 st;
+long sc_access(uintptr_t path, uint32_t mode) {
+    struct kstat st;
     char kpath[PATH_MAX_SYS];
     int err = user_path(path, kpath, sizeof(kpath));
     (void)mode;                                     /* single user, no permission bits enforced */
@@ -335,8 +327,8 @@ long sc_access(uint32_t path, uint32_t mode) {
 // stat, directories
 //============================================================================
 
-long sc_stat64(uint32_t path, uint32_t buf) {
-    struct kstat64 st;
+long sc_stat(uintptr_t path, uintptr_t buf) {
+    struct kstat st;
     char kpath[PATH_MAX_SYS];
     int err = user_path(path, kpath, sizeof(kpath));
 
@@ -345,52 +337,44 @@ long sc_stat64(uint32_t path, uint32_t buf) {
     return copy_to_user((void *)buf, &st, sizeof(st)) ? -EFAULT : 0;
 }
 
-long sc_fstat64(uint32_t fd, uint32_t buf) {
-    struct kstat64 st;
+long sc_fstat(uint32_t fd, uintptr_t buf) {
+    struct kstat st;
     int err = sys_fstat(fd, &st);
     if (err) return err;
     return copy_to_user((void *)buf, &st, sizeof(st)) ? -EFAULT : 0;
 }
 
-long sc_fstatat64(int dirfd, uint32_t path, uint32_t buf, uint32_t flags) {
+long sc_newfstatat(int dirfd, uintptr_t path, uintptr_t buf, uint32_t flags) {
     (void)flags;                                    /* AT_SYMLINK_NOFOLLOW: no symbolic links */
     if (dirfd != AT_FDCWD) return -ENOSYS;
-    return sc_stat64(path, buf);
+    return sc_stat(path, buf);
 }
 
-/* The old statfs layout has 32-bit counters; the 64-bit one is copied as is. */
-static long put_statfs(uint32_t buf, const struct kstatfs64 *st, bool wide) {
-    if (wide) return copy_to_user((void *)buf, st, sizeof(*st)) ? -EFAULT : 0;
-    struct { uint32_t type, bsize, blocks, bfree, bavail, files, ffree; int32_t fsid[2]; uint32_t namelen, frsize, flags, spare[4]; } o = {
-        st->f_type, st->f_bsize, (uint32_t)st->f_blocks, (uint32_t)st->f_bfree, (uint32_t)st->f_bavail,
-        (uint32_t)st->f_files, (uint32_t)st->f_ffree, { st->f_fsid[0], st->f_fsid[1] }, st->f_namelen, st->f_frsize,
-        st->f_flags, { 0 } };
-    return copy_to_user((void *)buf, &o, sizeof(o)) ? -EFAULT : 0;
+static long put_statfs(uintptr_t buf, const struct kstatfs *st) {
+    return copy_to_user((void *)buf, st, sizeof(*st)) ? -EFAULT : 0;
 }
 
-static long statfs_path(uint32_t path, uint32_t buf, bool wide) {
-    struct kstatfs64 st;
+static long statfs_path(uintptr_t path, uintptr_t buf) {
+    struct kstatfs st;
     char kpath[PATH_MAX_SYS];
     int err = user_path(path, kpath, sizeof(kpath));
 
     if (!err) err = vfs_statfs(kpath, &st);
-    return err ? err : put_statfs(buf, &st, wide);
+    return err ? err : put_statfs(buf, &st);
 }
 
-static long statfs_fd(uint32_t fd, uint32_t buf, bool wide) {
-    struct kstatfs64 st;
+static long statfs_fd(uint32_t fd, uintptr_t buf) {
+    struct kstatfs st;
     int err = sys_fstatfs((int)fd, &st);
-    return err ? err : put_statfs(buf, &st, wide);
+    return err ? err : put_statfs(buf, &st);
 }
 
-long sc_statfs(uint32_t path, uint32_t buf) { return statfs_path(path, buf, false); }
-long sc_fstatfs(uint32_t fd, uint32_t buf) { return statfs_fd(fd, buf, false); }
-long sc_statfs64(uint32_t path, uint32_t size, uint32_t buf) { return size == sizeof(struct kstatfs64) ? statfs_path(path, buf, true) : -EINVAL; }
-long sc_fstatfs64(uint32_t fd, uint32_t size, uint32_t buf) { return size == sizeof(struct kstatfs64) ? statfs_fd(fd, buf, true) : -EINVAL; }
+long sc_statfs(uintptr_t path, uintptr_t buf) { return statfs_path(path, buf); }
+long sc_fstatfs(uint32_t fd, uintptr_t buf) { return statfs_fd(fd, buf); }
 
 /* FAT has no hard or symbolic links, which is how Linux's vfat answers too. */
-long sc_link(uint32_t from, uint32_t to) {
-    struct kstat64 st;
+long sc_link(uintptr_t from, uintptr_t to) {
+    struct kstat st;
     char a[PATH_MAX_SYS], b[PATH_MAX_SYS];
     int err = user_path(from, a, sizeof(a));
 
@@ -399,26 +383,26 @@ long sc_link(uint32_t from, uint32_t to) {
     return err ? err : -EPERM;
 }
 
-long sc_symlink(uint32_t target, uint32_t linkpath) {
+long sc_symlink(uintptr_t target, uintptr_t linkpath) {
     char a[PATH_MAX_SYS], b[PATH_MAX_SYS];
     int err = user_path(target, a, sizeof(a));
 
     if (!err) err = user_path(linkpath, b, sizeof(b));
-    return err ? err : vfs_stat(b, &(struct kstat64){ 0 }) == 0 ? -EEXIST : -EPERM;
+    return err ? err : vfs_stat(b, &(struct kstat){ 0 }) == 0 ? -EEXIST : -EPERM;
 }
 
 /* Nothing here is a symbolic link: existing paths are "not a link", the rest do not exist. */
-long sc_readlink(uint32_t path, uint32_t buf, uint32_t size) {
-    struct kstat64 st;
+long sc_readlink(uintptr_t path, uintptr_t buf, long size) {
+    struct kstat st;
     char kpath[PATH_MAX_SYS];
     int err = user_path(path, kpath, sizeof(kpath));
 
     (void)buf;
-    if (!err) err = (int)size > 0 ? vfs_stat(kpath, &st) : -EINVAL;
+    if (!err) err = size > 0 ? vfs_stat(kpath, &st) : -EINVAL;
     return err ? err : -EINVAL;
 }
 
-long sc_getdents64(uint32_t fd, uint32_t buf, uint32_t count) {
+long sc_getdents64(uint32_t fd, uintptr_t buf, size_t count) {
     size_t len = count < IO_CHUNK ? count : IO_CHUNK;
     char *kbuf = kmalloc(len ? len : 1);
 

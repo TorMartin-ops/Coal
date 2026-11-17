@@ -527,7 +527,7 @@ static int sockfs_close(vnode_t *v) {
     return 0;
 }
 
-static int sockfs_getattr(vnode_t *v, struct kstat64 *st) {
+static int sockfs_getattr(vnode_t *v, struct kstat *st) {
     (void)v;
     st->st_mode = S_IFSOCK | 0777;
     st->st_nlink = 1;

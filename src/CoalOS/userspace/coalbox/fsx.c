@@ -58,7 +58,7 @@ int stat_main(int argc, char **argv) {
         time_t t = st.st_mtime;
         gmtime_r(&t, &tm);
         strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", &tm);
-        printf("  File: %s\n  Size: %llu\tBlocks: %llu\t%s\nMode: %04o\tLinks: %u\tUid: %u\tGid: %u\nModify: %s UTC\n",
+        printf("  File: %s\n  Size: %llu\tBlocks: %llu\t%s\nMode: %04o\tLinks: %lu\tUid: %u\tGid: %u\nModify: %s UTC\n",
                argv[i], (unsigned long long)st.st_size, (unsigned long long)st.st_blocks, type,
                st.st_mode & 07777, st.st_nlink, st.st_uid, st.st_gid, when);
     }
@@ -123,7 +123,7 @@ static void du_print(unsigned long long kb, const char *path) {
 static unsigned long long du_walk(const char *path, int top, int *rc) {
     struct stat st;
     if (lstat(path, &st) < 0) { *rc = cb_err("cannot access", path); return 0; }
-    unsigned long long bytes = st.st_blocks ? st.st_blocks * 512 : (unsigned long long)st.st_size;
+    unsigned long long bytes = st.st_blocks ? (unsigned long long)st.st_blocks * 512 : (unsigned long long)st.st_size;
     unsigned long long kb = (bytes + 1023) / 1024;
     if (S_ISDIR(st.st_mode)) {
         int n;

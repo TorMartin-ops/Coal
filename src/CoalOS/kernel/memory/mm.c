@@ -19,12 +19,14 @@ static vma_struct_t *vma_alloc(void) {
     return v;
 }
 
-static uint32_t prot_of(uint32_t vm_flags) {
-    return PAGE_PRESENT | PAGE_USER | ((vm_flags & VM_WRITE) ? PAGE_RW : 0);
+/* PROT_NONE mappings stay present but become supervisor-only, so user accesses fault. */
+static uint64_t prot_of(uint32_t vm_flags) {
+    return PAGE_PRESENT | ((vm_flags & (VM_READ | VM_WRITE | VM_EXEC)) ? PAGE_USER : 0) |
+           ((vm_flags & VM_WRITE) ? PAGE_RW : 0) | ((vm_flags & VM_EXEC) ? 0 : PAGE_NX);
 }
 
 static bool user_range_ok(uintptr_t start, uintptr_t end) {
-    return start < end && start >= IDENTITY_MAP_SIZE && end <= KERNEL_SPACE_VIRT_START;
+    return start < end && start >= USER_SPACE_MIN && end <= USER_SPACE_MAX;
 }
 
 /* --- Tree helpers (mm->lock held) ------------------------------------------ */
@@ -68,7 +70,7 @@ static vma_struct_t *insert_locked(mm_struct_t *mm, uintptr_t start, uintptr_t e
 
 /* --- Lifetime ---------------------------------------------------------------- */
 
-mm_struct_t *create_mm(uint32_t *pgd_phys) {
+mm_struct_t *create_mm(void *pgd_phys) {
     mm_struct_t *mm = kmalloc(sizeof(*mm));
     if (!mm)
         return NULL;
@@ -116,11 +118,11 @@ mm_struct_t *dup_mm(mm_struct_t *parent) {
     uintptr_t flags = spinlock_acquire_irqsave(&parent->lock);
 
     uintptr_t pgd = paging_clone_directory(parent->pgd_phys);
-    mm_struct_t *child = pgd ? create_mm((uint32_t *)pgd) : NULL;
+    mm_struct_t *child = pgd ? create_mm((void *)pgd) : NULL;
     if (!child) {
         spinlock_release_irqrestore(&parent->lock, flags);
         if (pgd) {
-            paging_free_user_space((uint32_t *)pgd);
+            paging_free_user_space((void *)pgd);
             put_frame(pgd);
         }
         return NULL;
@@ -181,6 +183,67 @@ int remove_vma_range(mm_struct_t *mm, uintptr_t start, size_t length) {
 
     kfree(spare);
     return paging_unmap_range(mm->pgd_phys, start, end - start) ? -EINVAL : 0;
+}
+
+/* Splits v at addr (inside it): v keeps the lower part, `upper` becomes the higher one. */
+static void vma_split(mm_struct_t *mm, vma_struct_t *v, uintptr_t addr, vma_struct_t *upper) {
+    *upper = *v;
+    upper->vm_start = addr;
+    v->vm_end = addr;
+    vma_link(mm, upper);
+}
+
+int mm_protect(mm_struct_t *mm, uintptr_t start, size_t length, uint32_t prot_flags) {
+    uintptr_t end = start + PAGE_ALIGN_UP(length);
+    if (!mm || (start & PAGING_OFFSET_MASK) || end < start || !user_range_ok(start, end))
+        return -EINVAL;
+    if (length == 0)
+        return 0;
+
+    vma_struct_t *spare[2] = { vma_alloc(), vma_alloc() };      /* one per boundary that may split a VMA */
+    int rc = spare[0] && spare[1] ? 0 : -ENOMEM;
+    uint64_t prot = 0;
+
+    uintptr_t flags = spinlock_acquire_irqsave(&mm->lock);
+    for (uintptr_t a = start; !rc && a < end;) {                /* the range must be fully mapped */
+        vma_struct_t *v = rbtree_find_vma(mm->vma_tree.root, a);
+        if (!v)
+            rc = -ENOMEM;
+        else
+            a = v->vm_end;
+    }
+    if (!rc) {
+        vma_struct_t *v = rbtree_find_vma(mm->vma_tree.root, start);
+        if (v->vm_start < start)
+            vma_split(mm, v, start, spare[0]), spare[0] = NULL;
+        v = rbtree_find_vma(mm->vma_tree.root, end - 1);
+        if (v->vm_end > end)
+            vma_split(mm, v, end, spare[1]), spare[1] = NULL;
+
+        for (uintptr_t a = start; a < end;) {
+            v = rbtree_find_vma(mm->vma_tree.root, a);
+            v->vm_flags = (v->vm_flags & ~(uint32_t)(VM_READ | VM_WRITE | VM_EXEC)) | prot_flags;
+            v->page_prot = prot_of(v->vm_flags);
+            prot = v->page_prot;
+            a = v->vm_end;
+        }
+    }
+    spinlock_release_irqrestore(&mm->lock, flags);
+    kfree(spare[0]);
+    kfree(spare[1]);
+    if (rc)
+        return rc;
+
+    /* Present pages get the new rights; copy-on-write pages stay read-only so that the write fault copies. */
+    for (uintptr_t a = start; a < end; a += PAGE_SIZE) {
+        pte_t *pte = paging_pte(mm->pgd_phys, a, false);
+        if (!pte || !(*pte & PAGE_PRESENT))
+            continue;
+        uint64_t keep = *pte & (PAGING_ADDR_MASK | PAGE_ACCESSED | PAGE_DIRTY | PAGE_COW);
+        *pte = keep | ((*pte & PAGE_COW) ? prot & ~PAGE_RW : prot);
+        paging_invalidate_page((void *)a);
+    }
+    return 0;
 }
 
 uintptr_t mm_brk(mm_struct_t *mm, uintptr_t new_brk) {
@@ -254,7 +317,7 @@ intptr_t mm_mmap_anon(mm_struct_t *mm, uintptr_t hint, size_t len, uint32_t vm_f
 static vma_struct_t *grow_stack(mm_struct_t *mm, uintptr_t addr) {
     vma_struct_t *v = rbtree_find_first_above(mm->vma_tree.root, addr);
     uintptr_t low = PAGE_ALIGN_DOWN(addr);
-    if (!v || !(v->vm_flags & VM_GROWS_DOWN) || low < IDENTITY_MAP_SIZE ||
+    if (!v || !(v->vm_flags & VM_GROWS_DOWN) || low < USER_SPACE_MIN ||
         v->vm_end - low > MM_STACK_MAX)
         return NULL;
     v->vm_start = low;      /* no VMA lies between addr and v, so tree order is unchanged */
@@ -264,7 +327,7 @@ static vma_struct_t *grow_stack(mm_struct_t *mm, uintptr_t addr) {
 /* After a demand-zero fault, also map the next absent pages of the VMA (up to `end`) that share the
  * page table. Sequential first touches (heap growth, big buffers) then cost one fault instead of
  * FAULT_AROUND. Takes only spare memory and never triggers the OOM killer. */
-static void fault_around(uint32_t *pte, uint32_t prot, uintptr_t page, uintptr_t end) {
+static void fault_around(pte_t *pte, uint64_t prot, uintptr_t page, uintptr_t end) {
     for (unsigned i = 1; i < FAULT_AROUND; i++) {
         page += PAGE_SIZE;
         if (page >= end || !PTE_INDEX(page) || (pte[i] & PAGE_PRESENT))
@@ -279,8 +342,8 @@ static void fault_around(uint32_t *pte, uint32_t prot, uintptr_t page, uintptr_t
 /* Make the page at `page` present (and writable if asked) with PTE flags prot.
  * `around` is the end of the VMA when neighbours may be mapped too, else 0.
  * Touches page tables only, never the VMA tree, so it runs without mm->lock. */
-static int resolve(mm_struct_t *mm, uint32_t prot, uintptr_t page, bool write, uintptr_t around) {
-    uint32_t *pte = paging_pte(mm->pgd_phys, page, true);
+static int resolve(mm_struct_t *mm, uint64_t prot, uintptr_t page, bool write, uintptr_t around) {
+    pte_t *pte = paging_pte(mm->pgd_phys, page, true);
     if (!pte)
         return VM_FAULT_OOM;
 
@@ -299,7 +362,7 @@ static int resolve(mm_struct_t *mm, uint32_t prot, uintptr_t page, bool write, u
         return VM_FAULT_SEGV;
 
     uintptr_t shared = *pte & PAGING_ADDR_MASK;
-    uint32_t flags = (*pte & PAGING_FLAG_MASK & ~PAGE_COW) | PAGE_RW;
+    uint64_t flags = (*pte & PAGING_FLAG_MASK & ~PAGE_COW) | PAGE_RW;
     if (get_frame_refcount(shared) == 1) {              /* last owner: just reclaim it */
         *pte = shared | flags;
     } else {
@@ -315,7 +378,7 @@ static int resolve(mm_struct_t *mm, uint32_t prot, uintptr_t page, bool write, u
 }
 
 /* resolve(); if memory is short the OOM killer frees some and the allocation is tried again. */
-static int resolve_or_kill(mm_struct_t *mm, uint32_t prot, uintptr_t page, bool write, uintptr_t around) {
+static int resolve_or_kill(mm_struct_t *mm, uint64_t prot, uintptr_t page, bool write, uintptr_t around) {
     int r;
 
     for (int i = 0; (r = resolve(mm, prot, page, write, around)) == VM_FAULT_OOM && i < OOM_RETRIES && oom_make_room(); i++) { }
@@ -328,7 +391,7 @@ static bool vma_allows(const vma_struct_t *v, bool write) {
 }
 
 int mm_fault(mm_struct_t *mm, uintptr_t addr, uint32_t error_code) {
-    if (addr >= KERNEL_SPACE_VIRT_START)
+    if (addr >= USER_SPACE_MAX)
         return VM_FAULT_SEGV;
     bool write = error_code & PAGE_FAULT_WRITE;
 
@@ -337,7 +400,7 @@ int mm_fault(mm_struct_t *mm, uintptr_t addr, uint32_t error_code) {
     if (!v)
         v = grow_stack(mm, addr);
     bool ok = v && vma_allows(v, write);
-    uint32_t prot = ok ? v->page_prot : 0;
+    uint64_t prot = ok ? v->page_prot : 0;
     uintptr_t around = ok && !(v->vm_flags & VM_GROWS_DOWN) ? v->vm_end : 0;
     spinlock_release_irqrestore(&mm->lock, flags);
 
@@ -348,7 +411,7 @@ bool mm_access_ok(mm_struct_t *mm, uintptr_t addr, size_t len, bool write, bool 
     if (len == 0)
         return true;
     uintptr_t end = addr + len;
-    if (end < addr || end > KERNEL_SPACE_VIRT_START)
+    if (end < addr || end > USER_SPACE_MAX)
         return false;
 
     for (uintptr_t a = addr; a < end;) {
@@ -356,14 +419,14 @@ bool mm_access_ok(mm_struct_t *mm, uintptr_t addr, size_t len, bool write, bool 
         vma_struct_t *v = rbtree_find_vma(mm->vma_tree.root, a);
         bool ok = v && vma_allows(v, write);
         uintptr_t seg_end = ok ? (v->vm_end < end ? v->vm_end : end) : 0;
-        uint32_t prot = ok ? v->page_prot : 0;
+        uint64_t prot = ok ? v->page_prot : 0;
         spinlock_release_irqrestore(&mm->lock, flags);
         if (!ok)
             return false;
 
         if (populate) {
             for (uintptr_t p = PAGE_ALIGN_DOWN(a); p < seg_end; p += PAGE_SIZE) {
-                uint32_t *pte = paging_pte(mm->pgd_phys, p, false);
+                pte_t *pte = paging_pte(mm->pgd_phys, p, false);
                 if ((!pte || !(*pte & PAGE_PRESENT) || (write && !(*pte & PAGE_RW))) &&
                     resolve_or_kill(mm, prot, p, write, 0) != VM_FAULT_OK)
                     return false;

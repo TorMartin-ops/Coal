@@ -21,9 +21,9 @@
 #define VM_FAULT_SEGV (-1)  /* invalid address or permission: the process deserves SIGSEGV */
 #define VM_FAULT_OOM  (-2)  /* out of memory while resolving the fault */
 
-struct registers;
+struct isr_frame;
 
-/** Entry point from the page-fault ISR (user-mode faults). */
-void page_fault_handler(struct registers *regs);
+/** Page-fault interrupt handler: user faults go to mm_fault(); kernel faults need an exception-table fixup. */
+void page_fault_handler(struct isr_frame *regs);
 
 #endif /* PAGING_FAULT_H */

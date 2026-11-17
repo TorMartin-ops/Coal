@@ -1,71 +1,62 @@
-; CPU exception (0-19) and hardware IRQ (32-47) entry stubs.
-; Vector 14 lives in isr_pf.asm, vector 0x80 in syscall.asm.
+; CPU exception (0-31) and hardware IRQ (32-47, local APIC) entry stubs.
+;
+; Every stub builds the frame described by isr_frame_t: a dummy error code where the CPU pushes none, the
+; vector, then the 15 general registers. An entry from user mode executes swapgs first, so %gs is the
+; kernel's per-CPU base from there on. NMI, #DF and #MC can arrive between a swapgs and the instruction
+; that needed it (and on their own IST stack), so they decide from the GS base itself, not from CS.
 
-bits 32
+bits 64
 default rel
 
 %include "kernel/cpu/cpu_defs.inc"
 
 extern isr_common_handler       ; void isr_common_handler(isr_frame_t *)
+extern isr_paranoid_handler
 
 section .text
 
-; Exception without a CPU error code: push a dummy one.
 %macro ISR_NOERR 1
 isr%1:
-    push    dword 0
-    push    dword %1
-    jmp     isr_common_stub
+    push    qword 0
+    push    qword %1
+    jmp     isr_common
 %endmacro
 
-; Exception where the CPU already pushed an error code.
 %macro ISR_ERR 1
 isr%1:
-    push    dword %1
-    jmp     isr_common_stub
+    push    qword %1
+    jmp     isr_common
+%endmacro
+
+%macro ISR_PARANOID 1
+isr%1:
+    %if %1 = 8
+    push    qword %1
+    %else
+    push    qword 0
+    push    qword %1
+    %endif
+    jmp     isr_paranoid
 %endmacro
 
 %macro IRQ 1
 irq%1:
-    push    dword 0
-    push    dword IRQ_BASE + %1
-    jmp     isr_common_stub
+    push    qword 0
+    push    qword IRQ_BASE + %1
+    jmp     isr_common
 %endmacro
 
-ISR_NOERR 0
-
-; Debug exception. A user program with TF set that executes sysenter gets a single-step trap in the
-; kernel entry (sysenter_entry .. sysenter_flags_done) while the stack is still the scratch stack.
-; Return at once: the entry code clears TF itself and the user's TF stays in the saved eflags.
-extern sysenter_entry, sysenter_flags_done
-isr1:
-    cmp     word [esp + 4], KERNEL_CS
-    jne     .trap
-    cmp     dword [esp], sysenter_entry
-    jb      .trap
-    cmp     dword [esp], sysenter_flags_done
-    ja      .trap
-    iret
-.trap:
-    push    dword 0
-    push    dword 1
-    jmp     isr_common_stub
-
-ISR_NOERR 2
-ISR_NOERR 3
-ISR_NOERR 4
-ISR_NOERR 5
-ISR_NOERR 6
-ISR_NOERR 7
-ISR_ERR   8
-ISR_ERR   10
-ISR_ERR   11
-ISR_ERR   12
-ISR_ERR   13
-ISR_NOERR 16
-ISR_ERR   17
-ISR_NOERR 18
-ISR_NOERR 19
+%assign v 0
+%rep 32
+    %if v = 2 || v = 8 || v = 18
+        ISR_PARANOID v
+    %elif v = 10 || v = 11 || v = 12 || v = 13 || v = 14 || v = 17 || v = 21 || v = 29 || v = 30
+        ISR_ERR v
+    %else
+        ISR_NOERR v
+    %endif
+%assign v v+1
+%endrep
 
 %assign i 0
 %rep 16
@@ -75,31 +66,70 @@ ISR_NOERR 19
 IRQ 16                          ; local APIC timer (vector 0x30)
 IRQ 31                          ; local APIC spurious interrupt (vector 0x3F)
 
-isr_common_stub:
-    SAVE_FRAME
-    cld                         ; user mode may have set DF; the C ABI and rep movs need it clear
-    push    esp                 ; &isr_frame_t
+isr_common:
+    cld
+    PUSH_GPRS
+    test    byte [rsp + F_CS], 3
+    jz      .in_kernel
+    swapgs
+.in_kernel:
+    mov     rdi, rsp
     call    isr_common_handler
-    add     esp, 4
-    RESTORE_FRAME
-    iret
+
+; Leaves the kernel with iretq. Every path that returns through a frame ends here: interrupts and
+; exceptions, system calls that cannot use sysret, and the first run of a new task (ret_from_fork).
+global interrupt_return
+interrupt_return:
+    cli
+    test    byte [rsp + F_CS], 3
+    jz      .to_kernel
+    swapgs
+.to_kernel:
+    POP_GPRS
+    add     rsp, 16             ; int_no, err_code
+    iretq
+
+isr_paranoid:
+    cld
+    PUSH_GPRS
+    xor     ebx, ebx            ; rbx: nonzero if swapgs has to be undone
+    mov     ecx, MSR_GS_BASE
+    rdmsr
+    test    edx, edx
+    js      .gs_is_kernel       ; a kernel address: already the per-CPU base
+    swapgs
+    mov     ebx, 1
+.gs_is_kernel:
+    mov     rdi, rsp
+    call    isr_paranoid_handler
+    test    ebx, ebx
+    jz      .done
+    swapgs
+.done:
+    POP_GPRS
+    add     rsp, 16
+    iretq
+
+; New tasks "return" here with an isr_frame_t above the alignment slot scheduler_make_context leaves, so the
+; first run of a process is an ordinary return to user mode.
+global ret_from_fork
+ret_from_fork:
+    add     rsp, 8
+    jmp     interrupt_return
 
 ; Entry points indexed by vector 0..63; 0 marks vectors without a stub.
-extern isr14
 section .rodata
 global isr_stub_table
 isr_stub_table:
 %assign v 0
 %rep 64
-    %if v = 9 || v = 15 || (v >= 20 && v < 32) || (v > 48 && v < 63)
-        dd 0
-    %elif v = 14
-        dd isr14
+    %if v >= 48 && v != 48 && v != 63
+        dq 0
     %elif v < 32
-        dd isr %+ v
+        dq isr %+ v
     %else
         %assign n v - 32
-        dd irq %+ n
+        dq irq %+ n
     %endif
 %assign v v+1
 %endrep
