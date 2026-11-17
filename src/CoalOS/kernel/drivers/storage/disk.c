@@ -11,8 +11,8 @@
  #include <kernel/memory/kmalloc.h>        // For temporary buffer allocation
  #include <kernel/core/types.h>          // Standard types
  #include <kernel/lib/assert.h>         // For KERNEL_ASSERT
- #include <kernel/lib/port_io.h>        // <<< ADDED for inb
- #include <kernel/drivers/input/keyboard_hw.h>    // <<< ADDED for KBC_STATUS_PORT
+ #include <kernel/lib/port_io.h>
+ #include <kernel/drivers/input/keyboard_hw.h>
  
  #include <kernel/lib/string.h>         // For memset, memcpy
  
@@ -64,7 +64,6 @@
      terminal_printf("[Disk Debug] KBC Status before block_device_init: 0x%x\n", inb(KBC_STATUS_PORT));
      // --- End Debug Print ---
  
-     // <<< FIX: Declare ret *before* the call >>>
      int ret = block_device_init(device_name, &disk->blk_dev);
  
      // --- Debug Print AFTER block_device_init ---
@@ -78,11 +77,9 @@
          disk->initialized = false; // Ensure it's marked as not initialized
          return ret; // Propagate block device error
      }
-     // <<< FIX: Use %lu for uint32_t lower part (avoid (uint32_t)(%llu0xFFFFFFFF) with %lu) >>>
-     terminal_printf("[Disk] Block device '%s' initialized. Total Sectors: %lu\n",
+     terminal_printf("[Disk] Block device '%s' initialized. Total Sectors: %u\n",
                      disk->blk_dev.device_name, (uint32_t)(disk->blk_dev.total_sectors & 0xFFFFFFFF));
  
-     // *** FIX APPLIED HERE ***
      // 2. Mark disk structure as initialized *before* trying to read from it
      disk->initialized = true;
  
@@ -115,7 +112,6 @@
   */
  int disk_read_raw_sectors(disk_t *disk, uint64_t lba, void *buffer, size_t count) {
      if (!disk || !disk->initialized || !buffer || count == 0) {
-         // <<< FIX: Use %lu for size_t >>>
          terminal_printf("[Disk] read_raw: Error - Invalid parameters (disk=%p, init=%d, buf=%p, count=%lu).\n",
                          disk, disk ? disk->initialized : 0, buffer, (unsigned long)count);
          return FS_ERR_INVALID_PARAM;
@@ -123,8 +119,7 @@
  
      // Bounds check against the whole disk size
      if (lba >= disk->blk_dev.total_sectors || count > disk->blk_dev.total_sectors - lba) {
-          // <<< FIX: Use %lu for size_t, %lu for uint32_t part of uint64_t >>>
-          terminal_printf("[Disk] read_raw: Error - Read out of bounds (LBA=%lu, Count=%lu, Total=%lu).\n",
+          terminal_printf("[Disk] read_raw: Error - Read out of bounds (LBA=%u, Count=%lu, Total=%u).\n",
                           (uint32_t)(lba & 0xFFFFFFFF), (unsigned long)count, (uint32_t)(disk->blk_dev.total_sectors & 0xFFFFFFFF));
           return FS_ERR_OUT_OF_BOUNDS;
      }
@@ -132,8 +127,7 @@
      // Delegate directly to the block device function
      int ret = block_device_read(&disk->blk_dev, lba, buffer, count);
      if (ret != FS_SUCCESS) {
-         // <<< FIX: Use %lu for size_t, (uint32_t)(%llu0xFFFFFFFF) with %lu for uint64_t >>>
-         terminal_printf("[Disk] read_raw: Block device read failed for %lu sectors at LBA (uint32_t)(%llu0xFFFFFFFF) with %lu.\n", (unsigned long)count, lba);
+         terminal_printf("[Disk] read_raw: Block device read failed for %u sectors at LBA %llu.\n", (uint32_t)count, lba);
      }
      return ret;
  }
@@ -149,7 +143,6 @@
   */
  int disk_write_raw_sectors(disk_t *disk, uint64_t lba, const void *buffer, size_t count) {
      if (!disk || !disk->initialized || !buffer || count == 0) {
-         // <<< FIX: Use %lu for size_t >>>
          terminal_printf("[Disk] write_raw: Error - Invalid parameters (disk=%p, init=%d, buf=%p, count=%lu).\n",
                          disk, disk ? disk->initialized : 0, buffer, (unsigned long)count);
          return FS_ERR_INVALID_PARAM;
@@ -157,17 +150,15 @@
  
      // Bounds check against the whole disk size
      if (lba >= disk->blk_dev.total_sectors || count > disk->blk_dev.total_sectors - lba) {
-          // <<< FIX: Use %lu for size_t, (uint32_t)(%llu0xFFFFFFFF) with %lu for uint64_t >>>
-          terminal_printf("[Disk] write_raw: Error - Write out of bounds (LBA=(uint32_t)(%llu0xFFFFFFFF) with %lu, Count=%lu, Total=(uint32_t)(%llu0xFFFFFFFF) with %lu).\n",
-                          lba, (unsigned long)count, disk->blk_dev.total_sectors);
+          terminal_printf("[Disk] write_raw: Error - Write out of bounds (LBA=%llu, Count=%u, Total=%llu).\n",
+                          lba, (uint32_t)count, (uint64_t)disk->blk_dev.total_sectors);
           return FS_ERR_OUT_OF_BOUNDS;
      }
  
      // Delegate directly to the block device function
      int ret = block_device_write(&disk->blk_dev, lba, buffer, count);
      if (ret != FS_SUCCESS) {
-         // <<< FIX: Use %lu for size_t, (uint32_t)(%llu0xFFFFFFFF) with %lu for uint64_t >>>
-         terminal_printf("[Disk] write_raw: Block device write failed for %lu sectors at LBA (uint32_t)(%llu0xFFFFFFFF) with %lu.\n", (unsigned long)count, lba);
+         terminal_printf("[Disk] write_raw: Block device write failed for %u sectors at LBA %llu.\n", (uint32_t)count, lba);
      }
      return ret;
  }
@@ -184,7 +175,6 @@
   */
  int partition_read_sectors(partition_t *partition, uint64_t lba, void *buffer, size_t count) {
       if (!partition || !partition->is_valid || !partition->parent_disk || !buffer || count == 0) {
-          // <<< FIX: Use %lu for size_t >>>
           terminal_printf("[Disk] part_read: Error - Invalid parameters (part=%p, valid=%d, disk=%p, buf=%p, count=%lu).\n",
                           partition, partition ? partition->is_valid : 0, partition ? partition->parent_disk : NULL, buffer, (unsigned long)count);
           return FS_ERR_INVALID_PARAM;
@@ -192,9 +182,8 @@
  
       // Bounds check against the partition size
       if (lba >= partition->total_sectors || count > partition->total_sectors - lba) {
-          // <<< FIX: Use %lu for size_t, (uint32_t)(%llu0xFFFFFFFF) with %lu for uint64_t >>>
-          terminal_printf("[Disk] part_read: Error - Read out of partition bounds (Part LBA=(uint32_t)(%llu0xFFFFFFFF) with %lu, Count=%lu, Part Size=(uint32_t)(%llu0xFFFFFFFF) with %lu).\n",
-                          lba, (unsigned long)count, partition->total_sectors);
+          terminal_printf("[Disk] part_read: Error - Read out of partition bounds (Part LBA=%llu, Count=%u, Part Size=%llu).\n",
+                          lba, (uint32_t)count, (uint64_t)partition->total_sectors);
           return FS_ERR_OUT_OF_BOUNDS;
       }
  
@@ -216,7 +205,6 @@
   */
  int partition_write_sectors(partition_t *partition, uint64_t lba, const void *buffer, size_t count) {
        if (!partition || !partition->is_valid || !partition->parent_disk || !buffer || count == 0) {
-           // <<< FIX: Use %lu for size_t >>>
            terminal_printf("[Disk] part_write: Error - Invalid parameters (part=%p, valid=%d, disk=%p, buf=%p, count=%lu).\n",
                            partition, partition ? partition->is_valid : 0, partition ? partition->parent_disk : NULL, buffer, (unsigned long)count);
            return FS_ERR_INVALID_PARAM;
@@ -224,9 +212,8 @@
  
        // Bounds check against the partition size
        if (lba >= partition->total_sectors || count > partition->total_sectors - lba) {
-           // <<< FIX: Use %lu for size_t, (uint32_t)(%llu0xFFFFFFFF) with %lu for uint64_t >>>
-           terminal_printf("[Disk] part_write: Error - Write out of partition bounds (Part LBA=(uint32_t)(%llu0xFFFFFFFF) with %lu, Count=%lu, Part Size=(uint32_t)(%llu0xFFFFFFFF) with %lu).\n",
-                           lba, (unsigned long)count, partition->total_sectors);
+           terminal_printf("[Disk] part_write: Error - Write out of partition bounds (Part LBA=%llu, Count=%u, Part Size=%llu).\n",
+                           lba, (uint32_t)count, (uint64_t)partition->total_sectors);
            return FS_ERR_OUT_OF_BOUNDS;
        }
  
@@ -279,7 +266,6 @@
      // Allocate a temporary buffer for the MBR sector
      uint32_t sector_size = disk->blk_dev.sector_size;
      if (sector_size < 512) {
-          // <<< FIX: Use %lu for uint32_t >>>
           terminal_printf("[Disk MBR] Error: Disk sector size %lu is less than required 512 bytes.\n", (unsigned long)sector_size);
           return FS_ERR_INVALID_FORMAT;
      }
@@ -330,16 +316,14 @@
              if (part->start_lba >= disk->blk_dev.total_sectors ||
                  part->total_sectors > disk->blk_dev.total_sectors - part->start_lba)
              {
-                  // <<< FIX: Use %d for int i, (uint32_t)(%llu0xFFFFFFFF) with %lu for uint64_t >>>
-                  terminal_printf("[Disk MBR] Warning: Partition %d on '%s' seems invalid (Start=%lu, Size=%lu, DiskSize=%lu). Marking invalid.\n",
+                  terminal_printf("[Disk MBR] Warning: Partition %d on '%s' seems invalid (Start=%u, Size=%u, DiskSize=%u). Marking invalid.\n",
                                   i, disk->blk_dev.device_name, 
                                   (uint32_t)(part->start_lba & 0xFFFFFFFF), 
                                   (uint32_t)(part->total_sectors & 0xFFFFFFFF), 
                                   (uint32_t)(disk->blk_dev.total_sectors & 0xFFFFFFFF));
                   part->is_valid = false;
              } else {
-                  // <<< FIX: Use %d for int i, (uint32_t)(%llu0xFFFFFFFF) with %lu for uint64_t >>>
-                  terminal_printf("   [+] Partition %d: Type=0x%02X, StartLBA=%lu, Size=%lu sectors\n",
+                  terminal_printf("   [+] Partition %d: Type=0x%02X, StartLBA=%u, Size=%u sectors\n",
                                   i, part->type, 
                                   (uint32_t)(part->start_lba & 0xFFFFFFFF),
                                   (uint32_t)(part->total_sectors & 0xFFFFFFFF));

@@ -1,7 +1,6 @@
 /**
  * @file scheduler_context.c
  * @brief Context Switching and CPU State Management
- * @author Refactored for SOLID principles
  * @version 6.0
  * 
  * @details Handles low-level context switching between tasks, idle mode
@@ -47,7 +46,7 @@ static tcb_t g_idle_task_tcb;
 static pcb_t g_idle_task_pcb;
 
 static __attribute__((noreturn)) void kernel_idle_task_loop(void) {
-    SCHED_INFO("Idle task started (PID %lu). Entering HLT loop.", (unsigned long)IDLE_TASK_PID);
+    SCHED_INFO("Idle task started (PID %u). Entering HLT loop.", IDLE_TASK_PID);
     
     // Ensure segment registers are properly set
     asm volatile(
@@ -176,7 +175,7 @@ void scheduler_context_switch(tcb_t *old_task, tcb_t *new_task) {
     KERNEL_ASSERT(new_task && new_task->process && new_task->process->page_directory_phys, 
                   "Invalid new task");
     
-    SCHED_DEBUG("Context switch: PID %lu -> PID %lu",
+    SCHED_DEBUG("Context switch: PID %u -> PID %u",
                 old_task ? old_task->pid : (uint32_t)-1, new_task->pid);
     
     // Set up kernel stack for new task
@@ -194,7 +193,7 @@ void scheduler_context_switch(tcb_t *old_task, tcb_t *new_task) {
         new_task->has_run = true;
         
         if (new_task->process->is_kernel_task) {
-            SCHED_DEBUG("First run for kernel task PID %lu", new_task->pid);
+            SCHED_DEBUG("First run for kernel task PID %u", new_task->pid);
             
             // Switch page directory if needed
             if (pd_needs_switch) {
@@ -207,7 +206,7 @@ void scheduler_context_switch(tcb_t *old_task, tcb_t *new_task) {
             
             KERNEL_PANIC_HALT("Kernel task returned unexpectedly!");
         } else {
-            SCHED_DEBUG("First run for user process PID %lu", new_task->pid);
+            SCHED_DEBUG("First run for user process PID %u", new_task->pid);
             
             // Switch page directory if needed
             if (pd_needs_switch) {

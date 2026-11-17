@@ -100,7 +100,7 @@ uintptr_t paging_clone_directory(uint32_t* src_pd_phys) {
     
     paging_temp_unmap((uintptr_t)new_pd_virt);
     
-    LOGGER_DEBUG(LOG_MODULE, "Cloned page directory: %#x -> %#lx", (uint32_t)src_pd_phys, new_pd_phys);
+    LOGGER_DEBUG(LOG_MODULE, "Cloned page directory: %#x -> %#x", (uint32_t)src_pd_phys, new_pd_phys);
     
     return new_pd_phys;
 }

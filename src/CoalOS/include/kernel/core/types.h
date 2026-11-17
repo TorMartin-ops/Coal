@@ -9,51 +9,23 @@ extern "C" {
 /*---------------------------------------------------------------------------
  * Foundational Includes
  *--------------------------------------------------------------------------*/
-#include <libc/stddef.h>    // Provides size_t, NULL, etc.
-#include <libc/stdint.h>    // Provides fixed-width integer types (like uint32_t)
+#include <libc/stddef.h>    // size_t, NULL, offsetof
+#include <libc/stdint.h>    // fixed-width integer types, uintptr_t
 #include <libc/stdbool.h>   // Provides bool, true, false
 
-/*---------------------------------------------------------------------------
- * 64-bit Integer Types (if not already in libc/stdint.h)
- *--------------------------------------------------------------------------*/
-// Add this definition before struct vfs_driver in vfs.h (if not defined elsewhere)
-
-
-#ifndef MAX_FILENAME_LEN // Define if not already present
+#ifndef MAX_FILENAME_LEN
 #define MAX_FILENAME_LEN 255
 #endif
+
 struct dirent {
     char     d_name[MAX_FILENAME_LEN + 1];
-    uint32_t d_ino;       // Use cluster number or another unique ID
-    uint8_t  d_type;      // File type (DT_REG, DT_DIR, etc.)
-    // Add other fields like d_reclen if needed by userspace
+    uint32_t d_ino;       /* cluster number or other unique ID */
+    uint8_t  d_type;      /* DT_REG, DT_DIR, ... */
 };
-
-
-#ifndef _UINT64_T_DEFINED // Add guards if these might be defined elsewhere later
-typedef unsigned long long uint64_t;
-#define _UINT64_T_DEFINED
-#endif
-
-#ifndef _INT64_T_DEFINED
-typedef long long int64_t;
-#define _INT64_T_DEFINED
-#endif
-
 
 /*---------------------------------------------------------------------------
  * Basic Utility Macros
  *--------------------------------------------------------------------------*/
-
-/* Ensure NULL is defined */
-#ifndef NULL
-#define NULL ((void*)0)
-#endif
-
-/* Macro to calculate the offset of a member within a structure */
-#ifndef offsetof
-#define offsetof(type, member) ((size_t)&(((type *)0)->member))
-#endif
 
 /* Macro to retrieve the pointer to the container structure from a member pointer */
 #define container_of(ptr, type, member) \
@@ -62,15 +34,6 @@ typedef long long int64_t;
 /*---------------------------------------------------------------------------
  * Additional OS-Specific Types
  *--------------------------------------------------------------------------*/
-
-/*
- * uintptr_t: Unsigned integer type capable of holding a pointer.
- * For i386 (32-bit), this is typically uint32_t.
- */
-#ifndef _UINTPTR_T_DEFINED // Use a guard to prevent redefinition
-typedef uint32_t uintptr_t;
-#define _UINTPTR_T_DEFINED
-#endif
 
 /*
  * ssize_t: Signed integer type for byte counts and error codes.

@@ -1,17 +1,10 @@
 /**
  * @file buddy.c
- * @brief Power-of-Two Buddy Allocator Implementation (Revised v4.1 - Build Fixes)
+ * @brief Power-of-two buddy allocator.
  *
  * Manages a virtually contiguous region mapped to physical memory, returning
- * VIRTUAL addresses to callers. Includes robust checks, SMP safety via spinlocks,
- * and optional debugging features (canaries, leak tracking).
- *
- * Key Improvements (v4.1):
- * - Fixed printf format specifiers for size_t/uintptr_t.
- * - Removed duplicate function definition.
- * - Corrected physical address calculation for alignment assertions.
- * - Enhanced error handling and robustness checks.
- * - Improved comments and code clarity.
+ * virtual addresses to callers. SMP-safe via spinlocks; optional canaries and
+ * leak tracking for debugging.
  */
 
 // === Header Includes ===
@@ -484,7 +477,7 @@ static int __attribute__((unused)) buddy_block_size_to_order(size_t block_size) 
 void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
     uintptr_t heap_region_phys_start = (uintptr_t)heap_region_phys_start_ptr;
     serial_printf("[Buddy] Initializing...\n");
-    serial_printf(" Input Region Phys Start: %#lx, Size: %lu bytes\n", (unsigned long)heap_region_phys_start, region_size); // Use %lu for size_t
+    serial_printf(" Input Region Phys Start: %#lx, Size: %u bytes\n", (unsigned long)heap_region_phys_start, region_size); // Use %lu for size_t
 
     // 1. Basic Sanity Checks
     if (heap_region_phys_start == 0 || region_size < MIN_BLOCK_SIZE_INTERNAL) {
@@ -519,7 +512,7 @@ void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
     // Check if enough space remains after alignment
     if (adjustment >= region_size || (region_size - adjustment) < MIN_BLOCK_SIZE_INTERNAL) {
         // Use %lu for size_t
-        serial_printf("[Buddy] Error: Not enough space in region after aligning start to %lu bytes.\n", max_block_alignment);
+        serial_printf("[Buddy] Error: Not enough space in region after aligning start to %u bytes.\n", max_block_alignment);
         g_heap_start_virt_addr = 0; g_heap_end_virt_addr = 0; // Mark as uninitialized
         return;
     }
@@ -534,9 +527,9 @@ void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
 
     g_heap_end_virt_addr = g_heap_start_virt_addr; // Tentative end, adjusted below
     // Use %lx for uintptr_t addresses
-    serial_printf("  Aligned Phys Start: 0x%lx, Corresponding Virt Start: 0x%lx\n", g_buddy_heap_phys_start_addr, g_heap_start_virt_addr);
+    serial_printf("  Aligned Phys Start: 0x%x, Corresponding Virt Start: 0x%x\n", g_buddy_heap_phys_start_addr, g_heap_start_virt_addr);
     // Use %lu for size_t
-    serial_printf("  Available Size after alignment: %lu bytes\n", available_size);
+    serial_printf("  Available Size after alignment: %u bytes\n", available_size);
 
     // 4. Populate Free Lists with Initial Blocks (using VIRTUAL addresses)
     g_buddy_total_managed_size = 0;
@@ -589,12 +582,12 @@ void buddy_init(void *heap_region_phys_start_ptr, size_t region_size) {
     }
 
     // Use %lx for uintptr_t addresses
-    serial_printf("[Buddy] Init done. Managed VIRT Range: [0x%lx - 0x%lx)\n", g_heap_start_virt_addr, g_heap_end_virt_addr);
+    serial_printf("[Buddy] Init done. Managed VIRT Range: [0x%x - 0x%x)\n", g_heap_start_virt_addr, g_heap_end_virt_addr);
     // Use %lu for size_t
-    serial_printf("  Total Managed: %lu bytes, Initially Free: %lu bytes\n", g_buddy_total_managed_size, g_buddy_free_bytes);
+    serial_printf("  Total Managed: %u bytes, Initially Free: %u bytes\n", g_buddy_total_managed_size, g_buddy_free_bytes);
     if (remaining_size > 0) {
         // Use %lu for size_t
-        serial_printf("  (Note: %lu bytes unused at end of region due to alignment/size)\n", remaining_size);
+        serial_printf("  (Note: %u bytes unused at end of region due to alignment/size)\n", remaining_size);
     }
 }
 
@@ -1103,14 +1096,14 @@ void buddy_free(void *ptr) {
 
     // Enhanced debugging: Check for obviously corrupted pointers (Linux-compatible)
     if (user_addr < 0x1000) {
-        serial_printf("[Buddy] Error: Freeing small pointer 0x%lx (likely corrupted/NULL-like).\n", user_addr);
+        serial_printf("[Buddy] Error: Freeing small pointer 0x%x (likely corrupted/NULL-like).\n", user_addr);
         BUDDY_PANIC("Freeing corrupted pointer!");
         return;
     }
 
     // Check range FIRST, considering header size  
     if (user_addr < (g_heap_start_virt_addr + BUDDY_HEADER_SIZE) || user_addr >= g_heap_end_virt_addr) {
-        serial_printf("[Buddy] Error: Freeing pointer 0x%lx outside heap [0x%lx - 0x%lx).\n",
+        serial_printf("[Buddy] Error: Freeing pointer 0x%x outside heap [0x%x - 0x%x).\n",
                         user_addr, g_heap_start_virt_addr + BUDDY_HEADER_SIZE, g_heap_end_virt_addr);
         BUDDY_PANIC("Freeing pointer outside heap!");
         return;
@@ -1132,7 +1125,7 @@ void buddy_free(void *ptr) {
     size_t block_size = (size_t)1 << block_order;
     // Use %lx for addresses
     if ((block_addr - g_heap_start_virt_addr) % block_size != 0) {
-        serial_printf("[Buddy] Error: Freeing misaligned pointer 0x%p (derived block 0x%lx, order %d)\n", ptr, block_addr, block_order);
+        serial_printf("[Buddy] Error: Freeing misaligned pointer 0x%p (derived block 0x%x, order %d)\n", ptr, block_addr, block_order);
         BUDDY_PANIC("Freeing pointer yielding misaligned block!");
         return;
     }
@@ -1187,7 +1180,7 @@ void buddy_free_raw(void* block_addr_virt, int order) {
       uintptr_t addr = (uintptr_t)block_addr_virt;
       // Use %lx for addresses
       if (addr < g_heap_start_virt_addr || addr >= g_heap_end_virt_addr) {
-          serial_printf("[Buddy Raw Free] Error: Freeing 0x%p outside heap [0x%lx - 0x%lx).\n", block_addr_virt, g_heap_start_virt_addr, g_heap_end_virt_addr);
+          serial_printf("[Buddy Raw Free] Error: Freeing 0x%p outside heap [0x%x - 0x%x).\n", block_addr_virt, g_heap_start_virt_addr, g_heap_end_virt_addr);
           BUDDY_PANIC("Freeing pointer outside heap in buddy_free_raw");
           return;
       }

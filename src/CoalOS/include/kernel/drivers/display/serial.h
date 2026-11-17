@@ -12,7 +12,7 @@ void serial_init(); // Optional initialization
 void serial_putchar(char c);
 void serial_write(const char *str);
 void serial_print_hex(uint32_t n); // Print hex value
-void serial_printf(const char *fmt, ...); // Printf-style serial output
+void serial_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2))); // Printf-style serial output
 void serial_vprintf(const char *fmt, va_list args); // Printf-style with va_list
 
 #endif // SERIAL_H

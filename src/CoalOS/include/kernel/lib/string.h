@@ -29,19 +29,8 @@
   * @param src Pointer to the source memory area.
   * @param n The number of bytes to copy.
   * @return A pointer to the destination memory area dest.
-  *
-  * @note If using GCC or Clang, this will typically use the highly optimized
-  * compiler builtin for best performance. The C implementation below
-  * serves as a fallback or reference.
   */
- #ifdef __GNUC__
- // Use compiler builtin for GCC/Clang for optimized memcpy
- #define memcpy __builtin_memcpy
- void *memcpy(void *dest, const void *src, size_t n); // Declaration still needed for type checking? Maybe not with define? Check compiler docs. Better safe than sorry.
- #else
- // Standard C declaration (implementation should be in string.c)
  void *memcpy(void *dest, const void *src, size_t n);
- #endif
  
  /**
   * @brief Copies n bytes from memory area src to memory area dest.

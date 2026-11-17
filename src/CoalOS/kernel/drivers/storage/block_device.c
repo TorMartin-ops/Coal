@@ -7,7 +7,7 @@
  */
 
  #include <kernel/drivers/storage/block_device.h>
- #include <kernel/drivers/storage/buffer_cache.h> // <<< ADD THIS INCLUDE
+ #include <kernel/drivers/storage/buffer_cache.h>
  #include <kernel/lib/port_io.h>      // For inb, outb, inw, outw
  #include <kernel/drivers/display/terminal.h>     // For terminal_printf/write
  #include <kernel/sync/spinlock.h>     // For spinlock_t and functions
@@ -17,7 +17,7 @@
  #include <libc/limits.h>  // For UINTPTR_MAX
  #include <kernel/cpu/isr_frame.h>    // Include the frame definition
  #include <kernel/lib/assert.h>       // KERNEL_ASSERT (Optional, but recommended)
- #include <kernel/drivers/input/keyboard_hw.h> // <<< ADDED for KBC_STATUS_PORT constant for debug prints
+ #include <kernel/drivers/input/keyboard_hw.h>
  // --- ATA Register Definitions ---
  #define ATA_REG_DATA        0
  #define ATA_REG_ERROR        1
@@ -110,7 +110,6 @@
          }
          // asm volatile("pause"); // Can add pause if needed
      }
-     // <<< FIX: Use %lu for uint32_t (initial_timeout) >>>
      terminal_printf("[ATA Polling %s @%#x] Poll timeout after %lu loops (mask=%#x, val=%#x). Last status=%#x\n",
                      context, io_base, (unsigned long)initial_timeout, wait_mask, wait_value, inb(io_base + ATA_REG_STATUS));
      return -1; // Indicate timeout
@@ -364,7 +363,6 @@ static int ata_identify(block_device_t *dev) {
       size_t words_per_sector = dev->sector_size / 2;
       uint16_t data_port = dev->io_base + ATA_REG_DATA;
       for (size_t sector = 0; sector < sectors_in_block; sector++) {
-          // <<<--- Moved Status/Error Check Inside Loop (Before each sector transfer) --->>>
           uint8_t current_status = inb(dev->io_base + ATA_REG_STATUS);
           // Check BSY before DRQ - BSY must be 0 for DRQ to be valid after initial wait
           if (current_status & ATA_SR_BSY) {
@@ -381,7 +379,6 @@ static int ata_identify(block_device_t *dev) {
                terminal_printf("[ATA %s IO] Error: DRQ not set during sector %lu transfer! (Status=%#x)\n", dev->device_name, (unsigned long)sector, current_status);
                return BLOCK_ERR_IO; // DRQ should be set if command was successful
           }
-          // <<<--- End Moved Check --->>>
 
           uint16_t *buf_words = (uint16_t *)((uint8_t *)buffer + sector * dev->sector_size);
           if (write) {
@@ -442,7 +439,6 @@ static int ata_identify(block_device_t *dev) {
          // --- Debug Print BEFORE ata_set_multiple_mode ---
          terminal_printf("[BlockDev Debug] KBC Status before ata_set_multiple_mode: 0x%x\n", inb(KBC_STATUS_PORT));
          // --- End Debug Print ---
-         // <<< FIX: Remove redefinition of ret >>>
          ret = ata_set_multiple_mode(dev);
          // --- Debug Print AFTER ata_set_multiple_mode ---
          terminal_printf("[BlockDev Debug] KBC Status after ata_set_multiple_mode: 0x%x\n", inb(KBC_STATUS_PORT));
@@ -455,8 +451,7 @@ static int ata_identify(block_device_t *dev) {
      dev->initialized = (ret == BLOCK_ERR_OK);
      spinlock_release_irqrestore(dev->channel_lock, irq_flags);
      if (!dev->initialized) { terminal_printf("[BlockDev Init] Failed for '%s' during IDENTIFY (err %d).\n", device, ret); return ret; }
-     // <<< FIX: Use %lu for uint32_t lower part of uint64_t sectors (avoid %llu) >>>
-     terminal_printf("[BlockDev Init] OK: '%s' LBA48:%d Sectors:%lu\n",
+     terminal_printf("[BlockDev Init] OK: '%s' LBA48:%d Sectors:%u\n",
         device, dev->lba48_supported, (uint32_t)(dev->total_sectors & 0xFFFFFFFF));
 terminal_printf("    -> Mult:%u SectorSize:%lu\n", // Use %u for uint16_t, %lu for uint32_t
         dev->multiple_sector_count, (unsigned long)dev->sector_size);
@@ -520,7 +515,6 @@ terminal_printf("    -> Mult:%u SectorSize:%lu\n", // Use %u for uint16_t, %lu f
          // --- Hybrid Wait for IRQ or BSY Clear ---
          uint32_t wait_loops = ATA_TIMEOUT_PIO * ATA_IRQ_WAIT_MULTIPLIER;
          bool timed_out = true;
-         // <<< FIX: Remove unused variable >>>
          // bool command_done_polling = false;
          uint8_t polled_status = 0;
 
@@ -533,7 +527,6 @@ terminal_printf("    -> Mult:%u SectorSize:%lu\n", // Use %u for uint16_t, %lu f
              polled_status = inb(dev->io_base + ATA_REG_STATUS);
              if (!(polled_status & ATA_SR_BSY)) { // Check if BSY is clear
                  // BSY clear means command finished or errored
-                 // <<< FIX: Remove assignment to unused variable >>>
                  // command_done_polling = true;
                  timed_out = false; // Consider it not a timeout if BSY cleared
                  break;
@@ -543,13 +536,13 @@ terminal_printf("    -> Mult:%u SectorSize:%lu\n", // Use %u for uint16_t, %lu f
          // Final check for IRQ flag after loop
          if (!timed_out) { /* Already done */ }
          else if (*irq_fired_flag) {
-             terminal_printf("[ATA %s RW %s] IRQ detected *after* wait loop finished (Cmd %#x, LBA %lu).\n",
+             terminal_printf("[ATA %s RW %s] IRQ detected *after* wait loop finished (Cmd %#x, LBA %u).\n",
                              dev->device_name, write ? "Write" : "Read", command, (uint32_t)(current_lba & 0xFFFFFFFF));
              timed_out = false; // Treat as success
          }
 
          if (timed_out) {
-             terminal_printf("[ATA %s RW %s] Timeout waiting for IRQ/BSY Clear (Cmd %#x, LBA %lu)\n",
+             terminal_printf("[ATA %s RW %s] Timeout waiting for IRQ/BSY Clear (Cmd %#x, LBA %u)\n",
                              dev->device_name, write ? "Write" : "Read", command, (uint32_t)(current_lba & 0xFFFFFFFF));
              final_ret = BLOCK_ERR_TIMEOUT;
              *last_status_flag = inb(dev->io_base + ATA_REG_STATUS); // Read status on timeout
@@ -562,7 +555,7 @@ terminal_printf("    -> Mult:%u SectorSize:%lu\n", // Use %u for uint16_t, %lu f
          uint8_t final_error = *irq_fired_flag ? *last_error_flag : ((final_status & ATA_SR_ERR) ? inb(dev->io_base + ATA_REG_ERROR) : 0);
 
          if (final_status & (ATA_SR_ERR | ATA_SR_DF)) {
-             terminal_printf("[ATA %s RW %s] Error/Fault detected (Cmd %#x, LBA %lu, Status=%#x, Error=%#x)\n",
+             terminal_printf("[ATA %s RW %s] Error/Fault detected (Cmd %#x, LBA %u, Status=%#x, Error=%#x)\n",
                              dev->device_name, write ? "Write" : "Read", command, (uint32_t)(current_lba & 0xFFFFFFFF), final_status, final_error);
              final_ret = (final_status & ATA_SR_ERR) ? BLOCK_ERR_DEV_ERR : BLOCK_ERR_DEV_FAULT;
              break; // Exit outer loop
@@ -572,7 +565,7 @@ terminal_printf("    -> Mult:%u SectorSize:%lu\n", // Use %u for uint16_t, %lu f
          if (command != ATA_CMD_FLUSH_CACHE && command != ATA_CMD_FLUSH_CACHE_EXT) {
              // Check DRQ bit - MUST be set for successful R/W completion
              if (!(final_status & ATA_SR_DRQ)) {
-                 terminal_printf("[ATA %s RW %s] Command done but DRQ not set! (Cmd %#x, LBA %lu, Status=%#x)\n",
+                 terminal_printf("[ATA %s RW %s] Command done but DRQ not set! (Cmd %#x, LBA %u, Status=%#x)\n",
                                  dev->device_name, write ? "Write" : "Read", command, (uint32_t)(current_lba & 0xFFFFFFFF), final_status);
                  final_ret = BLOCK_ERR_IO; break;
              }
@@ -597,7 +590,6 @@ terminal_printf("    -> Mult:%u SectorSize:%lu\n", // Use %u for uint16_t, %lu f
 
              uint32_t wait_loops = ATA_TIMEOUT_PIO * ATA_IRQ_WAIT_MULTIPLIER;
              bool timed_out = true;
-             // <<< FIX: Remove unused variable >>>
              // bool cmd_done_poll = false;
              uint8_t poll_stat = 0;
              while(wait_loops--) {

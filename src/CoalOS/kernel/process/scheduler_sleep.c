@@ -1,7 +1,6 @@
 /**
  * @file scheduler_sleep.c
  * @brief Sleep Queue Management and Timer-based Task Wakeup
- * @author Refactored for SOLID principles
  * @version 6.0
  * 
  * @details Manages sleeping tasks, wakeup times, and the sleep queue.
@@ -93,7 +92,7 @@ static void add_to_sleep_queue_locked(tcb_t *task) {
     }
     
     g_sleep_queue.count++;
-    SCHED_DEBUG("Added task PID %lu to sleep queue, wakeup at tick %lu", 
+    SCHED_DEBUG("Added task PID %u to sleep queue, wakeup at tick %u", 
                 task->pid, task->wakeup_time);
 }
 
@@ -115,7 +114,7 @@ static void remove_from_sleep_queue_locked(tcb_t *task) {
     task->wait_prev = NULL;
     g_sleep_queue.count--;
     
-    SCHED_DEBUG("Removed task PID %lu from sleep queue", task->pid);
+    SCHED_DEBUG("Removed task PID %u from sleep queue", task->pid);
 }
 
 void scheduler_sleep_check_wakeups(void) {
@@ -140,11 +139,11 @@ void scheduler_sleep_check_wakeups(void) {
         // Release sleep lock before enqueueing
         spinlock_release_irqrestore(&g_sleep_queue.lock, sleep_irq_flags);
 
-        SCHED_DEBUG("Waking up task PID %lu (wakeup time %lu, current %lu)", 
+        SCHED_DEBUG("Waking up task PID %u (wakeup time %u, current %u)", 
                     task_to_wake->pid, task_to_wake->wakeup_time, current_ticks);
         
         if (!scheduler_queues_enqueue_ready_task(task_to_wake)) {
-            SCHED_ERROR("Failed to enqueue woken task PID %lu", task_to_wake->pid);
+            SCHED_ERROR("Failed to enqueue woken task PID %u", task_to_wake->pid);
         } else {
             task_woken = true;
         }
@@ -176,7 +175,7 @@ void scheduler_sleep_task(uint32_t ms) {
     
     if (ticks_to_wait > (UINT32_MAX - current_ticks)) { 
         wakeup_target = UINT32_MAX; 
-        SCHED_WARN("Sleep duration %lu ms results in tick overflow.", ms); 
+        SCHED_WARN("Sleep duration %u ms results in tick overflow.", ms); 
     } else { 
         wakeup_target = current_ticks + ticks_to_wait; 
     }
@@ -191,7 +190,7 @@ void scheduler_sleep_task(uint32_t ms) {
     current->state = TASK_SLEEPING;
     current->in_run_queue = false;
     
-    SCHED_DEBUG("Task PID %lu sleeping for %lu ms until tick %lu", 
+    SCHED_DEBUG("Task PID %u sleeping for %u ms until tick %u", 
                 current->pid, ms, current->wakeup_time);
 
     uintptr_t sleep_irq_flags = spinlock_acquire_irqsave(&g_sleep_queue.lock);
@@ -216,18 +215,18 @@ uint32_t scheduler_sleep_get_sleeping_count(void) {
 void scheduler_sleep_debug_print_queue(void) {
     uintptr_t sleep_irq_flags = spinlock_acquire_irqsave(&g_sleep_queue.lock);
     
-    serial_printf("[Sleep Queue] %lu sleeping tasks:\n", g_sleep_queue.count);
+    serial_printf("[Sleep Queue] %u sleeping tasks:\n", g_sleep_queue.count);
     
     tcb_t *task = g_sleep_queue.head;
     int index = 0;
     while (task && index < 10) { // Limit to first 10 for readability
-        serial_printf("  [%d] PID %lu, wakeup at tick %lu\n", 
+        serial_printf("  [%d] PID %u, wakeup at tick %u\n", 
                       index++, task->pid, task->wakeup_time);
         task = task->wait_next;
     }
     
     if (task) {
-        serial_printf("  ... and %lu more tasks\n", g_sleep_queue.count - index);
+        serial_printf("  ... and %u more tasks\n", g_sleep_queue.count - index);
     }
     
     spinlock_release_irqrestore(&g_sleep_queue.lock, sleep_irq_flags);

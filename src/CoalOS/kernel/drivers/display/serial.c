@@ -42,8 +42,6 @@ void serial_print_hex(uint32_t n) {
 }
 
 // Optional: Basic Initialization (can set baud rate, etc., but often works with defaults in QEMU)
-// Forward declaration for _vsnprintf from terminal.c
-extern int _vsnprintf(char *str, size_t size, const char *fmt, va_list args);
 
 void serial_vprintf(const char *fmt, va_list args) {
     char buf[256];

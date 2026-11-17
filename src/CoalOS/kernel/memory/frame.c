@@ -338,7 +338,6 @@ mark_reserved_range(g_kernel_page_directory_phys, g_kernel_page_directory_phys +
 }
 // Add any other known hardware regions or special areas here if necessary.
 
-// ***** ADDED: Mark the refcount array's own physical memory as reserved *****
 if (g_frame_refcounts_phys != 0 && g_refcount_array_alloc_size > 0) {
 mark_reserved_range(g_frame_refcounts_phys,
                   g_frame_refcounts_phys + g_refcount_array_alloc_size,
@@ -394,7 +393,7 @@ if (entry->type == MULTIBOOT_MEMORY_AVAILABLE) {
 }
 // Use %lu for size_t
 serial_printf("   Sanity Check: Found %lu frames marked available (refcount=0).\n", (unsigned long)available_count);
-serial_printf("                 Of those, %lu frames fall within the physical buddy heap range [%#lx - %#lx).\n",
+serial_printf("                 Of those, %lu frames fall within the physical buddy heap range [%#x - %#x).\n",
          (unsigned long)usable_buddy_frames, buddy_heap_phys_start, buddy_heap_phys_end);
 if (available_count == 0 && g_total_frames > 256) {
 terminal_write("   [WARNING] Zero available frames detected after initialization!\n");

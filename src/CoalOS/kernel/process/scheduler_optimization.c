@@ -107,7 +107,7 @@ tcb_t* scheduler_opt_select_next_task(void) {
             g_task_stats[task->pid]->wait_ticks = 0;  // Reset wait time
         }
         
-        OPT_DEBUG("Selected task PID %lu from priority %d (O(1) selection)", 
+        OPT_DEBUG("Selected task PID %u from priority %d (O(1) selection)", 
                   task->pid, highest_prio);
     }
     
@@ -181,7 +181,7 @@ void scheduler_opt_boost_priority(tcb_t *task) {
         g_task_stats[task->pid]->boost_count++;
     }
     
-    OPT_INFO("Boosted task PID %lu priority %u -> %u", 
+    OPT_INFO("Boosted task PID %u priority %u -> %u", 
              task->pid, old_priority, task->effective_priority);
     
     // If task is in run queue, move it to new priority
@@ -203,7 +203,7 @@ void scheduler_opt_reset_boost(tcb_t *task) {
         uint8_t old_priority = task->effective_priority;
         task->effective_priority = task->base_priority;
         
-        OPT_DEBUG("Reset task PID %lu priority %u -> %u (base)", 
+        OPT_DEBUG("Reset task PID %u priority %u -> %u (base)", 
                   task->pid, old_priority, task->effective_priority);
         
         if (task->pid < MAX_TASKS && g_task_stats[task->pid]) {

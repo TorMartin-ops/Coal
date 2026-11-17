@@ -1,7 +1,6 @@
 /**
  * @file scheduler_core.c
  * @brief Core Scheduling Logic - Task Selection & Priority Management
- * @author Refactored for SOLID principles
  * @version 6.0
  * 
  * @details Contains core scheduling algorithms including task selection,
@@ -76,7 +75,7 @@ tcb_t* scheduler_select_next_task(void) {
             task->ticks_remaining = MS_TO_TICKS(g_priority_time_slices_ms[effective_prio]);
         }
         
-        SCHED_DEBUG("Selected task PID %lu (Base Prio %d, Effective Prio %d), Slice=%lu [OPT]", 
+        SCHED_DEBUG("Selected task PID %u (Base Prio %d, Effective Prio %d), Slice=%u [OPT]", 
                     task->pid, task->priority, effective_prio, task->ticks_remaining);
         
         return task;
@@ -96,7 +95,7 @@ tcb_t* scheduler_select_next_task(void) {
             uint8_t effective_prio = scheduler_core_get_effective_priority(task);
             task->ticks_remaining = MS_TO_TICKS(g_priority_time_slices_ms[effective_prio]);
             
-            SCHED_DEBUG("Selected task PID %lu (Base Prio %d, Effective Prio %d), Slice=%lu", 
+            SCHED_DEBUG("Selected task PID %u (Base Prio %d, Effective Prio %d), Slice=%u", 
                         task->pid, task->priority, effective_prio, task->ticks_remaining);
             
             return task;
@@ -142,7 +141,7 @@ void schedule(void) {
         // Don't re-enqueue idle task
         if (old_task->pid != IDLE_TASK_PID) {
             if (!scheduler_queues_enqueue_ready_task(old_task)) {
-                SCHED_ERROR("Failed to re-enqueue old task PID %lu", old_task->pid);
+                SCHED_ERROR("Failed to re-enqueue old task PID %u", old_task->pid);
             }
         }
     }
@@ -186,7 +185,7 @@ void scheduler_core_tick(void) {
 
     // Trigger reschedule if time slice expired
     if (curr_task->ticks_remaining == 0) {
-        SCHED_DEBUG("Timeslice expired for PID %lu", curr_task->pid);
+        SCHED_DEBUG("Timeslice expired for PID %u", curr_task->pid);
         g_need_reschedule = true;
     }
 
@@ -203,7 +202,7 @@ int scheduler_core_add_task(pcb_t *pcb) {
 
     tcb_t *new_task = (tcb_t *)kmalloc(sizeof(tcb_t));
     if (!new_task) { 
-        SCHED_ERROR("kmalloc TCB failed for PID %lu", pcb->pid); 
+        SCHED_ERROR("kmalloc TCB failed for PID %u", pcb->pid); 
         return -1; 
     }
     
@@ -236,11 +235,11 @@ int scheduler_core_add_task(pcb_t *pcb) {
 
     // Enqueue in appropriate run queue
     if (!scheduler_queues_enqueue_ready_task(new_task)) {
-        SCHED_ERROR("Failed to enqueue newly created task PID %lu!", new_task->pid);
+        SCHED_ERROR("Failed to enqueue newly created task PID %u!", new_task->pid);
         return -1;
     }
 
-    SCHED_INFO("Added task PID %lu (Prio %u, Slice %lu ticks)",
+    SCHED_INFO("Added task PID %u (Prio %u, Slice %u ticks)",
                new_task->pid, new_task->priority, new_task->time_slice_ticks);
     return 0;
 }
@@ -248,7 +247,7 @@ int scheduler_core_add_task(pcb_t *pcb) {
 void scheduler_core_yield(void) {
     uint32_t eflags;
     asm volatile("pushf; pop %0; cli" : "=r"(eflags));
-    SCHED_TRACE("yield() called by PID %lu", g_current_task ? g_current_task->pid : (uint32_t)-1);
+    SCHED_TRACE("yield() called by PID %u", g_current_task ? g_current_task->pid : (uint32_t)-1);
     schedule();
     if (eflags & 0x200) asm volatile("sti");
 }
@@ -259,7 +258,7 @@ void scheduler_core_remove_current_task(uint32_t code) {
     KERNEL_ASSERT(task_to_terminate && task_to_terminate->pid != IDLE_TASK_PID, 
                   "Cannot terminate idle/null task");
 
-    SCHED_INFO("Task PID %lu exiting with code %lu. Marking as ZOMBIE.", 
+    SCHED_INFO("Task PID %u exiting with code %u. Marking as ZOMBIE.", 
                task_to_terminate->pid, code);
     task_to_terminate->state = TASK_ZOMBIE;
     task_to_terminate->exit_code = code;
@@ -278,16 +277,16 @@ void scheduler_core_unblock_task(tcb_t *task) {
 
     if (task->state == TASK_BLOCKED) {
         task->state = TASK_READY;
-        SCHED_DEBUG("Task PID %lu unblocked, new state: READY.", task->pid);
+        SCHED_DEBUG("Task PID %u unblocked, new state: READY.", task->pid);
         
         if (!scheduler_queues_enqueue_ready_task(task)) {
-             SCHED_ERROR("Failed to enqueue unblocked task PID %lu", task->pid);
+             SCHED_ERROR("Failed to enqueue unblocked task PID %u", task->pid);
         } else {
              g_need_reschedule = true;
-             SCHED_DEBUG("Task PID %lu enqueued into run queue.", task->pid);
+             SCHED_DEBUG("Task PID %u enqueued into run queue.", task->pid);
         }
     } else {
-        SCHED_ERROR("Called on task PID %lu which was not BLOCKED (state=%d).", task->pid, task->state);
+        SCHED_ERROR("Called on task PID %u which was not BLOCKED (state=%d).", task->pid, task->state);
     }
 }
 
@@ -334,7 +333,7 @@ void scheduler_core_inherit_priority(tcb_t *holder, tcb_t *waiter) {
         uint8_t old_priority = holder->effective_priority;
         holder->effective_priority = waiter->effective_priority;
         
-        SCHED_DEBUG("Priority inheritance: Task PID %lu priority %u -> %u due to waiter PID %lu",
+        SCHED_DEBUG("Priority inheritance: Task PID %u priority %u -> %u due to waiter PID %u",
                     holder->pid, old_priority, holder->effective_priority, waiter->pid);
         
         // If holder is in a run queue, move it to new priority queue
@@ -367,7 +366,7 @@ void scheduler_core_restore_priority(tcb_t *task) {
     if (new_effective != old_effective) {
         task->effective_priority = new_effective;
         
-        SCHED_DEBUG("Priority restore: Task PID %lu priority %u -> %u (base: %u)",
+        SCHED_DEBUG("Priority restore: Task PID %u priority %u -> %u (base: %u)",
                     task->pid, old_effective, new_effective, task->base_priority);
         
         // If task is in a run queue, move it to appropriate priority queue
@@ -388,7 +387,7 @@ void scheduler_core_add_blocked_task(tcb_t *holder, tcb_t *waiter) {
     // Apply priority inheritance
     scheduler_core_inherit_priority(holder, waiter);
     
-    SCHED_DEBUG("Added blocked task: PID %lu waiting on PID %lu", waiter->pid, holder->pid);
+    SCHED_DEBUG("Added blocked task: PID %u waiting on PID %u", waiter->pid, holder->pid);
 }
 
 void scheduler_core_remove_blocked_task(tcb_t *holder, tcb_t *waiter) {
@@ -413,7 +412,7 @@ void scheduler_core_remove_blocked_task(tcb_t *holder, tcb_t *waiter) {
     // Restore holder's priority
     scheduler_core_restore_priority(holder);
     
-    SCHED_DEBUG("Removed blocked task: PID %lu no longer waiting on PID %lu", waiter->pid, holder->pid);
+    SCHED_DEBUG("Removed blocked task: PID %u no longer waiting on PID %u", waiter->pid, holder->pid);
 }
 
 //============================================================================

@@ -115,10 +115,6 @@
  // --- Utility Macro ---
  
  /** Retrieve the data structure containing a node */
- #ifndef offsetof
- #define offsetof(type, member) ((size_t)&(((type *)0)->member))
- #endif
- 
  #define rb_entry(ptr, type, member) \
      ((type *)(((char *)(ptr)) - offsetof(type, member)))
  

@@ -168,11 +168,7 @@
  static void terminal_putchar_internal(char c); 
  static void terminal_clear_internal(void); 
  
- int _vsnprintf(char *str, size_t size, const char *fmt, va_list args);
- // *** MODIFIED _format_number signature ***
- static int _format_number(unsigned long num, bool is_negative, int base, bool upper, // Changed from unsigned long long
-                           int min_width, bool zero_pad, char *buf, int buf_sz);
- 
+  
  /* ------------------------------------------------------------------------- */
  /* Helpers                                                                   */
  /* ------------------------------------------------------------------------- */
@@ -438,11 +434,24 @@
  /* printf implementasjon                                                     */
  /* ------------------------------------------------------------------------- */
  
- // *** MODIFIED _format_number to use unsigned long (32-bit on i386) ***
- static int _format_number(unsigned long val_ul, bool is_negative, int base, bool upper,
+ /* Divides *v by a small base in place and returns the remainder. Done with
+ * divl because the kernel is not linked against libgcc (no __udivdi3). */
+ static uint32_t _divmod_small(unsigned long long *v, uint32_t base) {
+     uint32_t hi = (uint32_t)(*v >> 32);
+     uint32_t lo = (uint32_t)*v;
+     uint32_t qhi = hi / base;
+     uint32_t rem = hi % base;
+     uint32_t qlo;
+     __asm__("divl %4" : "=a"(qlo), "=d"(rem) : "a"(lo), "d"(rem), "rm"(base));
+     *v = ((unsigned long long)qhi << 32) | qlo;
+     return rem;
+ }
+
+ /* Formats val in the given base. */
+ static int _format_number(unsigned long long val_ul, bool is_negative, int base, bool upper,
                            int min_width, bool zero_pad, char *buf, int buf_sz) {
      if (buf_sz < 2) { return 0; } 
-     char tmp_buf[33]; // Max for 32-bit binary + null
+     char tmp_buf[65]; // Max for 64-bit binary + null
      int i = 0;
      const char *digits_map = upper ? "0123456789ABCDEF" : "0123456789abcdef";
  
@@ -452,8 +461,7 @@
          tmp_buf[i++] = '0';
      } else {
          while (val_ul > 0 && i < (int)sizeof(tmp_buf) -1) {
-             tmp_buf[i++] = digits_map[val_ul % base]; // 32-bit % int -> no __umoddi3
-             val_ul /= base;                      // 32-bit / int -> no __udivdi3
+             tmp_buf[i++] = digits_map[_divmod_small(&val_ul, (uint32_t)base)];
          }
      }
      int num_digits = i;
@@ -484,12 +492,13 @@
      return current_pos;
  }
  
- // *** MODIFIED _vsnprintf to handle unsigned long and avoid long long where possible ***
+ /* Supports %s %c %d %i %u %x %X %o %p %%, flags 0 and #, a width, and the
+ * l, ll and z length modifiers. */
  int _vsnprintf(char *str, size_t size, const char *fmt, va_list args) {
      if (!str || !size) { if (size == 1 && str) str[0] = '\0'; return 0; }
  
      size_t written_chars = 0;
-     char temp_num_buf[34]; 
+     char temp_num_buf[68];
  
      while (*fmt && written_chars < size - 1) {
          if (*fmt != '%') {
@@ -500,8 +509,8 @@
  
          bool zero_pad = false;
          int min_width = 0;
-         bool is_long = false;
-         // bool is_long_long = false; // Avoid if possible
+         bool is_long = false;     // l: same width as int on i386
+         bool is_long_long = false;
          bool alt_form = false; 
  
          if (*fmt == '0') { zero_pad = true; fmt++; }
@@ -512,19 +521,17 @@
              fmt++;
          }
  
-         if (*fmt == 'l') {
+         if (*fmt == 'z') {            // size_t is unsigned int on i386
+             fmt++;
+         } else if (*fmt == 'l') {
              is_long = true; fmt++;
-             if (*fmt == 'l') { 
-                 // is_long_long = true; // Mark it, but try to avoid 64-bit math
-                 serial_write("Warning: %ll specifier used, may truncate or cause issues without libgcc 64bit support.\n");
-                 fmt++; 
-             }
+             if (*fmt == 'l') { is_long_long = true; fmt++; }
          }
  
          const char *s_val;
          int len_s;
-         unsigned long ul_val; // Use unsigned long for most numeric conversions
-         long l_val;
+         unsigned long long ul_val;
+         long long l_val;
          bool neg;
  
          switch (*fmt) {
@@ -540,19 +547,18 @@
                  break;
              case 'c': str[written_chars++] = (char)va_arg(args, int); break;
              case 'd': case 'i':
-                 // Assume long long is not commonly needed for kernel messages, try to use long
-                 if (is_long) { l_val = va_arg(args, long); } // Handles %ld
-                 else { l_val = va_arg(args, int); }        // Handles %d
+                 if (is_long_long) { l_val = va_arg(args, long long); }
+                 else if (is_long) { l_val = va_arg(args, long); }
+                 else { l_val = va_arg(args, int); }
                  neg = l_val < 0;
-                 // Be careful with MIN_INT
-                 ul_val = neg ? ((l_val == (-2147483647L - 1L)) ? 2147483648UL : (unsigned long)-l_val) : (unsigned long)l_val;
+                 ul_val = neg ? (0ULL - (unsigned long long)l_val) : (unsigned long long)l_val;
                  len_s = _format_number(ul_val, neg, 10, false, min_width, zero_pad, temp_num_buf, sizeof(temp_num_buf));
                  for (int k=0; k<len_s && written_chars < size -1; ++k) str[written_chars++] = temp_num_buf[k];
                  break;
              case 'u': case 'x': case 'X': case 'o':
-                 // Assume long long is not commonly needed
-                 if (is_long) { ul_val = va_arg(args, unsigned long); } // Handles %lu, %lx etc.
-                 else { ul_val = va_arg(args, unsigned int); }         // Handles %u, %x etc.
+                 if (is_long_long) { ul_val = va_arg(args, unsigned long long); }
+                 else if (is_long) { ul_val = va_arg(args, unsigned long); }
+                 else { ul_val = va_arg(args, unsigned int); }
                  
                  int base = (*fmt == 'u') ? 10 : ((*fmt == 'o') ? 8 : 16);
                  bool upper = (*fmt == 'X');
@@ -564,12 +570,11 @@
                  for (int k=0; k<len_s && written_chars < size -1; ++k) str[written_chars++] = temp_num_buf[k];
                  break;
              case 'p': // Pointer
-                 ul_val = (unsigned long)(uintptr_t)va_arg(args, void*); // Pointers are 32-bit
+                 ul_val = (uintptr_t)va_arg(args, void *);
                  if (written_chars < size -1) str[written_chars++] = '0';
                  if (written_chars < size -1) str[written_chars++] = 'x';
                  int ptr_w = sizeof(void*) * 2; 
-                 // if (min_width < ptr_w) min_width = ptr_w; // Ensure full pointer width
-                 len_s = _format_number(ul_val, false, 16, false, ptr_w, true, temp_num_buf, sizeof(temp_num_buf)); // Pointers zero-padded
+                                  len_s = _format_number(ul_val, false, 16, false, ptr_w, true, temp_num_buf, sizeof(temp_num_buf)); // Pointers zero-padded
                  for (int k=0; k<len_s && written_chars < size -1; ++k) str[written_chars++] = temp_num_buf[k];
                  break;
              case '%': str[written_chars++] = '%'; break;

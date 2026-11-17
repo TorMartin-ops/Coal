@@ -159,7 +159,7 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
     uintptr_t kernel_phys_start_addr = (uintptr_t)&_kernel_start_phys;
     uintptr_t kernel_phys_end_addr = ALIGN_UP((uintptr_t)&_kernel_end_phys, PAGE_SIZE); 
 
-    terminal_printf("  Kernel Physical Range: [%#010lx - %#010lx)\n", kernel_phys_start_addr, kernel_phys_end_addr);
+    terminal_printf("  Kernel Physical Range: [%#010x - %#010x)\n", kernel_phys_start_addr, kernel_phys_end_addr);
 
     while ((uintptr_t)entry < mmap_end_addr && (uintptr_t)entry + mmap_tag->entry_size <= mmap_end_addr) {
         uintptr_t region_p_start = (uintptr_t)entry->addr;
@@ -195,7 +195,7 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
     if (*out_total_mem_span < total_span) *out_total_mem_span = UINTPTR_MAX; 
 
     if (best_candidate_base < 0x100000 && best_candidate_base != 0) {
-        terminal_printf("  Warning: Best heap candidate below 1MB (%#lx).\n", best_candidate_base);
+        terminal_printf("  Warning: Best heap candidate below 1MB (%#x).\n", best_candidate_base);
     }
 
     if (best_candidate_size64 >= MIN_USABLE_HEAP_SIZE && best_candidate_base != 0) {
@@ -203,10 +203,10 @@ static bool parse_memory_map_for_heap(struct multiboot_tag_mmap *mmap_tag,
         *out_heap_size = (best_candidate_size64 > (uint64_t)MAX_CLAMPED_INITIAL_HEAP_SIZE) ?
                          MAX_CLAMPED_INITIAL_HEAP_SIZE : (size_t)best_candidate_size64;
         if (*out_heap_size < MIN_USABLE_HEAP_SIZE) {
-            terminal_printf("  [FATAL] Heap candidate (%#lx, size %zu) too small after clamping.\n", *out_heap_base, *out_heap_size);
+            terminal_printf("  [FATAL] Heap candidate (%#x, size %zu) too small after clamping.\n", *out_heap_base, *out_heap_size);
             return false;
         }
-        terminal_printf("  Best Heap Found: PhysBase=%#lx, Size=%zu (may be clamped)\n", *out_heap_base, *out_heap_size);
+        terminal_printf("  Best Heap Found: PhysBase=%#x, Size=%zu (may be clamped)\n", *out_heap_base, *out_heap_size);
         return true;
     }
     terminal_printf("  [FATAL] No suitable heap region found (>= %u bytes).\n", MIN_USABLE_HEAP_SIZE);
@@ -264,7 +264,7 @@ static bool initialize_memory_management(uint32_t mb_info_phys) {
         mb_total_struct_size = 8192; // Default to 8KB
     }
     
-    terminal_printf("    Multiboot info at VIRT: %#lx (Size: %u bytes)\n", g_multiboot_info_virt_addr_global, (unsigned)mb_total_struct_size);
+    terminal_printf("    Multiboot info at VIRT: %#x (Size: %u bytes)\n", g_multiboot_info_virt_addr_global, (unsigned)mb_total_struct_size);
 
 
     terminal_write("  Stage 6: Initializing Frame Allocator...\n");

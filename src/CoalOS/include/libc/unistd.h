@@ -5,16 +5,9 @@
 #include "stdint.h"
 #include "stdarg.h"
 
-// Basic types
-typedef int32_t ssize_t;
-typedef int32_t off_t;
-typedef int32_t pid_t;
-typedef uint32_t uid_t;
-typedef uint32_t gid_t;
-typedef uint32_t mode_t;
-typedef uint32_t useconds_t;
-typedef int32_t intptr_t;
-typedef uint32_t uintptr_t;
+#include <kernel/core/types.h>   // ssize_t, off_t, pid_t, uid_t, gid_t, mode_t
+
+typedef unsigned int useconds_t;
 
 // File descriptor constants
 #define STDIN_FILENO  0

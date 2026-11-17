@@ -275,7 +275,7 @@ void kfree(void *ptr) {
     // Linux-compatible validation: Check for obviously corrupted pointers
     uintptr_t ptr_addr = (uintptr_t)ptr;
     if (ptr_addr < 0x1000) {
-        serial_printf("[kfree] Error: Freeing small/corrupted pointer 0x%lx\n", ptr_addr);
+        serial_printf("[kfree] Error: Freeing small/corrupted pointer 0x%x\n", ptr_addr);
         return; // Don't panic, just refuse to free
     }
     

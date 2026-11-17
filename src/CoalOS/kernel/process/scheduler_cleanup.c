@@ -1,7 +1,6 @@
 /**
  * @file scheduler_cleanup.c
  * @brief Zombie Process Cleanup and Resource Management
- * @author Refactored for SOLID principles
  * @version 6.0
  * 
  * @details Handles cleanup of terminated processes, resource deallocation,
@@ -44,18 +43,18 @@ void scheduler_cleanup_zombies(void) {
     tcb_t *zombie_to_reap = scheduler_queues_remove_zombie_task();
     
     if (zombie_to_reap) {
-        SCHED_INFO("Cleanup: Reaping ZOMBIE task PID %lu (Exit Code: %lu).", 
+        SCHED_INFO("Cleanup: Reaping ZOMBIE task PID %u (Exit Code: %u).", 
                    zombie_to_reap->pid, zombie_to_reap->exit_code);
         
         // Check idle task stack before destroying process
         scheduler_context_check_idle_integrity("Before destroy_process");
         
         if (zombie_to_reap->process) {
-            serial_printf("[destroy_process] Enter for PID %lu\n", zombie_to_reap->pid);
+            serial_printf("[destroy_process] Enter for PID %u\n", zombie_to_reap->pid);
             destroy_process(zombie_to_reap->process);
-            serial_printf("[destroy_process] Exit for PID %lu\n", zombie_to_reap->pid);
+            serial_printf("[destroy_process] Exit for PID %u\n", zombie_to_reap->pid);
         } else {
-            SCHED_WARN("Zombie task PID %lu has NULL process pointer!", zombie_to_reap->pid);
+            SCHED_WARN("Zombie task PID %u has NULL process pointer!", zombie_to_reap->pid);
         }
         
         // Check idle task stack after destroying process
@@ -67,7 +66,7 @@ void scheduler_cleanup_zombies(void) {
         // Check idle task stack after freeing TCB
         scheduler_context_check_idle_integrity("After kfree(tcb)");
         
-        SCHED_DEBUG("Successfully reaped zombie task PID %lu", zombie_to_reap->pid);
+        SCHED_DEBUG("Successfully reaped zombie task PID %u", zombie_to_reap->pid);
     }
 }
 
@@ -84,7 +83,7 @@ void scheduler_cleanup_all_zombies(void) {
             break; // No more zombies
         }
         
-        SCHED_INFO("Bulk cleanup: Reaping ZOMBIE task PID %lu (Exit Code: %lu).", 
+        SCHED_INFO("Bulk cleanup: Reaping ZOMBIE task PID %u (Exit Code: %u).", 
                    zombie_to_reap->pid, zombie_to_reap->exit_code);
         
         if (zombie_to_reap->process) {
@@ -108,11 +107,11 @@ void scheduler_cleanup_all_zombies(void) {
 
 bool scheduler_cleanup_force_cleanup_task(uint32_t pid) {
     if (pid == IDLE_TASK_PID) {
-        SCHED_ERROR("Cannot force cleanup idle task PID %lu", (unsigned long)pid);
+        SCHED_ERROR("Cannot force cleanup idle task PID %u", pid);
         return false;
     }
     
-    SCHED_DEBUG("Attempting forced cleanup of task PID %lu", pid);
+    SCHED_DEBUG("Attempting forced cleanup of task PID %u", pid);
     
     // This is a simplified implementation
     // In a full implementation, we would search through all task lists
@@ -121,14 +120,14 @@ bool scheduler_cleanup_force_cleanup_task(uint32_t pid) {
     tcb_t *zombie = scheduler_queues_remove_zombie_task();
     while (zombie) {
         if (zombie->pid == pid) {
-            SCHED_INFO("Force cleanup: Found and reaping task PID %lu", pid);
+            SCHED_INFO("Force cleanup: Found and reaping task PID %u", pid);
             
             if (zombie->process) {
                 destroy_process(zombie->process);
             }
             kfree(zombie);
             
-            SCHED_DEBUG("Successfully force-cleaned task PID %lu", pid);
+            SCHED_DEBUG("Successfully force-cleaned task PID %u", pid);
             return true;
         }
         
@@ -138,7 +137,7 @@ bool scheduler_cleanup_force_cleanup_task(uint32_t pid) {
         zombie = scheduler_queues_remove_zombie_task();
     }
     
-    SCHED_WARN("Force cleanup: Task PID %lu not found in zombie list", pid);
+    SCHED_WARN("Force cleanup: Task PID %u not found in zombie list", pid);
     return false;
 }
 
@@ -170,7 +169,7 @@ void scheduler_cleanup_increment_stats(bool success) {
 }
 
 void scheduler_cleanup_print_stats(void) {
-    serial_printf("[Cleanup Stats] Total reaped: %lu, Failures: %lu\n",
+    serial_printf("[Cleanup Stats] Total reaped: %u, Failures: %u\n",
                   g_cleanup_stats.total_reaped, g_cleanup_stats.reap_failures);
 }
 
@@ -191,15 +190,15 @@ bool scheduler_cleanup_validate_task_resources(tcb_t *task) {
     }
     
     if (task->state == TASK_ZOMBIE && task->process == NULL) {
-        SCHED_WARN("Zombie task PID %lu has NULL process - may cause cleanup issues", task->pid);
+        SCHED_WARN("Zombie task PID %u has NULL process - may cause cleanup issues", task->pid);
         return false;
     }
     
     if (task->in_run_queue && task->state == TASK_ZOMBIE) {
-        SCHED_ERROR("Zombie task PID %lu still marked as in_run_queue", task->pid);
+        SCHED_ERROR("Zombie task PID %u still marked as in_run_queue", task->pid);
         return false;
     }
     
-    SCHED_TRACE("Task PID %lu passed resource validation", task->pid);
+    SCHED_TRACE("Task PID %u passed resource validation", task->pid);
     return true;
 }

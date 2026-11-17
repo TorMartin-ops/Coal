@@ -300,16 +300,14 @@
      // Note: objs_this_slab might be smaller than cache->objs_per_slab_max due to coloring
      uintptr_t data_end = data_start + (slab->objs_this_slab * cache->internal_slot_size);
      if (obj_addr < data_start || obj_addr >= data_end || ((obj_addr - data_start) % cache->internal_slot_size) != 0) {
-        // <<<<< CORRECTED: Removed erroneous printf, added reasonable one >>>>>
-        serial_printf("[Slab] Cache '%s': Invalid free address 0x%lx (Out of bounds or misaligned).\n", cache->name, obj_addr);
+        serial_printf("[Slab] Cache '%s': Invalid free address 0x%x (Out of bounds or misaligned).\n", cache->name, obj_addr);
         spinlock_release_irqrestore(&cache->lock, irq_flags); return;
      }
 
      // --- Check Footer Canary (inside lock) ---
      uint32_t *footer_ptr = (uint32_t*)(obj_addr + cache->internal_slot_size - SLAB_FOOTER_SIZE);
      if (*footer_ptr != SLAB_FOOTER_MAGIC) {
-          // <<<<< CORRECTED: Changed %x to %lx >>>>>
-         serial_printf("[Slab] Cache '%s': CORRUPTION DETECTED freeing obj 0x%lx! Footer magic invalid (Expected: 0x%lx, Found: 0x%lx).\n",
+         serial_printf("[Slab] Cache '%s': CORRUPTION DETECTED freeing obj 0x%x! Footer magic invalid (Expected: 0x%lx, Found: 0x%lx).\n",
                          cache->name, obj_addr, (unsigned long)SLAB_FOOTER_MAGIC, (unsigned long)*footer_ptr);
          // Optionally: Mark slab as corrupt? Abort? For now, just report and abort free.
          spinlock_release_irqrestore(&cache->lock, irq_flags);
@@ -345,8 +343,7 @@
          else { list_changed = slab_list_remove(&cache->slab_partial, slab); }
 
          if (!list_changed && slab->free_count != 1) { // Only error if it wasn't found and wasn't just moved from full
-              // <<<<< CORRECTED: Changed %x to %lx >>>>>
-              serial_printf("[Slab] Cache '%s': ERROR! Empty slab 0x%lx not found on partial/full list.\n", cache->name, (uintptr_t)slab);
+              serial_printf("[Slab] Cache '%s': ERROR! Empty slab 0x%x not found on partial/full list.\n", cache->name, (uintptr_t)slab);
          }
 
          #ifdef ENABLE_SLAB_RECLAIM

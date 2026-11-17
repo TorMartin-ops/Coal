@@ -100,6 +100,9 @@ void terminal_printf(const char* format, ...) __attribute__((format(printf, 1, 2
  */
 void terminal_vprintf(const char* format, va_list args);
 
+/** Kernel formatter shared by terminal and serial output. */
+int _vsnprintf(char *str, size_t size, const char *fmt, va_list args);
+
 
 /* --- Interactive Input Functions --- */
 

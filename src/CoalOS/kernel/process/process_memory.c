@@ -48,11 +48,9 @@ bool allocate_kernel_stack(pcb_t *proc)
        return false;
     }
     size_t num_usable_pages = usable_stack_size / PAGE_SIZE;
-    // *** GUARD PAGE FIX: Allocate one extra page ***
     size_t num_pages_with_guard = num_usable_pages + 1;
     size_t total_alloc_size = num_pages_with_guard * PAGE_SIZE; // Total size including guard
 
-    // *** GUARD PAGE FIX: Ensure log message reflects the extra page ***
     serial_printf("  Allocating %lu pages + 1 guard page (%lu bytes total) for kernel stack...\n",
                     (unsigned long)num_usable_pages, (unsigned long)total_alloc_size);
 
@@ -77,13 +75,11 @@ bool allocate_kernel_stack(pcb_t *proc)
         }
     }
     proc->kernel_stack_phys_base = (uint32_t)phys_frames[0];
-    // *** GUARD PAGE FIX: Update log message ***
     serial_printf("  Successfully allocated %lu physical frames (incl. guard) for kernel stack.\n", (unsigned long)allocated_count);
 
     // 2. Allocate Virtual Range (Allocate for num_pages_with_guard)
     // TODO: Add locking for g_next_kernel_stack_virt_base in SMP
     uintptr_t kstack_virt_base = g_next_kernel_stack_virt_base;
-    // *** GUARD PAGE FIX: Use total size including guard ***
     uintptr_t kstack_virt_end_with_guard = kstack_virt_base + total_alloc_size;
     // Check for overflow and exceeding bounds
     if (kstack_virt_base < KERNEL_STACK_VIRT_START || kstack_virt_end_with_guard > KERNEL_STACK_VIRT_END || kstack_virt_end_with_guard <= kstack_virt_base) {
@@ -96,12 +92,10 @@ bool allocate_kernel_stack(pcb_t *proc)
     }
     g_next_kernel_stack_virt_base = kstack_virt_end_with_guard; // Advance allocator
     KERNEL_ASSERT((kstack_virt_base % PAGE_SIZE) == 0, "Kernel stack virt base not page aligned");
-    // *** GUARD PAGE FIX: Update log message ***
     serial_printf("  Allocated kernel stack VIRTUAL range (incl. guard): [%#lx - %#lx)\n",
                     (unsigned long)kstack_virt_base, (unsigned long)kstack_virt_end_with_guard);
 
     // 3. Map Physical Frames to Virtual Range in Kernel Page Directory
-    // *** GUARD PAGE FIX: Loop over all allocated frames ***
     for (size_t i = 0; i < num_pages_with_guard; i++) {
         uintptr_t target_vaddr = kstack_virt_base + (i * PAGE_SIZE);
         uintptr_t phys_addr    = phys_frames[i];
@@ -129,7 +123,6 @@ bool allocate_kernel_stack(pcb_t *proc)
     }
 
     // 4. Perform Kernel Stack Write Test (on usable range only)
-    // *** GUARD PAGE FIX: Test only the usable part ***
     uintptr_t usable_stack_end = kstack_virt_base + usable_stack_size;
     volatile uint32_t *stack_bottom_ptr = (volatile uint32_t *)kstack_virt_base;
     volatile uint32_t *stack_top_word_ptr = (volatile uint32_t *)(usable_stack_end - sizeof(uint32_t)); // Test highest usable word
@@ -148,9 +141,7 @@ bool allocate_kernel_stack(pcb_t *proc)
         serial_printf("  KERNEL STACK WRITE TEST FAILED! Read back %#lx and %#lx (expected %#lx)\n",
                         (unsigned long)read_back1, (unsigned long)read_back2, (unsigned long)test_value);
         serial_printf("  Unmapping failed stack range V=[%p-%p)\n", (void*)kstack_virt_base, (void*)kstack_virt_end_with_guard);
-        // *** GUARD PAGE FIX: Unmap total size ***
         paging_unmap_range((uint32_t*)g_kernel_page_directory_phys, kstack_virt_base, total_alloc_size);
-        // *** GUARD PAGE FIX: Free all frames ***
         for(size_t i=0; i<num_pages_with_guard; ++i) { if(phys_frames[i]) put_frame(phys_frames[i]); }
         kfree(phys_frames);
         g_next_kernel_stack_virt_base = kstack_virt_base; // Roll back VA allocator
@@ -163,7 +154,6 @@ bool allocate_kernel_stack(pcb_t *proc)
 
     kfree(phys_frames); // Free the temporary array
 
-    // *** GUARD PAGE FIX: Update log message ***
     serial_printf("  Kernel stack mapped (incl. guard): PhysBase=%#lx, VirtBase=%#lx, Usable VirtTop=%p\n",
                     (unsigned long)proc->kernel_stack_phys_base,
                     (unsigned long)kstack_virt_base,
@@ -189,7 +179,6 @@ void free_kernel_stack(pcb_t *proc)
     // kernel_stack_vaddr_top points to the end of the *usable* stack (e.g., 0xe0004000)
     uintptr_t stack_top_usable = (uintptr_t)proc->kernel_stack_vaddr_top;
     size_t usable_stack_size = PROCESS_KSTACK_SIZE;
-    // *** GUARD PAGE FIX: Calculate total size including guard ***
     size_t total_stack_size = usable_stack_size + PAGE_SIZE;
     size_t num_pages_with_guard = total_stack_size / PAGE_SIZE;
     uintptr_t stack_base = stack_top_usable - usable_stack_size; // Base of usable stack (e.g., 0xe0000000)
@@ -199,7 +188,7 @@ void free_kernel_stack(pcb_t *proc)
 
     // Free physical frames (Iterate over usable + guard page)
     serial_write("  Freeing kernel stack frames (incl. guard)...\n");
-    for (size_t i = 0; i < num_pages_with_guard; ++i) { // *** GUARD PAGE FIX: Loop limit ***
+    for (size_t i = 0; i < num_pages_with_guard; ++i) {
         uintptr_t v_addr = stack_base + (i * PAGE_SIZE);
         uintptr_t phys_addr = 0;
         // Get physical address from KERNEL page directory
@@ -292,7 +281,7 @@ error_t allocate_kernel_stack_safe(pcb_t *proc) {
         kstack_virt_end_with_guard > KERNEL_STACK_VIRT_END || 
         kstack_virt_end_with_guard <= kstack_virt_base) {
         
-        serial_printf("[Process] Kernel stack virtual address space exhausted [%#lx - %#lx)\n",
+        serial_printf("[Process] Kernel stack virtual address space exhausted [%#x - %#x)\n",
                       kstack_virt_base, kstack_virt_end_with_guard);
         
         // Clean up physical frames
@@ -323,7 +312,7 @@ error_t allocate_kernel_stack_safe(pcb_t *proc) {
         int map_res = paging_map_single_4k((uint32_t*)g_kernel_page_directory_phys, 
                                            target_vaddr, phys_addr, PTE_KERNEL_DATA_FLAGS);
         if (map_res != 0) {
-            serial_printf("[Process] Failed to map kernel stack page %zu (V=%p -> P=%#lx), error %d\n",
+            serial_printf("[Process] Failed to map kernel stack page %zu (V=%p -> P=%#x), error %d\n",
                           i, (void*)target_vaddr, phys_addr, map_res);
             
             // Unmap already mapped pages and free all physical frames

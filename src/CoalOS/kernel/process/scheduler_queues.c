@@ -1,7 +1,6 @@
 /**
  * @file scheduler_queues.c
  * @brief Queue Management for Scheduler - Run Queues & Task Lists
- * @author Refactored for SOLID principles
  * @version 6.0
  * 
  * @details Responsible for managing run queues, task enqueue/dequeue operations,
@@ -75,12 +74,12 @@ static bool enqueue_task_locked(run_queue_t *queue, tcb_t *task) {
 
     // CRITICAL: Never enqueue the idle task
     if (task->pid == IDLE_TASK_PID) {
-        SCHED_ERROR("CRITICAL BUG: Attempted to enqueue idle task PID %lu!", task->pid);
+        SCHED_ERROR("CRITICAL BUG: Attempted to enqueue idle task PID %u!", task->pid);
         return false;
     }
 
     if (task->in_run_queue) {
-        SCHED_WARN("Task PID %lu already marked as in_run_queue during enqueue attempt.", task->pid);
+        SCHED_WARN("Task PID %u already marked as in_run_queue during enqueue attempt.", task->pid);
         return false;
     }
 
@@ -105,7 +104,7 @@ static bool dequeue_task_locked(run_queue_t *queue, tcb_t *task) {
     KERNEL_ASSERT(task != NULL, "Cannot dequeue NULL task");
 
     if (!queue->head) {
-        SCHED_WARN("Attempted dequeue from empty queue for task PID %lu", task->pid);
+        SCHED_WARN("Attempted dequeue from empty queue for task PID %u", task->pid);
         task->in_run_queue = false;
         return false;
     }
@@ -140,7 +139,7 @@ static bool dequeue_task_locked(run_queue_t *queue, tcb_t *task) {
         return true;
     }
 
-    SCHED_ERROR("Task PID %lu not found in queue for dequeue!", task->pid);
+    SCHED_ERROR("Task PID %u not found in queue for dequeue!", task->pid);
     task->in_run_queue = false; // Clear flag defensively
     return false;
 }
@@ -157,7 +156,7 @@ bool scheduler_queues_enqueue_ready_task(tcb_t *task) {
     spinlock_release_irqrestore(&queue->lock, queue_irq_flags);
     
     if (result) {
-        SCHED_DEBUG("Enqueued task PID %lu into priority %u queue", task->pid, task->priority);
+        SCHED_DEBUG("Enqueued task PID %u into priority %u queue", task->pid, task->priority);
 #ifdef USE_SCHEDULER_OPTIMIZATION
         // Notify optimization module that this priority level has tasks
         scheduler_opt_mark_priority_active(task->priority);
@@ -193,11 +192,11 @@ tcb_t* scheduler_queues_dequeue_ready_task(uint8_t priority) {
         spinlock_release_irqrestore(&queue->lock, queue_irq_flags);
         
         if (!dequeued) { 
-            SCHED_ERROR("Selected task PID %lu Prio %d but failed to dequeue!", task->pid, priority); 
+            SCHED_ERROR("Selected task PID %u Prio %d but failed to dequeue!", task->pid, priority); 
             return NULL;
         }
         
-        SCHED_DEBUG("Dequeued task PID %lu from priority %u queue", task->pid, priority);
+        SCHED_DEBUG("Dequeued task PID %u from priority %u queue", task->pid, priority);
         return task;
     }
     
@@ -235,7 +234,7 @@ void scheduler_queues_move_task_priority(tcb_t *task, uint8_t old_priority, uint
     spinlock_release_irqrestore(&old_queue->lock, old_flags);
     
     if (!removed) {
-        SCHED_ERROR("Failed to remove task PID %lu from priority %u queue", task->pid, old_priority);
+        SCHED_ERROR("Failed to remove task PID %u from priority %u queue", task->pid, old_priority);
         return;
     }
 
@@ -246,9 +245,9 @@ void scheduler_queues_move_task_priority(tcb_t *task, uint8_t old_priority, uint
     spinlock_release_irqrestore(&new_queue->lock, new_flags);
     
     if (!added) {
-        SCHED_ERROR("Failed to add task PID %lu to priority %u queue", task->pid, new_priority);
+        SCHED_ERROR("Failed to add task PID %u to priority %u queue", task->pid, new_priority);
     } else {
-        SCHED_DEBUG("Moved task PID %lu from priority %u to %u", task->pid, old_priority, new_priority);
+        SCHED_DEBUG("Moved task PID %u from priority %u to %u", task->pid, old_priority, new_priority);
     }
 }
 
@@ -262,7 +261,7 @@ void scheduler_queues_add_to_all_tasks(tcb_t *task) {
     g_all_tasks_head = task;
     spinlock_release_irqrestore(&g_all_tasks_lock, all_tasks_irq_flags);
     
-    SCHED_DEBUG("Added task PID %lu to all tasks list", task->pid);
+    SCHED_DEBUG("Added task PID %u to all tasks list", task->pid);
 }
 
 tcb_t* scheduler_queues_remove_zombie_task(void) {
@@ -290,7 +289,7 @@ tcb_t* scheduler_queues_remove_zombie_task(void) {
     spinlock_release_irqrestore(&g_all_tasks_lock, all_tasks_irq_flags);
     
     if (zombie_to_reap) {
-        SCHED_DEBUG("Found zombie task PID %lu for cleanup", zombie_to_reap->pid);
+        SCHED_DEBUG("Found zombie task PID %u for cleanup", zombie_to_reap->pid);
     }
     
     return zombie_to_reap;
@@ -317,6 +316,6 @@ void scheduler_queues_debug_print_stats(void) {
     serial_printf("[Queue Stats] Priority queue counts:\n");
     for (int i = 0; i < SCHED_PRIORITY_LEVELS; i++) {
         uint32_t count = scheduler_queues_get_count(i);
-        serial_printf("  Priority %d: %lu tasks\n", i, count);
+        serial_printf("  Priority %d: %u tasks\n", i, count);
     }
 }

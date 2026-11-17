@@ -224,7 +224,7 @@ error_t buddy_core_init(uintptr_t start_virt, size_t size) {
     
     buddy_initialized = true;
     
-    LOGGER_INFO(LOG_MODULE, "Buddy allocator initialized: start=%#lx, size=%zu, free=%zu",
+    LOGGER_INFO(LOG_MODULE, "Buddy allocator initialized: start=%#x, size=%zu, free=%zu",
                heap_start_virt, total_managed_size, free_bytes);
     
     return E_SUCCESS;
@@ -269,7 +269,7 @@ uintptr_t buddy_core_alloc(size_t size) {
     
     spinlock_release_irqrestore(&buddy_lock, flags);
     
-    LOGGER_DEBUG(LOG_MODULE, "Allocated block at %#lx, order %u for size %zu",
+    LOGGER_DEBUG(LOG_MODULE, "Allocated block at %#x, order %u for size %zu",
                 block_addr, order, size);
     
     return block_addr;
@@ -284,7 +284,7 @@ void buddy_core_free(uintptr_t block_addr, uint8_t order) {
     }
     
     if (!is_valid_heap_address(block_addr)) {
-        LOGGER_ERROR(LOG_MODULE, "Invalid block address %#lx", block_addr);
+        LOGGER_ERROR(LOG_MODULE, "Invalid block address %#x", block_addr);
         return;
     }
     
@@ -311,7 +311,7 @@ void buddy_core_free(uintptr_t block_addr, uint8_t order) {
     
     spinlock_release_irqrestore(&buddy_lock, flags);
     
-    LOGGER_DEBUG(LOG_MODULE, "Freed block at %#lx, final order %u", block_addr, final_order);
+    LOGGER_DEBUG(LOG_MODULE, "Freed block at %#x, final order %u", block_addr, final_order);
 }
 
 /**

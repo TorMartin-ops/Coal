@@ -1,7 +1,6 @@
 /**
  * @file scheduler_main.c
  * @brief Main Scheduler Coordination and Public API
- * @author Refactored for SOLID principles
  * @version 6.0
  * 
  * @details Serves as the main coordination point for the modular scheduler
@@ -74,8 +73,8 @@ void scheduler_start(void) {
     // Update current task (this is a bit tricky due to the module separation)
     // For now, we'll use the core module's internal state
     
-    terminal_printf("  [Scheduler Start] First task selected: PID %lu\n",
-                     (unsigned long)first_task->pid);
+    terminal_printf("  [Scheduler Start] First task selected: PID %u\n",
+                     first_task->pid);
     
     // Perform the initial context switch to the first task
     scheduler_context_switch(NULL, first_task);
@@ -239,8 +238,8 @@ int scheduler_create_kernel_task(void (*entry_point)(void), uint8_t priority, co
     tcb->effective_priority = priority;
     tcb->context = stack_ptr;
     
-    serial_printf("[Scheduler DEBUG] Created kernel task '%s': PID=%lu, priority=%u\n",
-                name ? name : "unnamed", (unsigned long)task_pid, priority);
+    serial_printf("[Scheduler DEBUG] Created kernel task '%s': PID=%u, priority=%u\n",
+                name ? name : "unnamed", task_pid, priority);
     
     // Add to scheduler using the core module
     scheduler_queues_add_to_all_tasks(tcb);
@@ -255,7 +254,7 @@ int scheduler_create_kernel_task(void (*entry_point)(void), uint8_t priority, co
         return -1;
     }
     
-    serial_printf("[Scheduler INFO] Added kernel task PID %lu\n", (unsigned long)task_pid);
+    serial_printf("[Scheduler INFO] Added kernel task PID %u\n", task_pid);
     return 0;
 }
 
