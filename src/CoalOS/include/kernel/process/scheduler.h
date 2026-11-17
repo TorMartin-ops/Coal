@@ -1,160 +1,77 @@
-// include/scheduler.h (Version 4.0 - For Advanced Scheduler)
+/**
+ * @file scheduler.h
+ * @brief O(1) priority scheduler: a bitmap of non-empty priority levels plus
+ *        one FIFO run queue per level. Single CPU; the run queues are
+ *        protected by disabling interrupts.
+ */
 #ifndef SCHEDULER_H
 #define SCHEDULER_H
 
-#include <kernel/process/process.h> // Include process header for pcb_t definition
-#include <libc/stdint.h>
-#include <libc/stdbool.h> // Ensure bool is included
+#include <kernel/core/types.h>
 
-// Scheduler Configuration Constants
-#define SCHED_PRIORITY_LEVELS   4    // Number of priority levels
-#define SCHED_IDLE_PRIORITY     3    // Lowest priority (idle tasks)
-#define SCHED_DEFAULT_PRIORITY  1    // Default priority for user tasks
-#define SCHED_KERNEL_PRIORITY   0    // Highest priority for kernel tasks
+#define SCHED_PRIORITY_LEVELS  4   /* 0 = highest */
+#define SCHED_DEFAULT_PRIORITY 1
+#define SCHED_IDLE_PRIORITY    3
+#define SCHED_SLICE_TICKS      20
 
-// Assembly function for jumping to user mode
-extern void jump_to_user_mode(uint32_t kernel_esp);
+struct pcb;
 
-// Assembly function for setting up idle task context to match simple_switch layout
-extern uint32_t* setup_idle_context(uint32_t* stack_top, void (*idle_func)(void));
-
-// --- Enhanced Task States ---
 typedef enum {
-    TASK_READY,     // Ready to run (in a run queue)
-    TASK_RUNNING,   // Currently executing
-    TASK_BLOCKED,   // Waiting for an event (in a wait queue, not run queue)
-    TASK_SLEEPING,  // Sleeping until a specific time (in the sleep queue)
-    TASK_ZOMBIE,    // Terminated, resources awaiting cleanup
-    TASK_EXITING    // Intermediate state during termination (optional)
-} task_state_e; // Changed name to avoid conflict if task_state_t is used elsewhere
+    TASK_READY,     /* on a run queue */
+    TASK_RUNNING,
+    TASK_BLOCKED,   /* waiting for scheduler_unblock_task() */
+    TASK_SLEEPING,  /* on the sleep list */
+    TASK_ZOMBIE     /* exited, waiting to be reaped */
+} task_state_t;
 
-// === Context for Context Switching ===
-// DEAD SIMPLE: context is just a stack pointer where ALL registers are saved
-typedef uint32_t* context_t;
-
-// --- Enhanced Task Control Block (TCB) ---
 typedef struct tcb {
-    // Core Task Info & Links
-    struct tcb    *next;         // Next task in the run queue OR wait queue OR all_tasks list
-    pcb_t         *process;      // Pointer to parent process
-    uint32_t       pid;          // Process ID
-
-    // Execution Context
-    context_t      context;      // Saved CPU context (stack pointer)
-
-    // State & Scheduling Parameters
-    task_state_e   state;        // Current state
-    bool           in_run_queue;
-    bool           has_run;      // True if task has executed at least once
-    uint8_t        priority;     // Task priority (0=highest)
-    uint32_t       time_slice_ticks; // Current time slice allocation in ticks
-    uint32_t       ticks_remaining; // Ticks left in current time slice
-    
-    // Priority Inheritance Support
-    uint8_t        base_priority;    // Original priority before inheritance
-    uint8_t        effective_priority; // Current effective priority (after inheritance)
-    struct tcb    *blocking_task;    // Task we're waiting for (resource holder)
-    struct tcb    *blocked_tasks_head; // List of tasks blocked on resources we hold
-    struct tcb    *blocked_tasks_next; // Next in blocked tasks list
-
-    // Statistics & Sleep
-    uint32_t       runtime_ticks;  // Total runtime in ticks
-    uint32_t       wakeup_time;    // Absolute tick count when to wake up (if SLEEPING)
-    uint32_t       exit_code;      // Exit code when ZOMBIE
-
-    // Wait Queue Links (used for BLOCKED state on mutexes, semaphores, etc.)
-    struct tcb    *wait_prev;    // Previous in wait list (NULL if first or not waiting)
-    struct tcb    *wait_next;    // Next in wait list (NULL if last or not waiting)
-    void          *wait_reason;  // Pointer to object being waited on (optional context)
-
-    // All Tasks List Link
-    struct tcb    *all_tasks_next; // Next TCB in the global list of all tasks
-
+    struct tcb  *next;          /* run queue / sleep list link */
+    struct pcb  *process;
+    uint32_t    *context;       /* saved kernel ESP (see switch.asm) */
+    task_state_t state;
+    uint8_t      priority;
+    uint32_t     slice;         /* ticks left in the current slice */
+    uint32_t     wakeup_tick;
 } tcb_t;
 
-
-// --- Constants ---
-#define IDLE_TASK_PID 0 // Special PID for the idle task
-#define SCHED_TICKS_PER_SECOND 1000
-#define MS_TO_TICKS(ms) (((ms) * SCHED_TICKS_PER_SECOND) / 1000)
-
-// --- Public Function Prototypes ---
-
-/** @brief Initializes the scheduler subsystem. */
+/** Creates the idle task. Call once, before any task is added. */
 void scheduler_init(void);
 
-/**
- * @brief Creates a TCB for a given process and adds it to the scheduler.
- * @param pcb Pointer to the Process Control Block to schedule.
- * @return 0 on success, negative error code on failure.
- */
-int scheduler_add_task(pcb_t *pcb);
+/** Switches to the first task and never returns. */
+void scheduler_start(void) __attribute__((noreturn));
 
-/**
- * @brief Creates a simple kernel task for testing scheduler functionality.
- * @param entry_point Function to execute as the task.
- * @param priority Task priority (0=highest, 3=lowest).
- * @param name Descriptive name for the task.
- * @return 0 on success, negative error code on failure.
- */
-int scheduler_create_kernel_task(void (*entry_point)(void), uint8_t priority, const char *name);
+/** Makes a new task runnable. Returns 0. */
+int scheduler_add_task(struct pcb *proc);
 
-/**
- * @brief Core scheduler function. Selects next task, performs context switch.
- * @note Called with interrupts disabled.
- */
+/** Picks the next task and switches to it. Callable from tasks and from the tick ISR. */
 void schedule(void);
 
-/** @brief Voluntarily yields the CPU to another task. */
+/** Gives up the CPU but stays runnable. */
 void yield(void);
 
-/**
- * @brief Puts the current task to sleep for a specified duration.
- * @param ms Duration in milliseconds. Task state becomes SLEEPING.
- * @note The task will be woken up by the scheduler_tick handler.
- */
+/** Sleeps for at least ms milliseconds (timer-tick based, no busy wait). */
 void sleep_ms(uint32_t ms);
 
 /**
- * @brief Marks the current running task as ZOMBIE and triggers a context switch.
- * @param code The exit code for the process.
- * @note This function does not return to the caller.
+ * Wakes a task that set its state to TASK_BLOCKED. Safe if the task has not
+ * called schedule() yet and for tasks that are not blocked (no-op).
  */
-void remove_current_task_with_code(uint32_t code);
+void scheduler_unblock_task(tcb_t *task);
 
-/** @brief Returns a volatile pointer to the currently running task's TCB. */
-volatile tcb_t *get_current_task_volatile(void);
+/** Wakes a blocked or sleeping task so it can notice a pending signal. */
+void scheduler_wake(tcb_t *task);
 
-/** @brief Returns a non-volatile pointer to the currently running task's TCB. */
-tcb_t *get_current_task(void);
+/** Marks the current task a zombie and switches away for good. */
+void scheduler_exit_current(void) __attribute__((noreturn));
 
-/** @brief Frees resources associated with ZOMBIE tasks. */
-void scheduler_cleanup_zombies(void);
-
-/** @brief Retrieves basic scheduler statistics. */
-void debug_scheduler_stats(uint32_t *out_task_count, uint32_t *out_switches);
-
-/** @brief Checks if the scheduler is ready for preemptive context switching. */
-bool scheduler_is_ready(void);
-
-/** @brief Marks the scheduler as ready to perform context switching. */
-void scheduler_start(void);
-
-/**
- * @brief Scheduler's timer tick routine.
- * @details Called by the timer interrupt handler. Updates ticks, checks
- * sleeping tasks, manages time slices, and triggers preemption.
- * @note Must be called with interrupts disabled.
- */
+/** Timer interrupt hook: counts ticks, wakes sleepers, enforces time slices. */
 void scheduler_tick(void);
 
-/**
- * @brief Returns the current system tick count.
- * @return The volatile tick count.
- */
 uint32_t scheduler_get_ticks(void);
 
+tcb_t *get_current_task(void);
 
+<<<<<<< HEAD
 // --- External Declarations ---
 extern volatile bool g_scheduler_ready;
 
@@ -162,51 +79,18 @@ extern volatile bool g_need_reschedule;
 
 // --- External Assembly Function Prototypes ---
 extern void simple_switch(context_t *old_esp, context_t new_esp);
+=======
+extern volatile bool g_need_reschedule;   /* polled by syscall.asm on return to user mode */
+>>>>>>> wave2-process
 
 /**
- * @brief Makes a previously blocked task ready and enqueues it.
- * @param task Pointer to the TCB of the task to unblock.
- * @note This function should be called when an event a task was waiting for occurs.
+ * Lays out a first-run switch frame just below frame_top so that switching to
+ * the returned context "returns" into entry with the given EFLAGS.
  */
- void scheduler_unblock_task(tcb_t *task);
+uint32_t *scheduler_make_context(void *frame_top, void (*entry)(void), uint32_t eflags);
 
-/**
- * @brief Priority Inheritance Functions
- */
+/* switch.asm */
+void simple_switch(uint32_t **save_esp, uint32_t *new_esp);
+void ret_from_fork(void);
 
-/**
- * @brief Temporarily boost a task's priority to avoid priority inversion.
- * @param holder Task that holds a resource (priority to be boosted)
- * @param waiter Task that is waiting for the resource (source of priority)
- */
-void scheduler_inherit_priority(tcb_t *holder, tcb_t *waiter);
-
-/**
- * @brief Restore a task's original priority after releasing resources.
- * @param task Task whose priority should be restored
- */
-void scheduler_restore_priority(tcb_t *task);
-
-/**
- * @brief Add a task to the blocked tasks list of a resource holder.
- * @param holder Task that holds the resource
- * @param waiter Task that is waiting for the resource
- */
-void scheduler_add_blocked_task(tcb_t *holder, tcb_t *waiter);
-
-/**
- * @brief Remove a task from the blocked tasks list of a resource holder.
- * @param holder Task that holds the resource
- * @param waiter Task that was waiting for the resource
- */
-void scheduler_remove_blocked_task(tcb_t *holder, tcb_t *waiter);
-
-/**
- * @brief Get the effective priority for task scheduling decisions.
- * @param task Task to get effective priority for
- * @return The effective priority (considering inheritance)
- */
-uint8_t scheduler_get_effective_priority(tcb_t *task);
-
-
-#endif // SCHEDULER_H
+#endif

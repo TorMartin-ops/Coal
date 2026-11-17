@@ -10,6 +10,7 @@
 
 #include <kernel/core/types.h>
 #include <kernel/fs/vfs/vfs.h>
+#include <kernel/sync/spinlock.h>
 
 struct pcb;
 
@@ -20,6 +21,7 @@ struct pcb;
  */
 typedef struct sys_file {
     file_t *vfs_file;
+<<<<<<< HEAD
     int     flags;
     int     dups;
 } sys_file_t;
@@ -37,6 +39,28 @@ int     sys_fsync(int fd);
 int     sys_ioctl(int fd, uint32_t cmd, void *arg);
 int     sys_dup(int oldfd);
 int     sys_dup2(int oldfd, int newfd);
+=======
+    int flags;
+    int extra_refs;      /* references beyond the first (fork/dup); zero-initialised = one owner */
+} sys_file_t;
+
+/** Adds a reference (fork, dup). */
+static inline sys_file_t *sys_file_get(sys_file_t *sf) {
+    uintptr_t flags = local_irq_save();      /* i386 has no atomic add; one CPU */
+    sf->extra_refs++;
+    local_irq_restore(flags);
+    return sf;
+}
+
+/** Drops a reference; true when it was the last one and the caller must close and free sf. */
+static inline bool sys_file_put(sys_file_t *sf) {
+    uintptr_t flags = local_irq_save();
+    bool last = sf->extra_refs-- == 0;
+    local_irq_restore(flags);
+    return last;
+}
+
+>>>>>>> wave2-process
 
 /** Look up fd in the current process and take a reference; NULL if invalid. */
 sys_file_t *sys_file_get(int fd);
