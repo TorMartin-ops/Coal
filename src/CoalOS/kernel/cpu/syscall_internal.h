@@ -107,6 +107,7 @@ DECL(sc_uname(uint32_t))
 DECL(sc_zero(void))                 /* getuid and friends: always root */
 DECL(sc_reboot(uint32_t, uint32_t, uint32_t))
 DECL(sc_syslog(uint32_t, uint32_t, uint32_t))
+DECL(sc_getrandom(uint32_t, uint32_t, uint32_t))
 DECL(sc_set_thread_area(uint32_t))
 DECL(sc_set_tid_address(uint32_t))
 DECL(sc_rt_sigreturn(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, isr_frame_t *))

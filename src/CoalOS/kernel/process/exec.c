@@ -15,6 +15,7 @@
 #include <kernel/memory/kmap.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/memory/paging_process.h>
+#include <kernel/lib/random.h>
 
 /* Linux auxiliary vector types */
 #define AT_NULL 0
@@ -43,18 +44,6 @@
 
 static uint32_t nx_flag(void) {
     return g_nx_supported ? PAGE_NX_BIT : 0;
-}
-
-static void fill_random(uint8_t *out, size_t n) {
-    uint32_t x = 0x9E3779B9u;
-
-    for (size_t i = 0; i < n; i++) {
-        uint32_t lo, hi;
-        asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
-        x ^= lo + hi;
-        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-        out[i] = (uint8_t)x;
-    }
 }
 
 static int new_address_space(mm_struct_t **out) {
@@ -121,7 +110,7 @@ static int build_stack(mm_struct_t *mm, const char *path, const char *const *arg
     for (size_t i = envc; i-- > 0; ) vec[2 + argc + i] = PUT(envp[i]);
     for (size_t i = argc; i-- > 0; ) vec[1 + i] = PUT(argv[i]);
     off -= sizeof(platform); memcpy(buf + off, platform, sizeof(platform)); plat = base + off;
-    off -= 16; fill_random(buf + off, 16); rnd = base + off;
+    off -= 16; random_bytes(buf + off, 16); rnd = base + off;
 #undef PUT
     off &= ~(size_t)15;
 

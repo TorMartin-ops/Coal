@@ -68,6 +68,7 @@ static const syscall_fn_t syscall_table[NR_SYSCALLS] = {
     [SYS_SETRLIMIT]       = SC(sc_setrlimit),
     [SYS_UGETRLIMIT]      = SC(sc_ugetrlimit),
     [SYS_PRLIMIT64]       = SC(sc_prlimit64),
+    [SYS_GETRANDOM]       = SC(sc_getrandom),
     [SYS_NANOSLEEP]       = SC(sc_nanosleep),
     [SYS_RT_SIGACTION]    = SC(sc_rt_sigaction),
     [SYS_RT_SIGPROCMASK]  = SC(sc_rt_sigprocmask),

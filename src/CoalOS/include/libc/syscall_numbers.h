@@ -98,6 +98,7 @@
 #define SYS_FSTATAT64       300
 #define SYS_PSELECT6        308
 #define SYS_PIPE2           331
+#define SYS_GETRANDOM       355
 #define SYS_SOCKETCALL      102
 #define SYS_SOCKET          359
 #define SYS_SOCKETPAIR      360

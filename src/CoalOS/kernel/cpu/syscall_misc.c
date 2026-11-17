@@ -14,6 +14,7 @@
 #include <kernel/memory/kmalloc.h>
 #include <kernel/lib/string.h>
 #include <kernel/core/log.h>
+#include <kernel/lib/random.h>
 
 #define NSEC_PER_SEC 1000000000u
 #define SLEEP_CHUNK_S 1000000u          /* 10^9 ms still fits the tick compare */
@@ -165,4 +166,22 @@ long sc_syslog(uint32_t type, uint32_t ubuf, uint32_t len) {
     kfree(kbuf);
     if (n >= 0 && type == SYSLOG_ACTION_READ_CLEAR) klog_ring_clear();
     return n;
+}
+
+//============================================================================
+// getrandom(2): the flags (GRND_NONBLOCK, GRND_RANDOM) change nothing, the generator never blocks
+//============================================================================
+
+long sc_getrandom(uint32_t ubuf, uint32_t len, uint32_t flags) {
+    uint8_t chunk[256];
+    uint32_t done = 0;
+
+    if (flags & ~3u) return -EINVAL;
+    while (done < len) {
+        uint32_t n = MIN(len - done, (uint32_t)sizeof(chunk));
+        random_bytes(chunk, n);
+        if (copy_to_user((uint8_t *)ubuf + done, chunk, n) != 0) return done ? (long)done : -EFAULT;
+        done += n;
+    }
+    return (long)done;
 }

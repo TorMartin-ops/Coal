@@ -8,6 +8,7 @@
 #include <kernel/drivers/display/serial.h>
 #include <kernel/memory/uaccess.h>
 #include <kernel/lib/string.h>
+#include <kernel/lib/random.h>
 
 #define MAX_DEVICES 16
 #define NAME_LEN    16
@@ -160,9 +161,18 @@ static ssize_t null_read(void *priv, void *buf, size_t len) { return 0; }
 static ssize_t sink_write(void *priv, const void *buf, size_t len) { return (ssize_t)len; }
 static ssize_t zero_read(void *priv, void *buf, size_t len) { memset(buf, 0, len); return (ssize_t)len; }
 
+static ssize_t random_read(void *priv, void *buf, size_t len) {
+    size_t n = MIN(len, (size_t)256);       /* short reads keep interrupts off for a bounded time */
+    random_bytes(buf, n);
+    return (ssize_t)n;
+}
+static ssize_t random_write(void *priv, const void *buf, size_t len) { random_add(buf, len); return (ssize_t)len; }
+
 static const devfs_char_ops_t console_ops = { console_read, console_write, console_ioctl, NULL, (5 << 8) | 1, console_poll };
 static const devfs_char_ops_t null_ops    = { null_read, sink_write, NULL, NULL, (1 << 8) | 3, NULL };
 static const devfs_char_ops_t zero_ops    = { zero_read, sink_write, NULL, NULL, (1 << 8) | 5, NULL };
+static const devfs_char_ops_t random_ops  = { random_read, random_write, NULL, NULL, (1 << 8) | 8, NULL };
+static const devfs_char_ops_t urandom_ops = { random_read, random_write, NULL, NULL, (1 << 8) | 9, NULL };
 static const devfs_char_ops_t ttyS0_ops   = { serial_dev_read, serial_dev_write, NULL, (void *)SERIAL_COM1, (4 << 8) | 64, serial_dev_poll };
 static const devfs_char_ops_t ttyS1_ops   = { serial_dev_read, serial_dev_write, NULL, (void *)SERIAL_COM2, (4 << 8) | 65, serial_dev_poll };
 
@@ -172,6 +182,8 @@ int devfs_init(void) {
     if (rc == 0) rc = devfs_register_char("tty", &console_ops);
     if (rc == 0) rc = devfs_register_char("null", &null_ops);
     if (rc == 0) rc = devfs_register_char("zero", &zero_ops);
+    if (rc == 0) rc = devfs_register_char("random", &random_ops);
+    if (rc == 0) rc = devfs_register_char("urandom", &urandom_ops);
     if (rc == 0) rc = devfs_register_char("ttyS0", &ttyS0_ops);
     if (rc == 0) rc = devfs_register_char("ttyS1", &ttyS1_ops);
     return rc;
