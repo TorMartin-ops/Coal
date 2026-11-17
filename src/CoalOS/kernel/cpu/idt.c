@@ -6,6 +6,7 @@
 #include <kernel/cpu/idt.h>
 #include <kernel/cpu/gdt.h>
 #include <kernel/core/types.h>
+#include <kernel/process/signal.h>
 #include <kernel/lib/string.h>
 #include <kernel/core/log.h>
 #include <kernel/lib/assert.h>
@@ -123,6 +124,7 @@ void isr_common_handler(isr_frame_t *frame) {
 
     if (entry->handler) {
         entry->handler(frame);          // hardware handlers send their own EOI
+        if (frame->cs & 3) signal_deliver(frame);   // a user-mode task about to resume
         return;
     }
     if (frame->int_no >= IRQ0_VECTOR && frame->int_no < IRQ0_VECTOR + 16) {

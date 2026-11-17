@@ -44,6 +44,7 @@ typedef struct pcb {
     uint32_t sig_blocked;             /* blocked signal mask (bit n = signal n) */
     struct sigact sigact[32];         /* NSIG entries */
 
+    uint32_t tls_base, tls_pages;     /* set_thread_area descriptor, loaded on every switch */
     char     cwd[CWD_MAX];
     uint32_t cloexec;                 /* bit n: descriptor n is closed by execve */
 

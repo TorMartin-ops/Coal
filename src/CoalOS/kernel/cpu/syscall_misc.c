@@ -135,7 +135,7 @@ long sc_zero(void) { return 0; }        /* uid, gid, euid, egid: single-user sys
 // Thread area (minimal, for static libc start-up)
 //============================================================================
 
-/* One TLS descriptor; libc loads GDT_TLS_SELECTOR into %gs. */
+/* One TLS descriptor per process (saved in the PCB, loaded on every switch); libc loads GDT_TLS_SELECTOR into %gs. */
 long sc_set_thread_area(uint32_t udesc) {
     struct linux_user_desc d;
 
@@ -143,6 +143,8 @@ long sc_set_thread_area(uint32_t udesc) {
     if (d.entry_number != 0xFFFFFFFFu && d.entry_number != TLS_ENTRY) return -EINVAL;
 
     uint32_t pages = (d.flags & LIMIT_IN_PAGES) ? d.limit : (d.limit + PAGE_SIZE - 1) / PAGE_SIZE;
+    get_current_process()->tls_base = d.base_addr;
+    get_current_process()->tls_pages = pages;
     gdt_set_tls_base(d.base_addr, pages);
     d.entry_number = TLS_ENTRY;
     return copy_to_user((void *)udesc, &d, sizeof(d)) ? -EFAULT : 0;

@@ -5,6 +5,7 @@
 
 #include "syscall_internal.h"
 #include <kernel/process/scheduler.h>
+#include <kernel/cpu/gdt.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/lib/string.h>
 
@@ -44,6 +45,8 @@ void proc_exec_reset(pcb_t *p) {
     for (int fd = 0; fd < MAX_FD; fd++)
         if (p->cloexec & (1u << fd)) sc_close(fd);
     p->cloexec = 0;
+    p->tls_base = p->tls_pages = 0;
+    gdt_set_tls_base(0, 0);
 }
 
 long sc_wait4(int32_t pid, uint32_t ustatus, uint32_t options, uint32_t rusage) {

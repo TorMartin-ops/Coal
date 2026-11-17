@@ -28,8 +28,6 @@ struct exec_args {
 long exec_args_copy(uint32_t user_argv, uint32_t user_envp, struct exec_args *out);
 void exec_args_free(struct exec_args *a);
 
-/* Delivers one pending signal with a user handler by building an rt signal frame. */
-void signal_deliver(isr_frame_t *regs);
 
 #define DECL(...) long __VA_ARGS__;
 /* Handlers; syscall.c refers to them. */

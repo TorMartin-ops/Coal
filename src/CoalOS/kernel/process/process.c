@@ -247,6 +247,8 @@ int process_fork(const isr_frame_t *regs) {
     child->cmdline_len = parent->cmdline_len;
     strcpy(child->cwd, parent->cwd);
     child->cloexec = parent->cloexec;
+    child->tls_base = parent->tls_base;
+    child->tls_pages = parent->tls_pages;
     child->sig_blocked = parent->sig_blocked;
     memcpy(child->sigact, parent->sigact, sizeof(child->sigact));
     sys_files_clone(child, parent);
