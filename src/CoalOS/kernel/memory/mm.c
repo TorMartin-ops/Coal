@@ -49,8 +49,7 @@ static vma_struct_t *overlap(mm_struct_t *mm, uintptr_t start, uintptr_t end) {
     return rbtree_find_overlap(mm->vma_tree.root, start, end);
 }
 
-static vma_struct_t *insert_locked(mm_struct_t *mm, uintptr_t start, uintptr_t end,
-                                   uint32_t vm_flags, file_t *file, size_t offset) {
+static vma_struct_t *insert_locked(mm_struct_t *mm, uintptr_t start, uintptr_t end, uint32_t vm_flags) {
     if (overlap(mm, start, end))
         return NULL;
     vma_struct_t *v = vma_alloc();
@@ -60,8 +59,6 @@ static vma_struct_t *insert_locked(mm_struct_t *mm, uintptr_t start, uintptr_t e
     v->vm_end = end;
     v->vm_flags = vm_flags;
     v->page_prot = prot_of(vm_flags);
-    v->vm_file = file;
-    v->vm_offset = offset;
     vma_link(mm, v);
     return v;
 }
@@ -92,14 +89,11 @@ void destroy_mm(mm_struct_t *mm) {
     kfree(mm);
 }
 
-vma_struct_t *insert_vma(mm_struct_t *mm, uintptr_t start, uintptr_t end,
-                         uint32_t vm_flags, uint32_t page_prot,
-                         file_t *file, size_t offset) {
-    (void)page_prot;
+vma_struct_t *insert_vma(mm_struct_t *mm, uintptr_t start, uintptr_t end, uint32_t vm_flags) {
     if (!mm || ((start | end) & PAGING_OFFSET_MASK) || !user_range_ok(start, end))
         return NULL;
     uintptr_t flags = spinlock_acquire_irqsave(&mm->lock);
-    vma_struct_t *v = insert_locked(mm, start, end, vm_flags, file, offset);
+    vma_struct_t *v = insert_locked(mm, start, end, vm_flags);
     spinlock_release_irqrestore(&mm->lock, flags);
     return v;
 }
@@ -125,8 +119,7 @@ mm_struct_t *dup_mm(mm_struct_t *parent) {
 
     for (struct rb_node *n = rb_tree_first(&parent->vma_tree); n; n = rb_node_next(n)) {
         vma_struct_t *pv = rb_entry(n, vma_struct_t, rb_node);
-        vma_struct_t *cv = insert_locked(child, pv->vm_start, pv->vm_end,
-                                         pv->vm_flags, pv->vm_file, pv->vm_offset);
+        vma_struct_t *cv = insert_locked(child, pv->vm_start, pv->vm_end, pv->vm_flags);
         if (!cv) {
             spinlock_release_irqrestore(&parent->lock, flags);
             destroy_mm(child);
@@ -161,14 +154,12 @@ int remove_vma_range(mm_struct_t *mm, uintptr_t start, size_t length) {
         } else if (v->vm_start < start && v->vm_end > end) {
             *spare = *v;
             spare->vm_start = end;
-            spare->vm_offset += end - v->vm_start;
             v->vm_end = start;
             vma_link(mm, spare);
             spare = NULL;
         } else if (v->vm_start < start) {
             v->vm_end = start;
         } else {
-            v->vm_offset += end - v->vm_start;
             v->vm_start = end;
         }
     }
@@ -199,7 +190,7 @@ uintptr_t mm_brk(mm_struct_t *mm, uintptr_t new_brk) {
             if (v)
                 v->vm_end = new_top;
             else
-                ok = insert_locked(mm, heap, new_top, VM_READ | VM_WRITE | VM_USER | VM_ANONYMOUS | VM_HEAP, NULL, 0) != NULL;
+                ok = insert_locked(mm, heap, new_top, VM_READ | VM_WRITE | VM_USER | VM_ANONYMOUS | VM_HEAP) != NULL;
         }
         spinlock_release_irqrestore(&mm->lock, flags);
         if (!ok)
@@ -238,7 +229,7 @@ intptr_t mm_mmap_anon(mm_struct_t *mm, uintptr_t hint, size_t len, uint32_t vm_f
     }
 
     vma_struct_t *v = addr ? insert_locked(mm, addr, addr + len,
-                                           vm_flags | VM_USER | VM_ANONYMOUS, NULL, 0) : NULL;
+                                           vm_flags | VM_USER | VM_ANONYMOUS) : NULL;
     spinlock_release_irqrestore(&mm->lock, flags);
     return v ? (intptr_t)addr : -ENOMEM;
 }

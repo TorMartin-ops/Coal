@@ -11,6 +11,7 @@
 #include <kernel/memory/kmalloc.h>
 #include <kernel/process/scheduler.h>
 #include <kernel/lib/string.h>
+#include <kernel/fs/vfs/fs_init.h>
 #include <kernel/drivers/wait.h>
 #include <kernel/drivers/timer/pit.h>
 
@@ -308,17 +309,30 @@ long sc_sync(void) {
     return 0;
 }
 
+/* mount(source, target, fstype): "fat" mounts an ATA disk given as "hdb" or "/dev/hdb";
+ * the root disk is already mounted (-EBUSY). devfs and procfs take no device. */
 long sc_mount(uint32_t source, uint32_t target, uint32_t fstype) {
-    char *dev = kmalloc(2 * PATH_MAX_SYS), *dir = dev + PATH_MAX_SYS;
-    char fs[32];
+    char dev[16], fs[16];
+    const char *name = NULL;
+    char *dir = kmalloc(PATH_MAX_SYS);
     int err;
 
-    if (!dev) return -ENOMEM;
-    err = user_path(source, dev, PATH_MAX_SYS);
-    if (!err) err = user_path(target, dir, PATH_MAX_SYS);
+    if (!dir) return -ENOMEM;
+    err = fstype ? 0 : -EINVAL;
     if (!err) err = copy_path_from_user((const char *)fstype, fs, sizeof(fs));
-    if (!err) err = vfs_mount(dir, fs, dev);
-    kfree(dev);
+    if (!err) err = user_path(target, dir, PATH_MAX_SYS);
+    if (!err) {
+        struct kstat64 st;
+        err = vfs_stat(dir, &st);
+        if (!err && !S_ISDIR(st.st_mode)) err = -ENOTDIR;
+    }
+    if (!err && strcmp(fs, "fat") == 0) {
+        err = copy_path_from_user((const char *)source, dev, sizeof(dev));
+        name = strncmp(dev, "/dev/", 5) == 0 ? dev + 5 : dev;
+        if (!err) err = fs_attach_disk(name);
+    }
+    if (!err) err = vfs_mount(dir, fs, name);
+    kfree(dir);
     return err;
 }
 

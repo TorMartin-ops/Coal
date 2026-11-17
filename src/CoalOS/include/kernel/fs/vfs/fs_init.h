@@ -9,4 +9,10 @@
  */
 int fs_init(void);
 
+/**
+ * Makes an additional ATA disk (hdb, hdc, hdd) reachable for mounting; the root
+ * disk is always attached. Returns 0 or -ENODEV when there is no such drive.
+ */
+int fs_attach_disk(const char *name);
+
 #endif

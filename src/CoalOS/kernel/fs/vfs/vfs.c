@@ -20,6 +20,7 @@
 
 struct mount {
     char          path[MOUNT_PATH_MAX];
+    char          dev[8];           /* backing device, empty for virtual file systems */
     size_t        plen;
     vfs_driver_t *drv;
     void         *ctx;
@@ -130,12 +131,19 @@ int vfs_mount(const char *target, const char *fs_name, const char *device) {
     uintptr_t fl = spinlock_acquire_irqsave(&mount_lock);
     mount_t *slot = NULL;
     for (int i = 0; i < MAX_MOUNTS; i++) {
-        if (mounts[i].used && strcmp(mounts[i].path, path) == 0) { slot = NULL; rc = -EBUSY; break; }
+        if (mounts[i].used && (strcmp(mounts[i].path, path) == 0 ||
+                               (device && mounts[i].dev[0] && strcmp(mounts[i].dev, device) == 0))) {
+            slot = NULL;            /* the mount point or the device is taken */
+            rc = -EBUSY;
+            break;
+        }
         if (!mounts[i].used && !slot) slot = &mounts[i];
     }
     if (rc == 0 && !slot) rc = -ENOSPC;
     if (rc == 0) {                  /* reserved, but invisible to lookups until mounted */
         memcpy(slot->path, path, plen + 1);
+        if (device) strncpy(slot->dev, device, sizeof(slot->dev) - 1);
+        else slot->dev[0] = '\0';
         slot->plen = plen;
         slot->refs = 0;
         slot->used = true;
@@ -283,7 +291,7 @@ ssize_t vfs_write(file_t *f, const void *buf, size_t len) {
 }
 
 off_t vfs_lseek(file_t *f, off_t off, int whence) {
-    if (f->vnode->type == S_IFCHR) return -ESPIPE;
+    if (f->vnode->type != S_IFREG && f->vnode->type != S_IFDIR) return -ESPIPE;   /* devices, pipes, sockets */
     int64_t base;
     switch (whence) {
     case SEEK_SET: base = 0; break;

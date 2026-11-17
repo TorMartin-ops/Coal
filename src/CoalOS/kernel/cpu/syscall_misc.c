@@ -17,6 +17,7 @@
 #define NSEC_PER_SEC 1000000000u
 #define SLEEP_CHUNK_S 1000000u          /* 10^9 ms still fits the tick compare */
 #define TLS_ENTRY    (GDT_TLS_SELECTOR >> 3)
+#define GDT_LIMIT_MAX  0xFFFFFu
 #define LIMIT_IN_PAGES 0x10             /* user_desc.flags bit 4 */
 
 //============================================================================
@@ -77,7 +78,8 @@ long sc_nanosleep(uint32_t ureq, uint32_t urem) {
         uintptr_t flags = local_irq_save();
         rc = drv_wait_timeout(&sleep_queue, s * 1000u + (s == sec ? ms : 0));   /* only a signal ends it early */
         local_irq_restore(flags);
-        if (!rc && s == sec) ms = 0;
+        if (rc) break;                                  /* interrupted: report the whole chunk as left */
+        if (s == sec) ms = 0;
         sec -= s;
     }
     if (urem) {
@@ -117,6 +119,7 @@ long sc_set_thread_area(uint32_t udesc) {
     if (d.entry_number != 0xFFFFFFFFu && d.entry_number != TLS_ENTRY) return -EINVAL;
 
     uint32_t pages = (d.flags & LIMIT_IN_PAGES) ? d.limit : (d.limit + PAGE_SIZE - 1) / PAGE_SIZE;
+    if (pages > GDT_LIMIT_MAX) pages = GDT_LIMIT_MAX;       /* the descriptor limit is 20 bits wide */
     get_current_process()->tls_base = d.base_addr;
     get_current_process()->tls_pages = pages;
     gdt_set_tls_base(d.base_addr, pages);
