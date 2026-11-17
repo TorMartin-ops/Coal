@@ -71,7 +71,7 @@ def main():
         check("exit code: 0" in text, "ping the QEMU gateway", text)
         err, text = c.tool("coal_run", command="wget -q -O - http://10.0.2.2:%d/hello.txt" % http_port, timeout_ms=30000)
         check("hello from smoke" in text, "wget from a host http.server", text)
-        err, text = c.tool("coal_run", command="wget https://example.com/ -O /tmp/x; echo rc=$?", timeout_ms=15000)
+        err, text = c.tool("coal_run", command="wget -O /tmp/x https://example.com/; echo rc=$?", timeout_ms=15000)
         check("not supported" in text, "https gives a clear error", text)
         err, text = c.tool("coal_snapshot", name="smoke")
         check(not err, "snapshot", text)

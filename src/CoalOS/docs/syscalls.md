@@ -48,6 +48,7 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 78 | gettimeofday | `sc_gettimeofday` |  |
 | 88 | reboot | `sc_reboot` |  |
 | 91 | munmap | `sc_munmap` |  |
+| 102 | socketcall | `sc_socketcall` | multiplexer for the calls below |
 | 103 | syslog | `sc_syslog` |  |
 | 114 | wait4 | `sc_wait4` |  |
 | 122 | uname | `sc_uname` |  |
@@ -81,6 +82,20 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 295 | openat | `sc_openat` |  |
 | 300 | fstatat64 | `sc_fstatat64` |  |
 | 331 | pipe2 | `sc_pipe2` |  |
+| 359 | socket | `sc_socket` |  |
+| 361 | bind | `sc_bind` |  |
+| 362 | connect | `sc_connect` |  |
+| 363 | listen | `sc_listen` |  |
+| 364 | accept4 | `sc_accept4` |  |
+| 365 | getsockopt | `sc_getsockopt` |  |
+| 366 | setsockopt | `sc_setsockopt` |  |
+| 367 | getsockname | `sc_getsockname` |  |
+| 368 | getpeername | `sc_getpeername` |  |
+| 369 | sendto | `sc_sendto` |  |
+| 370 | sendmsg | `sc_sendmsg` |  |
+| 371 | recvfrom | `sc_recvfrom` |  |
+| 372 | recvmsg | `sc_recvmsg` |  |
+| 373 | shutdown | `sc_shutdown` |  |
 
 Behaviour worth knowing:
 

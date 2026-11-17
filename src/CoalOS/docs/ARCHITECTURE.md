@@ -68,7 +68,17 @@ driver interface with optional `poll`/`utime`/`ioctl` operations. Drivers:
 VGA text console with a VT100 subset (`terminal.c`), line discipline with
 canonical/raw modes and job-control signal keys (`tty.c`), PS/2 keyboard with a
 Norwegian keymap, 16550 UART with interrupt-driven rings (`serial.c`), PIT, ATA
-PIO with LBA48 (`block_device.c`).
+PIO with LBA48 (`block_device.c`). PCI bus 0 scan (`pci.c`) and an Intel e1000
+(82540EM) NIC with MMIO at `KERNEL_MMIO_VADDR_START`, 32 RX and 16 TX
+descriptors, interrupt-driven RX with a 10 ms poll fallback (`net/e1000.c`).
+
+## Network
+
+`kernel/net`: Ethernet, ARP cache, IPv4 (fragments dropped), ICMP echo, UDP,
+DHCP client with static fallback (10.0.2.15/24), and TCP (in-order receive,
+RTO with backoff, 16 KiB buffers, 32 connections). `socket.c` exposes them as
+fds through a sockfs vfs driver; `syscall_socket.c` implements the Linux socket
+calls. No IPv6, loopback, fragment reassembly or lease renewal.
 
 ## Kernel log
 
