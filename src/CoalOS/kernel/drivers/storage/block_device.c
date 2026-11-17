@@ -1,12 +1,16 @@
 /**
  * @file block_device.c
- * @brief ATA PIO driver. One command at a time per channel; the channel lock
- *        yields instead of disabling interrupts, so the timer keeps running.
+ * @brief ATA driver: bus-master DMA on an Intel PIIX IDE controller (QEMU's default), PIO otherwise.
+ *        One command at a time per channel; the channel lock yields instead of disabling
+ *        interrupts, so the timer keeps running. Commands are polled (drive interrupt masked).
  */
 #define LOG_MODULE "ata"
 
 #include <kernel/drivers/storage/block_device.h>
 #include <kernel/drivers/pic.h>
+#include <kernel/drivers/pci.h>
+#include <kernel/memory/paging.h>
+#include <kernel/memory/kmalloc.h>
 #include <kernel/core/log.h>
 #include <kernel/lib/port_io.h>
 #include <kernel/lib/string.h>
@@ -34,7 +38,27 @@
 #define ATA_CMD_WRITE_EXT     0x34
 #define ATA_CMD_FLUSH         0xE7
 #define ATA_CMD_FLUSH_EXT     0xEA
+#define ATA_CMD_READ_DMA      0xC8
+#define ATA_CMD_READ_DMA_EXT  0x25
+#define ATA_CMD_WRITE_DMA     0xCA
+#define ATA_CMD_WRITE_DMA_EXT 0x35
 #define ATA_CMD_IDENTIFY      0xEC
+
+/* Bus-master IDE registers (offsets from the channel's base in BAR4) */
+#define BM_CMD     0
+#define BM_STATUS  2
+#define BM_PRD     4
+#define BM_CMD_START   0x01
+#define BM_CMD_TO_MEM  0x08         /* device to memory: a read */
+#define BM_ST_ACTIVE   0x01
+#define BM_ST_ERROR    0x02
+#define BM_ST_IRQ      0x04
+#define PRD_EOT        0x8000
+#define PRD_ENTRIES    64u
+#define PIIX_VENDOR    0x8086
+#define PIIX3_IDE      0x7010
+#define PIIX4_IDE      0x7111
+#define PCI_BAR4       0x20
 
 #define ATA_DEVCTL_NIEN 0x02 /* written to control_base: no drive interrupts */
 
@@ -49,6 +73,12 @@
 #define MAX_SECTOR_SIZE       8192u
 
 static volatile uint8_t g_channel_busy[2];
+
+/* One physical region descriptor table per channel, both in one heap page (so it is direct-mapped and
+ * 512-byte aligned: never crosses a 64 KiB boundary). */
+typedef struct __attribute__((packed)) { uint32_t addr; uint16_t bytes, flags; } prd_t;
+static prd_t *g_prd[2];
+static uint16_t g_bm_base[2];       /* 0: no bus-master DMA on this channel */
 
 /* ---- Channel lock ------------------------------------------------------ */
 
@@ -199,6 +229,109 @@ static int ata_pio_command(block_device_t *d, uint64_t lba, sg_cursor_t *cur, ui
     return write ? ata_wait(d, false) : BLOCK_ERR_OK;
 }
 
+/* ---- Bus-master DMA ------------------------------------------------------- */
+
+static void dma_probe(void) {
+    pci_dev_t pci;
+    static bool done;
+
+    if (done) return;
+    done = true;
+    if (!pci_find(PIIX_VENDOR, PIIX3_IDE, &pci) && !pci_find(PIIX_VENDOR, PIIX4_IDE, &pci)) return;
+    uint32_t bar = pci_read32(&pci, PCI_BAR4);
+    uint8_t *page = kmalloc(PAGE_SIZE);
+    if (!page || !(bar & 1) || !(bar & ~3u)) { kfree(page); return; }
+    g_prd[0] = (prd_t *)page;
+    g_prd[1] = (prd_t *)(page + 512);
+    pci_write32(&pci, PCI_COMMAND, pci_read32(&pci, PCI_COMMAND) | PCI_CMD_MASTER | 1);
+    g_bm_base[0] = (uint16_t)(bar & ~3u);
+    g_bm_base[1] = (uint16_t)((bar & ~3u) + 8);
+}
+
+/* Memory the controller can reach: the direct map of lowmem. */
+static bool dma_ok(const blk_seg_t *segs, unsigned nseg) {
+    for (unsigned i = 0; i < nseg; i++) {
+        uintptr_t a = (uintptr_t)segs[i].buf;
+        if (a < KERNEL_SPACE_VIRT_START || a >= KERNEL_SPACE_VIRT_START + HIGHMEM_START_PHYS || (a & 1)) return false;
+    }
+    return true;
+}
+
+/* Moves the cursor forward by `sectors`. */
+static void sg_advance(sg_cursor_t *cur, uint32_t sectors) {
+    while (sectors) {
+        uint32_t step = MIN(cur->seg->sectors - cur->done, sectors);
+        cur->done += step;
+        sectors -= step;
+        if (cur->done == cur->seg->sectors && sectors) { cur->seg++; cur->done = 0; }
+    }
+}
+
+/* Describe up to `count` sectors from the cursor in the channel's PRD table; returns how many it covers.
+ * A region may not cross a 64 KiB boundary, so large or odd-placed segments become several entries. */
+static uint32_t prd_fill(const block_device_t *d, const sg_cursor_t *cur, uint32_t count) {
+    prd_t *prd = g_prd[d->channel];
+    const blk_seg_t *seg = cur->seg;
+    uint32_t ss = d->sector_size, off = cur->done * ss, total = 0, want = count * ss;
+    unsigned n = 0;
+
+    while (total < want && n < PRD_ENTRIES) {
+        uint32_t seg_bytes = seg->sectors * ss;
+        if (off == seg_bytes) { seg++; off = 0; continue; }
+        uintptr_t phys = virt_to_phys((uint8_t *)seg->buf + off);
+        uint32_t bytes = MIN(MIN(seg_bytes - off, want - total), 0x10000 - (uint32_t)(phys & 0xFFFF));
+        prd[n++] = (prd_t){ (uint32_t)phys, (uint16_t)bytes, 0 };   /* 64 KiB is encoded as 0 */
+        off += bytes;
+        total += bytes;
+    }
+    uint32_t sectors = total / ss, extra = total % ss;
+    while (extra) {                                 /* the table ends on a sector boundary */
+        uint32_t b = prd[n - 1].bytes ? prd[n - 1].bytes : 0x10000;
+        if (b <= extra) { extra -= b; n--; } else { prd[n - 1].bytes = (uint16_t)(b - extra); extra = 0; }
+    }
+    if (n) prd[n - 1].flags = PRD_EOT;
+    return sectors;
+}
+
+/* One DMA command for up to *count sectors (256 at most); *count becomes the number moved and the cursor
+ * advances. The channel lock is held. */
+static int ata_dma_command(block_device_t *d, uint64_t lba, sg_cursor_t *cur, uint32_t *count, bool write) {
+    uint16_t bm = g_bm_base[d->channel];
+    uint32_t n = prd_fill(d, cur, *count);
+    if (!n) return BLOCK_ERR_PARAMS;
+    bool ext = d->lba48_supported && (lba + n > LBA28_LIMIT);
+    uint8_t cmd = write ? (ext ? ATA_CMD_WRITE_DMA_EXT : ATA_CMD_WRITE_DMA)
+                        : (ext ? ATA_CMD_READ_DMA_EXT  : ATA_CMD_READ_DMA);
+    uint8_t dir = write ? 0 : BM_CMD_TO_MEM;
+
+    ata_select(d);
+    int r = ata_wait(d, false);
+    if (r != BLOCK_ERR_OK) return r;
+    outl(bm + BM_PRD, (uint32_t)virt_to_phys(g_prd[d->channel]));
+    outb(bm + BM_STATUS, BM_ST_ERROR | BM_ST_IRQ);
+    outb(bm + BM_CMD, dir);
+    ata_setup_lba(d, lba, n, ext);
+    outb(d->io_base + ATA_REG_COMMAND, cmd);
+    ata_delay_400ns(d);
+    outb(bm + BM_CMD, dir | BM_CMD_START);
+
+    r = BLOCK_ERR_TIMEOUT;
+    for (uint32_t i = 0; i < ATA_SPIN_MAX; i++) {
+        uint8_t st = alt_status(d);
+        if (!(st & ATA_SR_BSY) && !(inb(bm + BM_STATUS) & BM_ST_ACTIVE)) {
+            r = st & ATA_SR_DF ? BLOCK_ERR_DEV_FAULT : st & ATA_SR_ERR ? BLOCK_ERR_DEV_ERR : BLOCK_ERR_OK;
+            break;
+        }
+        if ((i & 15) == 15 && scheduler_is_ready()) yield();      /* long transfers: let others run */
+    }
+    outb(bm + BM_CMD, 0);
+    if (r == BLOCK_ERR_OK && (inb(bm + BM_STATUS) & BM_ST_ERROR)) r = BLOCK_ERR_IO;
+    outb(bm + BM_STATUS, BM_ST_ERROR | BM_ST_IRQ);
+    (void)inb(d->io_base + ATA_REG_STATUS);
+    if (r == BLOCK_ERR_OK) { sg_advance(cur, n); *count = n; }
+    return r;
+}
+
 int block_device_rw(block_device_t *d, uint64_t lba, const blk_seg_t *segs, unsigned nseg, bool write) {
     uint64_t count = 0;
     for (unsigned i = 0; d && i < nseg; i++) count += segs[i].sectors;
@@ -208,10 +341,20 @@ int block_device_rw(block_device_t *d, uint64_t lba, const blk_seg_t *segs, unsi
 
     int r = BLOCK_ERR_OK;
     sg_cursor_t cur = { segs, 0 };
+    bool dma = g_bm_base[d->channel] && dma_ok(segs, nseg);
     channel_lock(d->channel);
     while (count && r == BLOCK_ERR_OK) {
         uint32_t n = count < ATA_MAX_SECTORS_CMD ? (uint32_t)count : ATA_MAX_SECTORS_CMD;
-        r = ata_pio_command(d, lba, &cur, n, write);
+        if (dma) {
+            r = ata_dma_command(d, lba, &cur, &n, write);
+            if (r != BLOCK_ERR_OK) {                    /* a controller that fails once is not trusted again */
+                LOG_WARN("%s: DMA failed (err %d), using PIO", d->device_name, r);
+                g_bm_base[d->channel] = 0;
+                dma = false;
+                n = count < ATA_MAX_SECTORS_CMD ? (uint32_t)count : ATA_MAX_SECTORS_CMD;
+            }
+        }
+        if (!dma) r = ata_pio_command(d, lba, &cur, n, write);
         lba += n;
         count -= n;
     }
@@ -259,6 +402,7 @@ int block_device_init(const char *device, block_device_t *dev) {
     dev->io_base      = dev->channel ? ATA_SECONDARY_IO : ATA_PRIMARY_IO;
     dev->control_base = dev->channel ? ATA_SECONDARY_CTRL : ATA_PRIMARY_CTRL;
 
+    dma_probe();
     channel_lock(dev->channel);
     outb(dev->control_base, ATA_DEVCTL_NIEN);
     int r = ata_identify(dev);

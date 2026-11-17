@@ -34,7 +34,7 @@ typedef struct __attribute__((packed)) {
     uint32_t root_cluster;
 } fat_bpb_t;
 
-buffer_t *fat_buf(fat_fs_t *fs, uint32_t lba) { return buffer_get(fs->dev, lba); }
+buffer_t *fat_buf(fat_fs_t *fs, uint32_t lba) { return buffer_get_disk(fs->disk, lba); }
 
 /* ---- FAT table ------------------------------------------------------------ */
 
