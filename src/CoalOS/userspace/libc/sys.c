@@ -101,6 +101,13 @@ int kill(pid_t p, int s)                  { RET(__SC3(SYS_KILL, p, s, 0)); }
 time_t time(time_t *t)                    { RET(__SC1(SYS_TIME, t)); }
 int nanosleep(const struct timespec *r, struct timespec *m) { RET(__SC3(SYS_NANOSLEEP, r, m, 0)); }
 
+/* Adds inc to the nice value and returns the new one; the kernel's getpriority answers 20 - nice. */
+int nice(int inc) {
+    long r = __SC1(SYS_NICE, inc);
+    if (r < 0) { errno = (int)-r; return -1; }
+    return 20 - (int)__SC3(SYS_GETPRIORITY, 0, 0, 0);
+}
+
 pid_t waitpid(pid_t pid, int *status, int options) {
     RET(__sc(SYS_WAIT4, pid, (long)status, options, 0, 0));
 }

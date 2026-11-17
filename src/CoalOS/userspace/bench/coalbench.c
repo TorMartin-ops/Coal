@@ -41,7 +41,7 @@
 #define TCP_PROBE    18003
 #define TCP_BURST    (1u << 20)
 
-enum { NS, MBS };
+enum { NS, MBS, PCT, IRQS };    /* PCT and IRQS tests return the value times 100 as their "ticks" */
 
 /* One call times n operations and returns the elapsed TSC ticks, or 0 if it cannot run. */
 struct test {
@@ -52,6 +52,7 @@ struct test {
     int (*setup)(void);
     uint64_t (*run)(unsigned n);
     void (*teardown)(void);
+    int max_reps;                       /* > 0: slow test, one warm-up and at most this many samples */
 };
 
 static double ns_per_tick;
@@ -476,33 +477,165 @@ static uint64_t t_tcp_bw(unsigned n) {
          if (read(tcp_fd, iobuf, 1) != 1) return 0);
 }
 
+
+/* --- scheduler: wake-up latency, fairness, idle ------------------------------------------ */
+
+/* wakeup_*: the sleeper blocks in read(); the waker writes a TSC stamp and the sleeper answers with
+ * the time it took to run. In the loaded variant a CPU hog competes for the processor, so the number
+ * says how quickly a task that just woke up gets the CPU from a running hog. */
+static pid_t wake_pid, hog_pid;
+static int wake_to[2] = { -1, -1 }, wake_from[2] = { -1, -1 };
+
+static void spin_forever(void) {
+    for (;;) __asm__ volatile("" ::: "memory");
+}
+
+static int wake_setup(int with_hog) {
+    if (pipe(wake_to) || pipe(wake_from)) return 1;
+    if (with_hog && (hog_pid = fork()) <= 0) {
+        if (hog_pid < 0) return 1;
+        spin_forever();
+    }
+    if ((wake_pid = fork()) < 0) return 1;
+    if (!wake_pid) {
+        uint64_t sent, delay;
+        while (read(wake_to[0], &sent, sizeof sent) == sizeof sent) {
+            delay = rdtsc() - sent;
+            if (write(wake_from[1], &delay, sizeof delay) != sizeof delay) break;
+        }
+        _exit(0);
+    }
+    return 0;
+}
+static int wake_idle_setup(void) { return wake_setup(0); }
+static int wake_loaded_setup(void) { return wake_setup(1); }
+
+static void wake_teardown(void) {
+    reap(&wake_pid);
+    reap(&hog_pid);
+    closefd(&wake_to[0]); closefd(&wake_to[1]);
+    closefd(&wake_from[0]); closefd(&wake_from[1]);
+}
+
+/* Returns the summed delays; the pause between rounds lets the hog take the CPU again. */
+static uint64_t t_wakeup(unsigned n) {
+    struct timespec gap = { 0, 2000000 };
+    uint64_t sum = 0;
+
+    for (unsigned i = 0; i < n; i++) {
+        uint64_t stamp = rdtsc(), delay;
+        if (write(wake_to[1], &stamp, sizeof stamp) != sizeof stamp ||
+            read(wake_from[0], &delay, sizeof delay) != sizeof delay) return 0;
+        sum += delay;
+        nanosleep(&gap, NULL);
+    }
+    return sum;
+}
+
+/* fairness: three CPU hogs with nice 0, 5 and 10 count loop iterations for one second; each should
+ * get weight / total weight of the iterations (Linux nice weights 1024, 335, 110). The value is the
+ * largest deviation of any share from its expected share, in percent. */
+#define FAIR_HOGS 3
+#define FAIR_NS   1e9
+
+static uint64_t t_fairness(unsigned n) {
+    int nice_of[FAIR_HOGS] = { 0, 5, 10 };
+    static const unsigned weight[FAIR_HOGS] = { 1024, 335, 110 };
+    uint64_t count[FAIR_HOGS] = { 0 }, total = 0, end = rdtsc() + (uint64_t)(FAIR_NS / ns_per_tick);
+    int fd[FAIR_HOGS];
+    pid_t pid[FAIR_HOGS];
+    double worst = 0;
+
+    for (int i = 0; i < FAIR_HOGS; i++) {
+        int p[2];
+        if (pipe(p) || (pid[i] = fork()) < 0) return 0;
+        if (!pid[i]) {
+            uint64_t c = 0;
+            nice(nice_of[i]);
+            while (rdtsc() < end) c++;
+            if (write(p[1], &c, sizeof c) != sizeof c) _exit(1);
+            _exit(0);
+        }
+        close(p[1]);
+        fd[i] = p[0];
+    }
+    for (int i = 0; i < FAIR_HOGS; i++) {
+        if (read(fd[i], &count[i], sizeof count[i]) != sizeof count[i]) return 0;
+        close(fd[i]);
+        waitpid(pid[i], NULL, 0);
+        total += count[i];
+    }
+    for (int i = 0; i < FAIR_HOGS; i++) {
+        double expected = (double)weight[i] / (1024 + 335 + 110), got = (double)count[i] / (double)total;
+        double dev = (got / expected - 1) * 100;
+        if (dev < 0) dev = -dev;
+        if (dev > worst) worst = dev;
+    }
+    return (uint64_t)(worst * 100);
+}
+
+/* idle_irq: timer interrupts (the PIT's IRQ 0 plus the local APIC timer) during one second of sleeping.
+ * Under coalbench's driver the daemon wakes now and then too; it is the same for every kernel. */
+static unsigned timer_irqs(void) {
+    char buf[512];
+    int fd = open("/proc/interrupts", O_RDONLY);
+    ssize_t len = fd < 0 ? -1 : read(fd, buf, sizeof buf - 1);
+    unsigned total = 0;
+
+    if (fd >= 0) close(fd);
+    if (len <= 0) return 0;
+    buf[len] = 0;
+    for (char *line = buf; line && *line; line = strchr(line, '\n') ? strchr(line, '\n') + 1 : NULL) {
+        char *end;
+        unsigned long vector = strtoul(line, &end, 10), count;
+        if (*end != ':') continue;
+        count = strtoul(end + 1, NULL, 10);
+        if (vector == 32 || vector == 48) total += (unsigned)count;
+    }
+    return total;
+}
+
+static int idle_present(void) { return access("/proc/interrupts", 0) != 0; }
+
+static uint64_t t_idle_irq(unsigned n) {
+    struct timespec second = { 1, 0 };
+    unsigned before = timer_irqs();
+
+    nanosleep(&second, NULL);
+    return (uint64_t)(timer_irqs() - before) * 100;
+}
+
 /* --- driver -------------------------------------------------------------------- */
 
 static const struct test tests[] = {
-    { "null_syscall",    NS,  4096, 1 << 20, 0, NULL, t_null_syscall, NULL },
-    { "read_zero_1b",    NS,  2048, 1 << 20, 0, open_zero, t_read_zero, close_zero },
-    { "write_null_1b",   NS,  2048, 1 << 20, 0, open_null, t_write_null, close_null },
-    { "gettimeofday",    NS,  2048, 1 << 20, 0, NULL, t_gettimeofday, NULL },
-    { "clock_gettime",   NS,  2048, 1 << 20, 0, NULL, t_clock_gettime, NULL },
-    { "open_close",      NS,   256, 1 << 16, 0, NULL, t_open_close, NULL },
-    { "stat",            NS,   256, 1 << 16, 0, NULL, t_stat, NULL },
-    { "pipe_rw_1b",      NS,   512, 1 << 16, 0, NULL, t_pipe_rw, NULL },
-    { "page_fault",      NS,   512,    8192, 0, NULL, t_page_fault, NULL },
-    { "mmap_munmap_1m",  NS,   128, 1 << 16, 0, NULL, t_mmap_munmap, NULL },
-    { "fork_exit_wait",  NS,     8,     256, 0, NULL, t_fork_exit, NULL },
-    { "fork_exec_wait",  NS,     8,     256, 0, null_prog_present, t_fork_exec, NULL },
-    { "ctx_2",           NS,    64, 1 << 16, 0, ctx2_setup, t_ctx, ring_teardown },
-    { "ctx_8",           NS,    64, 1 << 16, 0, ctx8_setup, t_ctx, ring_teardown },
-    { "pipe_bw",        MBS,    32,     512, CHUNK, pipe_bw_setup, t_pipe_bw, pipe_bw_teardown },
-    { "signal_roundtrip", NS,  256, 1 << 16, 0, signal_setup, t_signal, NULL },
-    { "create_delete_0k", NS,   16,     256, 0, NULL, t_create_0k, NULL },
-    { "create_delete_4k", NS,   16,     256, 0, NULL, t_create_4k, NULL },
-    { "file_write_8m",  MBS,     1,       1, FILE_BYTES, NULL, t_file_write, NULL },
-    { "file_write_8m_nosync", MBS, 1,     1, FILE_BYTES, NULL, t_file_write_nosync, NULL },
-    { "file_read_8m",   MBS,     1,       1, FILE_BYTES, file_read_setup, t_file_read, file_read_teardown },
-    { "tcp_latency",     NS,   128, 1 << 16, 0, tcp_lat_setup, t_tcp_lat, tcp_teardown },
-    { "tcp_bw",         MBS,     1,      64, TCP_BURST, tcp_bw_setup, t_tcp_bw, tcp_teardown },
-    { "memcpy_bw",      MBS,     2,     256, 2u << 20, memcpy_setup, t_memcpy, memcpy_teardown },
+    { "null_syscall",    NS,  4096, 1 << 20, 0, NULL, t_null_syscall, NULL, 0 },
+    { "read_zero_1b",    NS,  2048, 1 << 20, 0, open_zero, t_read_zero, close_zero, 0 },
+    { "write_null_1b",   NS,  2048, 1 << 20, 0, open_null, t_write_null, close_null, 0 },
+    { "gettimeofday",    NS,  2048, 1 << 20, 0, NULL, t_gettimeofday, NULL, 0 },
+    { "clock_gettime",   NS,  2048, 1 << 20, 0, NULL, t_clock_gettime, NULL, 0 },
+    { "open_close",      NS,   256, 1 << 16, 0, NULL, t_open_close, NULL, 0 },
+    { "stat",            NS,   256, 1 << 16, 0, NULL, t_stat, NULL, 0 },
+    { "pipe_rw_1b",      NS,   512, 1 << 16, 0, NULL, t_pipe_rw, NULL, 0 },
+    { "page_fault",      NS,   512,    8192, 0, NULL, t_page_fault, NULL, 0 },
+    { "mmap_munmap_1m",  NS,   128, 1 << 16, 0, NULL, t_mmap_munmap, NULL, 0 },
+    { "fork_exit_wait",  NS,     8,     256, 0, NULL, t_fork_exit, NULL, 0 },
+    { "fork_exec_wait",  NS,     8,     256, 0, null_prog_present, t_fork_exec, NULL, 0 },
+    { "ctx_2",           NS,    64, 1 << 16, 0, ctx2_setup, t_ctx, ring_teardown, 0 },
+    { "ctx_8",           NS,    64, 1 << 16, 0, ctx8_setup, t_ctx, ring_teardown, 0 },
+    { "pipe_bw",        MBS,    32,     512, CHUNK, pipe_bw_setup, t_pipe_bw, pipe_bw_teardown, 0 },
+    { "signal_roundtrip", NS,  256, 1 << 16, 0, signal_setup, t_signal, NULL, 0 },
+    { "create_delete_0k", NS,   16,     256, 0, NULL, t_create_0k, NULL, 0 },
+    { "create_delete_4k", NS,   16,     256, 0, NULL, t_create_4k, NULL, 0 },
+    { "file_write_8m",  MBS,     1,       1, FILE_BYTES, NULL, t_file_write, NULL, 0 },
+    { "file_write_8m_nosync", MBS, 1,     1, FILE_BYTES, NULL, t_file_write_nosync, NULL, 0 },
+    { "file_read_8m",   MBS,     1,       1, FILE_BYTES, file_read_setup, t_file_read, file_read_teardown, 0 },
+    { "tcp_latency",     NS,   128, 1 << 16, 0, tcp_lat_setup, t_tcp_lat, tcp_teardown, 0 },
+    { "tcp_bw",         MBS,     1,      64, TCP_BURST, tcp_bw_setup, t_tcp_bw, tcp_teardown, 0 },
+    { "memcpy_bw",      MBS,     2,     256, 2u << 20, memcpy_setup, t_memcpy, memcpy_teardown, 0 },
+    { "wakeup_idle",     NS,    32,     128, 0, wake_idle_setup, t_wakeup, wake_teardown, 0 },
+    { "wakeup_loaded",   NS,    32,     128, 0, wake_loaded_setup, t_wakeup, wake_teardown, 0 },
+    { "fairness_dev",   PCT,     1,       1, 0, NULL, t_fairness, NULL, 3 },
+    { "idle_irq",      IRQS,     1,       1, 0, idle_present, t_idle_irq, NULL, 3 },
 };
 #define NTESTS ((int)(sizeof tests / sizeof tests[0]))
 
@@ -510,6 +643,7 @@ struct result { double median, p10, p90; int n; };
 
 static double sample_value(const struct test *t, unsigned iters, uint64_t ticks) {
     double ns = ticks_ns(ticks);
+    if (t->unit == PCT || t->unit == IRQS) return (double)ticks / 100;
     return t->unit == NS ? ns / iters : (double)t->bytes * iters / ns * 1e3;   /* 1 MB = 10^6 bytes */
 }
 
@@ -521,16 +655,17 @@ static int measure(const struct test *t, struct result *r) {
 
     if (t->setup && t->setup()) goto out;
     if (!(e = t->run(iters))) goto out;
-    while (ticks_ns(e) < TARGET_NS && iters < t->max_iters) {
+    while (t->unit <= MBS && ticks_ns(e) < TARGET_NS && iters < t->max_iters) {
         iters = iters * 2 > t->max_iters ? t->max_iters : iters * 2;
         if (!(e = t->run(iters))) goto out;
     }
-    for (int w = 0; w < g_warmup; w++)
+    for (int w = 0; w < (t->max_reps ? 1 : g_warmup); w++)
         if (!(e = t->run(iters))) goto out;
 
     int reps = g_reps;
     double fit = BUDGET_NS / ticks_ns(e);
     if (fit < reps) reps = fit < MIN_REPS ? (g_reps < MIN_REPS ? g_reps : MIN_REPS) : (int)fit;
+    if (t->max_reps && reps > t->max_reps) reps = t->max_reps;
     for (int i = 0; i < reps; i++) {
         if (!(e = t->run(iters))) goto out;
         samples[i] = sample_value(t, iters, e);
@@ -556,7 +691,8 @@ static void fmt(char *b, size_t n, double v) {
 
 static void emit(const struct test *t, const struct result *r, int ok, int first) {
     char m[32], lo[32], hi[32];
-    const char *unit = t->unit == NS ? "ns" : "MB/s";
+    static const char *const unit_name[] = { "ns", "MB/s", "%", "irq/s" };
+    const char *unit = unit_name[t->unit];
     if (ok) { fmt(m, sizeof m, r->median); fmt(lo, sizeof lo, r->p10); fmt(hi, sizeof hi, r->p90); }
     if (g_json) {
         printf("%s\n    {\"name\":\"%s\",\"unit\":\"%s\",", first ? "" : ",", t->name, unit);

@@ -183,7 +183,7 @@ def metrics(res):
     for k, v in (res.get("kernel") or {}).items():
         m["kernel_" + k] = (v, "bytes", True, v, v)
     for name, t in res["bench"]["tests"].items():
-        m[name] = (t["value"], t["unit"], t["unit"] == "ns", t.get("p10"), t.get("p90"))
+        m[name] = (t["value"], t["unit"], t["unit"] in ("ns", "%", "irq/s"), t.get("p10"), t.get("p90"))
     return m
 
 

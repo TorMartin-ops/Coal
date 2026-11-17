@@ -572,8 +572,11 @@ static void op_run(const struct req *r) {
 
     /* Done when the shell exits, not when every writer closes: a background job
        (cmd &) keeps the pipes open for as long as it lives. */
+    long wait_ms = 10;
     for (;;) {
-        pump(fds, 10, &nout, &nerr, &clipped);
+        /* A finished shell closes the pipes, which ends the poll at once; the timeout is only the
+           fallback for background jobs that keep them open, so back off instead of waking at 100 Hz. */
+        wait_ms = pump(fds, wait_ms, &nout, &nerr, &clipped) ? 10 : wait_ms < 250 ? wait_ms * 2 : wait_ms;
         long w = SYS4(SYS_wait4, pid, &status, WNOHANG, 0);
         if (w == pid || w < 0) { reaped = 1; break; }
         if (now_ms() - start >= limit) { timed_out = 1; break; }
