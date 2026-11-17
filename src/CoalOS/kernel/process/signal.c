@@ -19,7 +19,7 @@ bool signal_pending(void) {
     return p && (p->pending_signals & ~p->sig_blocked);
 }
 
-void signal_return_to_user(isr_frame_t *regs, uint32_t restart_nr) {
+void signal_return_to_user(isr_frame_t *regs, int restart_nr) {
     pcb_t *p = get_current_process();
     uint64_t pending = p->pending_signals;
 

@@ -29,7 +29,7 @@ long __syscall_ret(long r) {
     return r;
 }
 
-#define RET(x) return (int)__syscall_ret(x)
+#define RET(x) return __syscall_ret(x)
 
 ssize_t read(int fd, void *b, size_t n)        { RET(__SC3(SYS_READ, fd, b, n)); }
 ssize_t write(int fd, const void *b, size_t n) { RET(__SC3(SYS_WRITE, fd, b, n)); }
@@ -174,7 +174,7 @@ int tcsetattr(int fd, int when, const struct termios *t) {
 }
 
 /* rt_sigaction needs a restorer that calls rt_sigreturn. */
-__asm__(".text\n__sigreturn:\n\tmovl $15, %eax\n\tsyscall\n");        /* SYS_RT_SIGRETURN */
+__asm__(".text\n.globl __sigreturn\n__sigreturn:\n\tmovl $15, %eax\n\tsyscall\n");        /* SYS_RT_SIGRETURN */
 extern void __sigreturn(void);
 
 struct ksigaction {

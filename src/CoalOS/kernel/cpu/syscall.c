@@ -150,7 +150,7 @@ void syscall_dispatch(isr_frame_t *r) {
     r->rax = rc;
 
     pcb_t *p = get_current_process();       /* the common case, no signal and no temporary mask, takes two loads */
-    if (p->pending_signals) signal_return_to_user(r, rc == -EINTR && restartable(nr) ? nr : 0);
+    if (p->pending_signals) signal_return_to_user(r, rc == -EINTR && restartable(nr) ? (int)nr : SIGNAL_NO_RESTART);
     if (p->sig_restore) signal_mask_restore();
 }
 

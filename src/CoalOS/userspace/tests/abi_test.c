@@ -1,26 +1,39 @@
 /*
- * Linux i386 ABI smoke test. Built with -nostdlib -ffreestanding and no libc:
- * every call is a raw int 0x80, the way a static Linux binary makes them.
+ * Linux x86_64 ABI smoke test. Built with -nostdlib -ffreestanding and no libc:
+ * every call is a raw SYSCALL, the way a static Linux binary makes them.
  */
 
-typedef unsigned int u32;
+#include <libc/syscall_numbers.h>
 
 static long sc(long nr, long a, long b, long c, long d, long e, long f) {
-    register long r_ebp __asm__("ebp") = f;
+    register long r10 __asm__("r10") = d;
+    register long r8 __asm__("r8") = e;
+    register long r9 __asm__("r9") = f;
     long ret;
-    __asm__ volatile("int $0x80"
+    __asm__ volatile("syscall"
                      : "=a"(ret)
-                     : "a"(nr), "b"(a), "c"(b), "d"(c), "S"(d), "D"(e), "r"(r_ebp)
-                     : "memory", "cc");
+                     : "a"(nr), "D"(a), "S"(b), "d"(c), "r"(r10), "r"(r8), "r"(r9)
+                     : "rcx", "r11", "memory", "cc");
     return ret;
 }
 
 #define sc3(nr, a, b, c) sc(nr, (long)(a), (long)(b), (long)(c), 0, 0, 0)
 
-enum { NR_exit = 1, NR_read = 3, NR_write = 4, NR_open = 5, NR_close = 6, NR_lseek = 19,
-       NR_getpid = 20, NR_dup2 = 63, NR_brk = 45, NR_ioctl = 54, NR_uname = 122,
-       NR_mmap2 = 192, NR_munmap = 91, NR_clock_gettime = 265,
-       NR_getuid = 24, NR_gettimeofday = 78 };
+#define NR_exit SYS_EXIT
+#define NR_read SYS_READ
+#define NR_write SYS_WRITE
+#define NR_open SYS_OPEN
+#define NR_close SYS_CLOSE
+#define NR_lseek SYS_LSEEK
+#define NR_getpid SYS_GETPID
+#define NR_dup2 SYS_DUP2
+#define NR_brk SYS_BRK
+#define NR_ioctl SYS_IOCTL
+#define NR_uname SYS_UNAME
+#define NR_mmap SYS_MMAP
+#define NR_munmap SYS_MUNMAP
+#define NR_clock_gettime SYS_CLOCK_GETTIME
+#define NR_getuid SYS_GETUID
 
 static int failures;
 
@@ -51,7 +64,7 @@ void abi_main(void) {
     check(sc3(NR_getuid, 0, 0, 0) == 0, "getuid == 0");
     check(sc3(NR_uname, &u, 0, 0) == 0 && same(u.f[0], "Coal"), "uname sysname");
     check(sc3(999, 0, 0, 0) == -38, "unknown syscall returns -ENOSYS");
-    check(sc3(NR_write, 1, (void *)0xC0000000, 4) == -14, "write from kernel address is EFAULT");
+    check(sc3(NR_write, 1, (void *)0xffffffff80000000ul, 4) == -14, "write from kernel address is EFAULT");
     check(sc3(NR_write, 99, "x", 1) == -9, "write to bad fd is EBADF");
 
     check(sc3(NR_ioctl, 1, 0x5401, tc) == 0, "TCGETS on the console (isatty)");
@@ -66,8 +79,8 @@ void abi_main(void) {
         check(h[0] == 1 && h[8191] == 2, "heap is usable");
     }
 
-    long m = sc(NR_mmap2, 0, 4096, 3, 0x22, -1, 0);
-    check(m > 0 && !(m & 4095), "mmap2 anonymous");
+    long m = sc(NR_mmap, 0, 4096, 3, 0x22, -1, 0);
+    check(m > 0 && !(m & 4095), "mmap anonymous");
     if (m > 0) {
         *(volatile char *)m = 7;
         check(*(volatile char *)m == 7 && sc3(NR_munmap, m, 4096, 0) == 0, "anonymous page usable, munmap");
@@ -78,17 +91,17 @@ void abi_main(void) {
     if (fd >= 0) {
         check(sc3(NR_read, fd, buf, 4) == 4 && buf[0] == 0x7f && buf[1] == 'E', "read ELF magic");
         check(sc3(NR_lseek, fd, 1, 0) == 1, "lseek");
-        int fd2 = sc3(NR_dup2, fd, 9, 0);
-        check(fd2 == 9 && sc3(NR_read, 9, buf, 3) == 3 && buf[0] == 'E', "dup2 shares the offset");
+        int fd2 = sc3(NR_dup2, fd, 25, 0);
+        check(fd2 == 25 && sc3(NR_read, 25, buf, 3) == 3 && buf[0] == 'E', "dup2 shares the offset");
         check(sc3(NR_close, fd, 0, 0) == 0, "close");
-        check(sc3(NR_read, 9, buf, 1) == 1, "dup'd descriptor survives close of the original");
-        check(sc3(NR_close, 9, 0, 0) == 0 && sc3(NR_close, 9, 0, 0) == -9, "double close is EBADF");
+        check(sc3(NR_read, 25, buf, 1) == 1, "dup'd descriptor survives close of the original");
+        check(sc3(NR_close, 25, 0, 0) == 0 && sc3(NR_close, 25, 0, 0) == -9, "double close is EBADF");
     }
     check(sc3(NR_open, "/no/such/file", 0, 0) == -2, "open of a missing file is ENOENT");
 
-    int ts[2];
+    long ts[2];
     check(sc3(NR_clock_gettime, 1, ts, 0) == 0, "clock_gettime(MONOTONIC)");
-    int t1 = ts[0] * 1000 + ts[1] / 1000000, t2 = t1;
+    long t1 = ts[0] * 1000 + ts[1] / 1000000, t2 = t1;
     for (long spin = 0; spin < 50000000 && t2 - t1 < 5; spin++) {
         sc3(NR_clock_gettime, 1, ts, 0);
         t2 = ts[0] * 1000 + ts[1] / 1000000;
@@ -100,5 +113,5 @@ void abi_main(void) {
 }
 
 __attribute__((naked)) void _start(void) {
-    __asm__ volatile("xor %ebp, %ebp; call abi_main; ud2");
+    __asm__ volatile("xor %ebp, %ebp; and $-16, %rsp; call abi_main; ud2");
 }

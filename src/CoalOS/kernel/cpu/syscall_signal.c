@@ -142,7 +142,7 @@ void signal_mask_restore(void) {
     }
 }
 
-void signal_deliver(isr_frame_t *regs, uint32_t restart_nr) {
+void signal_deliver(isr_frame_t *regs, int restart_nr) {
     pcb_t *p = get_current_process();
     uint64_t ready;
     int sig;
@@ -155,7 +155,7 @@ void signal_deliver(isr_frame_t *regs, uint32_t restart_nr) {
     struct sigact act = p->sigact[sig];
     struct rt_sigframe f;
 
-    if (restart_nr && (act.flags & SA_RESTART)) {   /* the saved context re-executes "syscall" with the same arguments */
+    if (restart_nr != SIGNAL_NO_RESTART && (act.flags & SA_RESTART)) {   /* the saved context re-executes "syscall" with the same arguments */
         regs->rax = restart_nr;
         regs->rip -= 2;
     }

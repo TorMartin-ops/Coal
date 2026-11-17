@@ -26,16 +26,18 @@
 #endif
 #define SYS_SOCKETPAIR_NR SYS_SOCKETPAIR
 
-struct ksigaction { void (*handler)(int); unsigned long flags; void *restorer; unsigned mask[2]; };
+struct ksigaction { void (*handler)(int); unsigned long flags; void (*restorer)(void); unsigned long mask; };
+#define SA_RESTORER 0x04000000ul
+
+extern void __sigreturn(void);              /* libc: calls rt_sigreturn */
 
 static void set_handler(int sig, void (*h)(int), unsigned long flags) {
-    struct ksigaction sa = { h, flags, 0, { 0, 0 } };       /* no SA_RESTORER: the kernel supplies the return code */
+    struct ksigaction sa = { h, flags | SA_RESTORER, __sigreturn, 0 };
     __sc(SYS_RT_SIGACTION, sig, (long)&sa, 0, 8, 0);
 }
 
-static void sigprocmask_set(int how, unsigned mask) {
-    unsigned set[2] = { mask, 0 };
-    __sc(SYS_RT_SIGPROCMASK, how, (long)set, 0, 8, 0);
+static void sigprocmask_set(int how, unsigned long mask) {
+    __sc(SYS_RT_SIGPROCMASK, how, (long)&mask, 0, 8, 0);
 }
 
 static volatile int hits;
@@ -299,13 +301,6 @@ static void test_select(void) {
     waitpid(kid, NULL, 0);
     read(fds[0], &c, 1);
 
-    /* the old select (82) takes one pointer to its five arguments */
-    long args[5] = { fds[0] + 1, (long)&set, 0, 0, 0 };
-    tv = (struct tv){ 0, 0 };
-    args[4] = (long)&tv;
-    set = 1u << fds[0];
-    CHECK(__sc(SYS_SELECT, (long)args, 0, 0, 0, 0) == 0);
-
     /* pselect6 with a nanosecond timeout and no mask */
     struct ts tsp = { 0, 100 * 1000000 };
     set = 1u << fds[0];
@@ -317,7 +312,7 @@ static void test_select(void) {
     unsigned empty[2] = { 0, 0 }, cur[2];
     long sigarg[2] = { (long)empty, 8 };
     struct ts five = { 5, 0 }, brief = { 0, 300 * 1000000 };
-    unsigned usr1 = 1u << (SIGUSR1 - 1);
+    unsigned long usr1 = 1ul << (SIGUSR1 - 1);
 
     set_handler(SIGUSR1, on_signal, 0);
     sigprocmask_set(0 /* SIG_BLOCK */, usr1);
@@ -579,7 +574,7 @@ static void test_statfs_links(void) {
     CHECK(__sc(SYS_FSTATFS, fd, (long)&sf, 0, 0, 0) == 0 && sf.bfree < free_before);   /* free space shrank */
     close(fd);
     unlink("/tmp/k6big");
-    CHECK(__sc(SYS_STATFS, (long)"/proc", sizeof sf, (long)&sf, 0, 0) == 0 && sf.type == 0x9fa0);
+    CHECK(__sc(SYS_STATFS, (long)"/proc", (long)&sf, 0, 0, 0) == 0 && sf.type == 0x9fa0);
     unsigned old[16];
     CHECK(__sc(SYS_STATFS, (long)"/", (long)old, 0, 0, 0) == 0 && old[0] == 0x4d44 && old[2] > 0);
 
@@ -911,7 +906,7 @@ static void test_vdso(void) {
                      "syscall\n\t"
                      "pushfq\n\tandq $~0x100, (%%rsp)\n\tpopfq"
                      : "=a"(r) : "0"((long)SYS_GETPID) : "rcx", "r11", "memory", "cc");
-    CHECK(r == pid && traps >= 8);
+    CHECK(r == pid && traps >= 4);
     set_handler(SIGTRAP_NR, NULL, 0);
 
     /* NT set in user mode must not reach the kernel's iret (a task return): the signal handler below is

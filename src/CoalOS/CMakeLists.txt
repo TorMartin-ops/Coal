@@ -105,6 +105,7 @@ add_user_program(coalbench_null userspace/bench/null.c)
 # Raw SYSCALL smoke test: no libc, no start-up code.
 add_executable(abi_test userspace/tests/abi_test.c)
 set_target_properties(abi_test PROPERTIES OUTPUT_NAME abi_test.elf)
+target_include_directories(abi_test PRIVATE include)
 target_compile_options(abi_test PRIVATE -m64 -ffreestanding -nostdlib -fno-pie -fno-pic
     -fno-stack-protector -O1 -Wall -Wextra -Werror)
 target_link_options(abi_test PRIVATE -m64 -nostdlib -static -no-pie -s -Wl,--build-id=none

@@ -44,7 +44,9 @@ int signal_disposition(struct pcb *p, int sig);
 
 /* Before returning to user mode: builds an rt signal frame for one pending signal that has a handler. */
 struct isr_frame;
-void signal_deliver(struct isr_frame *regs, uint32_t restart_nr);
+#define SIGNAL_NO_RESTART (-1)
+
+void signal_deliver(struct isr_frame *regs, int restart_nr);
 
 /** Signal numbers are 1..NSIG; NSIG itself is defined in process.h. */
 
@@ -53,10 +55,10 @@ void signal_deliver(struct isr_frame *regs, uint32_t restart_nr);
  * interrupt or exception return) calls it: a pending signal with the default
  * action ends the process, one with a handler gets its frame. Kernel code is
  * never interrupted by a signal; blocking calls return -EINTR instead.
- * restart_nr is the number of a restartable system call that just returned -EINTR (0 otherwise):
+ * restart_nr is the number of a restartable system call that just returned -EINTR (SIGNAL_NO_RESTART otherwise):
  * if the handler that gets delivered has SA_RESTART, the call is re-issued after the handler returns.
  */
-void signal_return_to_user(struct isr_frame *regs, uint32_t restart_nr);
+void signal_return_to_user(struct isr_frame *regs, int restart_nr);
 
 /** pselect6: installs the user's sigset at uset as the blocked mask until signal_mask_restore() or a handler returns. */
 long signal_mask_swap(uintptr_t uset, size_t size);

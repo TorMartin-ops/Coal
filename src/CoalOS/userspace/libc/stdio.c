@@ -222,11 +222,10 @@ static void pad(struct sink *s, int n, char c) {
     while (n-- > 0) put(s, c);
 }
 
-/* *v /= base, returns the remainder; avoids the libgcc 64-bit division helpers. */
+/* *v /= base, returns the remainder. */
 static unsigned divmod64(unsigned long long *v, unsigned base) {
-    unsigned hi = (unsigned)(*v >> 32), lo = (unsigned)*v, qh = hi / base, r = hi % base, ql;
-    __asm__("divl %2" : "=a"(ql), "=d"(r) : "r"(base), "0"(lo), "1"(r));
-    *v = ((unsigned long long)qh << 32) | ql;
+    unsigned r = (unsigned)(*v % base);
+    *v /= base;
     return r;
 }
 
@@ -303,8 +302,8 @@ static int vformat(struct sink *s, const char *fmt, va_list ap) {
             if (*fmt == '*') { prec = va_arg(ap, int); fmt++; }
             else while (*fmt >= '0' && *fmt <= '9') prec = prec * 10 + (*fmt++ - '0');
         }
-        while (*fmt == 'l' || *fmt == 'h' || *fmt == 'z') {
-            if (*fmt == 'l') lng++;
+        while (*fmt == 'l' || *fmt == 'h' || *fmt == 'z' || *fmt == 'j' || *fmt == 't') {
+            if (*fmt != 'h') lng = 1;                  /* long, long long, size_t, intmax_t, ptrdiff_t: 64 bits */
             fmt++;
         }
         char tmp[48];
@@ -323,11 +322,11 @@ static int vformat(struct sink *s, const char *fmt, va_list ap) {
             unsigned long long v;
             int neg = 0, base = c == 'o' ? 8 : (c == 'x' || c == 'X' || c == 'p') ? 16 : 10;
             if (c == 'd' || c == 'i') {
-                long long sv = lng > 1 ? va_arg(ap, long long) : va_arg(ap, int);
+                long long sv = lng ? va_arg(ap, long long) : va_arg(ap, int);
                 neg = sv < 0;
                 v = neg ? -(unsigned long long)sv : (unsigned long long)sv;
             } else {
-                v = lng > 1 ? va_arg(ap, unsigned long long) : va_arg(ap, unsigned);
+                v = lng || c == 'p' ? va_arg(ap, unsigned long long) : va_arg(ap, unsigned);
                 if (c == 'p') alt = 1;
             }
             if (neg) prefix = "-"; else if (plus && base == 10 && (c == 'd' || c == 'i')) prefix = "+";
@@ -343,7 +342,9 @@ static int vformat(struct sink *s, const char *fmt, va_list ap) {
             str = e;
             if (!len && prec != 0) { str = "0"; len = 1; }
         } else if (c == 'f' || c == 'F') {
-            unsigned long long bits = va_arg(ap, unsigned long long);    /* a double travels as 8 stack bytes */
+            double d = va_arg(ap, double);
+            unsigned long long bits;
+            memcpy(&bits, &d, sizeof bits);
             if (bits >> 63) prefix = "-"; else if (plus) prefix = "+"; else if (space) prefix = " ";
             len = format_fixed(bits & ~(1ULL << 63), prec < 0 ? 6 : prec, alt, tmp);
             if (tmp[0] == 'i' || tmp[0] == 'n') zero = 0;

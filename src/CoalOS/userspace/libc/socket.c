@@ -6,10 +6,6 @@
 #include <libc/string.h>
 #include <libc/arpa/inet.h>
 
-#define SYS_SOCKETCALL_NR 102
-#define SC_SENDTO   11
-#define SC_RECVFROM 12
-
 #define RET(x) return (int)__syscall_ret(x)
 
 int socket(int d, int t, int p)                         { RET(__SC3(SYS_SOCKET, d, t, p)); }
@@ -24,15 +20,12 @@ int accept(int fd, struct sockaddr *a, socklen_t *l)    { return accept4(fd, a, 
 int setsockopt(int fd, int lv, int n, const void *v, socklen_t l) { RET(__sc(SYS_SETSOCKOPT, fd, lv, (long)n, (long)v, (long)l)); }
 int getsockopt(int fd, int lv, int n, void *v, socklen_t *l)      { RET(__sc(SYS_GETSOCKOPT, fd, lv, (long)n, (long)v, (long)l)); }
 
-/* Six arguments do not fit the five-register wrapper: go through socketcall(2). */
 ssize_t sendto(int fd, const void *b, size_t n, int fl, const struct sockaddr *to, socklen_t l) {
-    unsigned long args[6] = { (unsigned long)fd, (unsigned long)b, n, (unsigned long)fl, (unsigned long)to, l };
-    RET(__SC3(SYS_SOCKETCALL_NR, SC_SENDTO, args, 0));
+    return __syscall_ret(__sc6(SYS_SENDTO, fd, (long)b, (long)n, fl, (long)to, l));
 }
 
 ssize_t recvfrom(int fd, void *b, size_t n, int fl, struct sockaddr *from, socklen_t *l) {
-    unsigned long args[6] = { (unsigned long)fd, (unsigned long)b, n, (unsigned long)fl, (unsigned long)from, (unsigned long)l };
-    RET(__SC3(SYS_SOCKETCALL_NR, SC_RECVFROM, args, 0));
+    return __syscall_ret(__sc6(SYS_RECVFROM, fd, (long)b, (long)n, fl, (long)from, (long)l));
 }
 
 ssize_t send(int fd, const void *b, size_t n, int fl) { return sendto(fd, b, n, fl, NULL, 0); }

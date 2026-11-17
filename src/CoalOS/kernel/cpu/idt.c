@@ -152,7 +152,7 @@ void isr_common_handler(isr_frame_t *frame) {
     }
     if (frame->cs & 3) {
         if (g_need_reschedule) schedule();          // an interrupt made a better task runnable
-        signal_return_to_user(frame, 0);
+        signal_return_to_user(frame, SIGNAL_NO_RESTART);
     }
 }
 

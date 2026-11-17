@@ -50,10 +50,10 @@ static void test_stdlib(void) {
     strtol("12abc", &end, 10);
     CHECK(*end == 'a');
     errno = 0;
-    CHECK(strtol("99999999999", NULL, 10) == LONG_MAX && errno == ERANGE);
-    CHECK(strtol("-99999999999", NULL, 10) == LONG_MIN);
-    CHECK(strtol("-2147483648", NULL, 10) == LONG_MIN);
-    CHECK(strtoul("4294967295", NULL, 10) == ULONG_MAX);
+    CHECK(strtol("99999999999999999999", NULL, 10) == LONG_MAX && errno == ERANGE);
+    CHECK(strtol("-99999999999999999999", NULL, 10) == LONG_MIN);
+    CHECK(strtol("-9223372036854775808", NULL, 10) == LONG_MIN);
+    CHECK(strtoul("18446744073709551615", NULL, 10) == ULONG_MAX);
     CHECK(strtoll("-9223372036854775808", NULL, 10) == LLONG_MIN);
     CHECK(strtoll("123456789012", NULL, 10) == 123456789012LL);
     CHECK(strtoull("ffffffffffffffff", NULL, 16) == ULLONG_MAX);
@@ -136,7 +136,7 @@ static void test_printf(void) {
     snprintf(buf, sizeof buf, "[%5d][%-5d][%05d][%-4s][%4s]", 42, 42, -42, "ab", "cd");
     CHECK(strcmp(buf, "[   42][42   ][-0042][ab  ][  cd]") == 0);
     snprintf(buf, sizeof buf, "%d %ld %llu", INT_MIN, LONG_MAX, 18446744073709551615ULL);
-    CHECK(strcmp(buf, "-2147483648 2147483647 18446744073709551615") == 0);
+    CHECK(strcmp(buf, "-2147483648 9223372036854775807 18446744073709551615") == 0);
     snprintf(buf, sizeof buf, "%.3s|%*d|%#x|%o|%%", "abcdef", 4, 7, 255, 8);
     CHECK(strcmp(buf, "abc|   7|0xff|10|%") == 0);
     CHECK(snprintf(buf, 4, "abcdef") == 6 && strcmp(buf, "abc") == 0);

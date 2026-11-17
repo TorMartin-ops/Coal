@@ -174,7 +174,7 @@ long sc_pselect6(int n, uintptr_t r, uintptr_t w, uintptr_t e, uintptr_t uts, ui
 
     if (uts) {
         if (copy_from_user(&ts, (const void *)uts, sizeof(ts)) != 0) return -EFAULT;
-        if ((timeout = to_ms(ts.tv_sec, ts.tv_nsec, 1000000)) == -2 || false) return -EINVAL;
+        if ((timeout = to_ms(ts.tv_sec, ts.tv_nsec, 1000000)) == -2) return -EINVAL;
     }
     if (usig) {                                             /* { const sigset_t *mask; size_t size; } */
         uintptr_t sig[2];
