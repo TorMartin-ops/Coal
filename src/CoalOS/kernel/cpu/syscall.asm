@@ -100,9 +100,9 @@ sysenter_flags_done:
     sti
 
     EX_TABLE .sixth, .fault
-.sixth:
     cmp     ebp, KERNEL_BASE - 4        ; the stack pointer is the user's word: it must not make the kernel read its own memory
     ja      .fault
+.sixth:
     mov     ebp, [ebp]                  ; the stub pushed the user's ebp: the sixth argument
     mov     [esp + F_EBP], ebp
     push    esp
