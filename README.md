@@ -18,7 +18,7 @@ users. See [SECURITY.md](SECURITY.md).
   layout: `/bin /sbin /etc /home /root /tmp /dev /proc /usr /var`.
 - **System calls**: about 70 Linux i386 calls with Linux numbers and struct layouts, one table
   ([docs/syscalls.md](src/CoalOS/docs/syscalls.md)). Unimplemented calls return `-ENOSYS`.
-- **User space**: a small libc, `coalbox` (BusyBox-style multi-call binary with 37 applets),
+- **User space**: a small libc, `coalbox` (BusyBox-style multi-call binary with 38 applets),
   `sh` (pipes, redirection, `&&`, `||`, background jobs, history), `init`, and `mcpd`.
 - **MCP integration**: `tools/coal-mcp` lets Claude boot Coal in QEMU and run commands, transfer
   files, read the kernel log, take disk snapshots and roll back mistakes.
@@ -94,8 +94,8 @@ Start with [ARCHITECTURE.md](src/CoalOS/docs/ARCHITECTURE.md).
 ## Known limitations
 
 No network, threads, symbolic links, file-backed `mmap`, SMP or job control (`SIGSTOP` is ignored).
-The shell has no subshells, `$!` or command substitution. Output sent to the screen is not
-logged to the serial port. The disk is FAT16 with no permissions.
+The shell has no subshells, `$!` or command substitution.
+The disk is FAT16 with no permissions.
 
 ## Credits
 
