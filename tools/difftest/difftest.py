@@ -19,11 +19,14 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 CORPUS = os.path.join(HERE, "corpus")
 GUEST_DIR = "/tmp/dtbin"
-CC = ["musl-gcc", "-static", "-O1", "-w", "-fno-stack-protector"]
+CC = ["musl-gcc", "-static", "-O1", "-w", "-Werror=implicit-function-declaration", "-fno-stack-protector"]
+
+
+SKIP = {"fsops"}                 # driven by fuzz.py, not a fixed program
 
 
 def programs(only=None):
-    names = sorted(f[:-2] for f in os.listdir(CORPUS) if f.endswith(".c"))
+    names = sorted(f[:-2] for f in os.listdir(CORPUS) if f.endswith(".c") and f[:-2] not in SKIP)
     return [n for n in names if not only or n in only]
 
 

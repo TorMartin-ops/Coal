@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -145,8 +146,11 @@ static const char *ftype(uint32_t m) {
 /* stat family result: file type, permission bits, link count, size, owner. */
 static void stshow_(const char *label, long call, struct kstat_ *s) {
     if (call < 0) tr(label, call, NULL);
-    else tr(label, call, "type=%s mode=%04o nlink=%lu size=%ld uid=%u gid=%u", ftype(s->mode), s->mode & 07777,
-            (unsigned long)s->nlink, (long)s->size, s->uid, s->gid);
+    else if ((s->mode & 0170000) == 040000)       /* directory link counts and sizes depend on the file system */
+        tr(label, call, "type=dir mode=%04o uid=%u gid=%u", s->mode & 07777, s->uid, s->gid);
+    else
+        tr(label, call, "type=%s mode=%04o nlink=%lu size=%ld uid=%u gid=%u", ftype(s->mode), s->mode & 07777,
+           (unsigned long)s->nlink, (long)s->size, s->uid, s->gid);
 }
 #define STAT(label, path) do { struct kstat_ s_; memset(&s_, 0xa5, sizeof s_); stshow_(label, K(SYS_stat, path, &s_), &s_); } while (0)
 #define LSTAT(label, path) do { struct kstat_ s_; memset(&s_, 0xa5, sizeof s_); stshow_(label, K(SYS_lstat, path, &s_), &s_); } while (0)
@@ -165,3 +169,10 @@ static void ignsig(int sig) {
     struct { void *h; unsigned long f; void *r; unsigned long m; } a = {(void *)1, 0, 0, 0};
     sc_(SYS_rt_sigaction, sig, (long)&a, 0, 8, 0, 0);
 }
+
+/* A result that only has to be positive (counts, sizes) or an error; descriptors are closed. */
+#define POS(x) ({ long v_ = (x); v_ > 0 ? 1 : v_; })
+#define RFD(label, call) ({ long r_ = (call); if (r_ >= 0) sc_(SYS_close, r_, 0, 0, 0, 0, 0); tr(label, r_ >= 0 ? 0 : r_, NULL); })
+
+/* Type and permission bits only, for files whose size or content is not under the program's control. */
+#define STATT(label, path) do { struct kstat_ s_; long r_ = K(SYS_stat, path, &s_); if (r_ < 0) tr(label, r_, NULL); else tr(label, r_, "type=%s mode=%04o", ftype(s_.mode), s_.mode & 07777); } while (0)

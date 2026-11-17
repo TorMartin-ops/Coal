@@ -1,0 +1,123 @@
+/* Path resolution edge cases: dots, slashes, trailing slash, symlink chains and loops, openat. */
+#include "trace.h"
+
+int main(void) {
+    init();
+    scratch("path");
+    K(SYS_mkdir, "a", 0755);
+    K(SYS_mkdir, "a/b", 0755);
+    K(SYS_close, K(SYS_creat, "a/b/f", 0644));
+    K(SYS_close, K(SYS_creat, "top", 0644));
+    STAT("stat(a//b///f)", "a//b///f");
+    STAT("stat(a/./b/./f)", "a/./b/./f");
+    STAT("stat(a/b/../b/f)", "a/b/../b/f");
+    STAT("stat(a/b/../../top)", "a/b/../../top");
+    STAT("stat(./)", "./");
+    STAT("stat(.)", ".");
+    STATT("stat(..)", "..");
+    STAT("stat(/)", "/");
+    STAT("stat(//)", "//");
+    STAT("stat(/..)", "/..");
+    STAT("stat(/../../..)", "/../../..");
+    STAT("stat(a/)", "a/");
+    STAT("stat(a//)", "a//");
+    STAT("stat(top/)", "top/");
+    STAT("stat(top/.)", "top/.");
+    STAT("stat(top/..)", "top/..");
+    STAT("stat(a/b/f/x)", "a/b/f/x");
+    STAT("stat(missing/x)", "missing/x");
+    STAT("stat(a/missing/..)", "a/missing/..");
+    STAT("stat(empty)", "");
+    STAT("stat(space name)", " ");
+    R("creat(name with space)", K(SYS_creat, "sp ace", 0644));
+    STAT("stat(sp ace)", "sp ace");
+    STAT("stat(sp ace trailing slash)", "sp ace/");
+    R("creat(trailing slash)", K(SYS_open, "newfile/", O_CREAT | O_WRONLY, 0644));
+    R("open(trailing slash on file)", K(SYS_open, "top/", O_RDONLY));
+    R("mkdir(trailing slash)", K(SYS_mkdir, "m/", 0755));
+    STAT("stat(m)", "m");
+    R("mkdir(a/b/.)", K(SYS_mkdir, "a/b/.", 0755));
+    R("mkdir(a/b/..)", K(SYS_mkdir, "a/b/..", 0755));
+    R("mkdir(.)", K(SYS_mkdir, ".", 0755));
+    R("mkdir(/)", K(SYS_mkdir, "/", 0755));
+    R("unlink(a/b/.)", K(SYS_unlink, "a/b/."));
+    R("unlink(top/)", K(SYS_unlink, "top/"));
+    R("rmdir(m/)", K(SYS_rmdir, "m/"));
+    R("rmdir(a/b/..)", K(SYS_rmdir, "a/b/.."));
+    R("rename(top/, top2)", K(SYS_rename, "top/", "top2"));
+    R("rename(a/., x)", K(SYS_rename, "a/.", "x"));
+    R("rename(file to itself)", K(SYS_rename, "top", "top"));
+    R("rename(into missing dir)", K(SYS_rename, "top", "nodir/top"));
+
+    /* symlinks */
+    K(SYS_symlink, "a/b", "ln");
+    K(SYS_symlink, "ln/f", "ln2");
+    K(SYS_symlink, "/", "root");
+    K(SYS_symlink, "a/b/f/..", "badparent");
+    K(SYS_symlink, "loop2", "loop1");
+    K(SYS_symlink, "loop1", "loop2");
+    K(SYS_symlink, "self", "self");
+    STAT("stat(ln/f via dir symlink)", "ln/f");
+    STAT("stat(ln2 chain)", "ln2");
+    LSTAT("lstat(ln2)", "ln2");
+    LSTAT("lstat(ln/ follows trailing slash)", "ln/");
+    LSTAT("lstat(ln no slash)", "ln");
+    STATT("stat(root/etc/passwd)", "root/etc/passwd");
+    STAT("stat(loop1)", "loop1");
+    STAT("stat(self)", "self");
+    LSTAT("lstat(self)", "self");
+    R("open(loop1)", K(SYS_open, "loop1", O_RDONLY));
+    R("open(self creat)", K(SYS_open, "self", O_CREAT | O_RDWR, 0644));
+    R("open(NOFOLLOW symlink)", K(SYS_open, "ln2", O_RDONLY | 0400000));
+    R("open(O_NOFOLLOW|O_PATH-free dir symlink)", K(SYS_open, "ln", O_RDONLY | 0400000 | O_DIRECTORY));
+    RFD("open(O_DIRECTORY via symlink)", K(SYS_open, "ln", O_RDONLY | O_DIRECTORY));
+    R("chdir(ln)", K(SYS_chdir, "ln"));
+    char cwd[100] = "";
+    RF("getcwd(after chdir via symlink)", K(SYS_getcwd, cwd, sizeof cwd), "%s", cwd);
+    R("chdir(../..)", K(SYS_chdir, "../.."));
+    RF("getcwd(.. resolves physical parent)", K(SYS_getcwd, cwd, sizeof cwd), "%s", cwd);
+    R("chdir(scratch)", K(SYS_chdir, scratch_));
+    R("symlink(long target)", ({ char t[4100]; memset(t, 't', 4099); t[4099] = 0; K(SYS_symlink, t, "longln"); }));
+    R("symlink(255 name)", ({ char n[300]; memset(n, 's', 255); n[255] = 0; long q = K(SYS_symlink, "x", n); K(SYS_unlink, n); q; }));
+    R("deep path 40 levels", ({ char p[200] = "", w[200] = ""; long ok = 0; for (int i = 0; i < 40; i++) { strcat(p, "d/"); strcpy(w, p); w[strlen(w) - 1] = 0; if (K(SYS_mkdir, w, 0755) == 0) ok++; } ok; }));
+    STAT("stat(deep)", "d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d");
+    /* a 41-link symlink chain hits ELOOP at 40 on Linux */
+    char nm[16], tg[16];
+    for (int i = 0; i < 45; i++) { snprintf(nm, sizeof nm, "c%d", i); snprintf(tg, sizeof tg, "c%d", i + 1); K(SYS_symlink, tg, nm); }
+    K(SYS_close, K(SYS_creat, "c45", 0644));
+    STAT("stat(chain of 45)", "c0");
+    STAT("stat(chain of 6)", "c39");
+    STAT("stat(chain of 5 from c40)", "c40");
+
+    /* openat with directory descriptors */
+    long d = K(SYS_open, "a", O_RDONLY | O_DIRECTORY);
+    RFD("openat(dirfd, b/f)", K(SYS_openat, d, "b/f", O_RDONLY));
+    RFD("openat(dirfd, ../top)", K(SYS_openat, d, "../top", O_RDONLY));
+    RFD("openat(dirfd, absolute path ignores dirfd)", K(SYS_openat, d, "/etc/passwd", O_RDONLY));
+    RFD("openat(dirfd, missing)", K(SYS_openat, d, "nope", O_RDONLY));
+    R("openat(dirfd, creat)", ({ long q = K(SYS_openat, d, "made", O_CREAT | O_WRONLY, 0644); if (q >= 0) K(SYS_close, q); q >= 0 ? 0 : q; }));
+    STAT("stat(a/made)", "a/made");
+    R("mkdirat(dirfd)", K(SYS_mkdirat, d, "sub", 0755));
+    STAT("stat(a/sub)", "a/sub");
+    struct kstat_ s;
+    stshow_("newfstatat(dirfd, made)", K(SYS_newfstatat, d, "made", &s, 0), &s);
+    stshow_("newfstatat(dirfd, ln-like missing)", K(SYS_newfstatat, d, "zzz", &s, 0), &s);
+    R("unlinkat(dirfd, made)", K(SYS_unlinkat, d, "made", 0));
+    R("unlinkat(dirfd, sub, AT_REMOVEDIR)", K(SYS_unlinkat, d, "sub", 0x200));
+    R("unlinkat(dirfd, b without flag)", K(SYS_unlinkat, d, "b", 0));
+    R("renameat(dirfd, dirfd)", ({ K(SYS_close, K(SYS_creat, "a/r1", 0644)); K(SYS_renameat, d, "r1", d, "r2"); }));
+    STAT("stat(a/r2)", "a/r2");
+    R("symlinkat", K(SYS_symlinkat, "r2", d, "sl"));
+    char lb[32] = "";
+    RF("readlinkat", K(SYS_readlinkat, d, "sl", lb, sizeof lb), "%s", lb);
+    R("fchmodat", K(SYS_fchmodat, d, "r2", 0600));
+    STAT("stat(a/r2 after fchmodat)", "a/r2");
+    R("faccessat", K(SYS_faccessat, d, "r2", R_OK, 0));
+    R("linkat", K(SYS_linkat, d, "r2", d, "r3", 0));
+    STAT("stat(a/r3 nlink)", "a/r3");
+    R("mknodat(fifo)", K(SYS_mknodat, d, "fifo", S_IFIFO | 0644, 0));
+    R("fchownat", K(SYS_fchownat, d, "r2", 0, 0, 0));
+    R("utimensat(dirfd)", K(SYS_utimensat, d, "r2", 0, 0));
+    K(SYS_close, d);
+    return 0;
+}
