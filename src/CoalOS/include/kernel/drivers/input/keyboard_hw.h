@@ -13,6 +13,8 @@
 #define KBC_WAIT_TIMEOUT_CYCLES 300000
 #define KBC_FLUSH_MAX_ATTEMPTS  100
 
+#define KBC_ABSENT_STATUS 0xFF  /* what an unclaimed port reads (microvm has no i8042) */
+
 #define KBC_SR_OBF 0x01 /* output buffer full */
 #define KBC_SR_IBF 0x02 /* input buffer full */
 

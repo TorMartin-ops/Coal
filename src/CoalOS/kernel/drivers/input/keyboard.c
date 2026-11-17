@@ -170,6 +170,7 @@ void keyboard_set_handler(keyboard_handler_t handler) {
 
 void keyboard_init(void) {
     keymap_load(KEYMAP_US_QWERTY);
+    if (inb(KBC_STATUS_PORT) == KBC_ABSENT_STATUS) return;
 
     kbc_command(KBC_CMD_DISABLE_KB_IFACE);
     kbc_command(KBC_CMD_DISABLE_MOUSE_IFACE);

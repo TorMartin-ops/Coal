@@ -41,6 +41,7 @@
 static void configure_keyboard_controller(void) {
     uint8_t config = 0;
 
+    if (inb(KBC_STATUS_PORT) == KBC_ABSENT_STATUS) return;
     outb(KBC_CMD_PORT, KBC_CMD_READ_CONFIG);
     for (volatile int i = 0; i < 15000; i++) asm volatile("pause");
     if (inb(KBC_STATUS_PORT) & KBC_SR_OBF) config = inb(KBC_DATA_PORT);
