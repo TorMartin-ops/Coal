@@ -74,9 +74,14 @@ def main():
         err, text = c.tool("coal_run", command="/usr/bin/fs_stress quick", timeout_ms=120000)
         check("0 failed" in text, "fs_stress: file I/O round trip and unlink/rename of open files", text)
         # --- end kernel ---
-        # --- kernel wave 6: SA_RESTART, 64 KiB pipes, open directories, select, socketpair ---
-        err, text = c.tool("coal_run", command="/usr/bin/kernel_test", timeout_ms=120000)
-        check("0 failed" in text and "exit code: 0" in text, "kernel_test: restarted calls, pipes, open directories, select", text)
+        # --- kernel wave 6: SA_RESTART, 64 KiB pipes, open directories, select, socketpair, loopback,
+        #     #! scripts, statfs, links, FPU state ---
+        err, text = c.tool("coal_run", command="/usr/bin/kernel_test", timeout_ms=240000)
+        check("0 failed" in text and "exit code: 0" in text, "kernel_test: restarted calls, pipes, open directories, select, loopback, scripts, statfs, FPU", text)
+        err, text = c.tool("coal_run", command="ping -c 2 127.0.0.1")
+        check("2 received" in text, "ping 127.0.0.1 over the loopback interface", text)
+        err, text = c.tool("coal_run", command="cat /proc/mounts")
+        check("/dev/hda / vfat" in text, "/proc/mounts lists the root file system", text)
         # --- end kernel wave 6 ---
         err, text = c.tool("coal_run", command="dmesg")
         for _ in range(20):                 # DHCP needs about a second after boot

@@ -593,6 +593,13 @@ static void test_statfs_links(void) {
     unsigned old[16];
     CHECK(__sc(SYS_STATFS, (long)"/", (long)old, 0, 0, 0) == 0 && old[0] == 0x4d44 && old[2] > 0);
 
+    char mounts[256];
+    fd = open("/proc/mounts", O_RDONLY);
+    long n = fd < 0 ? 0 : read(fd, mounts, sizeof mounts - 1);
+    mounts[n > 0 ? n : 0] = 0;
+    if (fd >= 0) close(fd);
+    CHECK(strstr(mounts, "/dev/hda / vfat rw 0 0\n") && strstr(mounts, "proc /proc proc "));
+
     write_file("/tmp/k6f", "data");
     CHECK(__sc(SYS_LINK, (long)"/tmp/k6f", (long)"/tmp/k6g", 0, 0, 0) == -EPERM);
     CHECK(__sc(SYS_SYMLINK, (long)"/tmp/k6f", (long)"/tmp/k6g", 0, 0, 0) == -EPERM);
@@ -602,6 +609,67 @@ static void test_statfs_links(void) {
     CHECK(__sc(SYS_READLINK, (long)"/tmp/none", (long)path, sizeof path, 0, 0) == -ENOENT);
     CHECK(access("/tmp/k6g", F_OK) < 0);
     unlink("/tmp/k6f");
+}
+
+//============================================================================
+// FPU state belongs to the process: preemption, signal handlers, fork and execve
+//============================================================================
+
+static void sig_clobber_fpu(int sig) {
+    (void)sig;
+    __asm__ volatile("fninit\n\tfld1\n\tfld1\n\tfaddp\n\tfstp %%st(0)" ::: "memory");     /* leaves the FPU empty */
+}
+
+/* x87 value kept on the register stack across `rounds` system calls (and whatever preempts them). */
+static double fpu_count(double seed, int rounds) {
+    double out;
+
+    __asm__ volatile("fldl %0" : : "m"(seed));
+    for (int i = 0; i < rounds; i++) {
+        __sc(SYS_SCHED_YIELD, 0, 0, 0, 0, 0);
+        __asm__ volatile("fld1\n\tfaddp");
+        for (volatile int spin = 0; spin < 2000; spin++) { }
+    }
+    __asm__ volatile("fstpl %0" : "=m"(out));
+    return out;
+}
+
+static void test_fpu(void) {
+    int st = 0;
+    pid_t kids[3];
+    double seeds[3] = { 1000.0, 2000.0, 3000.0 };
+
+    for (int i = 0; i < 3; i++) {                       /* three processes interleave on the same registers */
+        if ((kids[i] = fork()) == 0) _exit(fpu_count(seeds[i], 2000) == seeds[i] + 2000 ? 0 : 1);
+    }
+    for (int i = 0; i < 3; i++) CHECK(waitpid(kids[i], &st, 0) == kids[i] && WIFEXITED(st) && WEXITSTATUS(st) == 0);
+
+    double v = 7.0, after;                              /* a handler that wrecks the FPU must not change what was interrupted */
+    set_handler(SIGUSR1, sig_clobber_fpu, 0);
+    __asm__ volatile("fldl %0" : : "m"(v));
+    kill(getpid(), SIGUSR1);
+    __asm__ volatile("fstpl %0" : "=m"(after));
+    CHECK(after == 7.0);
+    set_handler(SIGUSR1, SIG_DFL, 0);
+
+    v = 42.0;                                           /* fork copies the registers; each side keeps its own */
+    __asm__ volatile("fldl %0" : : "m"(v));
+    pid_t kid = fork();
+    if (kid == 0) {
+        __asm__ volatile("fld1\n\tfaddp\n\tfstpl %0" : "=m"(after));
+        _exit(after == 43.0 ? 0 : 1);
+    }
+    CHECK(waitpid(kid, &st, 0) == kid && WIFEXITED(st) && WEXITSTATUS(st) == 0);
+    __asm__ volatile("fstpl %0" : "=m"(after));
+    CHECK(after == 42.0);
+
+    kid = fork();                                       /* execve starts with a clean FPU */
+    if (kid == 0) {
+        __asm__ volatile("fldl %0" : : "m"(v));
+        execv("/usr/bin/kernel_test", (char *const[]){ "kernel_test", "--fpu-clean", NULL });
+        _exit(127);
+    }
+    CHECK(waitpid(kid, &st, 0) == kid && WIFEXITED(st) && WEXITSTATUS(st) == 42);
 }
 
 //============================================================================
@@ -649,13 +717,18 @@ static void test_oom(void) {
 }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--fpu-clean")) {             /* started by test_fpu: the FPU must be freshly initialised */
+        unsigned short cw, sw;
+        __asm__ volatile("fnstcw %0\n\tfnstsw %1" : "=m"(cw), "=m"(sw));
+        return cw == 0x37F && !(sw & 0x3800) ? 42 : 1;
+    }
     if (argc == 5 && !strcmp(argv[1], "--exec-args -v"))            /* run as a "#!" interpreter by test_exec_script */
         return !strcmp(argv[2], "/tmp/k6a") && !strcmp(argv[3], "3") && !strcmp(argv[4], "y") ? 42 : 1;
     static const struct { const char *name; void (*fn)(void); int by_name_only; } tests[] = {
         { "restart", test_sa_restart, 0 }, { "pipe", test_pipe_capacity, 0 }, { "dir", test_open_directory, 0 },
         { "select", test_select, 0 }, { "socketpair", test_socketpair, 0 },
         { "script", test_exec_script, 0 }, { "statfs", test_statfs_links, 0 },
-        { "loopback", test_loopback, 0 }, { "stream", test_loopback_stream, 0 },
+        { "fpu", test_fpu, 0 }, { "loopback", test_loopback, 0 }, { "stream", test_loopback_stream, 0 },
         { "oom", test_oom, 1 },                     /* needs a small machine: run as "kernel_test oom" */
     };
 
