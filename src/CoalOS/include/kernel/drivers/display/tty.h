@@ -1,7 +1,7 @@
 /**
  * @file tty.h
  * @brief Console line discipline: keyboard input, canonical/raw modes, echo,
- *        job-control signals. Linux termios semantics (i386 struct termios).
+ *        job-control signals. Linux termios semantics (Linux x86_64 struct termios).
  */
 #ifndef TTY_H
 #define TTY_H
@@ -29,7 +29,7 @@
 #define TTY_VSUSP  10
 #define TTY_NCCS   19
 
-/** Layout of the kernel's struct termios (TCGETS/TCSETS argument) on i386. */
+/** Layout of the kernel's struct termios (TCGETS/TCSETS argument) on x86_64. */
 typedef struct {
     uint32_t c_iflag, c_oflag, c_cflag, c_lflag;
     uint8_t  c_line;

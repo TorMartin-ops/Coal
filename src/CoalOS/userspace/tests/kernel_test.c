@@ -1,4 +1,4 @@
-/* Kernel behaviour beyond the plain system call ABI: the vDSO (sysenter, time page), SA_RESTART, pipe capacity and PIPE_BUF,
+/* Kernel behaviour beyond the plain system call ABI: the vDSO (time page), SA_RESTART, pipe capacity and PIPE_BUF,
  * removing open directories, select/pselect6 and socketpair, loopback networking, unreachable UDP ports.
  * Everything runs inside one Coal OS instance, using /tmp only. */
 

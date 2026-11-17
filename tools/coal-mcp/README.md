@@ -82,7 +82,7 @@ The server `instructions` and the guide tell the model all of this.
 ## What the OS image needs
 
 `/sbin/agentd` (built from `src/CoalOS/userspace/agentd/agentd.c`) must be on the disk image and started
-by init. It opens `/dev/ttyS1` and needs the Linux i386 calls `fork execve setsid pipe2 dup2 wait4 poll
+by init. It opens `/dev/ttyS1` and needs the Linux x86_64 calls `fork execve setsid pipe2 dup2 wait4 poll
 kill open read write close lseek getdents64 lstat64 fstat64 rename mkdir rmdir unlink uname clock_gettime
 nanosleep ioctl(TCGETS/TCSETS) setrlimit rt_sigaction`, a `/bin/sh`, and `/proc/meminfo`, `/proc/uptime`,
 `/proc/<pid>/status`.
@@ -99,7 +99,7 @@ booted in 0.5s; agentd is ready
 > coal_run command="uname -a; ls /bin"
 exit code: 0
 --- stdout ---
-Coal coal 0.2.0 #1 i386
+Coal coal 0.2.0 #1 x86_64
 > coal_write_file path="/tmp/hello.txt" content="hi\n"
 wrote 3 bytes to /tmp/hello.txt
 > coal_run command="cat /tmp/hello.txt"
@@ -128,7 +128,7 @@ is rebuilt on every boot.
 
 ## Compiling C for Coal
 
-`tools/coal-cc [-o out] file.c [more.c] [gcc options]` builds a static i386 program against Coal's libc
+`tools/coal-cc [-o out] file.c [more.c] [gcc options]` builds a static x86_64 program against Coal's libc
 (`#include <libc/stdio.h>`), with the same flags and `user.ld` as the in-tree programs. It needs `gcc` with
 32-bit support and `nasm`. Install the result with `coal_write_file` (`host_path`), then `coal_run`. No FPU:
 programs cannot use `float`/`double` arithmetic (`printf("%f")` works on values passed in).

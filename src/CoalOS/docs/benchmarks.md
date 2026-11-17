@@ -1,4 +1,11 @@
 | test                 | unit | wall-clock median |             p10 .. p90 | icount median |
+
+> **x86_64 port.** The tables and the sysenter/`int 0x80` sections below were measured on the former i386
+> kernel and are kept as history. Coal now enters the kernel with `syscall`. Instructions per operation
+> (`-icount shift=0,sleep=off`, same host and arguments), main i386 against x86_64:
+> null_syscall 131 -> 144, ctx_2 2987 -> 2301, fork_exit_wait 52010 -> 44984, fork_exec_wait 102602 -> 87030,
+> page_fault 1431 -> 876, pipe_bw 632 -> 932 MB/s, clock_gettime 99 -> 81, pipe_rw_1b 1804 -> 1746.
+
 |----------------------|------|-------------------|------------------------|---------------|
 | null_syscall         | ns   |            647.79 |       635.69 .. 683.04 |        104.05 |
 | read_zero_1b         | ns   |           1830.51 |     1561.61 .. 2164.56 |        694.35 |
