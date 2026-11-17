@@ -26,6 +26,7 @@ void signal_return_to_user(isr_frame_t *regs, uint32_t restart_nr) {
     if (!pending) return;
     for (int sig = 1; pending && sig < NSIG; sig++) {
         if ((pending & (1u << sig)) && signal_disposition(p, sig) == SIGDISP_DEFAULT) {
+            p->exiting = true;              /* before the signal is consumed: the OOM killer must still see a dying process */
             p->pending_signals &= ~(1u << sig);
             asm volatile("sti");            /* exiting may block; interrupt and exception gates enter with IRQs off */
             process_exit(sig);              /* wait status of a signalled process is the signal number */
