@@ -213,7 +213,7 @@ class Machine:
         return (os.path.join(self.build_dir, "kernel.iso"),
                 os.path.join(self.build_dir, "disk.img"))
 
-    def boot(self, rebuild=False, memory_mb=128, snapshot=False, timeout=60):
+    def boot(self, rebuild=False, memory_mb=None, snapshot=False, timeout=60):
         with self.lock:
             if self.attached:
                 return "attached to an existing Coal instance; nothing to boot"
@@ -232,7 +232,7 @@ class Machine:
             self._cleanup_workdir()
             self.workdir = tempfile.mkdtemp(prefix="coal-mcp-")
             com2, mon = self._p("com2.sock"), self._p("monitor.sock")
-            cmd = [qemu, "-display", "none", "-m", str(memory_mb),
+            cmd = [qemu, "-display", "none", "-m", str(memory_mb or default_memory_mb()),
                    "-cdrom", iso, "-hda", disk, "-boot", "d", "-no-shutdown",
                    "-serial", "file:" + self._p("com1.log"),
                    "-serial", "unix:%s,server=on,wait=off" % com2,
@@ -395,8 +395,15 @@ def fmt_mode(mode, typ):
     return t + bits
 
 
+def default_memory_mb():
+    try:
+        return max(16, min(4096, int(os.environ.get("COAL_MEMORY_MB", "512"))))
+    except ValueError:
+        return 512
+
+
 def tool_boot(m, a):
-    return m.boot(rebuild=bool(a.get("rebuild", False)), memory_mb=_int(a, "memory_mb", 128, 16, 4096),
+    return m.boot(rebuild=bool(a.get("rebuild", False)), memory_mb=_int(a, "memory_mb", default_memory_mb(), 16, 4096),
                   snapshot=bool(a.get("snapshot", False)), timeout=_int(a, "timeout_s", 60, 5, 600))
 
 
@@ -552,7 +559,7 @@ TOOLS = [
     ("coal_boot", "Boot Coal OS in QEMU (headless) and wait until its in-OS agent mcpd answers. "
      "Builds the OS first if no images exist. Returns once the VM is usable or fails with the kernel log tail.",
      schema({"rebuild": {"type": "boolean", "description": "Rebuild before booting (default false)."},
-             "memory_mb": {"type": "integer", "description": "Guest RAM in MiB (default 128)."},
+             "memory_mb": {"type": "integer", "description": "Guest RAM in MiB (default: --memory / COAL_MEMORY_MB, else 512)."},
              "snapshot": {"type": "boolean", "description": "Discard disk writes on shutdown (default false)."},
              "timeout_s": {"type": "integer", "description": "Seconds to wait for mcpd (default 60)."}}),
      ann("Boot Coal OS", idem=True), tool_boot),
@@ -726,7 +733,11 @@ def main():
     ap.add_argument("--attach", metavar="unix:PATH|tcp:HOST:PORT",
                     help="use an already running mcpd on this stream socket instead of managing QEMU")
     ap.add_argument("--build-dir", help="CMake build directory (default: <repo>/build/coal-mcp)")
+    ap.add_argument("--memory", type=int, metavar="MIB",
+                    help="default guest RAM for coal_boot (default: $COAL_MEMORY_MB or 512)")
     args = ap.parse_args()
+    if args.memory:
+        os.environ["COAL_MEMORY_MB"] = str(args.memory)
     if args.build_dir:
         os.environ["COAL_BUILD_DIR"] = args.build_dir
     machine = Machine(parse_attach(args.attach) if args.attach else None)
