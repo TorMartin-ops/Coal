@@ -129,13 +129,11 @@ void process_close_fds(pcb_t *proc) {
 
            // --- Perform cleanup outside the FD table lock ---
            // Call VFS close (safe to call now that FD entry is clear)
-           int vfs_ret = vfs_close(sf->vfs_file); // vfs_close handles freeing sf->vfs_file->data and the vnode
+           int vfs_ret = sys_file_put(sf); // drops this descriptor's reference; the last one closes the file
            if (vfs_ret < 0) {
                serial_printf("   [Proc %lu] Warning: vfs_close for fd %d returned error %d.\n",
                               (unsigned long)proc->pid, fd, vfs_ret);
            }
-           // Free the sys_file structure itself
-           kfree(sf);
            // --- End cleanup outside lock ---
 
            // Re-acquire the lock to continue the loop safely

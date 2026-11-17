@@ -200,43 +200,7 @@ int copy_fd_table(pcb_t *parent, pcb_t *child)
     if (!parent || !child) {
         return -EINVAL;
     }
-    
-    uintptr_t irq_flags = spinlock_acquire_irqsave(&parent->fd_table_lock);
-    
-    for (int fd = 0; fd < MAX_FD; fd++) {
-        sys_file_t *parent_sf = parent->fd_table[fd];
-        if (parent_sf) {
-            // Create new sys_file_t for child
-            sys_file_t *child_sf = (sys_file_t*)kmalloc(sizeof(sys_file_t));
-            if (!child_sf) {
-                spinlock_release_irqrestore(&parent->fd_table_lock, irq_flags);
-                return -ENOMEM;
-            }
-            
-            // Copy sys_file structure
-            *child_sf = *parent_sf;
-            
-            // Child gets its own copy of the file structure
-            file_t *child_file = (file_t*)kmalloc(sizeof(file_t));
-            if (!child_file) {
-                kfree(child_sf);
-                spinlock_release_irqrestore(&parent->fd_table_lock, irq_flags);
-                return -ENOMEM;
-            }
-            
-            // Copy file structure
-            *child_file = *parent_sf->vfs_file;
-            spinlock_init(&child_file->lock);
-            child_sf->vfs_file = child_file;
-            
-            // Reference same vnode (files are shared between parent and child)
-            // Note: In a full implementation, we'd need proper vnode reference counting
-            
-            child->fd_table[fd] = child_sf;
-        }
-    }
-    
-    spinlock_release_irqrestore(&parent->fd_table_lock, irq_flags);
+    sys_files_clone(child, parent);
     return 0;
 }
 
