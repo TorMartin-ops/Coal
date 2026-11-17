@@ -1,44 +1,5 @@
 
 
-# Stage 1: Building Bochs
-FROM ubuntu:22.04 as bochs-builder
-
-# Update and install dependencies
-RUN apt-get update && apt-get install -y \
-    git \
-    build-essential \
-    libgtk2.0-dev \
-    libncurses5-dev \
-    libncursesw5-dev \
-    libsdl2-dev
-
-# Clone and build Bochs
-RUN git clone https://github.com/bochs-emu/Bochs && cd Bochs/bochs && \
-    ./configure --enable-smp \
-                --enable-cpu-level=6 \
-                --enable-all-optimizations \
-                --enable-x86-64 \
-                --enable-pci \
-                --enable-vmx \
-                --enable-debugger \
-                --enable-disasm \
-                --enable-debugger-gui \
-                --enable-logging \
-                --enable-fpu \
-                --enable-3dnow \
-                --enable-sb16=dummy \
-                --enable-cdrom \
-                --enable-x86-debugger \
-                --enable-iodebug \
-                --disable-plugins \
-                --disable-docbook \
-                --with-x \
-                --with-x11 \
-                --with-term \
-                --with-sdl2 && \
-    make
-
-
 FROM ubuntu:22.04 as gcc-builder
 ARG BINUTILS_VERSION=2.41
 ARG GCC_VERSION=13.2.0
@@ -101,9 +62,6 @@ RUN set -x \
 
 FROM ubuntu:22.04 as devcontainer
 RUN apt-get update && apt-get install -y \
-    libgtk2.0-0 \
-    libncurses5 \
-    libsdl2-2.0-0 \
     git \
     sudo \
     make \ 
@@ -111,13 +69,13 @@ RUN apt-get update && apt-get install -y \
     nasm \
     ninja-build \
     xorriso \
-    qemu \
-    qemu-kvm \
     qemu-system-x86 \
-    qemu \
     gdb-multiarch \
     tmux \
     dosfstools \
+    mtools \
+    grub-pc-bin \
+    grub-common \
     libisl-dev \
     libmpc-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -125,17 +83,6 @@ RUN apt-get update && apt-get install -y \
 # Copy GCC installation from the first stage
 COPY --from=gcc-builder /usr/local/src /usr/local/src
 RUN cd /usr/local/src/build-binutils && make install && cd /usr/local/src/build-gcc && make install-gcc && make install-target-libgcc
-
-
-# Copy Bochs binaries from the builder stage
-COPY --from=bochs-builder /Bochs/bochs/bochs /usr/local/bin/
-COPY --from=bochs-builder /Bochs/bochs/bximage /usr/local/bin/
-COPY --from=bochs-builder /Bochs/bochs/bios/BIOS-bochs-latest /usr/local/share/bochs/BIOS-bochs-latest
-COPY --from=bochs-builder /Bochs/bochs/bios/VGABIOS-lgpl-latest /usr/local/share/bochs/VGABIOS-lgpl-latest
-
-# Download the latest Limine binary release.
-RUN  cd /usr/local && git clone https://github.com/limine-bootloader/limine.git --branch=v6.x-branch-binary --depth=1 && make -C limine
-
 
 
 RUN groupadd -g 61000 osdev; \
