@@ -110,6 +110,10 @@ def main():
         check(not err and hashlib.sha256(got).digest() == hashlib.sha256(blob).digest(),
               "3 MiB read back byte for byte (%d bytes)" % len(got), text)
         err, text = c.tool("coal_run", command="rm /tmp/blob.bin")
+        # --- sh and applets (scripts live in src/CoalOS/userspace/tests) ---
+        for script in ("sh_test.sh", "applet_test.sh"):
+            err, text = c.tool("coal_run", command="/bin/sh /usr/bin/" + script, timeout_ms=120000)
+            check("exit code: 0" in text and " 0 failed" in text, script, text[-1500:])
         err, text = c.tool("coal_snapshot", name="smoke")
         check(not err, "snapshot", text)
         err, text = c.tool("coal_run", command="rm /tmp/f && echo gone")
