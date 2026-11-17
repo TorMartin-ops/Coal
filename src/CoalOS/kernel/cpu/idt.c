@@ -140,8 +140,9 @@ void isr_common_handler(isr_frame_t *frame) {
     } else if (frame->int_no >= IRQ0_VECTOR && frame->int_no < IRQ0_VECTOR + 16) {
         pic_send_eoi(frame->int_no);    // no driver for this IRQ: acknowledge and ignore
     } else if (frame->cs & 3) {
-        KLOG_WARN("idt", "pid %u: exception %u at %#x", (unsigned)get_current_process()->pid,
-                  (unsigned)frame->int_no, (unsigned)frame->eip);
+        if (frame->int_no != 1)         /* a single-stepping program traps after every instruction */
+            KLOG_WARN("idt", "pid %u: exception %u at %#x", (unsigned)get_current_process()->pid,
+                      (unsigned)frame->int_no, (unsigned)frame->eip);
         signal_force(exception_signal(frame->int_no));
     } else {
         asm volatile("cli");

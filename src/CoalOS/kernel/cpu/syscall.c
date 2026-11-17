@@ -4,6 +4,7 @@
  */
 
 #include "syscall_internal.h"
+#include <kernel/cpu/gdt.h>
 
 typedef long (*syscall_fn_t)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, isr_frame_t *);
 
@@ -137,4 +138,29 @@ void syscall_dispatch(isr_frame_t *r) {
     pcb_t *p = get_current_process();       /* the common case, no signal and no temporary mask, takes two loads */
     if (p->pending_signals) signal_return_to_user(r, rc == -EINTR && restartable(nr) ? nr : 0);
     if (p->sig_restore) signal_mask_restore();
+}
+
+#define MSR_SYSENTER_CS  0x174
+#define MSR_SYSENTER_ESP 0x175
+#define MSR_SYSENTER_EIP 0x176
+#define CPUID1_EDX_SEP   (1u << 11)
+
+extern void sysenter_entry(void);
+extern uint8_t sysenter_scratch_top[];
+
+static void wrmsr(uint32_t msr, uint32_t value) {
+    asm volatile("wrmsr" : : "c"(msr), "a"(value), "d"(0));
+}
+
+bool sysenter_init(void) {
+    uint32_t sig, features, ebx, ecx;
+
+    asm volatile("cpuid" : "=a"(sig), "=b"(ebx), "=c"(ecx), "=d"(features) : "a"(1));
+    if (!(features & CPUID1_EDX_SEP)) return false;
+    if (((sig >> 8) & 0xF) == 6 && ((sig >> 4) & 0xF) < 3 && (sig & 0xF) < 3) return false;   /* Pentium Pro erratum */
+
+    wrmsr(MSR_SYSENTER_CS, KERNEL_CODE_SELECTOR);       /* ss = +8, user cs = +16, user ss = +24 (gdt.h) */
+    wrmsr(MSR_SYSENTER_ESP, (uint32_t)sysenter_scratch_top);
+    wrmsr(MSR_SYSENTER_EIP, (uint32_t)sysenter_entry);
+    return true;
 }

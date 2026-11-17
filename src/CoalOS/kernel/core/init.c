@@ -8,6 +8,8 @@
 #include <kernel/core/multiboot.h>
 #include <kernel/cpu/gdt.h>
 #include <kernel/cpu/idt.h>
+#include <kernel/cpu/syscall.h>
+#include <kernel/process/vdso.h>
 #include <kernel/drivers/timer/clock.h>
 #include <kernel/process/fpu.h>
 #include <kernel/memory/paging.h>
@@ -117,6 +119,7 @@ void kernel_main_init(uint32_t magic, uint32_t mb_info_phys_addr) {
 
     gdt_init();
     initialize_memory_management(mb_info_phys_addr);
+    vdso_init(sysenter_init());
     idt_init();
     init_pit();
     fpu_init();

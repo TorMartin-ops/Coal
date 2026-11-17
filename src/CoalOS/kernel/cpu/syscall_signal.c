@@ -14,7 +14,7 @@
 
 #define KSIGSET_SIZE    8                       /* bytes in the kernel sigset_t */
 #define UNBLOCKABLE     ((1u << SIGKILL) | (1u << SIGSTOP))
-#define EFLAGS_USER     0x00000CD5u             /* CF PF AF ZF SF DF OF */
+#define EFLAGS_USER     0x00000DD5u             /* CF PF AF ZF SF TF DF OF */
 #define EFLAGS_IF       0x00000200u
 
 /* Signal numbers are bit n of the internal masks; the user's sigset has bit n-1. */
