@@ -3,7 +3,7 @@
 
 Speaks MCP over stdio (JSON-RPC, newline-delimited). It builds Coal OS, runs it
 in QEMU and talks to the in-OS agent /sbin/mcpd over the second serial port
-(COM2) using newline-delimited JSON. Python 3.8+, standard library only.
+(COM2) using newline-delimited JSON. Python 3.9+, standard library only.
 
 Both protocol eras are served: the stateless 2026-07-28 revision (per-request
 _meta, server/discover) and the initialize handshake of 2025-11-25 and earlier.
@@ -26,7 +26,19 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-SERVER_INFO = {"name": "coal-mcp", "version": "1.0.0"}
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SRC_DIR = os.path.join(ROOT, "src", "CoalOS")
+
+
+def _repo_version():
+    try:
+        with open(os.path.join(SRC_DIR, "VERSION")) as f:
+            return f.read().strip() or "0"
+    except OSError:
+        return "0"
+
+
+SERVER_INFO = {"name": "coal-mcp", "version": _repo_version()}
 MODERN_VERSIONS = ["2026-07-28"]
 LEGACY_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 META_VERSION = "io.modelcontextprotocol/protocolVersion"
@@ -91,10 +103,11 @@ If mcpd does not answer: coal_kernel_log and coal_screen show the state; coal_re
 even a broken /sbin/init. coal_boot with snapshot=true discards all disk writes when the VM stops.
 """
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SRC_DIR = os.path.join(ROOT, "src", "CoalOS")
-CHUNK = 64 * 1024            # raw bytes per file transfer request
-MAX_READ = 4 * 1024 * 1024
+READ_CHUNK = 32 * 1024       # raw bytes per read_file response
+MAX_READ = 4 * 1024 * 1024   # default cap for an in-chat read; save_to has no cap
+# The guest's COM2 receive ring holds 2 KiB and drops bytes when mcpd falls behind, so a request line
+# must fit in it. Writes therefore go in small requests and each one is checked against mcpd's count.
+WIRE_LINE = 1900
 
 
 class ToolError(Exception):
@@ -185,7 +198,7 @@ class Link:
                 raise ToolError("cannot reach Coal's COM2 (%s). Is it booted?" % e)
             rid = self.next_id
             self.next_id += 1
-            fields.update(id=rid, op=op)
+            fields = dict(id=rid, op=op, **fields)       # id first: mcpd can answer even a malformed request
             line = json.dumps(fields, separators=(",", ":")).encode() + b"\n"
             try:
                 self.sock.sendall(line)
@@ -564,25 +577,42 @@ def tool_run(m, a):
     return out
 
 
+def _read_chunks(link, path, offset, limit):
+    """Yields (raw bytes, file size) pieces of path from offset, at most limit bytes (None: to the end)."""
+    done = 0
+    while limit is None or done < limit:
+        want = READ_CHUNK if limit is None else min(READ_CHUNK, limit - done)
+        r = link.request("read_file", path=path, offset=offset + done, max=want)
+        chunk = base64.b64decode(r["data"])
+        if len(chunk) != r["len"]:
+            raise ToolError("read_file: mcpd sent %d bytes but announced %d (link error)" % (len(chunk), r["len"]))
+        if not chunk:
+            return
+        done += len(chunk)
+        yield chunk, r["size"]
+
+
 def tool_read_file(m, a):
     path = _str(a, "path")
-    limit = _int(a, "max_bytes", 65536, 1, MAX_READ)
-    offset = _int(a, "offset", 0, 0, 1 << 40)
-    link = m.need_link()
-    data, size = b"", None
-    while len(data) < limit:
-        r = link.request("read_file", path=path, offset=offset + len(data),
-                         max=min(CHUNK, limit - len(data)))
-        size = r["size"]
-        chunk = base64.b64decode(r["data"])
-        if not chunk:
-            break
-        data += chunk
+    offset = _int(a, "offset", 0, 0, (1 << 31) - 1)
     save = _str(a, "save_to", required=False)
+    link = m.need_link()
     if save:
-        with open(save, "wb") as f:
-            f.write(data)
-        return "saved %d bytes to %s (file size %s)" % (len(data), save, size)
+        # No default cap: the whole file from offset, unless max_bytes says otherwise.
+        limit = _int(a, "max_bytes", 0, 1, 1 << 31) if a.get("max_bytes") is not None else None
+        total, size = 0, None
+        try:
+            with open(save, "wb") as f:
+                for chunk, size in _read_chunks(link, path, offset, limit):
+                    f.write(chunk)
+                    total += len(chunk)
+        except OSError as e:
+            raise ToolError("cannot write host file: %s" % e)
+        return "saved %d bytes to %s (file size %s)" % (total, save, size)
+    limit = _int(a, "max_bytes", 65536, 1, MAX_READ)
+    data, size = b"", None
+    for chunk, size in _read_chunks(link, path, offset, limit):
+        data += chunk
     head = "%s: %d bytes from offset %d (file size %s)" % (path, len(data), offset, size)
     if a.get("encoding") == "base64":
         return head + "\n" + base64.b64encode(data).decode()
@@ -590,6 +620,13 @@ def tool_read_file(m, a):
         return head + "\n" + data.decode("utf-8")
     except UnicodeDecodeError:
         return head + " [binary; showing base64]\n" + base64.b64encode(data).decode()
+
+
+def _write_chunk_size(path, mode):
+    """Raw bytes per write_file request so that the whole JSON line fits in WIRE_LINE."""
+    overhead = len(json.dumps({"id": 99999999, "op": "write_file", "path": path, "mode": mode,
+                               "append": True, "more": False, "data": ""}, separators=(",", ":"))) + 1
+    return max(48, (WIRE_LINE - overhead) // 4 * 3)
 
 
 def tool_write_file(m, a):
@@ -616,9 +653,14 @@ def tool_write_file(m, a):
         mode = int(mode, 8) if isinstance(mode, str) else int(mode)
     except ValueError:
         raise ToolError("mode must be an octal string or an integer")
-    for i in range(0, max(len(data), 1), CHUNK):
-        link.request("write_file", path=path, mode=mode, append=append or i > 0,
-                     data=base64.b64encode(data[i:i + CHUNK]).decode(), timeout=30)
+    step = _write_chunk_size(path, mode)
+    for i in range(0, max(len(data), 1), step):
+        piece = data[i:i + step]
+        r = link.request("write_file", path=path, mode=mode, append=append or i > 0,
+                         more=i + step < len(data), data=base64.b64encode(piece).decode(), timeout=30)
+        if r.get("written") != len(piece):
+            raise ToolError("write_file: mcpd stored %s of %d bytes at offset %d (link error); "
+                            "the file is incomplete" % (r.get("written"), len(piece), i))
     return "wrote %d bytes to %s" % (len(data), path)
 
 
@@ -743,7 +785,7 @@ TOOLS = [
      "existing file).",
      schema({"path": {**S, "description": "Absolute path inside Coal."},
              "offset": {"type": "integer", "description": "Start offset in bytes."},
-             "max_bytes": {"type": "integer", "description": "Bytes to read (default 65536, max 4 MiB)."},
+             "max_bytes": {"type": "integer", "description": "Bytes to read (default 65536, max 4 MiB; with save_to the default is the whole file)."},
              "encoding": {"type": "string", "enum": ["utf-8", "base64"], "description": "Force base64 output."},
              "save_to": {**S, "description": "Host path to write the bytes to instead of returning them (overwrites)."}},
             ["path"]), ann("Read file in Coal OS", read_only=True), tool_read_file),
@@ -802,6 +844,10 @@ def tool_list():
             for n, d, sc, an, _ in TOOLS]
 
 
+METHODS = ("initialize", "server/discover", "ping", "resources/list", "resources/read",
+           "tools/list", "tools/call")
+
+
 # --- MCP / JSON-RPC ---------------------------------------------------------------
 
 class Server:
@@ -858,12 +904,12 @@ class Server:
             return self.error(rid, -32022, "Unsupported protocol version",
                               {"supported": MODERN_VERSIONS + LEGACY_VERSIONS,
                                "requested": meta[META_VERSION]})
+        if method not in METHODS:
+            return self.error(rid, -32601, "Method not found: " + method)
         try:
             result = self.dispatch(method, params, modern)
         except ToolError as e:
             result = {"content": [{"type": "text", "text": str(e)}], "isError": True}
-        except KeyError:
-            return self.error(rid, -32601, "Method not found: " + method)
         except ValueError as e:
             return self.error(rid, -32602, str(e))
         except Exception as e:           # a bug here must not kill the server
@@ -904,10 +950,10 @@ class Server:
                 raise ValueError("arguments must be an object")
             try:
                 text = TOOL_INDEX[name][4](self.machine, args)
-            except (OSError, ValueError) as e:
-                raise ToolError("%s failed: %s" % (name, e))
+            except (OSError, ValueError, KeyError, TypeError) as e:
+                raise ToolError("%s failed: %s: %s" % (name, type(e).__name__, e))
             return {"content": [{"type": "text", "text": text}], "isError": False}
-        raise KeyError(method)
+        raise AssertionError(method)     # handle() only dispatches names in METHODS
 
 
 def parse_attach(spec):

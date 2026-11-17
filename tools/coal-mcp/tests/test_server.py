@@ -63,6 +63,38 @@ class Client:
         self.p.stdout.close()
 
 
+class InProcess(unittest.TestCase):
+    """Server.handle called directly, to inject failures inside a tool."""
+
+    def call(self, method, params):
+        sys.path.insert(0, os.path.join(HERE, ".."))
+        import server
+        sent = []
+        srv = server.Server(None)
+        srv.send = sent.append
+        old = server.TOOL_INDEX["coal_ps"]
+        server.TOOL_INDEX["coal_ps"] = old[:4] + (lambda m, a: {}["exit"],)
+        try:
+            srv.handle({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+        finally:
+            server.TOOL_INDEX["coal_ps"] = old
+        return sent[0]
+
+    def test_keyerror_in_a_tool_is_a_tool_result(self):
+        r = self.call("tools/call", {"name": "coal_ps", "arguments": {}})
+        self.assertNotIn("error", r)
+        self.assertTrue(r["result"]["isError"])
+        self.assertIn("KeyError", r["result"]["content"][0]["text"])
+
+    def test_only_unknown_methods_are_32601(self):
+        self.assertEqual(self.call("nope", {})["error"]["code"], -32601)
+
+    def test_version_comes_from_the_repo(self):
+        import server
+        ver = read(os.path.join(server.SRC_DIR, "VERSION")).decode().strip()
+        self.assertEqual(server.SERVER_INFO["version"], ver)
+
+
 class Protocol(unittest.TestCase):
     def setUp(self):
         self.c = Client()
@@ -205,6 +237,65 @@ class EndToEnd(unittest.TestCase):
         err, text = self.c.tool("coal_read_file", path=path, max_bytes=len(payload), save_to=out)
         self.assertFalse(err, text)
         self.assertEqual(read(out), payload)
+
+    def test_multi_megabyte_roundtrip_and_save_to_fetches_everything(self):
+        payload = os.urandom(3 * 1024 * 1024 + 123)
+        src = os.path.join(self.tmp, "src.bin")
+        with open(src, "wb") as f:
+            f.write(payload)
+        path = os.path.join(self.tmp, "big.bin")
+        err, text = self.c.tool("coal_write_file", path=path, host_path=src)
+        self.assertFalse(err, text)
+        self.assertEqual(read(path), payload)
+        out = os.path.join(self.tmp, "big.out")
+        err, text = self.c.tool("coal_read_file", path=path, save_to=out)      # no max_bytes: whole file
+        self.assertFalse(err, text)
+        self.assertEqual(read(out), payload)
+        err, text = self.c.tool("coal_read_file", path=path, save_to=out, offset=1000000, max_bytes=200000)
+        self.assertEqual(read(out), payload[1000000:1200000])
+
+    def test_run_kills_the_whole_process_group_on_timeout(self):
+        err, text = self.c.tool("coal_run", command="sleep 3137 & sleep 3138 | sleep 3139", timeout_ms=500)
+        self.assertIn("timed out", text)
+        left = subprocess.run(["pgrep", "-f", "^sleep 313[789]$"], stdout=subprocess.PIPE).stdout
+        self.assertEqual(left, b"")
+
+    def test_background_job_does_not_hold_the_call(self):
+        import time
+        t = time.time()
+        err, text = self.c.tool("coal_run", command="sleep 20 & echo started", timeout_ms=10000)
+        self.assertLess(time.time() - t, 5)
+        self.assertIn("started", text)
+        subprocess.run(["pkill", "-f", "^sleep 20$"])  # the job was left running on purpose
+
+    def test_huge_output_never_hangs_and_is_flagged(self):
+        err, text = self.c.tool("coal_run", command="head -c 3000000 /dev/zero | tr '\\0' x; echo done >&2",
+                                timeout_ms=30000)
+        self.assertIn("exit code: 0", text)
+        self.assertIn("output truncated", text)
+        self.assertIn("done", text)
+
+    def test_errno_text_on_write_failure(self):
+        err, text = self.c.tool("coal_write_file", path="/dev/full", content="x")
+        self.assertTrue(err)
+        self.assertIn("No space left on device", text)
+        self.assertIn("errno 28", text)
+
+    def test_numbers_are_checked_not_clamped(self):
+        sys.path.insert(0, os.path.join(HERE, ".."))
+        import server
+        self.c.close()                  # the bridge serves one connection at a time
+        l = server.Link(("unix", os.path.join(self.tmp, "com2.sock")))
+        try:
+            with self.assertRaises(server.ToolError) as e:
+                l.request("read_file", path="/etc/hostname", offset=99999999999)
+            self.assertIn("out of range", str(e.exception))
+            with self.assertRaises(server.ToolError):
+                l.request("run", cmd="true", timeout_ms="soon")
+            self.assertTrue(l.request("ping")["pong"])
+        finally:
+            l.close()
+            type(self).c = Client("--attach", "unix:" + os.path.join(self.tmp, "com2.sock"))
 
     def test_text_append_and_offset(self):
         path = os.path.join(self.tmp, "t.txt")
