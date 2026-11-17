@@ -32,6 +32,9 @@ int disk_init(disk_t *disk, const char *device_name);
 int disk_read_raw_sectors(disk_t *disk, uint64_t lba, void *buffer, size_t count);
 int disk_write_raw_sectors(disk_t *disk, uint64_t lba, const void *buffer, size_t count);
 
+/** Scatter/gather variant: one command for the sectors of all segments (see block_device_rw). */
+int disk_rw_sg(disk_t *disk, uint64_t lba, const blk_seg_t *segs, unsigned nseg, bool write);
+
 /** Flushes the drive's write cache. */
 int disk_flush(disk_t *disk);
 

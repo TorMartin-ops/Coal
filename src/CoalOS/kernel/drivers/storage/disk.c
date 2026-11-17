@@ -65,6 +65,11 @@ int disk_write_raw_sectors(disk_t *disk, uint64_t lba, const void *buffer, size_
     return block_device_write(&disk->blk_dev, lba, buffer, count);
 }
 
+int disk_rw_sg(disk_t *disk, uint64_t lba, const blk_seg_t *segs, unsigned nseg, bool write) {
+    if (!disk || !disk->initialized) return BLOCK_ERR_PARAMS;
+    return block_device_rw(&disk->blk_dev, lba, segs, nseg, write);
+}
+
 int disk_flush(disk_t *disk) {
     if (!disk || !disk->initialized) return BLOCK_ERR_PARAMS;
     return block_device_flush(&disk->blk_dev);

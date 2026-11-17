@@ -55,7 +55,7 @@ static uint8_t *slot(fat_dir_t *d, uint32_t idx, int *err) {
             uint32_t n = fat_next(fs, d->cc);
             if (!n) {
                 if (!d->grow) { *err = 0; return NULL; }
-                int c = fat_alloc(fs, d->cc);
+                int c = fat_alloc(fs, d->cc, true);
                 if (c < 0) { *err = c; return NULL; }
                 n = (uint32_t)c;
             }
@@ -235,6 +235,18 @@ static int make_alias(fat_fs_t *fs, uint32_t dir, const uint16_t *u, int n, uint
 
 /* ---- Iteration and lookup ------------------------------------------------- */
 
+/* Everything an 8.3 slot says about the entry (not its name or position). */
+static void ent_decode(const fat_fs_t *fs, const uint8_t *e, fat_ent_t *out) {
+    const fat_dirent_t *de = (const fat_dirent_t *)e;
+    memcpy(out->sfn, e, 11);
+    out->attr = de->attr;
+    out->cluster = de->cluster_lo | (fs->type == 32 ? (uint32_t)de->cluster_hi << 16 : 0);
+    out->size = de->size;
+    out->mtime = fat_dos_to_unix(de->mdate, de->mtime);
+    out->atime = fat_dos_to_unix(de->adate, 0);
+    out->ctime = fat_dos_to_unix(de->cdate, de->ctime);
+}
+
 int fat_dir_next(fat_dir_t *d, uint32_t *pos, fat_ent_t *out) {
     uint16_t u[MAX_LFN_CHARS + 1];
     uint32_t first = 0;
@@ -276,13 +288,7 @@ int fat_dir_next(fat_dir_t *d, uint32_t *pos, fat_ent_t *out) {
         } else {
             short_name(e, de->nt, out->name);
         }
-        memcpy(out->sfn, e, 11);
-        out->attr = de->attr;
-        out->cluster = de->cluster_lo | (d->fs->type == 32 ? (uint32_t)de->cluster_hi << 16 : 0);
-        out->size = de->size;
-        out->mtime = fat_dos_to_unix(de->mdate, de->mtime);
-        out->atime = fat_dos_to_unix(de->adate, 0);
-        out->ctime = fat_dos_to_unix(de->cdate, de->ctime);
+        ent_decode(d->fs, e, out);
         out->idx = i;
         out->first_idx = long_name ? first : i;
         out->lba = d->buf->block_number;
@@ -292,13 +298,64 @@ int fat_dir_next(fat_dir_t *d, uint32_t *pos, fat_ent_t *out) {
     }
 }
 
+/* ---- Name cache ------------------------------------------------------------ */
+
+/* Remembers where a name's slot is; the slot stays authoritative, so size, cluster and times are read from
+ * it. Entries are dropped when their slot is freed (fat_dir_remove) and replaced when a name is created. */
+static fat_dcache_t *dc_slot(const fat_fs_t *fs, uint32_t dir, const char *name) {
+    uint32_t h = dir * 2654435761u;
+    for (const char *p = name; *p; p++) h = (h ^ (uint8_t)fold(*p)) * 16777619u;
+    return strlen(name) < sizeof(fs->dcache->name) ? &fs->dcache[(h ^ h >> 15) % FAT_DCACHE_SIZE] : NULL;
+}
+
+static void dc_put(fat_fs_t *fs, uint32_t dir, const char *name, const fat_ent_t *e) {
+    fat_dcache_t *c = dc_slot(fs, dir, name);
+    if (!c) return;
+    c->dir = dir;
+    c->lba = e->lba;
+    c->off = e->off;
+    c->idx = e->idx;
+    c->first_idx = e->first_idx;
+    memcpy(c->sfn, e->sfn, 11);
+    strcpy(c->name, name);
+}
+
+static void dc_drop(fat_fs_t *fs, uint32_t dir, const char *name) {
+    fat_dcache_t *c = dc_slot(fs, dir, name);
+    if (c && c->dir == dir && name_eq(c->name, name)) c->name[0] = '\0';
+}
+
+/* The cached slot of (dir, name) if it still holds that entry. */
+static bool dc_get(fat_fs_t *fs, uint32_t dir, const char *name, fat_ent_t *out) {
+    fat_dcache_t *c = dc_slot(fs, dir, name);
+    if (!c || !c->name[0] || c->dir != dir || !name_eq(c->name, name)) return false;
+    buffer_t *b = fat_buf(fs, c->lba);
+    if (!b) return false;
+    const uint8_t *e = b->data + c->off;
+    bool ok = e[0] != 0x00 && e[0] != 0xE5 && e[11] != FAT_ATTR_LFN && memcmp(e, c->sfn, 11) == 0;
+    if (ok) {
+        ent_decode(fs, e, out);
+        strcpy(out->name, name);
+        out->idx = c->idx;
+        out->first_idx = c->first_idx;
+        out->lba = c->lba;
+        out->off = c->off;
+    } else {
+        c->name[0] = '\0';
+    }
+    buffer_release(b);
+    return ok;
+}
+
 int fat_dir_find(fat_fs_t *fs, uint32_t dir, const char *name, fat_ent_t *out) {
+    if (dc_get(fs, dir, name, out)) return 0;
     fat_dir_t d;
     uint32_t pos = 0;
     int rc;
     fat_dir_open(&d, fs, dir);
     while ((rc = fat_dir_next(&d, &pos, out)) > 0 && !name_eq(out->name, name)) {}
     fat_dir_close(&d);
+    if (rc > 0) dc_put(fs, dir, out->name, out);
     return rc > 0 ? 0 : rc < 0 ? rc : -ENOENT;
 }
 
@@ -381,19 +438,20 @@ int fat_dir_add(fat_fs_t *fs, uint32_t dir, const char *name, uint8_t attr,
     de->size = size;
     buffer_mark_dirty(d.buf);
 
-    if (out) {
-        strncpy(out->name, name, VFS_NAME_MAX);
-        out->name[VFS_NAME_MAX] = '\0';
-        memcpy(out->sfn, sfn, 11);
-        out->attr = attr;
-        out->cluster = cluster;
-        out->size = size;
-        out->mtime = out->atime = out->ctime = mtime;
-        out->idx = idx;
-        out->first_idx = start;
-        out->lba = d.buf->block_number;
-        out->off = (idx * FAT_ENT_SIZE) % fs->bps;
-    }
+    fat_ent_t made;
+    if (!out) out = &made;
+    strncpy(out->name, name, VFS_NAME_MAX);
+    out->name[VFS_NAME_MAX] = '\0';
+    memcpy(out->sfn, sfn, 11);
+    out->attr = attr;
+    out->cluster = cluster;
+    out->size = size;
+    out->mtime = out->atime = out->ctime = mtime;
+    out->idx = idx;
+    out->first_idx = start;
+    out->lba = d.buf->block_number;
+    out->off = (idx * FAT_ENT_SIZE) % fs->bps;
+    dc_put(fs, dir, name, out);
 out:
     fat_dir_close(&d);
     return rc;
@@ -411,6 +469,7 @@ int fat_dir_remove(fat_fs_t *fs, uint32_t dir, const fat_ent_t *ent) {
         buffer_mark_dirty(d.buf);
     }
     fat_dir_close(&d);
+    dc_drop(fs, dir, ent->name);
     return rc;
 }
 

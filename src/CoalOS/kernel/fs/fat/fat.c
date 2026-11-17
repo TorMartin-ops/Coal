@@ -50,21 +50,36 @@ static uint32_t fat_get(const fat_fs_t *fs, uint32_t c) {
 }
 
 static void fat_set(fat_fs_t *fs, uint32_t c, uint32_t v) {
-    uint32_t esz = fs->type == 16 ? 2 : 4;
+    uint32_t esz = fs->type == 16 ? 2 : 4, old = fat_get(fs, c);
     if (fs->type == 16) ((uint16_t *)fs->fat)[c] = (uint16_t)v;
     else {
         uint32_t *p = &((uint32_t *)fs->fat)[c];
         *p = (*p & 0xF0000000) | (v & 0x0FFFFFFF);
+    }
+    if ((old == 0) != (v == 0)) {               /* the free map follows the table */
+        fs->freemap[c / 32] ^= 1u << (c % 32);
+        fs->nfree += v == 0 ? 1 : -1;
     }
     uint32_t sec = c * esz / fs->bps;
     if (sec < fs->dirty_lo) fs->dirty_lo = sec;
     if (sec > fs->dirty_hi) fs->dirty_hi = sec;
 }
 
-uint32_t fat_free_clusters(const fat_fs_t *fs) {
-    uint32_t n = 0;
-    for (uint32_t c = 2; c < fs->nclusters + 2; c++) n += fat_get(fs, c) == 0;
-    return n;
+uint32_t fat_free_clusters(const fat_fs_t *fs) { return fs->nfree; }
+
+static inline bool is_free(const fat_fs_t *fs, uint32_t c) { return fs->freemap[c / 32] >> (c % 32) & 1; }
+
+/* First free cluster at or after `from`, wrapping once; 0 when the volume is full. */
+static uint32_t find_free(const fat_fs_t *fs, uint32_t from) {
+    uint32_t end = fs->nclusters + 2, words = (end + 31) / 32;
+    if (from < 2 || from >= end) from = 2;
+    uint32_t w = from / 32, bits = fs->freemap[w] & (~0u << (from % 32));
+    for (uint32_t i = 0; ; ) {
+        if (bits) return w * 32 + (uint32_t)__builtin_ctz(bits);
+        if (++i > words) return 0;
+        w = w + 1 == words ? 0 : w + 1;
+        bits = fs->freemap[w];
+    }
 }
 
 /* Next cluster of the chain, or 0 at its end (or on a corrupt link). */
@@ -82,21 +97,23 @@ uint32_t fat_nth(const fat_fs_t *fs, uint32_t first, uint32_t n) {
 
 void fat_set_eoc(fat_fs_t *fs, uint32_t c) { fat_set(fs, c, 0x0FFFFFFF); }
 
-/* Allocate a zeroed cluster and link it after `prev` (0 = start a new chain). */
-int fat_alloc(fat_fs_t *fs, uint32_t prev) {
-    uint32_t c = fs->next_free;
-    if (!cluster_ok(fs, c)) c = 2;
-    uint32_t n = fs->nclusters;
-    while (n-- && fat_get(fs, c) != 0) c = (c + 1 < fs->nclusters + 2) ? c + 1 : 2;
-    if (fat_get(fs, c) != 0) return -ENOSPC;
+/* Allocate a cluster and link it after `prev` (0 = start a new chain). A file append takes the cluster right
+ * behind `prev` when it is free, which keeps files contiguous on the disk. Directory clusters are zeroed
+ * (`zero`); file clusters are not, the page cache supplies zeros for what the file has not written. */
+int fat_alloc(fat_fs_t *fs, uint32_t prev, bool zero) {
+    uint32_t c = prev + 1;
+    if (!prev || c >= fs->nclusters + 2 || !is_free(fs, c)) c = find_free(fs, fs->next_free);
+    if (!c) return -ENOSPC;
 
-    uint32_t lba = fat_cluster_lba(fs, c);
-    for (uint32_t s = 0; s < fs->spc; s++) {
-        buffer_t *b = fat_buf(fs, lba + s);
-        if (!b) return -EIO;
-        memset(b->data, 0, fs->bps);
-        buffer_mark_dirty(b);
-        buffer_release(b);
+    if (zero) {
+        uint32_t lba = fat_cluster_lba(fs, c);
+        for (uint32_t s = 0; s < fs->spc; s++) {
+            buffer_t *b = fat_buf(fs, lba + s);
+            if (!b) return -EIO;
+            memset(b->data, 0, fs->bps);
+            buffer_mark_dirty(b);
+            buffer_release(b);
+        }
     }
     fat_set_eoc(fs, c);
     if (prev) fat_set(fs, prev, c);
@@ -104,13 +121,25 @@ int fat_alloc(fat_fs_t *fs, uint32_t prev) {
     return (int)c;
 }
 
-void fat_free_chain(fat_fs_t *fs, uint32_t c) {
+/* Free a chain. `meta`: directory clusters, whose cached sectors must not be written over a later owner. */
+void fat_free_chain(fat_fs_t *fs, uint32_t c, bool meta) {
     for (uint32_t guard = fs->nclusters; cluster_ok(fs, c) && guard--; ) {
         uint32_t n = fat_get(fs, c);
+        if (meta) buffer_discard(fs->disk, fat_cluster_lba(fs, c), fs->spc);
         fat_set(fs, c, 0);
         if (c < fs->next_free) fs->next_free = c;
         c = n;
     }
+}
+
+/* Cluster number of the chain's idx-th cluster, or 0 past its end. The cursor only walks forward. */
+uint32_t fat_chain_get(fat_chain_t *ch, const fat_fs_t *fs, uint32_t idx) {
+    if (!ch->cl || idx < ch->idx) { ch->idx = 0; ch->cl = ch->first; }
+    while (ch->idx < idx && ch->cl) {
+        ch->cl = fat_next(fs, ch->cl);
+        ch->idx++;
+    }
+    return ch->idx == idx ? ch->cl : 0;
 }
 
 /* Copy the dirty FAT range into every FAT copy in the buffer cache. */
@@ -131,10 +160,12 @@ int fat_commit(fat_fs_t *fs) {
     return rc;
 }
 
-/* Commit, then write every dirty buffer to the disk. */
+/* File data first, then the FAT and directory sectors that describe it. */
 int fat_flush(fat_fs_t *fs) {
-    int rc = fat_commit(fs);
+    int rc = fat_writeback(fs);
+    int commit = fat_commit(fs);
     int sync = buffer_cache_sync();
+    if (!rc) rc = commit;
     fs->unsynced = false;
     return rc ? rc : sync;
 }
@@ -179,6 +210,7 @@ void *fat_mount(const char *dev) {
     uint32_t sector_size = b->disk->blk_dev.sector_size;
     uint64_t disk_sectors = b->disk->blk_dev.total_sectors;
     const char *devname = b->disk->blk_dev.device_name;
+    disk_t *disk = b->disk;
     buffer_release(b);
     b = NULL;
 
@@ -187,7 +219,8 @@ void *fat_mount(const char *dev) {
     uint32_t fat_size = bpb.fat_size16 ? bpb.fat_size16 : bpb.fat_size32;
     if (!sig || bpb.bytes_per_sector != sector_size || spc == 0 || (spc & (spc - 1)) ||
         bpb.reserved == 0 || bpb.num_fats == 0 || bpb.num_fats > 2 || fat_size == 0 ||
-        total == 0 || total > disk_sectors || bpb.bytes_per_sector * spc > 65536u) {
+        total == 0 || total > disk_sectors || bpb.bytes_per_sector * spc > 65536u ||
+        sector_size > PC_PAGE_SIZE) {
         LOG_ERROR("invalid BPB on %s", dev);
         goto fail;
     }
@@ -196,6 +229,7 @@ void *fat_mount(const char *dev) {
     if (!fs) goto fail;
     memset(fs, 0, sizeof(*fs));
     fs->dev = devname;
+    fs->disk = disk;
     fs->bps = bpb.bytes_per_sector;
     fs->spc = spc;
     fs->cluster_bytes = fs->bps * spc;
@@ -228,6 +262,15 @@ void *fat_mount(const char *dev) {
     }
     fs->dirty_lo = ~0u;
     fs->next_free = 2;
+    size_t map_bytes = ((fs->nclusters + 2 + 31) / 32) * 4;
+    fs->freemap = kmalloc(map_bytes);
+    fs->dcache = kmalloc(FAT_DCACHE_SIZE * sizeof(*fs->dcache));
+    if (!fs->freemap || !fs->dcache) goto fail;
+    memset(fs->freemap, 0, map_bytes);
+    memset(fs->dcache, 0, FAT_DCACHE_SIZE * sizeof(*fs->dcache));
+    for (uint32_t c = 2; c < fs->nclusters + 2; c++) {
+        if (fat_get(fs, c) == 0) { fs->freemap[c / 32] |= 1u << (c % 32); fs->nfree++; }
+    }
     LOG_INFO("%s: FAT%u, %u clusters of %u bytes", dev, fs->type, fs->nclusters, fs->cluster_bytes);
     return fs;
 
@@ -235,7 +278,7 @@ bad:
     LOG_ERROR("inconsistent BPB on %s", dev);
 fail:
     if (b) buffer_release(b);
-    if (fs) kfree(fs->fat);
+    if (fs) { kfree(fs->fat); kfree(fs->freemap); kfree(fs->dcache); }
     kfree(fs);
     return NULL;
 }
@@ -246,7 +289,10 @@ int fat_unmount(void *ctx) {
     if (fs->nodes) { fat_unlock(fs); return -EBUSY; }
     int rc = fat_flush(fs);
     fat_unlock(fs);
+    pc_drop_owner(fs);
     kfree(fs->fat);
+    kfree(fs->freemap);
+    kfree(fs->dcache);
     kfree(fs);
     return rc;
 }

@@ -164,8 +164,14 @@ static int ata_identify(block_device_t *d) {
 
 /* ---- Data transfer ----------------------------------------------------- */
 
-/** One READ/WRITE command for `count` (1..256) sectors. The channel lock is held. */
-static int ata_pio_command(block_device_t *d, uint64_t lba, uint8_t *buf, uint32_t count, bool write) {
+/** Position inside a scatter list. */
+typedef struct {
+    const blk_seg_t *seg;
+    uint32_t         done;      /* sectors of *seg already moved */
+} sg_cursor_t;
+
+/** One READ/WRITE command for `count` (1..256) sectors, PIO. The channel lock is held. */
+static int ata_pio_command(block_device_t *d, uint64_t lba, sg_cursor_t *cur, uint32_t count, bool write) {
     bool ext = d->lba48_supported && (lba + count > LBA28_LIMIT);
     uint8_t cmd = write ? (ext ? ATA_CMD_WRITE_EXT : ATA_CMD_WRITE)
                         : (ext ? ATA_CMD_READ_EXT  : ATA_CMD_READ);
@@ -178,7 +184,9 @@ static int ata_pio_command(block_device_t *d, uint64_t lba, uint8_t *buf, uint32
     outb(d->io_base + ATA_REG_COMMAND, cmd);
     ata_delay_400ns(d);
 
-    for (uint32_t s = 0; s < count; s++, buf += d->sector_size) {
+    for (uint32_t s = 0; s < count; s++) {
+        while (cur->done == cur->seg->sectors) { cur->seg++; cur->done = 0; }
+        uint8_t *buf = (uint8_t *)cur->seg->buf + (size_t)cur->done++ * d->sector_size;
         r = ata_wait(d, true);
         if (r != BLOCK_ERR_OK) return r;
         if (write) {
@@ -191,18 +199,20 @@ static int ata_pio_command(block_device_t *d, uint64_t lba, uint8_t *buf, uint32
     return write ? ata_wait(d, false) : BLOCK_ERR_OK;
 }
 
-static int block_device_transfer(block_device_t *d, uint64_t lba, uint8_t *buf, size_t count, bool write) {
-    if (!d || !d->initialized || !buf || count == 0) return BLOCK_ERR_PARAMS;
+int block_device_rw(block_device_t *d, uint64_t lba, const blk_seg_t *segs, unsigned nseg, bool write) {
+    uint64_t count = 0;
+    for (unsigned i = 0; d && i < nseg; i++) count += segs[i].sectors;
+    if (!d || !d->initialized || count == 0) return BLOCK_ERR_PARAMS;
     if (lba >= d->total_sectors || count > d->total_sectors - lba) return BLOCK_ERR_BOUNDS;
     if (!d->lba48_supported && lba + count > LBA28_LIMIT) return BLOCK_ERR_BOUNDS;
 
     int r = BLOCK_ERR_OK;
+    sg_cursor_t cur = { segs, 0 };
     channel_lock(d->channel);
     while (count && r == BLOCK_ERR_OK) {
         uint32_t n = count < ATA_MAX_SECTORS_CMD ? (uint32_t)count : ATA_MAX_SECTORS_CMD;
-        r = ata_pio_command(d, lba, buf, n, write);
+        r = ata_pio_command(d, lba, &cur, n, write);
         lba += n;
-        buf += (size_t)n * d->sector_size;
         count -= n;
     }
     channel_unlock(d->channel);
@@ -217,11 +227,13 @@ static int block_device_transfer(block_device_t *d, uint64_t lba, uint8_t *buf, 
 /* ---- Public API -------------------------------------------------------- */
 
 int block_device_read(block_device_t *dev, uint64_t lba, void *buffer, size_t count) {
-    return block_device_transfer(dev, lba, buffer, count, false);
+    blk_seg_t seg = { buffer, (uint32_t)count };
+    return buffer ? block_device_rw(dev, lba, &seg, 1, false) : BLOCK_ERR_PARAMS;
 }
 
 int block_device_write(block_device_t *dev, uint64_t lba, const void *buffer, size_t count) {
-    return block_device_transfer(dev, lba, (uint8_t *)buffer, count, true);
+    blk_seg_t seg = { (void *)buffer, (uint32_t)count };
+    return buffer ? block_device_rw(dev, lba, &seg, 1, true) : BLOCK_ERR_PARAMS;
 }
 
 int block_device_flush(block_device_t *dev) {

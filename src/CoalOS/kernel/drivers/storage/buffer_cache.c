@@ -240,6 +240,20 @@ void buffer_mark_dirty(buffer_t *buf) {
     UNLOCK(fl);
 }
 
+void buffer_discard(disk_t *disk, uint32_t block, uint32_t count) {
+    if (!g_init) return;
+    uintptr_t fl;
+    LOCK(fl);
+    for (uint32_t i = 0; i < count; i++) {
+        buffer_t *b = lookup(disk, block + i);
+        if (b && !b->ref_count && !(b->flags & BUFFER_FLAG_BUSY)) {
+            cache_remove(b);
+            kfree(b);
+        }
+    }
+    UNLOCK(fl);
+}
+
 int buffer_flush(buffer_t *buf) {
     if (!buf) return BLOCK_ERR_PARAMS;
     uintptr_t fl;

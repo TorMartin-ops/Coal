@@ -21,6 +21,12 @@
 #define BLOCK_ERR_UNSUPPORTED -7
 #define BLOCK_ERR_IO          -10
 
+/** A run of sectors in memory; a transfer is a list of these, contiguous on the disk. */
+typedef struct {
+    void    *buf;
+    uint32_t sectors;
+} blk_seg_t;
+
 typedef struct {
     const char *device_name;   /* "hda".."hdd" */
     uint16_t io_base;
@@ -38,6 +44,9 @@ int block_device_init(const char *device, block_device_t *dev);
 
 int block_device_read(block_device_t *dev, uint64_t lba, void *buffer, size_t count);
 int block_device_write(block_device_t *dev, uint64_t lba, const void *buffer, size_t count);
+
+/** One transfer of consecutive sectors from/to several memory segments (kernel direct-mapped memory). */
+int block_device_rw(block_device_t *dev, uint64_t lba, const blk_seg_t *segs, unsigned nseg, bool write);
 
 /** Flushes the drive's write cache. */
 int block_device_flush(block_device_t *dev);
