@@ -1,67 +1,55 @@
-# Coal OS Development Repository
+# Coal OS
 
-Coal OS is a hobby operating system project written in C and x86 assembly.
+A 32-bit x86 hobby operating system written from scratch in C and x86 assembly.
 
-## Project Overview
+Coal OS started as a group project in IKT218 Advanced Operating Systems at the University of Agder (spring 2025). After the course I kept working on it alone, added my own libc and Linux-compatible system calls, and cleaned up the architecture.
 
-This repository contains the Coal OS project, a 32-bit x86 operating system built from scratch. The project started as part of an OS development course but has been refactored into a personal hobby OS project.
+## What it does
 
-## Building Coal OS
+- **Boot:** Multiboot2, higher-half kernel at `0xC0100000`
+- **Interrupts:** GDT, IDT, ISR/IRQ handling, PIT timer at 1000 Hz
+- **Memory:** physical frame allocator, buddy allocator, slab allocator, paging and virtual memory
+- **Processes:** ELF loader, user mode, preemptive priority scheduler, signals, process groups
+- **System calls:** native calls plus a Linux i386-compatible dispatcher (`fork`, `exec`, `read`, `write`, `open`, `close` and more)
+- **File system:** VFS layer and FAT16 with long file names, read and write, buffer cache
+- **Drivers:** PS/2 keyboard, VGA text mode, serial port, IDE/ATA disk
+- **User space:** own small libc and a shell with a command parser
 
-### Prerequisites
+## Project layout
 
-- Docker (recommended) or a local development environment with:
-  - Cross-compiler toolchain (i686-elf-gcc)
-  - NASM assembler
-  - CMake (3.22.1 or later)
-  - QEMU for testing
-  - xorriso for ISO creation
-  - mtools for FAT disk image manipulation
+```
+src/CoalOS/
+├── boot/        Multiboot2 entry and early setup
+├── kernel/      cpu, memory, process, fs, drivers, lib
+├── include/     kernel headers
+├── userspace/   libc and shell
+├── tests/       kernel test suite
+├── scripts/     QEMU and disk image helpers
+└── docs/        architecture and development notes
+```
 
-### Using Docker (Recommended)
+More detail is in [`src/CoalOS/docs/ARCHITECTURE.md`](src/CoalOS/docs/ARCHITECTURE.md).
 
-The project includes a devcontainer configuration for easy development:
+## Building and running
 
-1. Install Docker and Visual Studio Code
-2. Open the project in VS Code
-3. Use the "Reopen in Container" option when prompted
-
-### Build Instructions
+The easiest way is the dev container in `.devcontainer/` (VS Code: "Reopen in Container"). It has the i686-elf cross compiler, NASM, CMake and QEMU.
 
 ```bash
-# Create build directory
-cd build/CoalOS
-
-# Configure with CMake
+mkdir -p build/CoalOS && cd build/CoalOS
 cmake ../../src/CoalOS/
-
-# Build the OS
 make
-
-# Run with QEMU
 ../../src/CoalOS/scripts/start_qemu.sh kernel.iso
 ```
 
-## Project Structure
+Requirements outside the container: `i686-elf-gcc`, NASM, CMake 3.22+, QEMU, `xorriso` and `mtools`.
 
-```
-.vscode/           # VS Code configuration
-.devcontainer/     # Docker development container configuration
-build/CoalOS/      # Build output directory
-src/CoalOS/        # Source code for Coal OS
-```
+## Credits
 
-The main Coal OS source is located in `src/CoalOS/`. See the [Coal OS README](src/CoalOS/README.md) for detailed information about the OS architecture and components.
-
-## Features
-
-- Multiboot2-compliant boot process via Limine bootloader
-- Memory management with paging, buddy allocator, and slab allocator
-- Process management with ELF loading and context switching
-- FAT16 file system with VFS abstraction layer
-- Device drivers for keyboard, display, timer, and disk
-- Basic userspace with shell and test programs
+- **Tor Martin Kohle** – most of the kernel, memory management, processes, file system, libc and shell
+- **Bjarte Wik** – group member in IKT218
+- **Per-Arne Andersen** – course template and build setup for IKT218 at UiA
+- The [OSDev wiki](https://wiki.osdev.org) community
 
 ## License
 
-This is a personal hobby project. Feel free to explore and learn from the code.
+MIT, see [LICENSE](LICENSE).
