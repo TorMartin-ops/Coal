@@ -1,0 +1,4 @@
+#!/bin/sh
+# coaltest: the single entry point for Coal OS tests. See docs/testing/README.md.
+here=$(cd "$(dirname "$0")" && pwd)
+exec env PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" PYTHONDONTWRITEBYTECODE=1 python3 -m testkit "$@"
