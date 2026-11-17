@@ -66,8 +66,7 @@
 #define TX_DESCS    64
 #define ITR_INTERVAL 400            /* interrupt throttle, units of 256 ns: about 100 us */
 #define BUF_SIZE    2048
-#define MMIO_VA     KERNEL_MMIO_VADDR_START
-#define MMIO_PAGES  32              /* BAR0 is 128 KiB */
+#define MMIO_LEN    0x20000         /* BAR0 is 128 KiB */
 
 struct rx_desc { uint64_t addr; uint16_t len, csum; uint8_t status, errors; uint16_t special; };
 struct tx_desc { uint64_t addr; uint16_t len; uint8_t cso, cmd, status, css; uint16_t special; };
@@ -129,13 +128,8 @@ static uint8_t *dma_page(uintptr_t *phys) {
 }
 
 static bool map_registers(uintptr_t bar) {
-    uint32_t *kpd = (uint32_t *)g_kernel_page_directory_phys;
-    for (unsigned i = 0; i < MMIO_PAGES; i++)
-        if (paging_map_single_4k(kpd, MMIO_VA + i * PAGE_SIZE, bar + i * PAGE_SIZE,
-                                 PAGE_PRESENT | PAGE_RW | PAGE_PCD | PAGE_PWT) != 0)
-            return false;
-    mmio = (volatile uint8_t *)MMIO_VA;
-    return true;
+    mmio = ioremap(bar, MMIO_LEN);
+    return mmio != NULL;
 }
 
 static bool alloc_rings(void) {

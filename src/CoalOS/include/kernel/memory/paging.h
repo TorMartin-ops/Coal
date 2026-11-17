@@ -76,6 +76,7 @@ typedef uint64_t pte_t;
 #define KERNEL_STACK_VADDR_START 0xFFFFC00000000000ul
 #define KERNEL_STACK_VADDR_END   (KERNEL_STACK_VADDR_START + (1ul << 30))
 #define KERNEL_MMIO_VADDR_START  0xFFFFFFFFFB000000ul   /* device registers, mapped uncached */
+#define IOREMAP_OFFSET           0x300000ul             /* ioremap() hands out addresses from here; the local APIC page sits below */
 #define KERNEL_MMIO_VADDR_END    0xFFFFFFFFFC000000ul
 #define KERNEL_PML4_FIRST        256u                   /* first PML4 entry of kernel space */
 

@@ -142,7 +142,7 @@ int paging_get_physical_address_and_flags(void *pd, uintptr_t vaddr, uintptr_t *
 /* --- Device registers ------------------------------------------------------- */
 
 volatile void *ioremap(uint64_t phys, size_t size) {
-    static uintptr_t next = KERNEL_MMIO_VADDR_START;
+    static uintptr_t next = KERNEL_MMIO_VADDR_START + IOREMAP_OFFSET;
     uintptr_t first = PAGE_ALIGN_DOWN(phys), last = PAGE_ALIGN_UP(phys + size);
     uintptr_t va = next;
 
