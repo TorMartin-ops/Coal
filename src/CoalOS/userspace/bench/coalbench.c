@@ -24,6 +24,7 @@
 #include <libc/sys/stat.h>
 #include <libc/sys/wait.h>
 #include <libc/syscall.h>
+#include <libc/sys/time.h>
 #include <libc/time.h>
 #include <libc/unistd.h>
 
@@ -74,7 +75,7 @@ static inline uint64_t rdtsc(void) {
 
 static double mono_ns(void) {
     struct timespec ts;
-    __sc(SYS_CLOCK_GETTIME, 1, (long)&ts, 0, 0, 0);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec * 1e9 + (double)ts.tv_nsec;
 }
 
@@ -155,13 +156,13 @@ static uint64_t t_write_null(unsigned n) {
 }
 
 static uint64_t t_gettimeofday(unsigned n) {
-    long tv[2];
-    LOOP(n, if (__SC3(SYS_GETTIMEOFDAY, tv, 0, 0) != 0) return 0);
+    struct timeval tv;
+    LOOP(n, if (gettimeofday(&tv, NULL) != 0) return 0);
 }
 
 static uint64_t t_clock_gettime(unsigned n) {
     struct timespec ts;
-    LOOP(n, if (__SC3(SYS_CLOCK_GETTIME, 1, &ts, 0) != 0) return 0);
+    LOOP(n, if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0);
 }
 
 static uint64_t t_open_close(unsigned n) {
@@ -206,6 +207,33 @@ static uint64_t t_page_fault(unsigned n) {
     uint64_t t = rdtsc() - t0;
     unmap(p, (size_t)n * 4096);
     return t;
+}
+
+/* A burst of faults after the machine was idle: the kernel's pool of zeroed pages is full. */
+static uint64_t t_page_fault_idle(unsigned n) {
+    char *p = map_anon((size_t)n * 4096);
+    if (!p) return 0;
+    struct timespec ts = { 0, 10000000 };
+    nanosleep(&ts, NULL);
+    uint64_t t0 = rdtsc();
+    for (unsigned i = 0; i < n; i++) p[(size_t)i * 4096] = 1;
+    uint64_t t = rdtsc() - t0;
+    unmap(p, (size_t)n * 4096);
+    return t;
+}
+
+static void *volatile sink;
+
+static uint64_t t_malloc_free(unsigned n) {
+    LOOP(n, void *p = malloc(64); if (!p) return 0; sink = p; free(p));
+}
+
+/* 128 live blocks of eight sizes, freed in a different order than allocated. */
+static uint64_t t_malloc_churn(unsigned n) {
+    static void *blk[128];
+    LOOP(n,
+        for (unsigned k = 0; k < 128; k++) { blk[k] = malloc(8 + (k & 7) * 40); if (!blk[k]) return 0; }
+        for (unsigned k = 0; k < 128; k++) free(blk[(k * 37) & 127]));
 }
 
 static uint64_t t_mmap_munmap(unsigned n) {
@@ -617,6 +645,7 @@ static const struct test tests[] = {
     { "stat",            NS,   256, 1 << 16, 0, NULL, t_stat, NULL, 0 },
     { "pipe_rw_1b",      NS,   512, 1 << 16, 0, NULL, t_pipe_rw, NULL, 0 },
     { "page_fault",      NS,   512,    8192, 0, NULL, t_page_fault, NULL, 0 },
+    { "page_fault_idle", NS,    16,      16, 0, NULL, t_page_fault_idle, NULL, 0 },
     { "mmap_munmap_1m",  NS,   128, 1 << 16, 0, NULL, t_mmap_munmap, NULL, 0 },
     { "fork_exit_wait",  NS,     8,     256, 0, NULL, t_fork_exit, NULL, 0 },
     { "fork_exec_wait",  NS,     8,     256, 0, null_prog_present, t_fork_exec, NULL, 0 },
@@ -631,6 +660,8 @@ static const struct test tests[] = {
     { "file_read_8m",   MBS,     1,       1, FILE_BYTES, file_read_setup, t_file_read, file_read_teardown, 0 },
     { "tcp_latency",     NS,   128, 1 << 16, 0, tcp_lat_setup, t_tcp_lat, tcp_teardown, 0 },
     { "tcp_bw",         MBS,     1,      64, TCP_BURST, tcp_bw_setup, t_tcp_bw, tcp_teardown, 0 },
+    { "malloc_free_64", NS,    256, 1 << 16, 0, NULL, t_malloc_free, NULL, 0 },
+    { "malloc_churn",    NS,     4,     256, 0, NULL, t_malloc_churn, NULL, 0 },
     { "memcpy_bw",      MBS,     2,     256, 2u << 20, memcpy_setup, t_memcpy, memcpy_teardown, 0 },
     { "wakeup_idle",     NS,    32,     128, 0, wake_idle_setup, t_wakeup, wake_teardown, 0 },
     { "wakeup_loaded",   NS,    32,     128, 0, wake_loaded_setup, t_wakeup, wake_teardown, 0 },

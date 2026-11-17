@@ -19,6 +19,7 @@
 #define SIGCONT  18
 #define SIGSTOP  19
 #define SIGTSTP  20
+#define SIGXCPU  24
 
 typedef void (*sighandler_t)(int);
 #define SIG_DFL ((sighandler_t)0)

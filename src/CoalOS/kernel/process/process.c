@@ -136,6 +136,7 @@ static pcb_t *pcb_new(void) {
     spinlock_init(&p->fd_table_lock);
     p->task.process = p;
     strcpy(p->cwd, "/");
+    rlimit_init(p);
     if (!kstack_alloc(p)) { kfree(p); return NULL; }
     return p;
 }
@@ -249,6 +250,7 @@ int process_fork(const isr_frame_t *regs) {
     isr_frame_t *f;
 
     if (!parent || !parent->mm) return -ESRCH;
+    if (!rlimit_fork_allowed(parent)) return -EAGAIN;
     child = pcb_new();
     if (!child) return -EAGAIN;
     mm = dup_mm(parent->mm);
@@ -262,6 +264,7 @@ int process_fork(const isr_frame_t *regs) {
     strcpy(child->cwd, parent->cwd);
     child->cloexec = parent->cloexec;
     child->task.nice = parent->task.nice;
+    rlimit_fork(child, parent);
     child->tls_base = parent->tls_base;
     child->tls_pages = parent->tls_pages;
     child->sig_blocked = parent->sig_blocked;
@@ -310,6 +313,8 @@ void process_exit(int status) {
     me->children = NULL;
 
     if (me->parent) {
+        rlimit_exit(me);
+        signal_send(me->parent, SIGCHLD);     /* ignored unless the parent handles it: wakes a poll() */
         if (me->parent->wait_blocked) scheduler_unblock_task(&me->parent->task);
     } else {
         dead_push(me);
@@ -394,6 +399,7 @@ int proc_info_get(uint32_t pid, proc_info_t *out) {
     memcpy(out->name, p->name, sizeof(out->name));
     memcpy(out->cmdline, p->cmdline, sizeof(out->cmdline));
     out->cmdline_len = p->cmdline_len;
+    out->rl_hits = p->rl_hits;
     local_irq_restore(flags);
     return 0;
 }

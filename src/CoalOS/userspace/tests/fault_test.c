@@ -25,6 +25,11 @@ static void fault_int81(void) { asm volatile("int $0x81"); }           /* no gat
 static void fault_div0(void) {
     asm volatile("xor %%ecx, %%ecx; div %%ecx" : : "a"(1), "d"(0) : "ecx");
 }
+/* sysenter with a stack pointer that is not readable: the kernel cannot fetch the sixth argument, and
+ * sysexit then resumes the stub with the same bad esp. Only this process dies. */
+static void fault_sysenter(void) {
+    asm volatile("xor %%ebp, %%ebp; sysenter" : : "a"(20) : "memory");
+}
 static void fault_null(void) { *(volatile int *)0 = 1; }
 
 static void on_signal(int sig) { _exit(40 + sig); }
@@ -67,6 +72,7 @@ int main(void) {
     expect_signal("int $0x81", fault_int81, SIGSEGV);
     expect_signal("int3", fault_int3, SIGTRAP);
     expect_signal("null", fault_null, SIGSEGV);
+    expect_signal("sysenter with bad esp", fault_sysenter, SIGSEGV);
     expect_handler("ud2", fault_ud2, SIGILL);
     expect_handler("div0", fault_div0, SIGFPE);
     expect_handler("null", fault_null, SIGSEGV);

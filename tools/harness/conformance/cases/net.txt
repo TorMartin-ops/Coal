@@ -1,0 +1,41 @@
+== tcp_echo
+printf 'ping\n' | nc -w 2 @HOST@ @ECHO@
+--
+ping
+== http_get
+wget -q -O out http://@HOST@:@HTTP@/hello.txt; cat out
+--
+hello-net
+== http_get_stdout
+wget -q -O - http://@HOST@:@HTTP@/hello.txt
+--
+hello-net
+== http_binary_body
+wget -q -O b http://@HOST@:@HTTP@/bin256; wc -c < b
+--
+256
+== http_large_body
+wget -q -O b http://@HOST@:@HTTP@/big; wc -c < b
+--
+262144
+== http_404_fails
+wget -q -O out http://@HOST@:@HTTP@/missing; [ $? -ne 0 ] && echo failed
+--
+failed
+== connection_refused
+nc -w 1 @HOST@ 1 < /dev/null; [ $? -ne 0 ] && echo refused
+--
+refused
+== udp_echo
+printf 'udp\n' | nc -u -w 1 @HOST@ @UDP@
+--
+udp
+== http_then_use
+wget -q -O out http://@HOST@:@HTTP@/hello.txt; wc -c < out
+--
+10
+== two_connections
+printf 'a\n' | nc -w 2 @HOST@ @ECHO@; printf 'b\n' | nc -w 2 @HOST@ @ECHO@
+--
+a
+b

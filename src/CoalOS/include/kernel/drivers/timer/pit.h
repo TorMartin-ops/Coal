@@ -17,6 +17,12 @@ void timer_early_init(void);
 /** Nanoseconds since timer_early_init(). Monotonic. */
 uint64_t clock_ns(void);
 
+/** TSC frequency in kHz from that calibration (0: no TSC); *tsc0 is the TSC value at the start of the uptime. */
+uint32_t timer_tsc_khz(uint64_t *tsc0);
+
+/** Nanoseconds of the PIT periodic tick count (the clock when there is no TSC). */
+uint64_t pit_tick_ns(void);
+
 /** TSC frequency in kHz, 0 when the CPU has no TSC. */
 uint32_t clock_tsc_khz(void);
 

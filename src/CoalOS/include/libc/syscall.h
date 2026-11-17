@@ -1,4 +1,6 @@
-/* int 0x80 entry: number in eax, arguments in ebx, ecx, edx, esi, edi, ebp. */
+/* System call convention: number in eax, arguments in ebx, ecx, edx, esi, edi, ebp, result or -errno in eax.
+ * Calls go through __vsyscall: the kernel's __kernel_vsyscall (sysenter) when the program was started with
+ * AT_SYSINFO, else a stub in libc that executes int 0x80. Both preserve every register but eax. */
 #ifndef LIBC_SYSCALL_H
 #define LIBC_SYSCALL_H
 
@@ -53,12 +55,14 @@
 #define SYS_SOCKETPAIR 360
 #endif
 
+extern void (*__vsyscall)(void);
+
 /* Returns the raw kernel result; -4095..-1 is -errno. */
 static inline long __sc(long n, long a, long b, long c, long d, long e) {
     long r;
-    __asm__ volatile("int $0x80"
+    __asm__ volatile("call *%[entry]"
                      : "=a"(r)
-                     : "0"(n), "b"(a), "c"(b), "d"(c), "S"(d), "D"(e)
+                     : [entry] "m"(__vsyscall), "0"(n), "b"(a), "c"(b), "d"(c), "S"(d), "D"(e)
                      : "memory", "cc");
     return r;
 }

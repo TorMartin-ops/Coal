@@ -33,9 +33,9 @@ static fat_node_t *node_get(fat_fs_t *fs, const fat_ent_t *e) {
         n->ent_lba = e->lba;
         n->ent_off = e->off;
         n->attr = e->attr;
-        n->mtime = e->mtime;
-        n->atime = e->atime;
-        n->ctime = e->ctime;
+        n->mtime = fat_dos_to_unix(e->mdate, e->mtim);
+        n->atime = fat_dos_to_unix(e->adate, 0);
+        n->ctime = fat_dos_to_unix(e->cdate, e->ctim);
         n->next = fs->nodes;
         fs->nodes = n;
     }
@@ -83,58 +83,11 @@ static int resolve_parent(fat_fs_t *fs, const char *p, uint32_t *dir, char *leaf
 
 /* ---- Data I/O ------------------------------------------------------------- */
 
-static uint32_t chain_at(const fat_node_t *n, uint32_t idx) {
-    if (n->hint_cl && idx >= n->hint_idx) return fat_nth(n->fs, n->hint_cl, idx - n->hint_idx);
-    return fat_nth(n->fs, n->first, idx);
-}
-
-/* Cluster number for cluster index `idx` of the file, appending one if asked. */
-static int node_cluster(fat_node_t *n, uint32_t idx, bool alloc) {
-    uint32_t cl = chain_at(n, idx);
-    if (!cl && alloc) {
-        uint32_t prev = idx ? chain_at(n, idx - 1) : 0;
-        if (idx && !prev) return -EIO;
-        int c = fat_alloc(n->fs, prev);
-        if (c < 0) return c;
-        if (!prev) n->first = (uint32_t)c;
-        cl = (uint32_t)c;
-    }
-    if (!cl) return -EIO;
-    n->hint_idx = idx;
-    n->hint_cl = cl;
-    return (int)cl;
-}
-
-/* Move bytes between buf and the file at pos (buf == NULL writes zeros). */
-static ssize_t node_rw(fat_node_t *n, uint32_t pos, uint8_t *buf, uint32_t len, bool write) {
-    fat_fs_t *fs = n->fs;
-    uint32_t done = 0;
-    int err = 0;
-    while (done < len) {
-        uint32_t off = pos + done;
-        int cl = node_cluster(n, off / fs->cluster_bytes, write);
-        if (cl < 0) { err = cl; break; }
-        uint32_t in = off % fs->cluster_bytes;
-        uint32_t chunk = MIN(fs->bps - in % fs->bps, len - done);
-        buffer_t *b = fat_buf(fs, fat_cluster_lba(fs, (uint32_t)cl) + in / fs->bps);
-        if (!b) { err = -EIO; break; }
-        uint8_t *p = b->data + in % fs->bps;
-        if (!write) memcpy(buf + done, p, chunk);
-        else {
-            if (buf) memcpy(p, buf + done, chunk); else memset(p, 0, chunk);
-            buffer_mark_dirty(b);
-        }
-        buffer_release(b);
-        done += chunk;
-    }
-    return done ? (ssize_t)done : err;
-}
-
 static ssize_t fat_read(vnode_t *v, off_t pos, void *buf, size_t len) {
     fat_node_t *n = v->data;
     fat_lock(n->fs);
     ssize_t rc = 0;
-    if ((uint32_t)pos < n->size) rc = node_rw(n, (uint32_t)pos, buf, (uint32_t)MIN(len, n->size - (uint32_t)pos), false);
+    if ((uint32_t)pos < n->size) rc = fat_node_rw(n, (uint32_t)pos, buf, (uint32_t)MIN(len, n->size - (uint32_t)pos), false);
     fat_unlock(n->fs);
     return rc;
 }
@@ -142,11 +95,11 @@ static ssize_t fat_read(vnode_t *v, off_t pos, void *buf, size_t len) {
 static ssize_t write_locked(fat_node_t *n, uint32_t pos, const void *buf, uint32_t len) {
     ssize_t rc = 0;
     if (pos > n->size) {                         /* zero-fill the gap */
-        rc = node_rw(n, n->size, NULL, pos - n->size, true);
+        rc = fat_node_rw(n, n->size, NULL, pos - n->size, true);
         if (rc < 0) return rc;
         n->size = pos;
     }
-    rc = node_rw(n, pos, (uint8_t *)buf, len, true);
+    rc = fat_node_rw(n, pos, (uint8_t *)buf, len, true);
     if (rc > 0 && pos + (uint32_t)rc > n->size) n->size = pos + (uint32_t)rc;
     n->mtime = vfs_time();
     n->dirty = true;
@@ -177,8 +130,7 @@ static int fat_truncate(vnode_t *v, off_t len) {
         rc = w < 0 ? (int)w : (uint32_t)w == delta ? 0 : -ENOSPC;
     } else if ((uint32_t)len < n->size) {
         uint32_t keep = ((uint32_t)len + fs->cluster_bytes - 1) / fs->cluster_bytes;
-        uint32_t tail = keep * fs->cluster_bytes - (uint32_t)len;
-        if (tail) node_rw(n, (uint32_t)len, NULL, MIN(tail, n->size - (uint32_t)len), true);
+        fat_node_trim(n, (uint32_t)len);
         uint32_t rest;
         if (keep == 0) { rest = n->first; n->first = 0; }
         else {
@@ -187,10 +139,10 @@ static int fat_truncate(vnode_t *v, off_t len) {
             if (last) fat_set_eoc(fs, last);
         }
         n->size = (uint32_t)len;
-        n->hint_cl = 0;
+        n->chain.cl = 0;
         n->mtime = vfs_time();
         rc = node_flush_entry(n);               /* entry first, then release the clusters */
-        fat_free_chain(fs, rest);
+        fat_free_chain(fs, rest, false);
     }
     n->dirty = true;
     if (rc == 0) rc = fat_commit(fs);
@@ -242,7 +194,10 @@ static int fat_close(vnode_t *v) {
     int rc = 0;
     fat_lock(fs);
     if (--n->ref == 0) {
-        if (n->ent_lba == FAT_NODE_UNLINKED) fat_free_chain(fs, n->first);    /* last user of a removed file */
+        if (n->ent_lba == FAT_NODE_UNLINKED) {          /* last user of a removed file */
+            if (!is_dir(n)) fat_forget(fs, n->first, n->size);
+            fat_free_chain(fs, n->first, is_dir(n));
+        }
         if (n->dirty || n->ent_lba == FAT_NODE_UNLINKED) rc = fat_commit(fs);
         for (fat_node_t **pp = &fs->nodes; *pp; pp = &(*pp)->next) {
             if (*pp == n) { *pp = n->next; break; }
@@ -323,8 +278,12 @@ static int lookup(fat_fs_t *fs, const char *path, uint32_t *dir, char *leaf, fat
 static void entry_released(fat_fs_t *fs, const fat_ent_t *e) {
     fat_node_t *n = node_find(fs, e->lba, e->off);
 
+    bool dir = e->attr & FAT_ATTR_DIR;
     if (n) n->ent_lba = FAT_NODE_UNLINKED;
-    else fat_free_chain(fs, e->cluster);
+    else {
+        if (!dir) fat_forget(fs, e->cluster, e->size);
+        fat_free_chain(fs, e->cluster, dir);
+    }
 }
 
 static int fat_unlink(void *ctx, const char *path) {
@@ -400,10 +359,10 @@ static int fat_mkdir(void *ctx, const char *path, mode_t mode) {
         rc = f == 0 ? -EEXIST : f == -ENOENT ? 0 : f;
     }
     if (rc == 0) {
-        int c = fat_alloc(fs, 0);
+        int c = fat_alloc(fs, 0, true);
         rc = c < 0 ? c : init_dir_cluster(fs, (uint32_t)c, dir);
         if (rc == 0) rc = fat_dir_add(fs, dir, leaf, FAT_ATTR_DIR, (uint32_t)c, 0, vfs_time(), &e);
-        if (rc < 0 && c > 0) fat_free_chain(fs, (uint32_t)c);
+        if (rc < 0 && c > 0) fat_free_chain(fs, (uint32_t)c, true);
     }
     if (rc == 0) rc = fat_commit(fs);
     fat_unlock(fs);
@@ -447,7 +406,7 @@ static int rename_locked(fat_fs_t *fs, const char *from, const char *to) {
     }
 
     fat_ent_t n;
-    rc = fat_dir_add(fs, ddir, dleaf, s.attr, s.cluster, s.size, s.mtime, &n);
+    rc = fat_dir_add(fs, ddir, dleaf, s.attr, s.cluster, s.size, fat_dos_to_unix(s.mdate, s.mtim), &n);
     if (rc < 0) return rc;
     fat_node_t *open = node_find(fs, s.lba, s.off);     /* an open file follows its entry */
     if (open) { open->ent_lba = n.lba; open->ent_off = n.off; }

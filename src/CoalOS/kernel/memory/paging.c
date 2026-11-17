@@ -152,28 +152,28 @@ uintptr_t paging_clone_directory(uint32_t *src_pd) {
     for (uint32_t i = 1; i < KERNEL_PDE_INDEX; i++) {
         if (!(src[i] & PAGE_PRESENT))
             continue;
-        uintptr_t dpt_phys = frame_alloc_zeroed();
+        uintptr_t dpt_phys = frame_alloc();     /* every entry is written below */
         if (!dpt_phys) {
             paging_free_user_space((uint32_t *)child);
             put_frame(child);
             paging_flush_tlb();
             return 0;
         }
-        dst[i] = dpt_phys | (src[i] & PAGING_FLAG_MASK);
 
         uint32_t *spt = table_at(src[i]);
-        uint32_t *dpt = table_at(dst[i]);
+        uint32_t *dpt = phys_to_virt(dpt_phys);
         for (unsigned j = 0; j < 1024; j++) {
             uint32_t pte = spt[j];
-            if (!(pte & PAGE_PRESENT))
-                continue;
-            if (pte & PAGE_RW) {                /* both sides copy on first write */
-                pte = (pte & ~PAGE_RW) | PAGE_COW;
-                spt[j] = pte;
+            if (pte & PAGE_PRESENT) {
+                if (pte & PAGE_RW) {            /* both sides copy on first write */
+                    pte = (pte & ~PAGE_RW) | PAGE_COW;
+                    spt[j] = pte;
+                }
+                get_frame(pte);
             }
             dpt[j] = pte;
-            get_frame(pte);
         }
+        dst[i] = dpt_phys | (src[i] & PAGING_FLAG_MASK);
     }
     paging_flush_tlb();                         /* the parent's PTEs lost write access */
     return child;

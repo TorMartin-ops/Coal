@@ -1,14 +1,14 @@
 #include <kernel/drivers/timer/rtc.h>
-#include <kernel/drivers/timer/pit.h>
+#include <kernel/drivers/timer/clock.h>
 #include <kernel/lib/port_io.h>
 
-/* CMOS real-time clock (UTC) as Unix time; read once, then kept as an offset from uptime. */
+/* CMOS real-time clock (UTC) as Unix time. */
 static uint32_t cmos(uint8_t reg) {
     outb(0x70, reg);
     return inb(0x71);
 }
 
-static uint32_t rtc_unix_time(void) {
+uint32_t rtc_unix_time(void) {
     uint32_t sec, min, hour, day, mon, year, b;
 
     while (cmos(0x0A) & 0x80) ;                     /* update in progress */
@@ -30,18 +30,11 @@ static uint32_t rtc_unix_time(void) {
     return ((days * 24 + hour) * 60 + min) * 60 + sec;
 }
 
-static uint32_t rtc_boot_time(void) {
-    static uint32_t boot;
-    if (!boot) boot = rtc_unix_time() - (uint32_t)timer_uptime_ms() / 1000;
-    return boot;
-}
-
 uint32_t wall_seconds(void) {
-    return rtc_boot_time() + (uint32_t)timer_uptime_ms() / 1000;
+    uint32_t nsec;
+    return vdso_split_ns(clock_realtime_ns(), &nsec);
 }
 
 void wall_time(uint32_t *sec, uint32_t *nsec) {
-    uint32_t ms = (uint32_t)timer_uptime_ms();
-    *sec = rtc_boot_time() + ms / 1000;
-    *nsec = ms % 1000 * 1000000u;
+    *sec = vdso_split_ns(clock_realtime_ns(), nsec);
 }

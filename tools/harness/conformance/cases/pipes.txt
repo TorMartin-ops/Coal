@@ -1,0 +1,81 @@
+== cat_pipe
+echo hi | cat
+--
+hi
+== three_stages
+printf 'b\na\nc\n' | sort | head -n 2
+--
+a
+b
+== yes_head_sigpipe
+yes | head -n 3
+--
+y
+y
+y
+== stdin_redirect
+echo data > f; cat < f
+--
+data
+== stderr_to_stdout
+{ echo out; echo err >&2; } > o 2>&1; sort o
+--
+err
+out
+== split_streams
+{ echo out; echo err >&2; } 1>o 2>e; cat o e
+--
+out
+err
+== heredoc
+cat <<EOF
+line one
+line two
+EOF
+--
+line one
+line two
+== tee_branch
+echo a | tee f | cat; cat f
+--
+a
+a
+== pipeline_status
+false | true; echo $?
+--
+0
+== big_pipe
+seq 1 20000 | wc -l
+--
+20000
+== while_read
+printf '1\n2\n3\n' | while read n; do echo $((n*2)); done
+--
+2
+4
+6
+== read_from_pipe
+echo a b | { read x y; echo "$y $x"; }
+--
+b a
+== cat_many_files
+printf 'a\nb\n' > f1; printf 'c\n' > f2; cat f1 f2 | wc -l
+--
+3
+== command_in_pipe_subst
+echo "n=$(printf 'x\ny\n' | wc -l)"
+--
+n=2
+== fifo
+mkfifo p; echo hi > p & cat p; wait
+--
+hi
+== dev_null_sink
+yes | head -n 1000 > /dev/null; echo ok
+--
+ok
+== append_redirect_fd
+echo a > f; echo b 1>> f; cat f
+--
+a
+b

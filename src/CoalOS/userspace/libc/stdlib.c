@@ -7,30 +7,130 @@
 #include <libc/signal.h>
 #include <libc/limits.h>
 
-/* --- heap: first-fit free list on brk, blocks coalesce with their successor --- */
+/* --- heap: size classes with per-page free lists (after mimalloc, MSR-TR-2019-18) ---
+ *
+ * Small blocks come from 4 KiB pages taken from brk. Every page serves one size class and keeps two
+ * lists: `free`, which malloc pops, and `local_free`, which free pushes; they are merged when `free`
+ * runs dry. A fresh page hands out blocks by bumping an offset. A page that empties goes to a pool
+ * any class can reuse. Blocks above MAX_SMALL get their own mmap. The page header sits at the start
+ * of every page and of every large block, so free() finds it by masking the pointer. */
 
-struct block {
-    size_t size;            /* payload bytes, multiple of 8 */
-    struct block *next;     /* next block in address order */
-    int free;
+#define PAGE   4096u
+#define HDR    32u                              /* header size; keeps blocks 16-byte aligned */
+#define LARGE  0xFF
+#define GROW   (16 * PAGE)
+
+struct page {
+    unsigned char cls, full;                    /* full: on no list, nothing left to allocate */
+    unsigned short used, bump;                  /* blocks handed out; offset of the first never-used block */
+    union { struct page *next; size_t len; };   /* partial list / bytes mapped for a large block */
+    struct page *prev;
+    void *free, *local_free;
 };
 
-#define HDR ((size_t)sizeof(struct block))
-static struct block *head, *tail;
+_Static_assert(sizeof(struct page) <= HDR, "page header does not fit");
 
-static struct block *grow(size_t size) {
-    long cur = __syscall_ret(__SC1(SYS_BRK, 0));
-    if (cur < 0) return NULL;
-    size_t want = (HDR + size + 4095) & ~(size_t)4095;
-    long end = __syscall_ret(__SC1(SYS_BRK, cur + want));
-    if (end < 0 || (size_t)end < (size_t)cur + want) return NULL;
-    struct block *b = (struct block *)cur;
-    b->size = want - HDR;
-    b->next = NULL;
-    b->free = 1;
-    if (tail) tail->next = b; else head = b;
-    tail = b;
+static const unsigned short csize[] = { 16, 32, 48, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384,
+                                        448, 512, 640, 768, 896, 1008, 1344, 2032 };
+#define NCLS      ((unsigned)(sizeof csize / sizeof csize[0]))
+#define MAX_SMALL 2032u
+
+static struct page *cur[NCLS], *partial[NCLS];
+static struct page *spare;                      /* empty pages, linked through next */
+static char *heap_top, *heap_end;
+
+static unsigned class_of(size_t n) {
+    if (n <= 128) return n ? (unsigned)(n - 1) >> 4 : 0;
+    unsigned c = 8;
+    while (csize[c] < n) c++;
+    return c;
+}
+
+static struct page *page_get(void) {
+    struct page *pg = spare;
+    if (pg) {
+        spare = pg->next;
+        return pg;
+    }
+    if (heap_top == heap_end) {
+        long brk = __syscall_ret(__SC1(SYS_BRK, 0));
+        if (brk < 0) return NULL;
+        size_t base = ((size_t)brk + PAGE - 1) & ~(size_t)(PAGE - 1), size = GROW;
+        long end = __syscall_ret(__SC1(SYS_BRK, base + size));
+        if (end < 0 || (size_t)end < base + size) {
+            size = PAGE;
+            end = __syscall_ret(__SC1(SYS_BRK, base + size));
+            if (end < 0 || (size_t)end < base + size) return NULL;
+        }
+        heap_top = (char *)base;
+        heap_end = heap_top + size;
+    }
+    pg = (struct page *)heap_top;
+    heap_top += PAGE;
+    return pg;
+}
+
+static void partial_unlink(unsigned c, struct page *pg) {
+    if (pg->prev) pg->prev->next = pg->next; else partial[c] = pg->next;
+    if (pg->next) pg->next->prev = pg->prev;
+}
+
+/* Pop a block from the page's lists, merging the two when `free` is empty. */
+static inline void *page_pop(struct page *pg) {
+    void *b = pg->free;
+    if (!b) {
+        b = pg->local_free;
+        pg->local_free = NULL;
+    }
+    if (b) {
+        pg->free = *(void **)b;
+        pg->used++;
+    }
     return b;
+}
+
+/* Both lists of the current page of class c are empty: bump, or move to another page. */
+static void *malloc_slow(unsigned c) {
+    for (;;) {
+        struct page *pg = cur[c];
+        if (pg) {
+            void *b = page_pop(pg);
+            if (b) return b;
+            if (pg->bump <= PAGE - csize[c]) {
+                b = (char *)pg + pg->bump;
+                pg->bump += csize[c];
+                pg->used++;
+                return b;
+            }
+            pg->full = 1;
+        }
+        pg = partial[c];
+        if (pg) {
+            partial_unlink(c, pg);
+        } else {
+            pg = page_get();
+            if (!pg) { cur[c] = NULL; errno = ENOMEM; return NULL; }
+            pg->cls = (unsigned char)c;
+            pg->full = 0;
+            pg->used = 0;
+            pg->bump = HDR;
+            pg->free = pg->local_free = NULL;
+        }
+        cur[c] = pg;
+    }
+}
+
+static void *malloc_large(size_t n) {
+    size_t len = (n + HDR + PAGE - 1) & ~(size_t)(PAGE - 1);
+    long r = __sc(SYS_MMAP2, 0, (long)len, 3 /* RW */, 0x22 /* PRIVATE|ANON */, -1);
+    if ((unsigned long)r > (unsigned long)-4096) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    struct page *pg = (struct page *)r;
+    pg->cls = LARGE;
+    pg->len = len;
+    return (char *)pg + HDR;
 }
 
 void *malloc(size_t n) {
@@ -38,36 +138,35 @@ void *malloc(size_t n) {
         errno = ENOMEM;
         return NULL;
     }
-    n = (n + 7) & ~(size_t)7;
-    if (!n) n = 8;
-    for (int pass = 0; pass < 2; pass++) {
-        for (struct block *b = head; b; b = b->next) {
-            while (b->free && b->next && b->next->free && (char *)b + HDR + b->size == (char *)b->next) {
-                b->size += HDR + b->next->size;
-                if (tail == b->next) tail = b;
-                b->next = b->next->next;
-            }
-            if (!b->free || b->size < n) continue;
-            if (b->size >= n + HDR + 8) {
-                struct block *r = (struct block *)((char *)b + HDR + n);
-                r->size = b->size - n - HDR;
-                r->free = 1;
-                r->next = b->next;
-                if (tail == b) tail = r;
-                b->next = r;
-                b->size = n;
-            }
-            b->free = 0;
-            return (char *)b + HDR;
-        }
-        if (pass == 0 && !grow(n)) break;
-    }
-    errno = ENOMEM;
-    return NULL;
+    if (n > MAX_SMALL) return malloc_large(n);
+
+    unsigned c = class_of(n);
+    struct page *pg = cur[c];
+    void *b = pg ? page_pop(pg) : NULL;
+    return b ? b : malloc_slow(c);
 }
 
 void free(void *p) {
-    if (p) ((struct block *)((char *)p - HDR))->free = 1;
+    if (!p) return;
+    struct page *pg = (struct page *)((size_t)p & ~(size_t)(PAGE - 1));
+    if (pg->cls == LARGE) {
+        __SC3(SYS_MUNMAP, pg, pg->len, 0);
+        return;
+    }
+    unsigned c = pg->cls;
+    *(void **)p = pg->local_free;
+    pg->local_free = p;
+    if (--pg->used == 0 && pg != cur[c]) {
+        if (!pg->full) partial_unlink(c, pg);
+        pg->next = spare;
+        spare = pg;
+    } else if (pg->full) {
+        pg->full = 0;
+        pg->prev = NULL;
+        pg->next = partial[c];
+        if (partial[c]) partial[c]->prev = pg;
+        partial[c] = pg;
+    }
 }
 
 void *calloc(size_t n, size_t m) {
@@ -81,11 +180,12 @@ void *calloc(size_t n, size_t m) {
 
 void *realloc(void *p, size_t n) {
     if (!p) return malloc(n);
-    struct block *b = (struct block *)((char *)p - HDR);
-    if (b->size >= n) return p;
+    struct page *pg = (struct page *)((size_t)p & ~(size_t)(PAGE - 1));
+    size_t have = pg->cls == LARGE ? pg->len - HDR : csize[pg->cls];
+    if (have >= n) return p;
     void *q = malloc(n);
     if (!q) return NULL;
-    memcpy(q, p, b->size);
+    memcpy(q, p, have);
     free(p);
     return q;
 }
@@ -279,9 +379,20 @@ int unsetenv(const char *name) {
 
 extern int main(int argc, char **argv, char **envp);
 
+#define AT_SYSINFO      32
+#define AT_SYSINFO_EHDR 33
+
+void *__vdso_base;
+
 void __libc_start(long *sp) {
     int argc = (int)sp[0];
     char **argv = (char **)(sp + 1);
+    char **env;
     environ = argv + argc + 1;
+    for (env = environ; *env; env++) { }
+    for (unsigned long *a = (unsigned long *)(env + 1); a[0]; a += 2) {
+        if (a[0] == AT_SYSINFO) __vsyscall = (void (*)(void))a[1];
+        else if (a[0] == AT_SYSINFO_EHDR) __vdso_base = (void *)a[1];
+    }
     exit(main(argc, argv, environ));
 }

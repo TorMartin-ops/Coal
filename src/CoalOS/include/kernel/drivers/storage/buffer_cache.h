@@ -41,6 +41,9 @@ buffer_t *buffer_get_disk(disk_t *disk, uint32_t block_number);
 void buffer_release(buffer_t *buf);
 void buffer_mark_dirty(buffer_t *buf);
 
+/** Forgets the cached sectors [block, block+count) of a disk, dirty or not (their contents are dead). */
+void buffer_discard(disk_t *disk, uint32_t block, uint32_t count);
+
 /** Writes one buffer back if it is dirty. */
 int buffer_flush(buffer_t *buf);
 

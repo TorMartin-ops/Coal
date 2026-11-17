@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
-"""Tests for coal-mcp. Run: python3 tools/coal-mcp/tests/test_server.py
+"""Tests for the stdio server (coal-mcp on the gateway core). Run: python3 tools/coal-mcp/tests/test_server.py
 
-The end-to-end tests run the real mcpd (built as a 32-bit Linux binary) on a
+The end-to-end tests run the real agentd (built as a 32-bit Linux binary) on a
 pty that is bridged to a unix socket, in place of QEMU's COM2.
 """
 import base64
 import json
 import os
-import pty
-import select
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
-import threading
-import tty
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.path.join(HERE, "..", "server.py")
-MCPD_BUILD = os.path.join(HERE, "..", "..", "..", "src", "CoalOS", "userspace", "mcpd", "test", "build_host.sh")
+sys.path.insert(0, os.path.join(HERE, "..", "..", "coal-gateway", "tests"))
+
+from support import HostAgent  # noqa: E402
 
 
 def read(path):
@@ -32,8 +29,9 @@ class Client:
     """Minimal MCP client over the server's stdio."""
 
     def __init__(self, *extra):
-        self.p = subprocess.Popen([sys.executable, SERVER, *extra], stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE)
+        self.build = tempfile.mkdtemp(prefix="coal-mcp-build-")
+        self.p = subprocess.Popen([sys.executable, SERVER, "--build-dir", self.build, *extra],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         self.n = 0
 
     def send(self, method, params=None, notify=False):
@@ -53,32 +51,43 @@ class Client:
         self.send(method, params)
         return self.recv()
 
+    def result(self, name, **args):
+        return self.call("tools/call", {"name": name, "arguments": args})["result"]
+
     def tool(self, name, **args):
-        r = self.call("tools/call", {"name": name, "arguments": args})["result"]
+        r = self.result(name, **args)
         return r["isError"], r["content"][0]["text"]
 
     def close(self):
         self.p.stdin.close()
         self.p.wait(timeout=10)
         self.p.stdout.close()
+        shutil.rmtree(self.build, ignore_errors=True)
 
 
 class InProcess(unittest.TestCase):
-    """Server.handle called directly, to inject failures inside a tool."""
+    """Gateway.handle called directly, to inject failures inside a tool."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(HERE, "..", "..", "coal-gateway"))
+        from coal_gateway import cli, mcp, tools
+        from coal_gateway.machine import Machine
+        from coal_gateway.runlog import RunLog
+        self.tmp = tempfile.mkdtemp(prefix="coal-mcp-inproc-")
+        os.environ["COAL_BUILD_DIR"] = self.tmp
+        machine = Machine()
+        self.gw = mcp.Gateway(machine, RunLog(os.path.join(self.tmp, "runs"), lambda: machine.workspace_id),
+                              {"name": "coal-mcp", "version": cli.repo_version()})
+        self.tools = tools
+        self.old = tools.BY_NAME["coal_ps"].fn
+        tools.BY_NAME["coal_ps"].fn = lambda call, a: {}["exit"]
+
+    def tearDown(self):
+        self.tools.BY_NAME["coal_ps"].fn = self.old
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def call(self, method, params):
-        sys.path.insert(0, os.path.join(HERE, ".."))
-        import server
-        sent = []
-        srv = server.Server(None)
-        srv.send = sent.append
-        old = server.TOOL_INDEX["coal_ps"]
-        server.TOOL_INDEX["coal_ps"] = old[:4] + (lambda m, a: {}["exit"],)
-        try:
-            srv.handle({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-        finally:
-            server.TOOL_INDEX["coal_ps"] = old
-        return sent[0]
+        return self.gw.handle({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
 
     def test_keyerror_in_a_tool_is_a_tool_result(self):
         r = self.call("tools/call", {"name": "coal_ps", "arguments": {}})
@@ -90,9 +99,24 @@ class InProcess(unittest.TestCase):
         self.assertEqual(self.call("nope", {})["error"]["code"], -32601)
 
     def test_version_comes_from_the_repo(self):
-        import server
-        ver = read(os.path.join(server.SRC_DIR, "VERSION")).decode().strip()
-        self.assertEqual(server.SERVER_INFO["version"], ver)
+        from coal_gateway.machine import SRC_DIR
+        ver = read(os.path.join(SRC_DIR, "VERSION")).decode().strip()
+        self.assertEqual(self.gw.server_info["version"], ver)
+
+    def test_every_call_is_logged_with_its_run_id(self):
+        self.call("tools/call", {"name": "coal_ps", "arguments": {"run_id": "r1"}})
+        self.call("tools/call", {"name": "coal_status", "arguments": {"run_id": "r1"}})
+        with open(os.path.join(self.tmp, "runs", "r1.jsonl")) as f:
+            rows = [json.loads(l) for l in f]
+        self.assertEqual([(r["seq"], r["tool"], r["is_error"]) for r in rows],
+                         [(1, "coal_ps", True), (2, "coal_status", False)])
+        self.assertEqual(rows[0]["workspace_id"], self.gw.machine.workspace_id)
+
+    def test_bad_run_id_and_workspace_id(self):
+        self.assertEqual(self.call("tools/call", {"name": "coal_status", "arguments": {"run_id": "../x"}})["error"]["code"], -32602)
+        r = self.call("tools/call", {"name": "coal_status", "arguments": {"workspace_id": "ws-nope"}})["result"]
+        self.assertTrue(r["isError"])
+        self.assertIn("unknown workspace_id", r["content"][0]["text"])
 
 
 class Protocol(unittest.TestCase):
@@ -120,7 +144,9 @@ class Protocol(unittest.TestCase):
         names = {t["name"] for t in tools}
         for n in ("coal_boot", "coal_shutdown", "coal_reboot", "coal_run", "coal_read_file",
                   "coal_write_file", "coal_ls", "coal_ps", "coal_sysinfo", "coal_kernel_log",
-                  "coal_screen", "coal_build", "coal_guide", "coal_snapshot", "coal_restore", "coal_reset"):
+                  "coal_screen", "coal_build", "coal_guide", "coal_snapshot", "coal_restore", "coal_reset",
+                  "coal_spawn", "coal_jobs", "coal_job_status", "coal_job_output", "coal_job_signal",
+                  "coal_stat", "coal_mkdir", "coal_remove", "coal_keys", "coal_status", "coal_download"):
             self.assertIn(n, names)
         for t in tools:
             self.assertEqual(t["inputSchema"]["type"], "object")
@@ -168,51 +194,17 @@ class Protocol(unittest.TestCase):
         self.assertEqual(self.c.recv()["error"]["code"], -32700)
 
 
-def bridge(sock_path, master):
-    """Forwards bytes between a unix socket client and a pty master."""
-    srv = socket.socket(socket.AF_UNIX)
-    srv.bind(sock_path)
-    srv.listen(1)
-
-    def run():
-        while True:
-            conn, _ = srv.accept()
-            while True:
-                r, _, _ = select.select([conn, master], [], [])
-                try:
-                    if conn in r:
-                        d = conn.recv(65536)
-                        if not d:
-                            break
-                        os.write(master, d)
-                    if master in r:
-                        conn.sendall(os.read(master, 65536))
-                except OSError:
-                    break
-            conn.close()
-    threading.Thread(target=run, daemon=True).start()
-
-
-@unittest.skipUnless(shutil.which("gcc"), "gcc not available")
 class EndToEnd(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="coal-mcp-test-")
-        binary = os.path.join(cls.tmp, "mcpd")
-        if subprocess.call(["sh", MCPD_BUILD, binary], stderr=subprocess.DEVNULL) != 0:
-            raise unittest.SkipTest("cannot build 32-bit mcpd on this host")
-        master, slave = pty.openpty()
-        tty.setraw(master)
-        cls.mcpd = subprocess.Popen([binary, os.ttyname(slave)])
-        sock = os.path.join(cls.tmp, "com2.sock")
-        bridge(sock, master)
-        cls.c = Client("--attach", "unix:" + sock)
+        cls.host = HostAgent()
+        cls.tmp = cls.host.tmp
+        cls.c = Client("--attach", cls.host.address)
 
     @classmethod
     def tearDownClass(cls):
         cls.c.close()
-        cls.mcpd.kill()
-        shutil.rmtree(cls.tmp, ignore_errors=True)
+        cls.host.close()
 
     def test_run(self):
         err, text = self.c.tool("coal_run", command="echo out; echo err >&2; exit 7")
@@ -274,28 +266,29 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("exit code: 0", text)
         self.assertIn("output truncated", text)
         self.assertIn("done", text)
+        self.assertIn("of 3000000 bytes", text)
+        self.assertLess(len(text), 20000)             # head and tail only; the rest is in the VM
 
     def test_errno_text_on_write_failure(self):
-        err, text = self.c.tool("coal_write_file", path="/dev/full", content="x")
+        err, text = self.c.tool("coal_write_file", path="/nonexistent-dir/x", content="x")
         self.assertTrue(err)
-        self.assertIn("No space left on device", text)
-        self.assertIn("errno 28", text)
+        self.assertIn("No such file or directory", text)
+        self.assertIn("errno 2", text)
+
+    def test_failed_write_leaves_no_partial_file(self):
+        path = os.path.join(self.tmp, "keep.txt")
+        self.c.tool("coal_write_file", path=path, content="original")
+        err, text = self.c.tool("coal_write_file", path=path, content_base64="!!!")
+        self.assertTrue(err)
+        self.assertEqual(read(path), b"original")
+        self.assertEqual([n for n in os.listdir(self.tmp) if n.endswith(".agentd-tmp")], [])
 
     def test_numbers_are_checked_not_clamped(self):
-        sys.path.insert(0, os.path.join(HERE, ".."))
-        import server
-        self.c.close()                  # the bridge serves one connection at a time
-        l = server.Link(("unix", os.path.join(self.tmp, "com2.sock")))
-        try:
-            with self.assertRaises(server.ToolError) as e:
-                l.request("read_file", path="/etc/hostname", offset=99999999999)
-            self.assertIn("out of range", str(e.exception))
-            with self.assertRaises(server.ToolError):
-                l.request("run", cmd="true", timeout_ms="soon")
-            self.assertTrue(l.request("ping")["pong"])
-        finally:
-            l.close()
-            type(self).c = Client("--attach", "unix:" + os.path.join(self.tmp, "com2.sock"))
+        err, text = self.c.tool("coal_run", command="true", timeout_ms="soon")
+        self.assertTrue(err)
+        self.assertIn("timeout_ms must be a number", text)
+        err, text = self.c.tool("coal_read_file", path="/etc/hostname", offset="x")
+        self.assertTrue(err)
 
     def test_text_append_and_offset(self):
         path = os.path.join(self.tmp, "t.txt")
@@ -313,16 +306,72 @@ class EndToEnd(unittest.TestCase):
 
     def test_ls_ps_sysinfo(self):
         err, text = self.c.tool("coal_ls", path=self.tmp)
-        self.assertIn("mcpd", text)
+        self.assertIn("agentd", text)
         err, text = self.c.tool("coal_ps")
         self.assertIn("PID", text)
         err, text = self.c.tool("coal_sysinfo")
         self.assertIn("Linux", text)
 
+    def test_run_reports_a_structured_envelope(self):
+        r = self.c.result("coal_run", command="echo hi; exit 3", cwd="/tmp", env={"X": "1"})
+        d = r["structuredContent"]
+        self.assertEqual((d["exit_code"], d["signal"], d["timed_out"], d["killed_by"], d["cwd"]),
+                         (3, 0, False, None, "/tmp"))
+        self.assertEqual((d["stdout"]["text"], d["stdout"]["bytes_total"], d["stdout"]["truncated"]), ("hi\n", 3, False))
+        self.assertIn("duration_ms", d)
+        t = self.c.result("coal_run", command="sleep 30", timeout_ms=300)["structuredContent"]
+        self.assertEqual((t["timed_out"], t["killed_by"]), (True, "timeout"))
+
+    def test_no_output_placeholder_and_noninteractive_env(self):
+        err, text = self.c.tool("coal_run", command="true")
+        self.assertIn("(no output)", text)
+        err, text = self.c.tool("coal_run", command='echo "$PAGER $EDITOR $CI $TERM $GIT_TERMINAL_PROMPT"; cat; echo eof')
+        self.assertIn("cat true 1 dumb 0", text)
+        self.assertIn("eof", text)                       # cat saw /dev/null and ended
+
+    def test_job_lifecycle(self):
+        err, text = self.c.tool("coal_spawn", command="echo started; sleep 0.3; echo finished")
+        self.assertFalse(err, text)
+        handle = self.c.result("coal_jobs")["structuredContent"]["jobs"][0]["job_id"]
+        self.assertRegex(handle, r"j\d+-\d+")
+        err, text = self.c.tool("coal_job_status", job_id=handle, wait_ms=5000)
+        self.assertIn("exited, exit code 0", text)
+        err, text = self.c.tool("coal_job_output", job_id=handle)
+        self.assertIn("started\nfinished", text)
+        err, text = self.c.tool("coal_job_output", job_id=handle, offset=8)
+        self.assertTrue(text.endswith("finished\n"), text)
+        err, text = self.c.tool("coal_job_status", job_id=handle, release=True)
+        self.assertIn("released", text)
+        err, text = self.c.tool("coal_job_status", job_id=handle)
+        self.assertTrue(err)
+        err, text = self.c.tool("coal_job_status", job_id="nonsense")
+        self.assertTrue(err)
+
+    def test_job_signal(self):
+        self.c.tool("coal_spawn", command="sleep 60")
+        handle = self.c.result("coal_jobs")["structuredContent"]["jobs"][-1]["job_id"]
+        err, text = self.c.tool("coal_job_signal", job_id=handle)
+        self.assertFalse(err, text)
+        err, text = self.c.tool("coal_job_status", job_id=handle, wait_ms=5000)
+        self.assertIn("killed by signal", text)
+
+    def test_stat_mkdir_remove(self):
+        d = os.path.join(self.tmp, "a", "b")
+        err, text = self.c.tool("coal_mkdir", path=d, parents=True)
+        self.assertFalse(err, text)
+        s = self.c.result("coal_stat", path=d)["structuredContent"]
+        self.assertEqual(s["type"], "dir")
+        err, text = self.c.tool("coal_remove", path=os.path.join(self.tmp, "a"))
+        self.assertTrue(err)                              # not empty
+        err, text = self.c.tool("coal_remove", path=os.path.join(self.tmp, "a"), recursive=True)
+        self.assertFalse(err, text)
+        err, text = self.c.tool("coal_stat", path=d)
+        self.assertTrue(err)
+
     def test_survives_reconnect(self):
         self.c.tool("coal_run", command="true")
         self.c.close()
-        type(self).c = Client("--attach", "unix:" + os.path.join(self.tmp, "com2.sock"))
+        type(self).c = Client("--attach", self.host.address)
         err, text = self.c.tool("coal_run", command="echo again")
         self.assertIn("again", text)
 

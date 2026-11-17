@@ -12,6 +12,7 @@
 #include <kernel/fs/vfs/vfs.h>
 #include <kernel/drivers/storage/buffer_cache.h>
 #include <kernel/sync/mutex.h>
+#include <kernel/fs/vfs/page_cache.h>
 
 #define FAT_ATTR_RO     0x01
 #define FAT_ATTR_VOLID  0x08
@@ -38,8 +39,25 @@ typedef struct __attribute__((packed)) {
 
 struct fat_node;
 
+/** Cursor on a cluster chain: cluster `cl` is the chain's `idx`-th. Walks forward from there. */
+typedef struct {
+    uint32_t first, idx, cl;
+} fat_chain_t;
+
+/** Cached directory slot position of one name; the slot itself stays authoritative. */
+typedef struct {
+    uint32_t dir;               /* parent cluster, 0 = FAT16 root */
+    uint32_t lba, off;
+    uint32_t idx, first_idx;
+    uint8_t  sfn[11];
+    char     name[32];          /* empty = unused */
+} fat_dcache_t;
+
+#define FAT_DCACHE_SIZE 256u
+
 typedef struct fat_fs {
     const char *dev;            /* buffer cache device name */
+    disk_t *disk;
     uint32_t bps;               /* bytes per sector (== device sector size) */
     uint32_t spc;               /* sectors per cluster */
     uint32_t cluster_bytes;
@@ -51,6 +69,9 @@ typedef struct fat_fs {
     uint32_t data_lba;
     uint32_t nclusters;         /* data clusters are numbered 2 .. nclusters+1 */
     uint32_t next_free;         /* allocation hint */
+    uint32_t nfree;             /* free clusters */
+    uint32_t *freemap;          /* one bit per cluster, set = free */
+    fat_dcache_t *dcache;
     uint8_t *fat;               /* in-memory copy of FAT 1 */
     uint32_t dirty_lo, dirty_hi;/* dirty FAT sector range, lo > hi when clean */
     struct fat_node *nodes;     /* open files and directories */
@@ -68,7 +89,8 @@ typedef struct fat_node {
     uint32_t ent_lba;           /* location of the 8.3 entry, 0 for the root */
     uint32_t ent_off;
     uint32_t mtime, atime, ctime;
-    uint32_t hint_idx, hint_cl; /* cluster index cache for sequential access */
+    fat_chain_t chain;          /* cursor for sequential access */
+    uint32_t ra_next, ra_win;   /* readahead: next expected page, current window in pages */
     uint8_t  attr;
     bool     dirty;
 } fat_node_t;
@@ -79,7 +101,7 @@ typedef struct {
     uint8_t  sfn[11];
     uint8_t  attr;
     uint32_t cluster, size;
-    uint32_t mtime, atime, ctime;
+    uint16_t mdate, mtim, adate, cdate, ctim;   /* DOS timestamps as stored; converted only when used */
     uint32_t idx;               /* slot index of the 8.3 entry within its directory */
     uint32_t first_idx;         /* slot index of its first long-name slot */
     uint32_t lba, off;          /* where the 8.3 entry lives */
@@ -107,13 +129,20 @@ uint32_t fat_cluster_lba(const fat_fs_t *fs, uint32_t cluster);
 uint32_t fat_next(const fat_fs_t *fs, uint32_t cluster);
 uint32_t fat_free_clusters(const fat_fs_t *fs);
 uint32_t fat_nth(const fat_fs_t *fs, uint32_t first, uint32_t n);
-int      fat_alloc(fat_fs_t *fs, uint32_t prev);
+int      fat_alloc(fat_fs_t *fs, uint32_t prev, bool zero);
 void     fat_set_eoc(fat_fs_t *fs, uint32_t cluster);
-void     fat_free_chain(fat_fs_t *fs, uint32_t first);
+void     fat_free_chain(fat_fs_t *fs, uint32_t first, bool meta);
+uint32_t fat_chain_get(fat_chain_t *c, const fat_fs_t *fs, uint32_t idx);
 int      fat_commit(fat_fs_t *fs);
 int      fat_flush(fat_fs_t *fs);
 void     fat_unix_to_dos(uint32_t t, uint16_t *date, uint16_t *time);
 uint32_t fat_dos_to_unix(uint16_t date, uint16_t time);
+
+/* fat_data.c: file contents through the page cache */
+ssize_t fat_node_rw(fat_node_t *n, uint32_t pos, uint8_t *buf, uint32_t len, bool write);
+int     fat_writeback(fat_fs_t *fs);
+void    fat_forget(fat_fs_t *fs, uint32_t first, uint32_t size);
+void    fat_node_trim(fat_node_t *n, uint32_t len);
 
 /* fat_dir.c: directory slots, names, long file names */
 void fat_dir_open(fat_dir_t *d, fat_fs_t *fs, uint32_t first);

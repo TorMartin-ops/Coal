@@ -33,7 +33,24 @@ irq%1:
 %endmacro
 
 ISR_NOERR 0
-ISR_NOERR 1
+
+; Debug exception. A user program with TF set that executes sysenter gets a single-step trap in the
+; kernel entry (sysenter_entry .. sysenter_flags_done) while the stack is still the scratch stack.
+; Return at once: the entry code clears TF itself and the user's TF stays in the saved eflags.
+extern sysenter_entry, sysenter_flags_done
+isr1:
+    cmp     word [esp + 4], KERNEL_CS
+    jne     .trap
+    cmp     dword [esp], sysenter_entry
+    jb      .trap
+    cmp     dword [esp], sysenter_flags_done
+    ja      .trap
+    iret
+.trap:
+    push    dword 0
+    push    dword 1
+    jmp     isr_common_stub
+
 ISR_NOERR 2
 ISR_NOERR 3
 ISR_NOERR 4
@@ -60,6 +77,7 @@ IRQ 31                          ; local APIC spurious interrupt (vector 0x3F)
 
 isr_common_stub:
     SAVE_FRAME
+    cld                         ; user mode may have set DF; the C ABI and rep movs need it clear
     push    esp                 ; &isr_frame_t
     call    isr_common_handler
     add     esp, 4

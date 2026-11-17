@@ -3,6 +3,9 @@
 
 KERNEL_CS   equ 0x08
 KERNEL_DS   equ 0x10
+USER_CS     equ 0x1B        ; ring 3 selectors, see gdt.h
+USER_DS     equ 0x23
+VDSO_LANDING equ 0xBFFFF409 ; the sysenter return address; must match vdso_abi.h
 IRQ_BASE    equ 32          ; first PIC vector, see include/kernel/cpu/idt.h
 
 ; Push segments and general registers, then load the kernel data segments.

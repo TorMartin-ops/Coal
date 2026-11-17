@@ -16,6 +16,9 @@
 /** Entry point called by syscall.asm with the saved register frame. */
 void syscall_dispatch(isr_frame_t *regs);
 
+/** Programs the sysenter MSRs. False if the CPU has no (working) sysenter; int 0x80 always works. */
+bool sysenter_init(void);
+
 /** Set access and modification times of a file (utime). */
 int vfs_utime(const char *path, uint32_t atime, uint32_t mtime);
 

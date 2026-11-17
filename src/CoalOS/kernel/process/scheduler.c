@@ -20,6 +20,7 @@
  */
 #include <kernel/process/scheduler.h>
 #include <kernel/process/process.h>
+#include <kernel/process/rlimit.h>
 #include <kernel/process/fpu.h>
 #include <kernel/process/exec.h>
 #include <kernel/cpu/tss.h>
@@ -29,6 +30,7 @@
 #include <kernel/lib/string.h>
 #include <kernel/lib/assert.h>
 #include <kernel/memory/kmalloc.h>
+#include <kernel/memory/frame.h>
 
 #define IDLE_STACK_SIZE 4096
 #define NICE_0_WEIGHT   1024
@@ -142,6 +144,7 @@ static bool update_curr(tcb_t *t, uint64_t now) {
     if (t == IDLE || (int64_t)(now - t->exec_start) <= 0) return false;   /* `now` may predate a charge made by a wake-up */
     delta = now - t->exec_start;
     t->exec_start = now;
+    rlimit_charge(t->process, delta);
     t->ran_ns = delta > 0xFFFFFFFFu - t->ran_ns ? 0xFFFFFFFFu : t->ran_ns + (uint32_t)delta;
     dv = to_virtual(delta, t);
     t->vruntime += dv;
@@ -268,6 +271,7 @@ static void start_running(tcb_t *next, uint64_t now) {
     if (next == IDLE) return;
     next->protect = true;
     if (queued()) clockevent_request(now + slice_left_ns(next));
+    if (next->process->cpu_next != RLIMIT_CPU_NEVER) clockevent_request(now + rlimit_cpu_left_ns(next->process));
 }
 
 void schedule(void) {
@@ -315,6 +319,10 @@ void yield(void) {
 static void idle_loop(void) {
     for (;;) {
         process_reap_orphans();
+        if (frame_refill_zeroed()) {            /* idle time pays for the pool of zeroed frames */
+            if (g_need_reschedule) schedule();
+            continue;
+        }
         asm volatile("cli");
         if (g_need_reschedule) {
             asm volatile("sti");
@@ -439,9 +447,11 @@ void scheduler_timer_event(uint64_t now) {
     tcb_t *cur = g_current;
 
     if (!g_started) return;
-    if (cur != IDLE && queued()) {
-        if (update_curr(cur, now)) g_need_reschedule = true;
-        else clockevent_request(now + slice_left_ns(cur));
+    if (cur != IDLE) {
+        bool used_up = update_curr(cur, now);
+
+        if (used_up && queued()) g_need_reschedule = true;
+        else if (queued()) clockevent_request(now + slice_left_ns(cur));
     }
     if (g_need_reschedule) schedule();
 }

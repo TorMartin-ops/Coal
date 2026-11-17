@@ -44,7 +44,7 @@ void signal_force(int sig) {
     p->pending_signals |= 1u << sig;
 }
 
-static void send_one(pcb_t *p, int sig) {
+void signal_send(pcb_t *p, int sig) {
     int disp = signal_disposition(p, sig);
 
     if (p->task.state == TASK_ZOMBIE || disp == SIGDISP_IGNORE ||
@@ -63,7 +63,7 @@ int process_kill(int pid, int sig) {
     if (pid > 0) {
         p = process_find((uint32_t)pid);
         if (!p) return -ESRCH;
-        if (sig) send_one(p, sig);
+        if (sig) signal_send(p, sig);
         return 0;
     }
     for (p = process_all(); p; p = p->all_next) {
@@ -71,11 +71,11 @@ int process_kill(int pid, int sig) {
                    : p->pgid == (pid == 0 ? me->pgid : (uint32_t)-pid);
         if (!match || p == me || !p->pid) continue;
         hits++;
-        if (sig) send_one(p, sig);
+        if (sig) signal_send(p, sig);
     }
     if (me && (pid == 0 || (pid < -1 && me->pgid == (uint32_t)-pid))) {
         hits++;
-        if (sig) send_one(me, sig);
+        if (sig) signal_send(me, sig);
     }
     return hits ? 0 : -ESRCH;
 }

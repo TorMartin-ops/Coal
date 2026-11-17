@@ -136,3 +136,40 @@ long sc_getpgid(uint32_t pid) {
 }
 
 long sc_getpgrp(void) { return get_current_process()->pgid; }
+
+//============================================================================
+// Resource limits (see rlimit.h)
+//============================================================================
+
+long sc_setrlimit(uint32_t resource, uint32_t ulim) {
+    uint32_t lim[2];
+    if (copy_from_user(lim, (const void *)ulim, sizeof(lim)) != 0) return -EFAULT;
+    return rlimit_set(get_current_process(), resource, lim[0], lim[1]);
+}
+
+long sc_ugetrlimit(uint32_t resource, uint32_t ulim) {
+    uint32_t lim[2];
+    long err = rlimit_get(get_current_process(), resource, &lim[0], &lim[1]);
+    if (err) return err;
+    return copy_to_user((void *)ulim, lim, sizeof(lim)) ? -EFAULT : 0;
+}
+
+/* 64-bit limits; a finite value that does not fit in 32 bits counts as unlimited. */
+static uint32_t rlim_narrow(uint64_t v) { return v >= RLIM_INFINITY ? RLIM_INFINITY : (uint32_t)v; }
+static uint64_t rlim_widen(uint32_t v) { return v == RLIM_INFINITY ? ~0ull : v; }
+
+long sc_prlimit64(uint32_t pid, uint32_t resource, uint32_t unew, uint32_t uold) {
+    pcb_t *t = target_process(pid);
+    uint64_t nl[2];
+    uint32_t cur, max;
+
+    if (!t) return -ESRCH;
+    if (unew && copy_from_user(nl, (const void *)unew, sizeof(nl)) != 0) return -EFAULT;
+    long err = rlimit_get(t, resource, &cur, &max);
+    if (err) return err;
+    if (uold) {
+        uint64_t ol[2] = { rlim_widen(cur), rlim_widen(max) };
+        if (copy_to_user((void *)uold, ol, sizeof(ol)) != 0) return -EFAULT;
+    }
+    return unew ? rlimit_set(t, resource, rlim_narrow(nl[0]), rlim_narrow(nl[1])) : 0;
+}

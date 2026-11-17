@@ -21,6 +21,7 @@ typedef struct proc_info {
     char     name[16];
     char     cmdline[128];          /* arguments separated by NUL bytes */
     uint32_t cmdline_len;           /* bytes used in cmdline */
+    uint32_t rl_hits;               /* resource limits that stopped it or a child (RL_HIT mask) */
 } proc_info_t;
 
 /** Fill `out` for `pid`. Returns 0 or -ESRCH. */

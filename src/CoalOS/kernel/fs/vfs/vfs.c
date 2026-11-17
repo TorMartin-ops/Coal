@@ -96,12 +96,17 @@ int vfs_normalize(const char *in, char *out, size_t size) {
     return 0;
 }
 
-/* Normalized copy of path on the heap (paths are too large for the kernel stack); NULL with *rc set on failure. */
-static char *norm_alloc(const char *path, int *rc) {
-    char *norm = kmalloc(VFS_PATH_MAX);
+/* Normalized copy of path. Normalizing never makes a path longer, so short paths (nearly all) use the caller's
+ * small buffer; long ones go to the heap, which the caller frees through *heap. NULL with *rc set on failure. */
+#define NORM_SMALL 256
 
-    *rc = norm ? vfs_normalize(path, norm, VFS_PATH_MAX) : -ENOMEM;
-    if (*rc < 0) { kfree(norm); return NULL; }
+static char *norm_path(const char *path, char *small, char **heap, int *rc) {
+    char *norm = small;
+
+    *heap = NULL;
+    if (strlen(path) + 2 > NORM_SMALL) norm = *heap = kmalloc(VFS_PATH_MAX);
+    *rc = norm ? vfs_normalize(path, norm, norm == small ? NORM_SMALL : VFS_PATH_MAX) : -ENOMEM;
+    if (*rc < 0) { kfree(*heap); return NULL; }
     return norm;
 }
 
@@ -226,10 +231,11 @@ void vfs_shutdown(void) {
 int vfs_open(const char *path, int flags, mode_t mode, file_t **out) {
     const char *rel;
     int rc;
-    char *norm = norm_alloc(path, &rc);
+    char small[NORM_SMALL], *heap;
+    char *norm = norm_path(path, small, &heap, &rc);
     if (!norm) return rc;
     mount_t *m = mount_get(norm, &rel);
-    if (!m) { kfree(norm); return -ENOENT; }
+    if (!m) { kfree(heap); return -ENOENT; }
 
     vnode_t *v = kmalloc(sizeof(*v));
     file_t *f = kmalloc(sizeof(*f));
@@ -251,11 +257,11 @@ int vfs_open(const char *path, int flags, mode_t mode, file_t **out) {
     f->flags = (uint32_t)flags;
     f->offset = 0;
     *out = f;
-    kfree(norm);
+    kfree(heap);
     return 0;
 
 fail_free:
-    kfree(norm);
+    kfree(heap);
     kfree(v);
     kfree(f);
     mount_put(m);
@@ -429,10 +435,11 @@ enum ns_op { NS_UNLINK, NS_MKDIR, NS_RMDIR };
 static int ns_op(enum ns_op op, const char *path, mode_t mode) {
     const char *rel;
     int rc;
-    char *norm = norm_alloc(path, &rc);
+    char small[NORM_SMALL], *heap;
+    char *norm = norm_path(path, small, &heap, &rc);
     if (!norm) return rc;
     mount_t *m = mount_get(norm, &rel);
-    if (!m) { kfree(norm); return -ENOENT; }
+    if (!m) { kfree(heap); return -ENOENT; }
     vfs_driver_t *d = m->drv;
     switch (op) {
     case NS_UNLINK: rc = d->unlink ? d->unlink(m->ctx, rel) : -EROFS; break;
@@ -440,7 +447,7 @@ static int ns_op(enum ns_op op, const char *path, mode_t mode) {
     default:        rc = d->rmdir ? d->rmdir(m->ctx, rel) : -EROFS; break;
     }
     mount_put(m);
-    kfree(norm);
+    kfree(heap);
     return rc;
 }
 
@@ -451,8 +458,10 @@ int vfs_rmdir(const char *path) { return ns_op(NS_RMDIR, path, 0); }
 int vfs_rename(const char *from, const char *to) {
     const char *ra, *rb;
     int rc;
-    char *a = norm_alloc(from, &rc), *b = a ? norm_alloc(to, &rc) : NULL;
-    if (!b) { kfree(a); return rc; }
+    char small_a[NORM_SMALL], small_b[NORM_SMALL], *heap_a, *heap_b = NULL;
+    char *a = norm_path(from, small_a, &heap_a, &rc);
+    char *b = a ? norm_path(to, small_b, &heap_b, &rc) : NULL;
+    if (!b) { kfree(heap_a); return rc; }
     mount_t *ma = mount_get(a, &ra);
     mount_t *mb = mount_get(b, &rb);
     if (!ma || !mb) rc = -ENOENT;
@@ -460,7 +469,7 @@ int vfs_rename(const char *from, const char *to) {
     else rc = ma->drv->rename ? ma->drv->rename(ma->ctx, ra, rb) : -EROFS;
     if (ma) mount_put(ma);
     if (mb) mount_put(mb);
-    kfree(a);
-    kfree(b);
+    kfree(heap_a);
+    kfree(heap_b);
     return rc;
 }

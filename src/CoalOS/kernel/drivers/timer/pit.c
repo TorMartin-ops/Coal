@@ -3,6 +3,7 @@
  * @brief The clock (TSC, calibrated against PIT channel 2) and the PIT as a clock event device.
  */
 #include <kernel/drivers/timer/pit.h>
+#include <kernel/drivers/timer/clock.h>
 #include <kernel/drivers/pic.h>
 #include <kernel/cpu/idt.h>
 #include <kernel/lib/div64.h>
@@ -17,12 +18,10 @@
 #define PIT_CMD_CH2_ONESHOT 0xB0  /* channel 2, lobyte/hibyte, mode 0 */
 #define PORT_PC_CTRL 0x61         /* bit 0 gates channel 2, bit 1 is the speaker, bit 5 its output */
 #define CALIBRATE_MS 4u
-#define NS_SHIFT     24           /* ns = tsc * s_ns_mult >> NS_SHIFT */
 #define PIT_COUNT_MULT 5003u /* counts = ns * 5003 >> 22, i.e. ns * 1.19318e-3 */
 #define PIT_ONESHOT_MAX_NS   54000000u  /* 16-bit counter: 54.9 ms */
 
 static uint32_t s_tsc_khz;              /* 0: no TSC, the clock counts PIT ticks */
-static uint32_t s_ns_mult;
 static uint64_t s_tsc0;
 static volatile uint32_t s_pit_ticks;   /* only counted in periodic mode */
 
@@ -38,20 +37,29 @@ void timer_early_init(void) {
     outb(PIT_CH2, (uint8_t)(count >> 8));
     s_tsc0 = tsc_read();
     while (!(inb(PORT_PC_CTRL) & 0x20)) { }
-    s_tsc_khz = (uint32_t)(tsc_read() - s_tsc0) / CALIBRATE_MS;
-    s_ns_mult = (uint32_t)div64_32(1000000ull << NS_SHIFT, s_tsc_khz);
+    /* ticks / (count / PIT_BASE_HZ) in kHz: the counter holds count * (1000 / PIT_BASE_HZ) ms, not exactly CALIBRATE_MS */
+    uint64_t num = (tsc_read() - s_tsc0) * PIT_BASE_HZ;
+    uint32_t rem;
+    asm("divl %4" : "=a"(s_tsc_khz), "=d"(rem) : "a"((uint32_t)num), "d"((uint32_t)(num >> 32)), "r"(count * 1000u));
+    clock_calibrate();
+}
+
+uint32_t timer_tsc_khz(uint64_t *tsc0) {
+    *tsc0 = s_tsc0;
+    return s_tsc_khz;
 }
 
 uint32_t clock_tsc_khz(void) {
     return s_tsc_khz;
 }
 
+uint64_t pit_tick_ns(void) {
+    return (uint64_t)s_pit_ticks * 1000000u;
+}
+
+/* One clock for the kernel and the vDSO: the TSC scaled in clock.c. */
 uint64_t clock_ns(void) {
-    if (!s_tsc_khz) return (uint64_t)s_pit_ticks * 1000000u;
-    uint64_t d = tsc_read() - s_tsc0;
-    /* 96-bit product: the high word is shifted back in two parts so nothing overflows */
-    return (((uint64_t)(uint32_t)(d >> 32) * s_ns_mult) << (32 - NS_SHIFT)) +
-           (((uint64_t)(uint32_t)d * s_ns_mult) >> NS_SHIFT);
+    return clock_monotonic_ns();
 }
 
 uint64_t timer_ticks(void) {

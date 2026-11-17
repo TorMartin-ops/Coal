@@ -21,7 +21,7 @@ security boundary. See [SECURITY.md](SECURITY.md) and [Limitations](#limitations
 - **System calls**: 99 Linux i386 calls with Linux numbers and struct layouts, one table
   ([docs/syscalls.md](src/CoalOS/docs/syscalls.md)). Unimplemented calls return `-ENOSYS`.
 - **User space**: a small libc, `coalbox` (BusyBox-style multi-call binary with 65 applets, including `edit`, `top`, `find`, `diff`, `tr`, `printf`, `expr`),
-  `sh` (POSIX-style: `if`/`while`/`for`/`case`, functions, `$(...)`, subshells, here-documents, `set -e`/`-x`, `trap`, `#!` scripts, history and Tab completion), `init`, and `mcpd`.
+  `sh` (POSIX-style: `if`/`while`/`for`/`case`, functions, `$(...)`, subshells, here-documents, `set -e`/`-x`, `trap`, `#!` scripts, history and Tab completion), `init`, and `agentd`.
   `tools/coal-cc` compiles C programs for Coal on the host with Coal's libc.
 - **MCP integration**: `tools/coal-mcp` lets Claude boot Coal in QEMU and run commands, transfer
   files, read the kernel log, take disk snapshots and roll back mistakes.
@@ -35,16 +35,16 @@ Measured on one development machine (QEMU/TCG, no KVM, 512 MiB guest, the defaul
 
 | | |
 |---|---|
-| Boot, QEMU start to `mcpd` answering | 0.4 - 0.5 s |
+| Boot, QEMU start to `agentd` answering | 0.4 - 0.5 s |
 | `kernel.bin` text (code and read-only data) / data / bss | 151.5 KB / 8.8 KB / 100.9 KB |
 | `kernel.bin` file size | 173 KB stripped, 747 KB with debug info |
-| `coalbox` / `sh` / `init` / `mcpd` | 64.1 KB / 42.8 KB (38.4 KB of code and data) / 10.3 KB / 14.9 KB |
+| `coalbox` / `sh` / `init` / `agentd` | 64.1 KB / 42.8 KB (38.4 KB of code and data) / 10.3 KB / 14.9 KB |
 | Boot ISO (GRUB + kernel) / disk image | 5.9 MB / 32 MiB FAT16 (137 KB of files) |
 | RAM in use after boot | 1.7 MB of 509 MiB (`/proc/meminfo`: MemTotal 521296 kB, MemFree 519620 kB) |
 | Source size | about 11,100 lines of kernel C (15,300 with headers and assembly), 6,200 of user space |
 
 1 KB is 1000 bytes. The boot time is what `coal_boot` reports: QEMU launch, GRUB, kernel,
-`init` and `mcpd` up and answering a ping.
+`init` and `agentd` up and answering a ping.
 
 ## Quick start
 
@@ -60,11 +60,14 @@ cmake --build build --target run    # QEMU window, serial log on the terminal
 
 ## Talk to it with Claude
 
-`tools/coal-mcp/server.py` is an [MCP](https://modelcontextprotocol.io) server (Python 3.9+,
-standard library only). It builds Coal, boots it headless in QEMU and talks to `/sbin/mcpd` inside
-the VM over the second serial port. Claude gets 19 tools: boot, run a command, read and write
-files, list directories and processes, kernel log, read the screen, type on the keyboard, snapshot
-and restore.
+`tools/coal-gateway` is an [MCP](https://modelcontextprotocol.io) gateway (Python 3.9+, standard
+library only). It builds Coal, boots it headless in QEMU and talks to `/sbin/agentd` inside the VM
+over the second serial port with a framed, multiplexed protocol ([docs/agent-vm/protocol.md](docs/agent-vm/protocol.md)).
+Claude gets 27 tools: boot, run a command (structured result, head and tail of long output),
+background jobs with resource limits, read and write files atomically, list directories and
+processes, kernel log, read the screen, type on the keyboard, snapshot and restore. It serves MCP over
+stdio (`tools/coal-mcp/server.py`, as before) or over Streamable HTTP with a bearer token, and logs every
+call to a per-run JSONL file ([docs/agent-vm/gateway.md](docs/agent-vm/gateway.md)).
 
 ```sh
 claude mcp add coal -- python3 tools/coal-mcp/server.py
@@ -88,7 +91,7 @@ A session:
 
 ```
 > coal_boot
-built OS; booted in 0.5s; mcpd is ready
+built OS; booted in 0.5s; agentd is ready
 > coal_run command="uname -a; ls /bin; cat /proc/meminfo | head -2"
 exit code: 0
 --- stdout ---
@@ -103,8 +106,9 @@ syscall_test: 43 checks, 0 failed
 > coal_restore name="clean"          # undo everything since the snapshot
 ```
 
-Commands run in their own process group and are killed as a group on timeout; a `cmd &` does not
-keep the call waiting. Large files move in checked requests over a flow-controlled serial line. Trust model and details: [tools/coal-mcp/README.md](tools/coal-mcp/README.md).
+Commands are non-interactive, run in their own process group and are killed as a group on timeout
+(120 s by default); long-running work goes to `coal_spawn`. Large files move in checked chunks over a
+flow-controlled serial line. Trust model and details: [tools/coal-mcp/README.md](tools/coal-mcp/README.md).
 
 ## Networking
 
@@ -126,10 +130,12 @@ guest gets an Intel e1000 on QEMU user networking, so it is behind NAT:
 
 ```
 src/CoalOS/boot, kernel, include     the kernel (core cpu drivers fs memory net process sync)
-src/CoalOS/userspace                 libc, coalbox, sh, init, mcpd, tests
+src/CoalOS/userspace                 libc, coalbox, sh, init, agentd, tests
 src/CoalOS/docs                      ARCHITECTURE.md, syscalls.md
 src/CoalOS/rootfs                    files copied into the disk image
-tools/coal-mcp                       MCP server and its tests
+tools/coal-gateway                   MCP gateway (stdio, HTTP), agent protocol client
+tools/coal-mcp                       stdio entry point and its tests
+docs/agent-vm                        agent protocol and gateway documentation
 .github/workflows/ci.yml             CI
 ```
 

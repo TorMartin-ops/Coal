@@ -59,7 +59,7 @@ def main():
     c = Client(build_dir)
     try:
         err, text = c.tool("coal_boot")
-        check(not err and "mcpd is ready" in text, "boot", text)
+        check(not err and "agentd is ready" in text, "boot", text)
         err, text = c.tool("coal_run", command="uname -a; echo hello | wc -c")
         check(not err and "Coal" in text and "exit code: 0" in text, "run uname and a pipe", text)
         err, text = c.tool("coal_run", command="echo data > /tmp/f && cat /tmp/f && ls /bin")
@@ -106,7 +106,22 @@ def main():
         err, text = c.tool("coal_run", command="sleep 2 & echo started", timeout_ms=1500)
         check("started" in text and "timed out" not in text, "a background job does not hold coal_run", text)
         err, text = c.tool("coal_run", command="yes 0123456789 | head -n 100000", timeout_ms=20000)
-        check("exit code: 0" in text and "output truncated" in text, "large stdout is capped, not hung", text[:200])
+        check("exit code: 0" in text and "output truncated" in text and len(text) < 12000,
+              "large stdout is reduced to head and tail, not hung", text[:200])
+        err, text = c.tool("coal_run", command="seq 1 3000")
+        spill = [l for l in text.splitlines() if "full output is in the VM at" in l]
+        check(bool(spill), "the full output is spilled to a file in the VM", text[-400:])
+        path = spill[0].split(" at ")[1].split(". Read")[0]
+        err, text = c.tool("coal_read_file", path=path, offset=9000, max_bytes=20)
+        check("\n" in text and not err, "the spilled output can be read at an offset", text)
+        err, text = c.tool("coal_spawn", command="echo job-up; sleep 1; echo job-done")
+        handle = text.split()[2]
+        err, text = c.tool("coal_job_status", job_id=handle, wait_ms=20000)
+        check("exited, exit code 0" in text, "a background job runs to completion", text)
+        err, text = c.tool("coal_job_output", job_id=handle)
+        check("job-up" in text and "job-done" in text, "job output is readable", text)
+        err, text = c.tool("coal_run", command="cat; echo done", timeout_ms=5000)
+        check("done" in text and "timed out" not in text, "stdin is /dev/null", text)
         blob = os.urandom(3 * 1024 * 1024)
         src, back = os.path.join(www, "blob.bin"), os.path.join(www, "blob.back")
         with open(src, "wb") as f:
@@ -128,7 +143,7 @@ def main():
         err, text = c.tool("coal_run", command="rm /tmp/f && echo gone")
         check("gone" in text, "delete a file", text)
         err, text = c.tool("coal_restore", name="smoke")
-        check(not err and "mcpd is ready" in text, "restore reboots", text)
+        check(not err and "agentd is ready" in text, "restore reboots", text)
         err, text = c.tool("coal_read_file", path="/tmp/f")
         check(not err and "data" in text, "restore brought the file back", text)
         err, text = c.tool("coal_sysinfo")
@@ -136,7 +151,7 @@ def main():
         # --- kernel wave 6: out of memory on a 128 MB machine (the biggest process is killed, one log line) ---
         c.tool("coal_shutdown")
         err, text = c.tool("coal_boot", memory_mb=128)
-        check(not err and "mcpd is ready" in text, "boot with 128 MB", text)
+        check(not err and "agentd is ready" in text, "boot with 128 MB", text)
         err, text = c.tool("coal_run", command="/usr/bin/kernel_test oom", timeout_ms=60000)
         check("0 failed" in text and "exit code: 0" in text, "kernel_test oom: one of two memory hogs is killed, the other finishes", text)
         err, text = c.tool("coal_run", command="dmesg | grep 'out of memory'")

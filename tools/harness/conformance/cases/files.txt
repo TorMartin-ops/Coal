@@ -1,0 +1,96 @@
+== write_read
+echo hello > f; cat f
+--
+hello
+== append
+echo a > f; echo b >> f; cat f
+--
+a
+b
+== mkdir_p_ls
+mkdir -p d/e/f; ls d; ls d/e
+--
+e
+f
+== copy_move
+echo x > a; cp a b; mv b c; ls; cat c
+--
+a
+c
+x
+== remove_tree
+mkdir -p d/e; echo x > d/e/f; rm -r d; [ -e d ] && echo present || echo gone
+--
+gone
+== rmdir_nonempty_fails
+mkdir d; touch d/f; rmdir d 2>/dev/null || echo refused; [ -d d ] && echo kept
+--
+refused
+kept
+== missing_file_fails
+cat nope 2>/dev/null; [ $? -ne 0 ] && echo failed
+--
+failed
+== truncate_and_size
+echo hello > f; : > f; wc -c < f
+--
+0
+== large_file
+yes 0123456789 | head -n 100000 > big; wc -c < big; tail -n 1 big
+--
+1100000
+0123456789
+== dd_zero
+dd if=/dev/zero of=z bs=1024 count=64 2>/dev/null; wc -c < z
+--
+65536
+== dev_null_zero
+echo gone > /dev/null; head -c 8 /dev/zero | wc -c; cat /dev/null | wc -c
+--
+8
+0
+== glob
+touch a1 a2 b1; echo a*; echo *1
+--
+a1 a2
+a1 b1
+== spaces_in_names
+echo 1 > "a b.txt"; ls; cat "a b.txt"
+--
+a b.txt
+1
+== find_name
+mkdir -p s/t; touch s/x.c s/t/y.c s/z.h; find s -name '*.c' | sort
+--
+s/t/y.c
+s/x.c
+== test_operators
+mkdir d; touch f; [ -d d ] && [ -f f ] && [ ! -f d ] && [ -s f ] || echo ok
+--
+ok
+== subdir_cwd
+mkdir d; cd d; echo in > f; cd ..; cat d/f
+--
+in
+== symlink
+echo x > t; ln -s t l; cat l
+--
+x
+== hard_link
+echo x > a; ln a b; echo y >> b; cat a
+--
+x
+y
+== chmod_exec_bit
+touch f; chmod 755 f; [ -x f ] && echo exec; chmod 644 f; [ -x f ] || echo plain
+--
+exec
+plain
+== tar_roundtrip
+mkdir d; echo hi > d/f; tar cf a.tar d; rm -r d; tar xf a.tar; cat d/f
+--
+hi
+== gzip_roundtrip
+echo hello | gzip | gunzip
+--
+hello
