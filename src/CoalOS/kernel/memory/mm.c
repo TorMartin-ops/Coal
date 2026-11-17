@@ -92,13 +92,11 @@
   */
  // --- THIS IS THE SINGLE, CORRECT DEFINITION ---
  // Forward declaration for idle task stack checking
- extern void check_idle_task_stack_integrity(const char *checkpoint);
  
  void destroy_mm(mm_struct_t *mm) {
      if (!mm) return;
  
      serial_write("[destroy_mm] Enter.\n"); // <-- Logging
-     check_idle_task_stack_integrity("destroy_mm: Enter");
  
      // Acquire lock to safely get root, then clear it
      uintptr_t irq_flags = spinlock_acquire_irqsave(&mm->lock);
@@ -112,20 +110,16 @@
  
      if (root) {
          serial_write("[destroy_mm] Traversing VMA tree...\n"); // <-- Logging
-         check_idle_task_stack_integrity("destroy_mm: Before VMA traversal");
          // Perform post-order traversal of RB Tree to unmap and free nodes
          rbtree_postorder_traverse(root, destroy_vma_node_callback, mm); // Pass mm for context
-         check_idle_task_stack_integrity("destroy_mm: After VMA traversal");
          serial_write("[destroy_mm] VMA traversal complete.\n"); // <-- Logging
      } else {
          serial_write("[destroy_mm] VMA tree is empty, skipping traversal.\n"); // <-- Logging
      }
  
      serial_write("[destroy_mm] Calling kfree(mm)...\n"); // <-- Logging
-     check_idle_task_stack_integrity("destroy_mm: Before kfree(mm)");
      // Free the mm_struct itself
      kfree(mm);
-     check_idle_task_stack_integrity("destroy_mm: After kfree(mm)");
      serial_write("[destroy_mm] Returned from kfree(mm). Exit.\n"); // <-- Logging
  }
  
@@ -161,9 +155,7 @@
         // Only proceed if size is greater than 0, as paging_unmap_range handles 0 size internally now.
         int ret = 0; // Assume success for zero size
         if (vma_size > 0) {
-            check_idle_task_stack_integrity("destroy_vma_cb: Before paging_unmap_range");
             ret = paging_unmap_range(mm->pgd_phys, vma_node->vm_start, vma_size);
-            check_idle_task_stack_integrity("destroy_vma_cb: After paging_unmap_range");
         } else {
             // If size is 0, no unmapping needed, but log it for clarity if desired
             serial_write("  Skipping paging_unmap_range for zero-sized VMA.\n");
@@ -184,9 +176,7 @@
 
     // Free the resources associated with the VMA structure itself
     serial_write("  Calling free_vma_resources (kfree)...\n");
-    check_idle_task_stack_integrity("destroy_vma_cb: Before free_vma_resources");
     free_vma_resources(vma_node); // Assumes this function calls kfree(vma_node)
-    check_idle_task_stack_integrity("destroy_vma_cb: After free_vma_resources");
     serial_write("  Returned from free_vma_resources.\n");
 }
 

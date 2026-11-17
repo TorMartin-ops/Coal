@@ -21,7 +21,6 @@
 #include <kernel/lib/assert.h>           // For KERNEL_ASSERT and KERNEL_PANIC_HALT
 
 // Forward declaration for idle task stack checking
-extern void check_idle_task_stack_integrity(const char *checkpoint);
 
 // --- Compile-time Sanity Checks ---
 #ifndef PAGE_SIZE
@@ -552,14 +551,12 @@ void put_frame(uintptr_t phys_addr) {
             // These are important PFNs - PD frames or user stack frames
             serial_printf("[Put Frame WARN] About to free important PFN %lu (Phys=%#lx, Virt=%#lx)\n",
                           (unsigned long)pfn, (unsigned long)phys_addr, (unsigned long)virt_addr);
-            check_idle_task_stack_integrity("put_frame: Before buddy_free (important frame)");
         }
         
         buddy_free_raw((void*)virt_addr, FRAME_BUDDY_ORDER);
         
         // Check idle task stack after buddy_free_raw
         if (pfn == 0x10002 || pfn == 0x10071 || pfn == 0x10074) {
-            check_idle_task_stack_integrity("put_frame: After buddy_free (important frame)");
         }
 
     } else {

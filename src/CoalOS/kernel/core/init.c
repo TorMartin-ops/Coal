@@ -523,12 +523,8 @@ static void launch_program(const char *path_on_disk, const char *program_descrip
     pcb_t *proc_pcb = create_user_process(path_on_disk);
 
     if (proc_pcb) {
-        if (scheduler_add_task(proc_pcb) == 0) {
-            terminal_printf("  [OK] %s (PID %lu) scheduled successfully.\n", program_description, (unsigned long)proc_pcb->pid);
-        } else {
-            terminal_printf("  [ERROR] Failed to add %s (PID %lu) to scheduler!\n", program_description, (unsigned long)proc_pcb->pid);
-            destroy_process(proc_pcb); 
-        }
+        scheduler_add_task(proc_pcb);
+        terminal_printf("  [OK] %s (PID %lu) scheduled successfully.\n", program_description, (unsigned long)proc_pcb->pid);
     } else {
         terminal_printf("  [ERROR] Failed to create process for %s from '%s'.\n", program_description, path_on_disk);
     }

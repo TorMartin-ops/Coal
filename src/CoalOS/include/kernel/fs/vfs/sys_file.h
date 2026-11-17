@@ -6,6 +6,7 @@
 
 #include <kernel/core/types.h>
 #include <kernel/fs/vfs/vfs.h>
+#include <kernel/sync/spinlock.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,7 +32,24 @@ extern "C" {
 typedef struct sys_file {
     file_t *vfs_file;
     int flags;
+    int extra_refs;      /* references beyond the first (fork/dup); zero-initialised = one owner */
 } sys_file_t;
+
+/** Adds a reference (fork, dup). */
+static inline sys_file_t *sys_file_get(sys_file_t *sf) {
+    uintptr_t flags = local_irq_save();      /* i386 has no atomic add; one CPU */
+    sf->extra_refs++;
+    local_irq_restore(flags);
+    return sf;
+}
+
+/** Drops a reference; true when it was the last one and the caller must close and free sf. */
+static inline bool sys_file_put(sys_file_t *sf) {
+    uintptr_t flags = local_irq_save();
+    bool last = sf->extra_refs-- == 0;
+    local_irq_restore(flags);
+    return last;
+}
 
 
 // === Function Prototypes === (Unchanged)

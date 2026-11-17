@@ -164,16 +164,11 @@ static int console_vfs_close(file_t *file) {
         return 0;
     }
     
-    // Free console data
+    // The vnode and the file are freed by vfs_close(); only the driver data is ours.
     if (file->vnode->data) {
         kfree(file->vnode->data);
         file->vnode->data = NULL;
     }
-    
-    // Free vnode
-    kfree(file->vnode);
-    file->vnode = NULL;
-    
     return 0;
 }
 
@@ -206,6 +201,7 @@ file_t *create_console_file(int mode) {
     file_t *console_file = (file_t *)kmalloc(sizeof(file_t));
     if (!console_file) {
         console_vfs_close(&(file_t){.vnode = vnode});
+        kfree(vnode);
         return NULL;
     }
     

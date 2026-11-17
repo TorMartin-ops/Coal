@@ -1,7 +1,7 @@
 #ifndef ELF_H
 #define ELF_H
 
-#include "libc/stdint.h" // or wherever you keep uint16_t, uint32_t, etc.
+#include <libc/stdint.h>
 
 /* ---- Basic ELF macros ---- */
 #define EI_NIDENT 16
@@ -11,9 +11,8 @@
 #define EI_MAG1   1
 #define EI_MAG2   2
 #define EI_MAG3   3
-#define EI_CLASS  4 // <<< ADDED
-#define EI_DATA   5 // <<< ADDED
-// etc...
+#define EI_CLASS  4
+#define EI_DATA   5
 
 /* ELF magic */
 #define ELFMAG0 0x7F
@@ -21,7 +20,7 @@
 #define ELFMAG2 'L'
 #define ELFMAG3 'F'
 
-// <<< ADDED Standard ELF Definitions >>>
+
 /* e_ident[EI_CLASS] */
 #define ELFCLASSNONE 0 /* Invalid class */
 #define ELFCLASS32   1 /* 32-bit objects */
@@ -31,7 +30,6 @@
 #define ELFDATANONE 0 /* Invalid data encoding */
 #define ELFDATA2LSB 1 /* 2's complement, little endian */
 #define ELFDATA2MSB 2 /* 2's complement, big endian */
-// <<< END ADDED >>>
 
 
 /* e_type */
@@ -39,7 +37,6 @@
 #define ET_REL    1
 #define ET_EXEC   2
 #define ET_DYN    3
-// etc...
 
 /* e_machine */
 #define EM_386    3
@@ -51,7 +48,8 @@
 /* Program header types */
 #define PT_NULL    0
 #define PT_LOAD    1
-// etc...
+#define PT_INTERP  3
+#define PT_PHDR    6
 
 /* Program header flags */
 #define PF_X       0x1

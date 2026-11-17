@@ -204,7 +204,7 @@
      current_proc->fd_table[fd] = NULL; // Clear FD entry under lock
      spinlock_release_irqrestore(&current_proc->fd_table_lock, irq_flags);
  
-     KERNEL_ASSERT(sf_to_close != NULL, "sf_to_close became NULL post-lock");
+     if (!sys_file_put(sf_to_close)) return 0;   // still open through another fd or process
  
      int vfs_ret = vfs_close(sf_to_close->vfs_file); // vfs_close handles its own internal locking.
      kfree(sf_to_close);
