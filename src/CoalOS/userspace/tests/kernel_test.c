@@ -16,6 +16,7 @@
 #include <libc/sys/wait.h>
 #include <libc/sys/time.h>
 #include <libc/sys/socket.h>
+#include <libc/netinet/in.h>
 #include "check.h"
 
 #define SA_RESTART  0x10000000
@@ -404,6 +405,206 @@ static void test_socketpair(void) {
 }
 
 //============================================================================
+// Loopback networking: TCP and UDP over 127.0.0.1, ICMP port unreachable
+//============================================================================
+
+static void lo_addr(struct sockaddr_in *a, unsigned port) {
+    memset(a, 0, sizeof *a);
+    a->sin_family = AF_INET;
+    a->sin_port = htons((uint16_t)port);
+    a->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+}
+
+/* A socket of the given type bound to 127.0.0.1 and a free port, which is stored in *a. */
+static int lo_socket(int type, struct sockaddr_in *a) {
+    socklen_t n = sizeof *a;
+    int fd = socket(AF_INET, type, 0);
+
+    lo_addr(a, 0);
+    if (fd < 0 || bind(fd, (struct sockaddr *)a, sizeof *a) != 0 || getsockname(fd, (struct sockaddr *)a, &n) != 0) return -1;
+    return fd;
+}
+
+static void test_loopback(void) {
+    struct sockaddr_in a, peer;
+    socklen_t n;
+    char buf[64];
+    int ls = lo_socket(SOCK_STREAM, &a), c, s;
+
+    CHECK(ls >= 0 && listen(ls, 4) == 0);
+    CHECK(a.sin_addr.s_addr == htonl(INADDR_LOOPBACK) && a.sin_port != 0);
+    c = socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(connect(c, (struct sockaddr *)&a, sizeof a) == 0);          /* works with or without a NIC */
+    n = sizeof peer;
+    s = accept(ls, (struct sockaddr *)&peer, &n);
+    CHECK(s >= 0 && peer.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+    CHECK(write(c, "hello", 5) == 5 && read(s, buf, sizeof buf) == 5 && !memcmp(buf, "hello", 5));
+    CHECK(write(s, "world!", 6) == 6 && read(c, buf, sizeof buf) == 6 && !memcmp(buf, "world!", 6));
+    n = sizeof peer;
+    CHECK(getpeername(c, (struct sockaddr *)&peer, &n) == 0 && peer.sin_port == a.sin_port);
+    CHECK(close(s) == 0 && read(c, buf, sizeof buf) == 0);            /* orderly shutdown reaches the peer */
+    close(c);
+    close(ls);
+
+    /* A refused connection: nobody listens on that port. */
+    lo_addr(&peer, 1);
+    c = socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(connect(c, (struct sockaddr *)&peer, sizeof peer) < 0 && errno == ECONNREFUSED);
+    close(c);
+
+    /* UDP between two sockets, with the sender's address reported. */
+    struct sockaddr_in ua, ub, from;
+    int u1 = lo_socket(SOCK_DGRAM, &ua), u2 = lo_socket(SOCK_DGRAM, &ub);
+    CHECK(u1 >= 0 && u2 >= 0);
+    CHECK(sendto(u1, "dgram", 5, 0, (struct sockaddr *)&ub, sizeof ub) == 5);
+    n = sizeof from;
+    CHECK(recvfrom(u2, buf, sizeof buf, 0, (struct sockaddr *)&from, &n) == 5 && !memcmp(buf, "dgram", 5));
+    CHECK(from.sin_port == ua.sin_port && from.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+
+    /* Port unreachable: a connected UDP socket to a closed port gets ECONNREFUSED, once. */
+    int uc = socket(AF_INET, SOCK_DGRAM, 0);
+    struct timeval tv = { 2, 0 };
+    close(u2);                                                          /* now nothing listens on ub */
+    CHECK(connect(uc, (struct sockaddr *)&ub, sizeof ub) == 0);
+    setsockopt(uc, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    CHECK(send(uc, "x", 1, 0) == 1);
+    CHECK(recv(uc, buf, sizeof buf, 0) < 0 && errno == ECONNREFUSED);
+    CHECK(recv(uc, buf, sizeof buf, MSG_DONTWAIT) < 0 && errno == EAGAIN);
+    CHECK(send(uc, "x", 1, 0) == 1);
+    msleep(50);
+    struct pollfd pfd = { uc, POLLIN, 0 };
+    CHECK(poll(&pfd, 1, 0) == 1 && (pfd.revents & POLLERR));
+    int soerr = 0;
+    socklen_t sl = sizeof soerr;
+    CHECK(getsockopt(uc, SOL_SOCKET, SO_ERROR, &soerr, &sl) == 0 && soerr == ECONNREFUSED);
+    close(uc);
+    /* An unconnected socket sends to a closed port without any error. */
+    CHECK(sendto(u1, "x", 1, 0, (struct sockaddr *)&ub, sizeof ub) == 1);
+    msleep(50);
+    CHECK(recv(u1, buf, sizeof buf, MSG_DONTWAIT) < 0 && errno == EAGAIN);
+    close(u1);
+
+    /* The interface itself. */
+    struct { char name[16]; struct sockaddr_in addr; char pad[8]; } ifr;
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    memset(&ifr, 0, sizeof ifr);
+    strcpy(ifr.name, "lo");
+    CHECK(__sc(SYS_IOCTL, fd, 0x8915, (long)&ifr, 0, 0) == 0 && ifr.addr.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+    close(fd);
+}
+
+/* 1 MiB through a loopback connection in both directions at once, verified byte for byte. */
+static void test_loopback_stream(void) {
+    enum { TOTAL = 1 << 20 };
+    struct sockaddr_in a;
+    int ls = lo_socket(SOCK_STREAM, &a), c, s;
+    static unsigned char blk[8192];
+    long sent = 0, got = 0, bad = 0;
+
+    CHECK(ls >= 0 && listen(ls, 1) == 0);
+    pid_t kid = fork();
+    if (kid == 0) {                                     /* server: echo everything back */
+        s = accept(ls, NULL, NULL);
+        for (long r; (r = read(s, blk, sizeof blk)) > 0;)
+            for (long off = 0; off < r;) { long w = write(s, blk + off, r - off); if (w <= 0) _exit(1); off += w; }
+        _exit(0);
+    }
+    close(ls);
+    c = socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(connect(c, (struct sockaddr *)&a, sizeof a) == 0);
+    fcntl(c, F_SETFL, O_NONBLOCK);
+    while (got < TOTAL) {
+        struct pollfd pfd = { c, POLLIN | (sent < TOTAL ? POLLOUT : 0), 0 };
+        if (poll(&pfd, 1, 5000) <= 0) break;
+        if ((pfd.revents & POLLOUT) && sent < TOTAL) {
+            for (int i = 0; i < (int)sizeof blk; i++) blk[i] = (unsigned char)((sent + i) * 7 >> 3);
+            long w = write(c, blk, TOTAL - sent < (long)sizeof blk ? TOTAL - sent : (long)sizeof blk);
+            if (w > 0) sent += w;                       /* a short write is fine: the pattern depends on the offset only */
+        }
+        if (pfd.revents & POLLIN) {
+            static unsigned char in[8192];
+            long r = read(c, in, sizeof in);
+            for (long i = 0; i < r; i++) bad += in[i] != (unsigned char)((got + i) * 7 >> 3);
+            if (r > 0) got += r;
+        }
+    }
+    CHECK(sent == TOTAL && got == TOTAL && bad == 0);
+    close(c);
+    int st = 0;
+    CHECK(waitpid(kid, &st, 0) == kid && WIFEXITED(st) && WEXITSTATUS(st) == 0);
+}
+
+//============================================================================
+// Scripts, statfs, links
+//============================================================================
+
+static void write_file(const char *path, const char *text) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+    write(fd, text, strlen(text));
+    close(fd);
+}
+
+static int run_status(const char *path, char *const argv[]) {
+    int st = 0;
+    pid_t kid = fork();
+
+    if (kid == 0) { execv(path, argv); _exit(errno == ENOEXEC ? 126 : errno == ELOOP ? 125 : 127); }
+    return waitpid(kid, &st, 0) == kid && WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+static void test_exec_script(void) {
+    char *const plain[] = { "/tmp/k6s", NULL }, *const with_args[] = { "/tmp/k6a", "3", "y", NULL };
+
+    write_file("/tmp/k6s", "#!/bin/sh\nexit 7\n");
+    CHECK(run_status("/tmp/k6s", plain) == 7);
+    /* The interpreter is this program, which checks its own arguments: the rest of the line is ONE argument. */
+    write_file("/tmp/k6a", "#!  /usr/bin/kernel_test   --exec-args -v  \n");
+    CHECK(run_status("/tmp/k6a", with_args) == 42);
+    write_file("/tmp/k6n", "not a program\n");
+    CHECK(run_status("/tmp/k6n", plain) == 126);                    /* ENOEXEC */
+    write_file("/tmp/k6l", "#!/tmp/k6l\n");
+    CHECK(run_status("/tmp/k6l", plain) == 125);                    /* an interpreter that is itself a loop: ELOOP */
+    write_file("/tmp/k6i", "#!/tmp/k6missing\n");
+    CHECK(run_status("/tmp/k6i", plain) == 127);                    /* ENOENT for the interpreter */
+    unlink("/tmp/k6s"); unlink("/tmp/k6a"); unlink("/tmp/k6n"); unlink("/tmp/k6l"); unlink("/tmp/k6i");
+}
+
+static void test_statfs_links(void) {
+    struct { unsigned type, bsize; unsigned long long blocks, bfree, bavail, files, ffree; int fsid[2]; unsigned namelen, frsize, flags, spare[4]; }
+        __attribute__((packed)) sf;
+    char path[8];
+
+    memset(&sf, 0xAA, sizeof sf);
+    CHECK(__sc(SYS_STATFS64, (long)"/", sizeof sf, (long)&sf, 0, 0) == 0);
+    CHECK(sf.type == 0x4d44 && sf.bsize >= 512 && sf.blocks > 0 && sf.bfree <= sf.blocks && sf.namelen >= 255);
+    CHECK(__sc(SYS_STATFS64, (long)"/", 80, (long)&sf, 0, 0) == -EINVAL);
+    CHECK(__sc(SYS_STATFS64, (long)"/nonexistent", sizeof sf, (long)&sf, 0, 0) == -ENOENT);
+    unsigned long long free_before = sf.bfree;
+    write_file("/tmp/k6big", "x");
+    int fd = open("/tmp/k6big", O_WRONLY | O_APPEND);
+    char blk[8192];
+    memset(blk, 1, sizeof blk);
+    CHECK(write(fd, blk, sizeof blk) == sizeof blk);
+    memset(&sf, 0, sizeof sf);
+    CHECK(__sc(SYS_FSTATFS64, fd, sizeof sf, (long)&sf, 0, 0) == 0 && sf.bfree < free_before);   /* free space shrank */
+    close(fd);
+    unlink("/tmp/k6big");
+    CHECK(__sc(SYS_STATFS64, (long)"/proc", sizeof sf, (long)&sf, 0, 0) == 0 && sf.type == 0x9fa0);
+    unsigned old[16];
+    CHECK(__sc(SYS_STATFS, (long)"/", (long)old, 0, 0, 0) == 0 && old[0] == 0x4d44 && old[2] > 0);
+
+    write_file("/tmp/k6f", "data");
+    CHECK(__sc(SYS_LINK, (long)"/tmp/k6f", (long)"/tmp/k6g", 0, 0, 0) == -EPERM);
+    CHECK(__sc(SYS_SYMLINK, (long)"/tmp/k6f", (long)"/tmp/k6g", 0, 0, 0) == -EPERM);
+    CHECK(__sc(SYS_SYMLINK, (long)"x", (long)"/tmp/k6f", 0, 0, 0) == -EEXIST);
+    CHECK(__sc(SYS_LINK, (long)"/tmp/none", (long)"/tmp/k6g", 0, 0, 0) == -ENOENT);
+    CHECK(__sc(SYS_READLINK, (long)"/tmp/k6f", (long)path, sizeof path, 0, 0) == -EINVAL);   /* exists, not a link */
+    CHECK(__sc(SYS_READLINK, (long)"/tmp/none", (long)path, sizeof path, 0, 0) == -ENOENT);
+    CHECK(access("/tmp/k6g", F_OK) < 0);
+    unlink("/tmp/k6f");
+}
+
+//============================================================================
 // Out of memory: the biggest process is killed, the rest carries on
 //============================================================================
 
@@ -448,9 +649,13 @@ static void test_oom(void) {
 }
 
 int main(int argc, char **argv) {
+    if (argc == 5 && !strcmp(argv[1], "--exec-args -v"))            /* run as a "#!" interpreter by test_exec_script */
+        return !strcmp(argv[2], "/tmp/k6a") && !strcmp(argv[3], "3") && !strcmp(argv[4], "y") ? 42 : 1;
     static const struct { const char *name; void (*fn)(void); int by_name_only; } tests[] = {
         { "restart", test_sa_restart, 0 }, { "pipe", test_pipe_capacity, 0 }, { "dir", test_open_directory, 0 },
         { "select", test_select, 0 }, { "socketpair", test_socketpair, 0 },
+        { "script", test_exec_script, 0 }, { "statfs", test_statfs_links, 0 },
+        { "loopback", test_loopback, 0 }, { "stream", test_loopback_stream, 0 },
         { "oom", test_oom, 1 },                     /* needs a small machine: run as "kernel_test oom" */
     };
 
