@@ -31,6 +31,12 @@ static int _snprintf(char *buf, size_t size, const char *fmt, ...) {
 /* Once user space owns the console, only warnings and errors go to the screen
  * (like Linux's console loglevel); everything still reaches COM1 and dmesg. */
 static bool g_console_quiet;
+static void (*g_sink)(const char *s, size_t n);
+
+
+void klog_set_sink(void (*sink)(const char *s, size_t n)) {
+    g_sink = sink;
+}
 
 void klog_console_quiet(void) {
     g_console_quiet = true;
@@ -42,6 +48,7 @@ static void emit(const char *s, size_t n, bool to_screen) {
     for (size_t i = 0; i < n; i++) g_ring[g_total++ % KLOG_RING_SIZE] = s[i];
     if (to_screen) terminal_write_bytes(s, n);
     serial_write(s);
+    if (g_sink) g_sink(s, n);
     spinlock_release_irqrestore(&g_lock, flags);
 }
 
