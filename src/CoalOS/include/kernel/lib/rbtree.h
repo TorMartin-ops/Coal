@@ -73,8 +73,6 @@
  /** Get the next node (in-order successor) in the tree or NULL */
  struct rb_node *rb_node_next(struct rb_node *node_ptr);
  
- /** Get the previous node (in-order predecessor) in the tree or NULL */
- struct rb_node *rb_node_prev(struct rb_node *node_ptr);
  
  // --- VMA Specific Helpers (Implementation in rbtree.c) ---
  
@@ -98,6 +96,12 @@
   */
  struct vma_struct* rbtree_find_overlap(struct rb_node *root, uintptr_t start, uintptr_t end);
  
+ /**
+  * @brief Finds the VMA with the lowest vm_start strictly above addr.
+  * @return Pointer to that vma_struct, or NULL if none.
+  */
+ struct vma_struct* rbtree_find_first_above(struct rb_node *root, uintptr_t addr);
+
  // --- Traversal ---
  
  typedef void (*rbtree_visit_func)(struct vma_struct *vma_node, void *data);

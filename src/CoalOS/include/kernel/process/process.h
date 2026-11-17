@@ -5,6 +5,8 @@
 
 #include <kernel/core/types.h>      // Include necessary base types
 #include <kernel/memory/paging.h>      // Include for PAGE_SIZE, KERNEL_SPACE_VIRT_START, registers_t
+#include <kernel/sync/spinlock.h>
+#include <kernel/core/error.h>
 
 // Forward declare mm_struct to avoid circular dependency with mm.h if needed
 struct mm_struct;

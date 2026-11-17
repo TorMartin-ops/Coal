@@ -15,7 +15,6 @@
 #include <kernel/cpu/syscall.h>
 #include <kernel/memory/paging.h>
 #include <kernel/memory/frame.h>
-#include <kernel/memory/buddy.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/drivers/display/serial.h>
 #include <kernel/drivers/display/terminal.h>
@@ -53,7 +52,6 @@ const char *SYSTEM_SHELL_PATH = "/bin/shell.elf";
 
 #define MIN_USABLE_HEAP_SIZE (1 * 1024 * 1024)            // 1MB
 #define MAX_CLAMPED_INITIAL_HEAP_SIZE (256 * 1024 * 1024) // 256MB
-#define IDENTITY_MAPPED_LIMIT 0x400000u                   // first 4MB
 #define MULTIBOOT2_BOOTLOADER_MAGIC_EXPECTED  0x36d76289U
 #define SHORT_DELAY_CYCLES                   15000
 #define KBC_FORCE_CONFIG_DELAY               25000
@@ -467,8 +465,6 @@ static bool initialize_memory_management(uint32_t mb_info_phys) {
     uintptr_t total_phys_memory_span;
     uintptr_t initial_heap_phys_base;
     size_t    initial_heap_size;
-    uintptr_t kernel_phys_start = (uintptr_t)&_kernel_start_phys;
-    uintptr_t kernel_phys_end_aligned = ALIGN_UP((uintptr_t)&_kernel_end_phys, PAGE_SIZE);
 
     terminal_write("  Stage 0: Parsing Multiboot memory map...\n");
     struct multiboot_tag_mmap *mmap_tag = (struct multiboot_tag_mmap *)multiboot_find_tag(mb_info_phys, MULTIBOOT_TAG_TYPE_MMAP);
@@ -477,38 +473,14 @@ static bool initialize_memory_management(uint32_t mb_info_phys) {
         KERNEL_PANIC_HALT("Failed to parse memory map or find suitable heap for buddy allocator!");
     }
 
-    terminal_write("  Stage 1+2: Initializing Page Directory & Early Maps...\n");
-    uintptr_t pd_phys;
-    if (paging_initialize_directory(&pd_phys) != 0) KERNEL_PANIC_HALT("Failed to initialize Page Directory!");
-    if (paging_setup_early_maps(pd_phys, kernel_phys_start, (uintptr_t)&_kernel_end_phys, initial_heap_phys_base, initial_heap_size) != 0) {
-        KERNEL_PANIC_HALT("Failed to setup early paging maps!");
-    }
-
-    terminal_write("  Stage 3: Initializing Buddy Allocator...\n");
-    buddy_init((void *)initial_heap_phys_base, initial_heap_size);
-    terminal_printf("    Buddy Allocator: Initial Free Space: %zu KB\n", buddy_free_space() / 1024);
-
-    terminal_write("  Stage 4: Finalizing and Activating Paging...\n");
-    if (paging_finalize_and_activate(pd_phys, total_phys_memory_span) != 0) KERNEL_PANIC_HALT("Failed to activate paging!");
+    terminal_write("  Stage 1: Paging, frame allocator and kmalloc...\n");
+    memory_init(initial_heap_phys_base, initial_heap_size);
 
     // The boot info must stay reachable at its physical address after paging
     // is on, which only holds inside the identity-mapped low memory.
-    if (mb_info_phys >= IDENTITY_MAPPED_LIMIT) {
+    if (mb_info_phys >= IDENTITY_MAP_SIZE) {
         KERNEL_PANIC_HALT("Multiboot info outside identity-mapped region!");
     }
-
-    terminal_write("  Stage 6: Initializing Frame Allocator...\n");
-    mmap_tag = (struct multiboot_tag_mmap *)multiboot_find_tag(mb_info_phys, MULTIBOOT_TAG_TYPE_MMAP);
-    if (!mmap_tag) KERNEL_PANIC_HALT("Cannot find MMAP tag for Frame Allocator!");
-    if (frame_init(mmap_tag, kernel_phys_start, kernel_phys_end_aligned, initial_heap_phys_base, initial_heap_phys_base + initial_heap_size) != 0) {
-        KERNEL_PANIC_HALT("Frame Allocator initialization failed!");
-    }
-
-    terminal_write("  Stage 7: Initializing Kmalloc...\n");
-    kmalloc_init();
-
-    terminal_write("  Stage 8: Initializing Temporary VA Mapper...\n");
-    if (paging_temp_map_init() != 0) KERNEL_PANIC_HALT("Failed to initialize temporary VA mapper!");
 
     terminal_write("[OK] Memory Subsystems Initialized Successfully.\n");
     return true;

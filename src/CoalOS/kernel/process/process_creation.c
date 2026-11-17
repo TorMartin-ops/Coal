@@ -17,7 +17,6 @@
 #include <kernel/lib/string.h>
 #include <kernel/process/scheduler.h>
 #include <kernel/fs/vfs/read_file.h>
-#include <kernel/memory/kmalloc_internal.h>
 #include <kernel/process/elf.h>
 #include <libc/stddef.h>
 #include <kernel/lib/assert.h>
@@ -234,13 +233,8 @@ pcb_t *create_user_process(const char *path)
 
     // --- Step 7: Setup standard VMAs ---
     PROC_DEBUG_PRINTF("Step 7: Setup standard VMAs\n");
-     uintptr_t heap_start = proc->mm->end_brk;
-     KERNEL_ASSERT(heap_start < USER_STACK_BOTTOM_VIRT, "Heap start overlaps user stack area");
-     uint32_t heap_page_prot = PAGE_PRESENT | PAGE_RW | PAGE_USER | (g_nx_supported ? PAGE_NX_BIT : 0);
-     if (!insert_vma(proc->mm, heap_start, heap_start, VM_READ | VM_WRITE | VM_USER | VM_ANONYMOUS, heap_page_prot, NULL, 0)) {
-          ret_status = -ENOMEM; goto fail_create;
-     }
-     serial_printf("  Initial Heap VMA placeholder added: [%#lx - %#lx)\n", (unsigned long)heap_start, (unsigned long)heap_start);
+     KERNEL_ASSERT(proc->mm->end_brk < USER_STACK_BOTTOM_VIRT, "Heap start overlaps user stack area");
+     // The heap VMA is created by mm_brk() on first growth.
      uint32_t stack_page_prot = PAGE_PRESENT | PAGE_RW | PAGE_USER | (g_nx_supported ? PAGE_NX_BIT : 0);
      if (!insert_vma(proc->mm, USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR, VM_READ | VM_WRITE | VM_USER | VM_GROWS_DOWN | VM_ANONYMOUS, stack_page_prot, NULL, 0)) {
        ret_status = -ENOMEM; goto fail_create;
