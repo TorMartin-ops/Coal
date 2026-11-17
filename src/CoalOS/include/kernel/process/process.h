@@ -42,6 +42,8 @@ typedef struct pcb {
     bool     wait_blocked;            /* parent is blocked in process_waitpid() */
     uint32_t pending_signals;
     uint32_t sig_blocked;             /* blocked signal mask (bit n = signal n) */
+    uint32_t sig_saved;               /* mask to restore when sig_restore is set (pselect6) */
+    bool     sig_restore;
     struct sigact sigact[32];         /* NSIG entries */
 
     uint32_t tls_base, tls_pages;     /* set_thread_area descriptor, loaded on every switch */

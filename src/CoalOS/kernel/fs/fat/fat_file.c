@@ -275,7 +275,7 @@ static int fat_getattr(vnode_t *v, struct kstat64 *st) {
     st->st_dev = 1;
     st->st_ino = n->ent_lba ? (uint64_t)n->ent_lba * (fs->bps / FAT_ENT_SIZE) + n->ent_off / FAT_ENT_SIZE : 1;
     st->st_mode = dir ? S_IFDIR | 0755 : S_IFREG | ((n->attr & FAT_ATTR_RO) ? 0555 : 0755);
-    st->st_nlink = dir ? 2 : n->ent_lba == FAT_NODE_UNLINKED ? 0 : 1;
+    st->st_nlink = n->ent_lba == FAT_NODE_UNLINKED ? 0 : dir ? 2 : 1;
     st->st_size = dir ? 0 : n->size;
     st->st_blksize = 4096;
     st->st_blocks = dir ? 0 : (uint64_t)((n->size + fs->cluster_bytes - 1) / fs->cluster_bytes) * fs->spc * (fs->bps / 512);
@@ -319,8 +319,6 @@ static int lookup(fat_fs_t *fs, const char *path, uint32_t *dir, char *leaf, fat
     return fat_dir_find(fs, *dir, leaf, e);
 }
 
-static bool entry_open(fat_fs_t *fs, const fat_ent_t *e) { return node_find(fs, e->lba, e->off) != NULL; }
-
 /* The directory entry e was removed: free its clusters now, or when the last opener closes the file. */
 static void entry_released(fat_fs_t *fs, const fat_ent_t *e) {
     fat_node_t *n = node_find(fs, e->lba, e->off);
@@ -353,7 +351,6 @@ static int fat_rmdir(void *ctx, const char *path) {
     int rc = lookup(fs, path, &dir, leaf, &e);
     if (rc == 0) {
         if (!(e.attr & FAT_ATTR_DIR)) rc = -ENOTDIR;
-        else if (entry_open(fs, &e)) rc = -EBUSY;
         else {
             rc = fat_dir_is_empty(fs, e.cluster);
             if (rc == 0) rc = -ENOTEMPTY;
@@ -361,7 +358,7 @@ static int fat_rmdir(void *ctx, const char *path) {
         }
     }
     if (rc == 0) rc = fat_dir_remove(fs, dir, &e);
-    if (rc == 0) { fat_free_chain(fs, e.cluster); rc = fat_commit(fs); }
+    if (rc == 0) { entry_released(fs, &e); rc = fat_commit(fs); }    /* an open directory stays, empty, until closed */
     fat_unlock(fs);
     return rc;
 }
@@ -437,7 +434,6 @@ static int rename_locked(fat_fs_t *fs, const char *from, const char *to) {
     } else if (rc == 0) {
         bool ddirp = d.attr & FAT_ATTR_DIR;
         if (ddirp != sdirp) return ddirp ? -EISDIR : -ENOTDIR;
-        if (ddirp && entry_open(fs, &d)) return -EBUSY;
         if (ddirp) {
             int empty = fat_dir_is_empty(fs, d.cluster);
             if (empty < 0) return empty;

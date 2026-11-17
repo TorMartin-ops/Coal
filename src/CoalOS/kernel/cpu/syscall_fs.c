@@ -12,8 +12,6 @@
 #include <kernel/process/scheduler.h>
 #include <kernel/lib/string.h>
 #include <kernel/fs/vfs/fs_init.h>
-#include <kernel/drivers/wait.h>
-#include <kernel/drivers/timer/pit.h>
 
 #define IO_CHUNK    PAGE_SIZE
 #define IOV_MAX     1024
@@ -134,51 +132,6 @@ long sc_pipe(uint32_t fds) { return sc_pipe2(fds, 0); }
 /* The driver behind the descriptor reads and writes the user argument itself. */
 long sc_ioctl(uint32_t fd, uint32_t cmd, uint32_t arg) {
     return sys_ioctl(fd, cmd, (void *)arg);
-}
-
-#define POLL_MAX 128
-
-/* Readiness of one descriptor; call with IRQs off so no wakeup can slip in before the task blocks. */
-static int16_t poll_one(const struct linux_pollfd *p) {
-    if (p->fd < 0) return 0;
-    sys_file_t *sf = sys_file_get(p->fd);
-    if (!sf) return POLLNVAL;
-    uint32_t r = vfs_poll(sf->vfs_file);
-    sys_file_put(sf);
-    return (int16_t)(r & (p->events | POLLERR | POLLHUP));
-}
-
-long sc_poll(uint32_t ufds, uint32_t nfds, int32_t timeout_ms) {
-    struct linux_pollfd fds[POLL_MAX];
-    uint64_t deadline = timeout_ms > 0 ? timer_uptime_ms() + (uint32_t)timeout_ms : 0;
-    long ready;
-
-    if (nfds > POLL_MAX) return -EINVAL;
-    if (copy_from_user(fds, (const void *)ufds, nfds * sizeof(fds[0])) != 0) return -EFAULT;
-    for (;;) {
-        uintptr_t flags = local_irq_save();
-        ready = 0;
-        for (uint32_t i = 0; i < nfds; i++) {
-            fds[i].revents = poll_one(&fds[i]);
-            ready += fds[i].revents != 0;
-        }
-        if (!ready && timeout_ms != 0) {
-            uint64_t now = timer_uptime_ms();
-            if (timeout_ms < 0 || now < deadline) {
-                int rc = timeout_ms < 0 ? drv_wait(&drv_poll_queue)
-                                        : drv_wait_timeout(&drv_poll_queue, (uint32_t)(deadline - now));
-                local_irq_restore(flags);
-                if (rc) return rc;
-                continue;
-            }
-        }
-        local_irq_restore(flags);
-        break;
-    }
-    for (uint32_t i = 0; i < nfds; i++)
-        if (copy_to_user(&((struct linux_pollfd *)ufds)[i].revents, &fds[i].revents, sizeof(int16_t)) != 0)
-            return -EFAULT;
-    return ready;
 }
 
 //============================================================================

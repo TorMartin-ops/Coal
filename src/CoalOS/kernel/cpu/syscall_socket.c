@@ -29,6 +29,14 @@ static struct sock *grab(uint32_t fd, sys_file_t **sf, long *err) {
     return s;
 }
 
+static bool is_socketpair(uint32_t fd) {
+    sys_file_t *sf = sys_file_get((int)fd);
+    bool pair = sf && sys_is_socketpair(sf);
+
+    if (sf) sys_file_put(sf);
+    return pair;
+}
+
 static long get_addr(uint32_t uaddr, uint32_t len, struct sockaddr_in *sa) {
     if (len < sizeof(*sa)) return -EINVAL;
     if (copy_from_user(sa, (const void *)uaddr, sizeof(*sa)) != 0) return -EFAULT;
@@ -80,6 +88,24 @@ long sc_socket(uint32_t domain, uint32_t type, uint32_t protocol) {
     long fd = sock_create((int)domain, (int)type, (int)protocol);
     if (fd >= 0 && (type & SOCK_CLOEXEC)) get_current_process()->cloexec |= 1u << fd;
     return fd;
+}
+
+/* socketpair(AF_UNIX, SOCK_STREAM): two connected descriptors backed by a pair of pipes. */
+long sc_socketpair(uint32_t domain, uint32_t type, uint32_t protocol, uint32_t usv) {
+    int fds[2];
+
+    if (domain != AF_UNIX) return -EAFNOSUPPORT;
+    if ((type & 0xF) != SOCK_STREAM) return -ESOCKTNOSUPPORT;
+    if (protocol) return -EPROTONOSUPPORT;
+    long r = sys_socketpair(fds, type & SOCK_NONBLOCK);
+    if (r < 0) return r;
+    if (copy_to_user((void *)usv, fds, sizeof(fds)) != 0) {
+        sys_close(fds[0]);
+        sys_close(fds[1]);
+        return -EFAULT;
+    }
+    if (type & SOCK_CLOEXEC) get_current_process()->cloexec |= 1u << fds[0] | 1u << fds[1];
+    return 0;
 }
 
 long sc_bind(uint32_t fd, uint32_t uaddr, uint32_t len) {
@@ -160,7 +186,7 @@ long sc_sendto(uint32_t fd, uint32_t buf, uint32_t len, uint32_t flags, uint32_t
     long r = 0;
     struct sock *s = grab(fd, &sf, &r);
 
-    if (!s) return r;
+    if (!s) return r == -ENOTSOCK && is_socketpair(fd) ? sc_write(fd, buf, len) : r;
     if (uaddr && (r = get_addr(uaddr, alen, &sa)) != 0) { sys_file_put(sf); return r; }
     r = send_user(s, buf, len, (int)flags, uaddr ? &sa : NULL);
     sys_file_put(sf);
@@ -173,7 +199,7 @@ long sc_recvfrom(uint32_t fd, uint32_t buf, uint32_t len, uint32_t flags, uint32
     long r = 0;
     struct sock *s = grab(fd, &sf, &r);
 
-    if (!s) return r;
+    if (!s) return r == -ENOTSOCK && is_socketpair(fd) ? sc_read(fd, buf, len) : r;
     r = recv_user(s, buf, len, (int)flags, uaddr ? &sa : NULL);
     sys_file_put(sf);
     if (r >= 0 && uaddr) put_addr(uaddr, ulen, &sa);
@@ -234,7 +260,12 @@ long sc_shutdown(uint32_t fd, uint32_t how) {
     long r = 0;
     struct sock *s = grab(fd, &sf, &r);
 
-    if (!s) return r;
+    if (!s) {
+        if (r != -ENOTSOCK || !(sf = sys_file_get((int)fd))) return r;
+        r = sys_is_socketpair(sf) ? sys_socketpair_shutdown(sf, (int)how) : -ENOTSOCK;
+        sys_file_put(sf);
+        return r;
+    }
     r = sock_shutdown(s, (int)how);
     sys_file_put(sf);
     return r;
@@ -299,6 +330,7 @@ long sc_socketcall(uint32_t call, uint32_t uargs) {
     case 16: return sc_sendmsg(a[0], a[1], a[2]);
     case 17: return sc_recvmsg(a[0], a[1], a[2]);
     case 18: return sc_accept4(a[0], a[1], a[2], a[3]);
-    default: return -EOPNOTSUPP;                    /* socketpair */
+    case 8:  return sc_socketpair(a[0], a[1], a[2], a[3]);
+    default: return -EOPNOTSUPP;
     }
 }

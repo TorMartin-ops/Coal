@@ -42,9 +42,11 @@
 #define SYS_GETTIMEOFDAY    78
 #define SYS_MUNMAP          91
 #define SYS_WAIT4           114
+#define SYS_SELECT          82
 #define SYS_UNAME           122
 #define SYS_GETPGID         132
 #define SYS_LLSEEK          140
+#define SYS_NEWSELECT       142
 #define SYS_READV           145
 #define SYS_WRITEV          146
 #define SYS_GETSID          147
@@ -81,9 +83,11 @@
 #define SYS_CLOCK_GETTIME   265
 #define SYS_OPENAT          295
 #define SYS_FSTATAT64       300
+#define SYS_PSELECT6        308
 #define SYS_PIPE2           331
 #define SYS_SOCKETCALL      102
 #define SYS_SOCKET          359
+#define SYS_SOCKETPAIR      360
 #define SYS_BIND            361
 #define SYS_CONNECT         362
 #define SYS_LISTEN          363

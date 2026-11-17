@@ -36,10 +36,17 @@ int     sys_dup(int oldfd);
 int     sys_dup2(int oldfd, int newfd);
 /** Anonymous pipe: fds[0] reads what is written to fds[1]. flags: O_NONBLOCK. */
 int     sys_pipe(int fds[2], int flags);
+/** Connected pair of AF_UNIX stream sockets: both descriptors read and write. flags: O_NONBLOCK. */
+int     sys_socketpair(int fds[2], int flags);
+/** True if sf is one end of a socketpair (it is read and written like a socket, but is not an AF_INET one). */
+bool    sys_is_socketpair(sys_file_t *sf);
+/** Shuts one direction of a socketpair end down (SHUT_RD, SHUT_WR or SHUT_RDWR). */
+int     sys_socketpair_shutdown(sys_file_t *sf, int how);
 
-/** Open file on a driver-private vnode (sockets): new descriptor in the current process, or -errno.
- *  The driver's close() runs when the last descriptor goes; on error it still owns data. */
-int     sys_install_vnode(vfs_driver_t *drv, void *data, uint32_t type, int flags);
+/** Open file on a driver-private vnode (pipes, sockets): new descriptor in the current process, or -errno.
+ *  oflags are the open flags (access mode and O_NONBLOCK). The driver's close() runs when the last
+ *  descriptor goes; on error the caller still owns data. */
+int     sys_install_vnode(vfs_driver_t *drv, void *data, uint32_t type, int oflags);
 
 /** Look up fd in the current process and take a reference; NULL if invalid. */
 sys_file_t *sys_file_get(int fd);

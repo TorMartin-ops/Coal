@@ -41,15 +41,22 @@ int signal_disposition(struct pcb *p, int sig);
 
 /* Before returning to user mode: builds an rt signal frame for one pending signal that has a handler. */
 struct isr_frame;
-void signal_deliver(struct isr_frame *regs);
+void signal_deliver(struct isr_frame *regs, uint32_t restart_nr);
 
 /**
  * The one place signals take effect. Every return to ring 3 (system call exit,
  * interrupt or exception return) calls it: a pending signal with the default
  * action ends the process, one with a handler gets its frame. Kernel code is
  * never interrupted by a signal; blocking calls return -EINTR instead.
+ * restart_nr is the number of a restartable system call that just returned -EINTR (0 otherwise):
+ * if the handler that gets delivered has SA_RESTART, the call is re-issued after the handler returns.
  */
-void signal_return_to_user(struct isr_frame *regs);
+void signal_return_to_user(struct isr_frame *regs, uint32_t restart_nr);
+
+/** pselect6: installs the user's sigset at uset as the blocked mask until signal_mask_restore() or a handler returns. */
+long signal_mask_swap(uint32_t uset, uint32_t size);
+/** Puts back the mask saved by signal_mask_swap() unless a handler frame took over that job. */
+void signal_mask_restore(void);
 
 /** True if a deliverable signal is pending for the current process (blocking calls give up). */
 bool signal_pending(void);

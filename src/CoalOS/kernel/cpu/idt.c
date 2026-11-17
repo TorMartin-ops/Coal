@@ -149,7 +149,7 @@ void isr_common_handler(isr_frame_t *frame) {
         for (;;)
             asm volatile("hlt");
     }
-    if (frame->cs & 3) signal_return_to_user(frame);
+    if (frame->cs & 3) signal_return_to_user(frame, 0);
 }
 
 void idt_init(void) {

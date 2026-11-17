@@ -91,7 +91,29 @@ long sc_rt_sigprocmask(uint32_t how, uint32_t uset, uint32_t uoset, uint32_t siz
     return 0;
 }
 
-void signal_deliver(isr_frame_t *regs) {
+/* pselect6: run with the caller's temporary mask; the old one comes back when the call ends or the handler returns. */
+long signal_mask_swap(uint32_t uset, uint32_t size) {
+    pcb_t *p = get_current_process();
+    uint32_t set[2];
+
+    if (size != KSIGSET_SIZE) return -EINVAL;
+    if (copy_from_user(set, (const void *)uset, sizeof(set)) != 0) return -EFAULT;
+    p->sig_saved = p->sig_blocked;
+    p->sig_restore = true;
+    p->sig_blocked = mask_from_user(set[0]);
+    return 0;
+}
+
+void signal_mask_restore(void) {
+    pcb_t *p = get_current_process();
+
+    if (p->sig_restore) {
+        p->sig_blocked = p->sig_saved;
+        p->sig_restore = false;
+    }
+}
+
+void signal_deliver(isr_frame_t *regs, uint32_t restart_nr) {
     pcb_t *p = get_current_process();
     uint32_t ready;
     int sig;
@@ -103,6 +125,11 @@ void signal_deliver(isr_frame_t *regs) {
 
     struct sigact act = p->sigact[sig];
     struct rt_sigframe f;
+
+    if (restart_nr && (act.flags & SA_RESTART)) {   /* the saved context re-executes "int 0x80" with the same arguments */
+        regs->eax = restart_nr;
+        regs->eip -= 2;
+    }
     memset(&f, 0, sizeof(f));
 
     uint32_t sp = ((regs->useresp - sizeof(f)) & ~0xFu) - 4;    /* esp + 4 is 16-byte aligned at entry */
@@ -112,13 +139,15 @@ void signal_deliver(isr_frame_t *regs) {
     f.puc = sp + offsetof(struct rt_sigframe, uc);
     *(int32_t *)f.info = sig;
     memcpy(f.retcode, (uint8_t[]){0xB8, SYS_RT_SIGRETURN, 0, 0, 0, 0xCD, 0x80}, 7);
-    f.uc.sigmask[0] = mask_to_user(p->sig_blocked);
+    uint32_t old_mask = p->sig_restore ? p->sig_saved : p->sig_blocked;     /* what sigreturn restores */
+    p->sig_restore = false;
+    f.uc.sigmask[0] = mask_to_user(old_mask);
     f.uc.sc = (struct sigcontext){
         .gs = regs->gs, .fs = regs->fs, .es = regs->es, .ds = regs->ds,
         .edi = regs->edi, .esi = regs->esi, .ebp = regs->ebp, .esp = regs->useresp,
         .ebx = regs->ebx, .edx = regs->edx, .ecx = regs->ecx, .eax = regs->eax,
         .eip = regs->eip, .cs = regs->cs, .eflags = regs->eflags,
-        .esp_at_signal = regs->useresp, .ss = regs->ss, .oldmask = mask_to_user(p->sig_blocked),
+        .esp_at_signal = regs->useresp, .ss = regs->ss, .oldmask = mask_to_user(old_mask),
     };
 
     p->pending_signals &= ~(1u << sig);

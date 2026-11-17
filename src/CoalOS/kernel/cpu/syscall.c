@@ -85,10 +85,14 @@ static const syscall_fn_t syscall_table[NR_SYSCALLS] = {
     [SYS_REBOOT]          = SC(sc_reboot),
     [SYS_SYSLOG]          = SC(sc_syslog),
     [SYS_POLL]            = SC(sc_poll),
+    [SYS_SELECT]          = SC(sc_oldselect),
+    [SYS_NEWSELECT]       = SC(sc_newselect),
+    [SYS_PSELECT6]        = SC(sc_pselect6),
     [SYS_RT_SIGRETURN]    = SC(sc_rt_sigreturn),
     [SYS_FCNTL64]         = SC(sc_fcntl64),
     [SYS_SOCKETCALL       ] = SC(sc_socketcall),
     [SYS_SOCKET           ] = SC(sc_socket),
+    [SYS_SOCKETPAIR       ] = SC(sc_socketpair),
     [SYS_BIND             ] = SC(sc_bind),
     [SYS_CONNECT          ] = SC(sc_connect),
     [SYS_LISTEN           ] = SC(sc_listen),
@@ -104,10 +108,24 @@ static const syscall_fn_t syscall_table[NR_SYSCALLS] = {
     [SYS_SHUTDOWN         ] = SC(sc_shutdown),
 };
 
+/* Calls that restart after a SA_RESTART handler (signal(7)). poll, nanosleep and select never do. */
+static bool restartable(uint32_t nr) {
+    switch (nr) {
+    case SYS_READ: case SYS_WRITE: case SYS_READV: case SYS_WRITEV:
+    case SYS_WAITPID: case SYS_WAIT4:
+    case SYS_ACCEPT4: case SYS_SENDTO: case SYS_SENDMSG: case SYS_RECVFROM: case SYS_RECVMSG:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void syscall_dispatch(isr_frame_t *r) {
     uint32_t nr = r->eax;
     syscall_fn_t fn = nr < NR_SYSCALLS ? syscall_table[nr] : NULL;
+    long rc = fn ? fn(r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp, r) : -ENOSYS;
 
-    r->eax = fn ? (uint32_t)fn(r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp, r) : (uint32_t)-ENOSYS;
-    signal_return_to_user(r);
+    r->eax = (uint32_t)rc;
+    signal_return_to_user(r, rc == -EINTR && restartable(nr) ? nr : 0);
+    signal_mask_restore();
 }

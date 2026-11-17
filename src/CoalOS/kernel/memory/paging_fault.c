@@ -28,5 +28,5 @@ void page_fault_handler(registers_t *regs) {
                   (unsigned)addr, (unsigned)regs->eip);
         signal_force(r == VM_FAULT_OOM ? SIGKILL : SIGSEGV);
     }
-    signal_return_to_user((isr_frame_t *)regs);
+    signal_return_to_user((isr_frame_t *)regs, 0);
 }

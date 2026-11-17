@@ -122,7 +122,7 @@ void sys_files_clone(pcb_t *dst, pcb_t *src) {
     spinlock_release_irqrestore(&src->fd_table_lock, fl);
 }
 
-int sys_install_vnode(vfs_driver_t *drv, void *data, uint32_t type, int flags) {
+int sys_install_vnode(vfs_driver_t *drv, void *data, uint32_t type, int oflags) {
     pcb_t *p = get_current_process();
     sys_file_t *sf = kmalloc(sizeof(*sf));
     file_t *f = kmalloc(sizeof(*f));
@@ -134,10 +134,10 @@ int sys_install_vnode(vfs_driver_t *drv, void *data, uint32_t type, int flags) {
     v->fs_driver = drv;
     v->type = type;
     f->vnode = v;
-    f->flags = O_RDWR;
+    f->flags = oflags;
     f->offset = 0;
     sf->vfs_file = f;
-    sf->flags = O_RDWR | flags;
+    sf->flags = oflags;
     sf->dups = 0;
     int fd = fd_install(p, sf);
     if (fd < 0) { kfree(sf); kfree(f); kfree(v); }

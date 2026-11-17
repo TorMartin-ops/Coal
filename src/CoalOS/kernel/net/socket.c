@@ -18,7 +18,6 @@
 #include <kernel/sync/spinlock.h>
 #include <kernel/lib/string.h>
 
-#define S_IFSOCK_MODE   0140000
 #define EPHEMERAL_FIRST 49152
 #define UDP_PAYLOAD_MAX (IP_PAYLOAD_MAX - 8)
 
@@ -155,7 +154,7 @@ struct sock *sock_of(sys_file_t *sf) {
 }
 
 static int install(struct sock *s, int flags) {
-    int fd = sys_install_vnode(&sockfs, s, S_IFSOCK_MODE, flags);
+    int fd = sys_install_vnode(&sockfs, s, S_IFSOCK, O_RDWR | flags);
     if (fd < 0) sock_free(s);
     return fd;
 }
@@ -507,7 +506,7 @@ static int sockfs_close(vnode_t *v) {
 
 static int sockfs_getattr(vnode_t *v, struct kstat64 *st) {
     (void)v;
-    st->st_mode = S_IFSOCK_MODE | 0777;
+    st->st_mode = S_IFSOCK | 0777;
     st->st_nlink = 1;
     return 0;
 }
