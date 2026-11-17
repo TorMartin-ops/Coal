@@ -1,0 +1,66 @@
+== trap_exit
+trap 'echo bye' EXIT; echo body
+--
+body
+bye
+== trap_int_self
+trap 'echo int' INT; kill -INT $$; echo after
+--
+int
+after
+== trap_usr1
+trap 'echo usr1' USR1; kill -USR1 $$; echo done
+--
+usr1
+done
+== trap_reset
+trap 'echo x' INT; trap - INT; trap 'echo y' EXIT; echo ok
+--
+ok
+y
+== kill_term_status
+sleep 30 & p=$!; kill $p; wait $p; echo $?
+--
+143
+== kill_9_status
+sleep 30 & p=$!; kill -9 $p; wait $p; echo $?
+--
+137
+== kill_zero_probe
+sleep 30 & p=$!; kill -0 $p && echo alive; kill $p; wait $p; kill -0 $p 2>/dev/null || echo dead
+--
+alive
+dead
+== self_term
+sh -c 'kill -TERM $$'; echo $?
+--
+143
+== kill_by_name
+sleep 30 & p=$!; kill -s TERM $p; wait $p; echo $?
+--
+143
+== ignored_term
+sh -c 'trap "" TERM; kill -TERM $$; echo survived'
+--
+survived
+== sigpipe_ends_writer
+yes | head -n 1
+--
+y
+== trap_reset_in_child
+trap 'echo parent' INT; sh -c 'kill -INT $$; echo child done'; echo $?
+--
+130
+== sigkill_uncatchable
+sh -c 'trap "echo no" KILL 2>/dev/null; kill -KILL $$'; echo $?
+--
+137
+== trap_term_handler_runs
+sh -c 'trap "echo handled; exit 5" TERM; kill -TERM $$; sleep 5'; echo $?
+--
+handled
+5
+== wait_returns_child_status
+sh -c 'exit 9' & wait $!; echo $?
+--
+9

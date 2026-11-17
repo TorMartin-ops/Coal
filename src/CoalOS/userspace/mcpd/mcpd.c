@@ -883,7 +883,9 @@ int main(int argc, char **argv) {
     if (fd > 1) SYS1(SYS_close, fd);
 
     olen = 0; ofull = 0;
-    puts_("{\"event\":\"ready\",\"version\":1}");
+    puts_("{\"event\":\"ready\",\"version\":1,\"up_ms\":");
+    put_num(now_ms());
+    puts_("}");
     send_out();
 
     static char rx[4096];

@@ -1,0 +1,86 @@
+== exit_status
+sh -c 'exit 3'; echo $?
+--
+3
+== subshell_status
+(exit 4); echo $?
+--
+4
+== and_or
+false || echo or; true && echo and
+--
+or
+and
+== for_loop
+for i in 1 2 3; do echo $i; done
+--
+1
+2
+3
+== function_args
+f() { echo "arg=$1"; }; f x
+--
+arg=x
+== command_substitution
+echo $(echo inner) `echo tick`
+--
+inner tick
+== pid_is_number
+echo $$ | grep -c '^[0-9][0-9]*$'
+--
+1
+== env_passed
+env FOO=bar sh -c 'echo $FOO'
+--
+bar
+== export_inherited
+FOO=1; export FOO; sh -c 'echo $FOO'; unset FOO; sh -c 'echo "[$FOO]"'
+--
+1
+[]
+== exec_replaces
+sh -c 'exec echo replaced; echo no'
+--
+replaced
+== wait_for_child
+sleep 1 & wait; echo done
+--
+done
+== background_pid
+sleep 1 & p=$!; [ -n "$p" ] && echo pid; wait $p; echo $?
+--
+pid
+0
+== shebang_script
+printf '#!/bin/sh\necho script $1\n' > s; chmod +x s; ./s arg
+--
+script arg
+== subshell_cd_isolated
+mkdir d; a=$(pwd); (cd d); [ "$a" = "$(pwd)" ] && echo same
+--
+same
+== exit_in_script
+printf 'echo before\nexit 7\necho after\n' > s; sh s; echo $?
+--
+before
+7
+== many_processes
+i=0; while [ $i -lt 30 ]; do sh -c 'exit 0'; i=$((i+1)); done; echo $i
+--
+30
+== uname_sysname
+uname -s
+--
+Linux
+== clock_advances
+a=$(date +%s); sleep 1; b=$(date +%s); [ $b -gt $a ] && echo advanced
+--
+advanced
+== xargs_batches
+printf 'a\nb\nc\n' | xargs echo
+--
+a b c
+== set_e
+sh -c 'set -e; false; echo not reached'; echo $?
+--
+1

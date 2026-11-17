@@ -1,0 +1,146 @@
+== grep_count
+printf 'a\nb\na\n' | grep -c a
+--
+2
+== grep_invert_number
+printf 'a\nb\nc\n' | grep -vn b
+--
+1:a
+3:c
+== grep_ignore_case
+printf 'Hello\nworld\n' | grep -i HELLO
+--
+Hello
+== grep_extended
+printf 'cat\ndog\nbird\n' | grep -E 'cat|bird'
+--
+cat
+bird
+== grep_recursive
+mkdir d; echo needle > d/f; echo hay > d/g; grep -r needle d
+--
+d/f:needle
+== sed_substitute
+echo banana | sed 's/a/o/g'
+--
+bonono
+== sed_print_line
+printf '1\n2\n3\n' | sed -n '2p'
+--
+2
+== sed_delete
+printf 'a\nx\nb\n' | sed '/x/d'
+--
+a
+b
+== sed_in_place
+echo abc > f; sed -i 's/b/B/' f; cat f
+--
+aBc
+== awk_field
+echo 'a b c' | awk '{print $2}'
+--
+b
+== awk_sum
+printf '1\n2\n3\n' | awk '{s+=$1} END{print s}'
+--
+6
+== awk_separator
+echo 'x:y:z' | awk -F: '{print $3}'
+--
+z
+== cut_fields
+echo 'a:b:c' | cut -d: -f2
+--
+b
+== cut_chars
+echo abcdef | cut -c2-4
+--
+bcd
+== tr_upper
+echo hello | tr a-z A-Z
+--
+HELLO
+== tr_delete_squeeze
+printf 'a  b\n' | tr -s ' '; printf 'a\nb\n' | tr -d '\n'; echo
+--
+a b
+ab
+== sort_numeric_reverse
+printf '10\n9\n100\n' | sort -n -r
+--
+100
+10
+9
+== sort_unique
+printf 'b\na\nb\n' | sort -u
+--
+a
+b
+== sort_key
+printf 'x 2\ny 1\n' | sort -k2
+--
+y 1
+x 2
+== uniq_count
+printf 'a\na\nb\n' | uniq -c
+--
+      2 a
+      1 b
+== head_tail
+seq 1 10 | head -n 2; seq 1 10 | tail -n 2; seq 1 5 | tail -n +4
+--
+1
+2
+9
+10
+4
+5
+== wc_all
+printf 'one two\nthree\n' | wc -l; printf 'one two\nthree\n' | wc -w; printf 'one two\nthree\n' | wc -c
+--
+2
+3
+14
+== printf_formats
+printf '%5d|%-5s|%x|%c\n' 42 ab 255 z
+--
+   42|ab   |ff|z
+== arithmetic
+expr 2 + 3; echo $((7*6)); echo $((10 % 4))
+--
+5
+42
+2
+== basename_dirname
+basename /a/b.txt .txt; dirname /a/b/c
+--
+b
+/a/b
+== rev_nl_fold
+echo abc | rev; printf 'x\ny\n' | nl; echo abcdef | fold -w 3
+--
+cba
+     1	x
+     2	y
+abc
+def
+== diff_same_and_different
+echo a > f1; echo a > f2; echo b > f3; diff f1 f2 && echo same; diff f1 f3 > /dev/null; echo $?
+--
+same
+1
+== md5sum
+echo hello | md5sum
+--
+b1946ac92492d2347c6235b4d2611184  -
+== base64_roundtrip
+echo hello | base64 | base64 -d
+--
+hello
+== tac_reverse_lines
+printf '1\n2\n3\n' | tac
+--
+3
+2
+1
