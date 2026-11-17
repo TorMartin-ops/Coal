@@ -44,7 +44,6 @@ extern int32_t sys_execve_impl(uint32_t user_pathname_ptr, uint32_t user_argv_pt
 extern volatile uint32_t g_pit_ticks;
 
 // Forward declarations for stub functions
-static pcb_t *process_fork(pcb_t *parent);
 static uint32_t find_free_vma_region(mm_struct_t *mm, size_t size);
 // vfs_mkdir, vfs_rmdir, and vfs_unlink are now declared in vfs.h
 static time_t get_unix_timestamp(void);
@@ -61,14 +60,10 @@ static bool validate_user_string(const char *str, size_t max_len) {
 }
 
 // Forward declarations for syscall handlers
-static int sys_linux_exit(uint32_t status, uint32_t unused1, uint32_t unused2, uint32_t unused3, uint32_t unused4, uint32_t unused5);
-static int sys_linux_fork(uint32_t unused1, uint32_t unused2, uint32_t unused3, uint32_t unused4, uint32_t unused5, uint32_t unused6);
 static int sys_linux_read(uint32_t fd, uint32_t buf, uint32_t count, uint32_t unused1, uint32_t unused2, uint32_t unused3);
 static int sys_linux_write(uint32_t fd, uint32_t buf, uint32_t count, uint32_t unused1, uint32_t unused2, uint32_t unused3);
 static int sys_linux_open(uint32_t filename, uint32_t flags, uint32_t mode, uint32_t unused1, uint32_t unused2, uint32_t unused3);
 static int sys_linux_close(uint32_t fd, uint32_t unused1, uint32_t unused2, uint32_t unused3, uint32_t unused4, uint32_t unused5);
-static int sys_linux_waitpid(uint32_t pid, uint32_t stat_addr, uint32_t options, uint32_t unused1, uint32_t unused2, uint32_t unused3);
-static int sys_linux_execve(uint32_t filename, uint32_t argv, uint32_t envp, uint32_t unused1, uint32_t unused2, uint32_t unused3);
 static int sys_linux_getpid(uint32_t unused1, uint32_t unused2, uint32_t unused3, uint32_t unused4, uint32_t unused5, uint32_t unused6);
 static int sys_linux_brk(uint32_t brk, uint32_t unused1, uint32_t unused2, uint32_t unused3, uint32_t unused4, uint32_t unused5);
 static int sys_linux_getuid(uint32_t unused1, uint32_t unused2, uint32_t unused3, uint32_t unused4, uint32_t unused5, uint32_t unused6);
@@ -97,10 +92,6 @@ void init_linux_syscall_table(void) {
     }
     
     // Process Control
-    linux_syscall_table[__NR_exit] = sys_linux_exit;
-    linux_syscall_table[__NR_fork] = sys_linux_fork;
-    linux_syscall_table[__NR_execve] = sys_linux_execve;
-    linux_syscall_table[__NR_waitpid] = sys_linux_waitpid;
     linux_syscall_table[__NR_getpid] = sys_linux_getpid;
     
     // File I/O
@@ -149,48 +140,6 @@ int linux_syscall_dispatcher(uint32_t syscall_num, uint32_t ebx, uint32_t ecx,
 }
 
 // System call implementations
-
-static int sys_linux_exit(uint32_t status, uint32_t unused1, uint32_t unused2, 
-                         uint32_t unused3, uint32_t unused4, uint32_t unused5) {
-    (void)unused1; (void)unused2; (void)unused3; (void)unused4; (void)unused5;
-    
-    tcb_t *current = get_current_task();
-    if (!current || !current->process) {
-        return -LINUX_ESRCH;
-    }
-    
-    // Store exit status
-    current->process->exit_status = status;
-    
-    // Mark process as zombie
-    current->process->state = PROC_ZOMBIE;
-    current->process->has_exited = true;
-    
-    // Schedule another task
-    schedule();
-    
-    // Should not return
-    return 0;
-}
-
-static int sys_linux_fork(uint32_t unused1, uint32_t unused2, uint32_t unused3,
-                         uint32_t unused4, uint32_t unused5, uint32_t unused6) {
-    (void)unused1; (void)unused2; (void)unused3; (void)unused4; (void)unused5; (void)unused6;
-    
-    tcb_t *current = get_current_task();
-    if (!current || !current->process) {
-        return -LINUX_ESRCH;
-    }
-    
-    // Create child process
-    pcb_t *child = process_fork(current->process);
-    if (!child) {
-        return -LINUX_ENOMEM;
-    }
-    
-    // Return child PID to parent, 0 to child
-    return child->pid;
-}
 
 static int sys_linux_read(uint32_t fd, uint32_t buf, uint32_t count,
                          uint32_t unused1, uint32_t unused2, uint32_t unused3) {
@@ -281,59 +230,6 @@ static int sys_linux_close(uint32_t fd, uint32_t unused1, uint32_t unused2,
     // Perform close
     int result = sys_close(fd);
     return result < 0 ? coalos_to_linux_error(result) : 0;
-}
-
-static int sys_linux_waitpid(uint32_t pid, uint32_t stat_addr, uint32_t options,
-                            uint32_t unused1, uint32_t unused2, uint32_t unused3) {
-    (void)unused1; (void)unused2; (void)unused3;
-    
-    // Validate status pointer if provided
-    if (stat_addr && !validate_user_buffer((void *)stat_addr, sizeof(int), true)) {
-        return -LINUX_EFAULT;
-    }
-    
-    tcb_t *current = get_current_task();
-    if (!current || !current->process) {
-        return -LINUX_ESRCH;
-    }
-    
-    // TODO: Use CoalOS sys_waitpid_impl directly
-    // It handles the user space copy internally
-    // int32_t result = sys_waitpid_impl(pid, stat_addr, options, NULL);
-    // return result < 0 ? coalos_to_linux_error(result) : result;
-    return -LINUX_ENOSYS;
-}
-
-static int sys_linux_execve(uint32_t filename, uint32_t argv, uint32_t envp,
-                           uint32_t unused1, uint32_t unused2, uint32_t unused3) {
-    (void)unused1; (void)unused2; (void)unused3;
-    
-    // Validate filename
-    if (!validate_user_string((const char *)filename, SYSCALL_MAX_PATH_LEN)) {
-        return -LINUX_EFAULT;
-    }
-    
-    // Count and validate argv
-    int argc = 0;
-    if (argv) {
-        char **user_argv = (char **)argv;
-        while (argc < 1024) { // Reasonable limit
-            char *arg;
-            if (copy_from_user(&arg, &user_argv[argc], sizeof(char *)) != 0) {
-                return -LINUX_EFAULT;
-            }
-            if (!arg) break;
-            if (!validate_user_string(arg, ARG_MAX)) {
-                return -LINUX_EFAULT;
-            }
-            argc++;
-        }
-    }
-    
-    // TODO: Use CoalOS sys_execve_impl directly
-    // int32_t result = sys_execve_impl(filename, argv, envp, NULL);
-    // return result < 0 ? coalos_to_linux_error(result) : result;
-    return -LINUX_ENOSYS;
 }
 
 static int sys_linux_getpid(uint32_t unused1, uint32_t unused2, uint32_t unused3,
@@ -688,12 +584,6 @@ static int sys_linux_nanosleep(uint32_t req, uint32_t rem, uint32_t unused1,
 
 // Stub implementations for missing functions
 // TODO: Move these to their proper locations
-
-static pcb_t *process_fork(pcb_t *parent) {
-    // TODO: Implement proper fork functionality
-    (void)parent;
-    return NULL;
-}
 
 static uint32_t find_free_vma_region(mm_struct_t *mm, size_t size) {
     // TODO: Implement VMA region finding

@@ -9,12 +9,11 @@
 #include <kernel/memory/paging.h>
 #include <kernel/memory/mm.h>
 #include <kernel/process/process.h>
+#include <kernel/process/signal.h>
 #include <kernel/process/scheduler.h>
 #include <kernel/core/log.h>
 #include <kernel/lib/assert.h>
 
-#define EXIT_SIGSEGV 139    /* 128 + SIGSEGV, as a shell would report it */
-#define EXIT_SIGKILL 137
 
 void vm_fault_kill_current(uintptr_t fault_addr, uintptr_t fault_eip, int vm_fault_result) {
     pcb_t *p = get_current_process();
@@ -22,7 +21,7 @@ void vm_fault_kill_current(uintptr_t fault_addr, uintptr_t fault_eip, int vm_fau
               p ? (unsigned)p->pid : 0u,
               vm_fault_result == VM_FAULT_OOM ? "out of memory" : "segmentation fault",
               (unsigned)fault_addr, (unsigned)fault_eip);
-    remove_current_task_with_code(vm_fault_result == VM_FAULT_OOM ? EXIT_SIGKILL : EXIT_SIGSEGV);
+    process_exit(vm_fault_result == VM_FAULT_OOM ? SIGKILL : SIGSEGV);
     KERNEL_PANIC_HALT("vm_fault_kill_current returned");
 }
 

@@ -11,6 +11,7 @@
 //============================================================================
 // Includes
 //============================================================================
+#include <kernel/process/process.h>
 #include <kernel/cpu/isr_frame.h>
 #include <kernel/drivers/display/serial.h>
 #include <kernel/fs/vfs/fs_errno.h>
@@ -85,9 +86,8 @@ int32_t sys_signal_impl(uint32_t signum, uint32_t user_handler_ptr, uint32_t arg
 
 int32_t sys_kill_impl(uint32_t pid, uint32_t sig, uint32_t arg3, isr_frame_t *regs)
 {
-    (void)pid; (void)sig; (void)arg3; (void)regs;
-    serial_write("[Syscall] sys_kill not implemented\n");
-    return -ENOSYS;
+    (void)arg3; (void)regs;
+    return process_kill((int)pid, (int)sig);
 }
 
 //============================================================================

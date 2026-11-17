@@ -9,7 +9,6 @@
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/process/process.h>
-#include <kernel/process/process_manager.h>
 #include <kernel/sync/spinlock.h>
 
 sys_file_t *sys_file_ref(sys_file_t *sf) {
