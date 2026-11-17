@@ -10,6 +10,9 @@
 
 #include <kernel/core/types.h>
 
+/** Replaces the generator state with one derived from seed and skips the cycle counter seeding (coal.seed=). */
+void random_seed(uint64_t seed);
+
 /** Mixes len bytes of entropy into the generator. Safe from interrupt context. */
 void random_add(const void *data, size_t len);
 
