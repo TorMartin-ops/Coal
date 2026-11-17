@@ -2,6 +2,7 @@
  * @file init.c
  * @brief Boot sequence: runs once from main() after the Multiboot2 stub.
  */
+#define LOG_MODULE "boot"
 #include <kernel/core/init.h>
 #include <kernel/core/log.h>
 #include <kernel/core/multiboot.h>
@@ -24,8 +25,6 @@
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/lib/port_io.h>
 #include <kernel/lib/assert.h>
-
-#define LOG_MODULE "boot"
 
 extern uint8_t _kernel_start_phys;
 extern uint8_t _kernel_end_phys;
@@ -127,6 +126,7 @@ void kernel_main_init(uint32_t magic, uint32_t mb_info_phys_addr) {
     scheduler_add_task(init);
 
     configure_keyboard_controller();
+    LOG_INFO("starting %s", INIT_PATH);
     asm volatile("sti");
     scheduler_start();
     KERNEL_PANIC_HALT("scheduler_start() returned");

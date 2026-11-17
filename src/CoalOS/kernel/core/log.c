@@ -6,6 +6,7 @@
 #include <kernel/core/log.h>
 #include <kernel/drivers/display/terminal.h>
 #include <kernel/drivers/display/serial.h>
+#include <kernel/drivers/timer/pit.h>
 #include <kernel/sync/spinlock.h>
 #include <libc/stdarg.h>
 
@@ -19,6 +20,14 @@ static spinlock_t g_lock;
 static const char *const level_names[] = { "TRACE", "DEBUG", "INFO ", "WARN ", "ERROR", "FATAL" };
 
 /* s must be NUL terminated at s[n]. */
+static int _snprintf(char *buf, size_t size, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = _vsnprintf(buf, size, fmt, ap);
+    va_end(ap);
+    return n;
+}
+
 static void emit(const char *s, size_t n) {
     uintptr_t flags = spinlock_acquire_irqsave(&g_lock);
 
@@ -41,9 +50,11 @@ static void emit_va(char *buf, size_t used, const char *fmt, va_list ap) {
 void klog(int level, const char *module, const char *fmt, ...) {
     char buf[LINE_MAX_LEN];
     va_list ap;
-    size_t head = 0;
-    const char *parts[] = { "[", level_names[level], "] ", module, ": " };
+    size_t head;
+    uint32_t ms = (uint32_t)timer_uptime_ms();
+    const char *parts[] = { level_names[level], "] ", module, ": " };
 
+    head = (size_t)_snprintf(buf, sizeof(buf) / 2, "[%5u.%03u] [", ms / 1000, ms % 1000);
     for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++)
         for (const char *p = parts[i]; *p && head < sizeof(buf) / 2; p++) buf[head++] = *p;
 

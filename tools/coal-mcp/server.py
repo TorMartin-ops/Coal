@@ -204,10 +204,10 @@ class Link:
         end = time.monotonic() + timeout
         while time.monotonic() < end and alive():
             try:
-                self.request("ping", timeout=1.0)
+                self.request("ping", timeout=0.3)
                 return True
             except ToolError:
-                time.sleep(0.25)
+                time.sleep(0.05)
         return False
 
 
