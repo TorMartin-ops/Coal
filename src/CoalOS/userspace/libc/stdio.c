@@ -1,243 +1,359 @@
-/**
- * @file stdio.c
- * @brief Standard I/O library implementation for Coal OS userspace
- */
-
 #include <libc/stdio.h>
+#include <libc/stdlib.h>
 #include <libc/string.h>
-#include <libc/stdarg.h>
 #include <libc/unistd.h>
-#include <libc/limits.h>
-
-// Buffer size for printf operations
-#define PRINTF_BUFFER_SIZE 1024
+#include <libc/fcntl.h>
+#include <libc/errno.h>
 
 struct FILE {
     int fd;
+    int flags;              /* F_* below */
+    int rpos, rlen;         /* read buffer window */
+    int wlen;               /* pending write bytes */
+    int cap;
+    char *buf;
 };
 
-static FILE stdin_file = { STDIN_FILENO };
-static FILE stdout_file = { STDOUT_FILENO };
-static FILE stderr_file = { STDERR_FILENO };
+#define F_ERR  1
+#define F_EOF  2
+#define F_LINE 4            /* flush on newline (tty) */
+#define F_OWN  8            /* buf and FILE are malloc'd */
+#define F_WR   16
+#define F_PROBED 32         /* stdout checked for a terminal */
+#define F_UNBUF 64          /* flush after every call (stderr) */
 
-FILE *stdin = &stdin_file;
-FILE *stdout = &stdout_file;
-FILE *stderr = &stderr_file;
+static char out_buf[BUFSIZ], in_buf[BUFSIZ], err_buf[128];
+static FILE f_in  = { 0, 0, 0, 0, 0, BUFSIZ, in_buf };
+static FILE f_out = { 1, F_WR, 0, 0, 0, BUFSIZ, out_buf };
+static FILE f_err = { 2, F_WR | F_UNBUF, 0, 0, 0, sizeof err_buf, err_buf };
+FILE *stdin = &f_in, *stdout = &f_out, *stderr = &f_err;
+static FILE *opened[8];
 
-int putchar(int c) {
-    char ch = (char)c;
-    return (write(STDOUT_FILENO, &ch, 1) == 1) ? c : EOF;
-}
-
-int puts(const char *s) {
-    if (!s) return EOF;
-    
-    size_t len = strlen(s);
-    if (write(STDOUT_FILENO, s, len) != (ssize_t)len) {
-        return EOF;
+int fflush(FILE *f) {
+    if (!f) {
+        for (int i = 0; i < 8; i++) if (opened[i]) fflush(opened[i]);
+        return fflush(stdout);
     }
-    if (putchar('\n') == EOF) {
-        return EOF;
+    int off = 0;
+    while (off < f->wlen) {
+        ssize_t n = write(f->fd, f->buf + off, (size_t)(f->wlen - off));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            f->flags |= F_ERR;
+            f->wlen = 0;
+            return EOF;
+        }
+        off += (int)n;
     }
+    f->wlen = 0;
     return 0;
 }
 
-// Helper functions for number formatting
-static void reverse_string(char *str, int length) {
-    int start = 0;
-    int end = length - 1;
-    while (start < end) {
-        char temp = str[start];
-        str[start] = str[end];
-        str[end] = temp;
-        start++;
-        end--;
-    }
+void __stdio_flush_all(void) { fflush(NULL); }
+
+/* stdout becomes line buffered the first time it is found to be a terminal. */
+static void bput(FILE *f, int c) {
+    if (f == &f_out && !(f->flags & F_PROBED))
+        f->flags |= F_PROBED | (isatty(1) ? F_LINE : 0);
+    f->buf[f->wlen++] = (char)c;
+    if (f->wlen == f->cap || ((f->flags & F_LINE) && c == '\n')) fflush(f);
 }
 
-// Write num in the given base into str, returning the length.
-static int uint_to_string(unsigned int num, char *str, int base) {
-    int i = 0;
-
-    if (num == 0) {
-        str[i++] = '0';
-        str[i] = '\0';
-        return i;
-    }
-
-    while (num != 0) {
-        int rem = num % base;
-        str[i++] = (rem > 9) ? (rem - 10) + 'a' : rem + '0';
-        num = num / base;
-    }
-
-    str[i] = '\0';
-    reverse_string(str, i);
-    return i;
+static void done(FILE *f) {
+    if (f->flags & F_UNBUF) fflush(f);
 }
 
-static int int_to_string(int num, char *str) {
-    if (num >= 0) return uint_to_string((unsigned int)num, str, 10);
-    // Negate as unsigned so that INT_MIN works.
-    str[0] = '-';
-    return 1 + uint_to_string(0u - (unsigned int)num, str + 1, 10);
+int fputc(int c, FILE *f) {
+    bput(f, c);
+    done(f);
+    return (unsigned char)c;
 }
 
-int printf(const char* format, ...) {
-    if (!format) return -1;
-    
-    va_list args;
-    va_start(args, format);
-    int result = vprintf(format, args);
-    va_end(args);
-    return result;
+size_t fwrite(const void *p, size_t size, size_t n, FILE *f) {
+    const char *s = p;
+    for (size_t i = 0, total = size * n; i < total; i++) bput(f, s[i]);
+    done(f);
+    return n;
 }
 
-int vprintf(const char* format, va_list args) {
-    char buffer[PRINTF_BUFFER_SIZE];
-    int len = vsnprintf(buffer, sizeof(buffer), format, args);
-    if (len > 0) {
-        write(STDOUT_FILENO, buffer, len);
-    }
-    return len;
+int fputs(const char *s, FILE *f) {
+    fwrite(s, 1, strlen(s), f);
+    return (f->flags & F_ERR) ? EOF : 0;
 }
 
-int snprintf(char *str, size_t size, const char *format, ...) {
-    va_list args;
-    va_start(args, format);
-    int result = vsnprintf(str, size, format, args);
-    va_end(args);
-    return result;
-}
+int putchar(int c) { return fputc(c, stdout); }
+int puts(const char *s) { fputs(s, stdout); fputc('\n', stdout); return 0; }
 
-// Output cursor for vsnprintf: always leaves room for the final NUL.
-typedef struct {
-    char *buf;
-    size_t size;
-    size_t pos;
-} out_t;
+/* --- reading --- */
 
-static void out_char(out_t *o, char c) {
-    if (o->pos < o->size - 1) o->buf[o->pos++] = c;
-}
-
-// Write text (len bytes) padded to width with spaces or zeros.
-static void out_field(out_t *o, const char *text, size_t len, size_t width,
-                      bool left, bool zero) {
-    size_t pad = width > len ? width - len : 0;
-    size_t i = 0;
-
-    if (!left && zero && len > 0 && text[0] == '-') {
-        out_char(o, '-');   // keep the sign in front of the zeros
-        i = 1;
-    }
-    for (size_t k = 0; !left && k < pad; k++) out_char(o, zero ? '0' : ' ');
-    for (; i < len; i++) out_char(o, text[i]);
-    for (size_t k = 0; left && k < pad; k++) out_char(o, ' ');
-}
-
-int vsnprintf(char *str, size_t size, const char *format, va_list args) {
-    if (!str || !format || size == 0) return -1;
-
-    out_t o = { str, size, 0 };
-    char temp_buf[64];
-
-    for (const char *p = format; *p; p++) {
-        if (*p != '%') {
-            out_char(&o, *p);
-            continue;
+static int fill(FILE *f) {
+    if (f->flags & (F_EOF | F_ERR)) return 0;
+    if (f == &f_in) fflush(stdout);     /* show prompts before blocking */
+    for (;;) {
+        ssize_t n = read(f->fd, f->buf, (size_t)f->cap);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            f->flags |= n < 0 ? F_ERR : F_EOF;
+            return 0;
         }
-        p++;
+        f->rpos = 0;
+        f->rlen = (int)n;
+        return 1;
+    }
+}
 
-        bool left = false, zero = false;
-        for (;; p++) {
-            if (*p == '-') left = true;
-            else if (*p == '0') zero = true;
+int fgetc(FILE *f) {
+    if (f->rpos >= f->rlen && !fill(f)) return EOF;
+    return (unsigned char)f->buf[f->rpos++];
+}
+
+size_t fread(void *p, size_t size, size_t n, FILE *f) {
+    char *d = p;
+    size_t total = size * n, i = 0;
+    for (; i < total; i++) {
+        int c = fgetc(f);
+        if (c == EOF) break;
+        d[i] = (char)c;
+    }
+    return size ? i / size : 0;
+}
+
+char *fgets(char *s, int n, FILE *f) {
+    int i = 0;
+    while (i < n - 1) {
+        int c = fgetc(f);
+        if (c == EOF) break;
+        s[i++] = (char)c;
+        if (c == '\n') break;
+    }
+    if (!i) return NULL;
+    s[i] = 0;
+    return s;
+}
+
+ssize_t getline(char **line, size_t *cap, FILE *f) {
+    size_t len = 0;
+    for (;;) {
+        int c = fgetc(f);
+        if (c == EOF && !len) return -1;
+        if (len + 2 > *cap) {
+            size_t nc = *cap ? *cap * 2 : 128;
+            char *p = realloc(*line, nc);
+            if (!p) return -1;
+            *line = p;
+            *cap = nc;
+        }
+        if (c == EOF) break;
+        (*line)[len++] = (char)c;
+        if (c == '\n') break;
+    }
+    (*line)[len] = 0;
+    return (ssize_t)len;
+}
+
+int feof(FILE *f)   { return (f->flags & F_EOF) != 0; }
+int ferror(FILE *f) { return (f->flags & F_ERR) != 0; }
+int fileno(FILE *f) { return f->fd; }
+
+FILE *fopen(const char *path, const char *mode) {
+    int flags = mode[0] == 'r' ? O_RDONLY
+              : mode[0] == 'w' ? O_WRONLY | O_CREAT | O_TRUNC
+              : O_WRONLY | O_CREAT | O_APPEND;
+    if (strchr(mode, '+')) flags = (flags & ~3) | O_RDWR;
+    int slot = 0;
+    while (slot < 8 && opened[slot]) slot++;
+    if (slot == 8) { errno = EMFILE; return NULL; }
+    int fd = open(path, flags, 0644);
+    if (fd < 0) return NULL;
+    FILE *f = calloc(1, sizeof *f);
+    char *b = malloc(BUFSIZ);
+    if (!f || !b) {
+        free(f); free(b);
+        close(fd);
+        errno = ENOMEM;
+        return NULL;
+    }
+    f->fd = fd;
+    f->buf = b;
+    f->cap = BUFSIZ;
+    f->flags = F_OWN | (mode[0] != 'r' ? F_WR : 0);
+    opened[slot] = f;
+    return f;
+}
+
+int fclose(FILE *f) {
+    int r = (f->flags & F_WR) ? fflush(f) : 0;
+    if (close(f->fd) < 0) r = EOF;
+    for (int i = 0; i < 8; i++) if (opened[i] == f) opened[i] = NULL;
+    if (f->flags & F_OWN) {
+        free(f->buf);
+        free(f);
+    }
+    return r;
+}
+
+int remove(const char *path) {
+    return unlink(path) == 0 ? 0 : (errno == EISDIR ? rmdir(path) : -1);
+}
+
+void perror(const char *msg) {
+    if (msg && *msg) fprintf(stderr, "%s: ", msg);
+    fprintf(stderr, "%s\n", strerror(errno));
+}
+
+/* --- formatted output --- */
+
+struct sink {
+    FILE *f;                /* write to a stream, or ... */
+    char *buf;              /* ... into a buffer of cap bytes */
+    size_t cap, len;
+};
+
+static void put(struct sink *s, char c) {
+    if (s->f) {
+        bput(s->f, c);
+    } else if (s->len + 1 < s->cap) {
+        s->buf[s->len] = c;
+    }
+    s->len++;
+}
+
+static void pad(struct sink *s, int n, char c) {
+    while (n-- > 0) put(s, c);
+}
+
+/* *v /= base, returns the remainder; avoids the libgcc 64-bit division helpers. */
+static unsigned divmod64(unsigned long long *v, unsigned base) {
+    unsigned hi = (unsigned)(*v >> 32), lo = (unsigned)*v, qh = hi / base, r = hi % base, ql;
+    __asm__("divl %2" : "=a"(ql), "=d"(r) : "r"(base), "0"(lo), "1"(r));
+    *v = ((unsigned long long)qh << 32) | ql;
+    return r;
+}
+
+static int vformat(struct sink *s, const char *fmt, va_list ap) {
+    for (; *fmt; fmt++) {
+        if (*fmt != '%') { put(s, *fmt); continue; }
+        int left = 0, zero = 0, plus = 0, space = 0, alt = 0, width = 0, prec = -1, lng = 0;
+        for (fmt++;; fmt++) {
+            if (*fmt == '-') left = 1;
+            else if (*fmt == '0') zero = 1;
+            else if (*fmt == '+') plus = 1;
+            else if (*fmt == ' ') space = 1;
+            else if (*fmt == '#') alt = 1;
             else break;
         }
-        size_t width = 0;
-        while (*p >= '0' && *p <= '9') width = width * 10 + (size_t)(*p++ - '0');
-        while (*p == 'l') p++;   // long is 32 bits, same as int
-        if (!*p) break;
-
-        const char *text = temp_buf;
-        size_t len = 0;
-
-        switch (*p) {
-            case 'c':
-                temp_buf[0] = (char)va_arg(args, int);
-                len = 1;
-                zero = false;
-                break;
-            case 's':
-                text = va_arg(args, const char *);
-                if (!text) text = "(null)";
-                len = strlen(text);
-                zero = false;
-                break;
-            case 'd':
-            case 'i':
-                len = (size_t)int_to_string(va_arg(args, int), temp_buf);
-                break;
-            case 'u':
-                len = (size_t)uint_to_string(va_arg(args, unsigned int), temp_buf, 10);
-                break;
-            case 'x':
-                len = (size_t)uint_to_string(va_arg(args, unsigned int), temp_buf, 16);
-                break;
-            case 'X': {
-                len = (size_t)uint_to_string(va_arg(args, unsigned int), temp_buf, 16);
-                for (size_t i = 0; i < len; i++) {
-                    if (temp_buf[i] >= 'a' && temp_buf[i] <= 'f') temp_buf[i] -= 'a' - 'A';
-                }
-                break;
-            }
-            case 'p':
-                temp_buf[0] = '0';
-                temp_buf[1] = 'x';
-                len = 2 + (size_t)uint_to_string((unsigned int)(uintptr_t)va_arg(args, void *),
-                                                 temp_buf + 2, 16);
-                break;
-            case '%':
-                temp_buf[0] = '%';
-                len = 1;
-                width = 0;
-                break;
-            default:   // unknown specifier: print it unchanged
-                temp_buf[0] = '%';
-                temp_buf[1] = *p;
-                len = 2;
-                width = 0;
-                break;
+        if (*fmt == '*') { width = va_arg(ap, int); fmt++; if (width < 0) { left = 1; width = -width; } }
+        else while (*fmt >= '0' && *fmt <= '9') width = width * 10 + (*fmt++ - '0');
+        if (*fmt == '.') {
+            prec = 0;
+            fmt++;
+            if (*fmt == '*') { prec = va_arg(ap, int); fmt++; }
+            else while (*fmt >= '0' && *fmt <= '9') prec = prec * 10 + (*fmt++ - '0');
         }
-        out_field(&o, text, len, width, left, zero);
+        while (*fmt == 'l' || *fmt == 'h' || *fmt == 'z') {
+            if (*fmt == 'l') lng++;
+            fmt++;
+        }
+        char tmp[24];
+        const char *str = tmp, *prefix = "";
+        int len = 0;
+        char c = *fmt;
+        if (c == '%') { put(s, '%'); continue; }
+        if (c == 'c') {
+            tmp[0] = (char)va_arg(ap, int);
+            len = 1;
+        } else if (c == 's') {
+            str = va_arg(ap, const char *);
+            if (!str) str = "(null)";
+            while ((prec < 0 || len < prec) && str[len]) len++;
+        } else if (c == 'd' || c == 'i' || c == 'u' || c == 'x' || c == 'X' || c == 'o' || c == 'p') {
+            unsigned long long v;
+            int neg = 0, base = c == 'o' ? 8 : (c == 'x' || c == 'X' || c == 'p') ? 16 : 10;
+            if (c == 'd' || c == 'i') {
+                long long sv = lng > 1 ? va_arg(ap, long long) : va_arg(ap, int);
+                neg = sv < 0;
+                v = neg ? -(unsigned long long)sv : (unsigned long long)sv;
+            } else {
+                v = lng > 1 ? va_arg(ap, unsigned long long) : va_arg(ap, unsigned);
+                if (c == 'p') alt = 1;
+            }
+            if (neg) prefix = "-"; else if (plus && base == 10 && (c == 'd' || c == 'i')) prefix = "+";
+            else if (space && (c == 'd' || c == 'i')) prefix = " ";
+            else if (alt && base == 16 && v) prefix = c == 'X' ? "0X" : "0x";
+            const char *digits = c == 'X' ? "0123456789ABCDEF" : "0123456789abcdef";
+            char *e = tmp + sizeof tmp;
+            while (v) *--e = digits[divmod64(&v, (unsigned)base)];
+            str = e;
+            len = (int)(tmp + sizeof tmp - e);
+            if (prec >= 0) zero = 0;
+            while (len < prec && e > tmp) { *--e = '0'; len++; }
+            str = e;
+            if (!len && prec != 0) { str = "0"; len = 1; }
+        } else {
+            put(s, '%');
+            if (c) put(s, c); else break;
+            continue;
+        }
+        if (c == 's' || c == 'c') zero = 0;
+        int plen = (int)strlen(prefix);
+        int fill = width - len - plen;
+        if (!left && !zero) pad(s, fill, ' ');
+        for (int i = 0; i < plen; i++) put(s, prefix[i]);
+        if (!left && zero) pad(s, fill, '0');
+        for (int i = 0; i < len; i++) put(s, str[i]);
+        if (left) pad(s, fill, ' ');
     }
-
-    str[o.pos] = '\0';
-    return (int)o.pos;
+    return (int)s->len;
 }
 
-int sprintf(char *str, const char *format, ...) {
-    va_list args;
-    va_start(args, format);
-    int result = vsprintf(str, format, args);
-    va_end(args);
-    return result;
+int vfprintf(FILE *f, const char *fmt, va_list ap) {
+    struct sink s = { f, NULL, 0, 0 };
+    int r = vformat(&s, fmt, ap);
+    done(f);
+    return r;
 }
 
-int vsprintf(char *str, const char *format, va_list args) {
-    return vsnprintf(str, (size_t)INT_MAX, format, args);
+int vsnprintf(char *buf, size_t n, const char *fmt, va_list ap) {
+    struct sink s = { NULL, buf, n, 0 };
+    int r = vformat(&s, fmt, ap);
+    if (n) buf[s.len < n ? s.len : n - 1] = 0;
+    return r;
 }
 
-int fprintf(FILE *stream, const char *format, ...) {
-    if (!stream) return -1;
+int vprintf(const char *fmt, va_list ap) { return vfprintf(stdout, fmt, ap); }
 
-    char buffer[PRINTF_BUFFER_SIZE];
-    va_list args;
-    va_start(args, format);
-    int len = vsnprintf(buffer, sizeof(buffer), format, args);
-    va_end(args);
+int printf(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vfprintf(stdout, fmt, ap);
+    va_end(ap);
+    return r;
+}
 
-    if (len > 0) write(stream->fd, buffer, len);
-    return len;
+int fprintf(FILE *f, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vfprintf(f, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+int snprintf(char *buf, size_t n, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vsnprintf(buf, n, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+int sprintf(char *buf, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vsprintf(buf, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+int vsprintf(char *buf, const char *fmt, va_list ap) {
+    return vsnprintf(buf, (size_t)-1 >> 1, fmt, ap);
 }

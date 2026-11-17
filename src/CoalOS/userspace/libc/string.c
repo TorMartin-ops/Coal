@@ -1,357 +1,192 @@
-/**
- * @file string.c
- * @brief String manipulation functions for Coal OS userspace
- */
-
 #include <libc/string.h>
-#include <libc/stdbool.h>
+#include <libc/stdlib.h>
+#include <libc/errno.h>
+#include <libc/ctype.h>
 
-// Memory functions
-void *memcpy(void *dest, const void *src, size_t n) {
-    if (!dest || !src) return dest;
-    
-    unsigned char *d = (unsigned char*)dest;
-    const unsigned char *s = (const unsigned char*)src;
-    
-    for (size_t i = 0; i < n; i++) {
-        d[i] = s[i];
-    }
-    
-    return dest;
+void *memcpy(void *d, const void *s, size_t n) {
+    void *r = d;
+    __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+    return r;
 }
 
-void *memset(void *s, int c, size_t n) {
-    if (!s) return s;
-    
-    unsigned char *ptr = (unsigned char*)s;
-    unsigned char value = (unsigned char)c;
-    
-    for (size_t i = 0; i < n; i++) {
-        ptr[i] = value;
-    }
-    
-    return s;
+void *memset(void *d, int c, size_t n) {
+    void *r = d;
+    __asm__ volatile("rep stosb" : "+D"(d), "+c"(n) : "a"(c) : "memory");
+    return r;
 }
 
-void *memmove(void *dest, const void *src, size_t n) {
-    if (!dest || !src) return dest;
-    
-    unsigned char *d = (unsigned char*)dest;
-    const unsigned char *s = (const unsigned char*)src;
-    
-    if (d == s) {
-        return dest;
-    }
-    
-    if (d < s) {
-        // Copy forward
-        for (size_t i = 0; i < n; i++) {
-            d[i] = s[i];
-        }
-    } else {
-        // Copy backward to handle overlap
-        for (size_t i = n; i > 0; i--) {
-            d[i-1] = s[i-1];
-        }
-    }
-    
-    return dest;
+void *memmove(void *d, const void *s, size_t n) {
+    unsigned char *dp = d;
+    const unsigned char *sp = s;
+    if (dp <= sp || dp >= sp + n) return memcpy(d, s, n);
+    while (n--) dp[n] = sp[n];
+    return d;
 }
 
-int memcmp(const void *s1, const void *s2, size_t n) {
-    if (!s1 && !s2) return 0;
-    if (!s1) return -1;
-    if (!s2) return 1;
-    
-    const unsigned char *p1 = (const unsigned char*)s1;
-    const unsigned char *p2 = (const unsigned char*)s2;
-    
-    for (size_t i = 0; i < n; i++) {
-        if (p1[i] != p2[i]) {
-            return p1[i] - p2[i];
-        }
-    }
-    
+int memcmp(const void *a, const void *b, size_t n) {
+    const unsigned char *x = a, *y = b;
+    for (; n; n--, x++, y++)
+        if (*x != *y) return *x - *y;
     return 0;
 }
 
 void *memchr(const void *s, int c, size_t n) {
-    if (!s) return NULL;
-    
-    const unsigned char *ptr = (const unsigned char*)s;
-    unsigned char ch = (unsigned char)c;
-    
-    for (size_t i = 0; i < n; i++) {
-        if (ptr[i] == ch) {
-            return (void*)(ptr + i);
-        }
-    }
-    
+    const unsigned char *p = s;
+    for (; n; n--, p++)
+        if (*p == (unsigned char)c) return (void *)p;
     return NULL;
 }
 
-// String functions
 size_t strlen(const char *s) {
-    if (!s) return 0;
-    
-    size_t len = 0;
-    while (s[len]) {
-        len++;
-    }
-    
-    return len;
+    const char *p = s;
+    while (*p) p++;
+    return (size_t)(p - s);
 }
 
-int strcmp(const char *s1, const char *s2) {
-    if (!s1 && !s2) return 0;
-    if (!s1) return -1;
-    if (!s2) return 1;
-    
-    while (*s1 && (*s1 == *s2)) {
-        s1++;
-        s2++;
-    }
-    
-    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
+char *strcpy(char *d, const char *s) {
+    char *r = d;
+    while ((*d++ = *s++)) {}
+    return r;
 }
 
-int strncmp(const char *s1, const char *s2, size_t n) {
-    if (!s1 && !s2) return 0;
-    if (!s1) return -1;
-    if (!s2) return 1;
-    
-    for (size_t i = 0; i < n; i++) {
-        if (s1[i] != s2[i]) {
-            return (unsigned char)s1[i] - (unsigned char)s2[i];
-        }
-        if (s1[i] == '\0') {
-            break;
-        }
-    }
-    
-    return 0;
-}
-
-char *strcpy(char *dest, const char *src) {
-    if (!dest || !src) return dest;
-    
-    char *original_dest = dest;
-    
-    while ((*dest++ = *src++));
-    
-    return original_dest;
-}
-
-char *strncpy(char *dest, const char *src, size_t n) {
-    if (!dest || !src) return dest;
-    
-    char *original_dest = dest;
-    size_t i;
-    
-    // Copy up to n characters
-    for (i = 0; i < n && src[i] != '\0'; i++) {
-        dest[i] = src[i];
-    }
-    
-    // Pad with null characters if needed
-    for (; i < n; i++) {
-        dest[i] = '\0';
-    }
-    
-    return original_dest;
-}
-
-char *strcat(char *dest, const char *src) {
-    if (!dest || !src) return dest;
-    
-    char *original_dest = dest;
-    
-    // Find end of dest string
-    while (*dest) {
-        dest++;
-    }
-    
-    // Append src to dest
-    while ((*dest++ = *src++));
-    
-    return original_dest;
-}
-
-char *strncat(char *dest, const char *src, size_t n) {
-    if (!dest || !src) return dest;
-    
-    char *original_dest = dest;
-    
-    // Find end of dest string
-    while (*dest) {
-        dest++;
-    }
-    
-    // Append up to n characters from src
+char *strncpy(char *d, const char *s, size_t n) {
     size_t i = 0;
-    for (; i < n && src[i] != '\0'; i++) {
-        dest[i] = src[i];
-    }
-
-    // Ensure null termination
-    dest[i] = '\0';
-    
-    return original_dest;
+    for (; i < n && s[i]; i++) d[i] = s[i];
+    for (; i < n; i++) d[i] = 0;
+    return d;
 }
 
-char *strchr(const char *s, int c) {
-    if (!s) return NULL;
-    
-    char ch = (char)c;
-    
-    while (*s) {
-        if (*s == ch) {
-            return (char*)s;
-        }
-        s++;
-    }
-    
-    // Check for null terminator match
-    if (ch == '\0') {
-        return (char*)s;
-    }
-    
-    return NULL;
+char *strcat(char *d, const char *s) {
+    strcpy(d + strlen(d), s);
+    return d;
 }
 
-char *strrchr(const char *s, int c) {
-    if (!s) return NULL;
-    
-    char ch = (char)c;
-    const char *last_match = NULL;
-    
-    while (*s) {
-        if (*s == ch) {
-            last_match = s;
-        }
-        s++;
-    }
-    
-    // Check for null terminator match
-    if (ch == '\0') {
-        return (char*)s;
-    }
-    
-    return (char*)last_match;
-}
-
-char *strstr(const char *haystack, const char *needle) {
-    if (!haystack || !needle) return NULL;
-    
-    if (*needle == '\0') {
-        return (char*)haystack;
-    }
-    
-    while (*haystack) {
-        const char *h = haystack;
-        const char *n = needle;
-        
-        while (*h && *n && (*h == *n)) {
-            h++;
-            n++;
-        }
-        
-        if (*n == '\0') {
-            return (char*)haystack;
-        }
-        
-        haystack++;
-    }
-    
-    return NULL;
+char *strncat(char *d, const char *s, size_t n) {
+    char *e = d + strlen(d);
+    while (n-- && *s) *e++ = *s++;
+    *e = 0;
+    return d;
 }
 
 size_t strspn(const char *s, const char *accept) {
-    if (!s || !accept) return 0;
-    
-    size_t count = 0;
-    
-    while (*s) {
-        const char *a = accept;
-        bool found = false;
-        
-        while (*a) {
-            if (*s == *a) {
-                found = true;
-                break;
-            }
-            a++;
-        }
-        
-        if (!found) {
-            break;
-        }
-        
-        count++;
-        s++;
-    }
-    
-    return count;
+    size_t n = 0;
+    while (s[n] && strchr(accept, s[n])) n++;
+    return n;
 }
 
 size_t strcspn(const char *s, const char *reject) {
-    if (!s || !reject) return s ? strlen(s) : 0;
-    
-    size_t count = 0;
-    
-    while (*s) {
-        const char *r = reject;
-        
-        while (*r) {
-            if (*s == *r) {
-                return count;
-            }
-            r++;
-        }
-        
-        count++;
-        s++;
-    }
-    
-    return count;
+    size_t n = 0;
+    while (s[n] && !strchr(reject, s[n])) n++;
+    return n;
 }
 
-
-char *strtok(char *str, const char *delim) {
-    static char *saved_ptr = NULL;
-    return strtok_r(str, delim, &saved_ptr);
+char *strpbrk(const char *s, const char *accept) {
+    s += strcspn(s, accept);
+    return *s ? (char *)s : NULL;
 }
 
-char *strtok_r(char *str, const char *delim, char **saveptr) {
-    if (!delim || !saveptr) return NULL;
-    
-    if (str) {
-        *saveptr = str;
+char *strtok_r(char *s, const char *delim, char **save) {
+    if (!s) s = *save;
+    s += strspn(s, delim);
+    if (!*s) return NULL;
+    char *tok = s;
+    s += strcspn(s, delim);
+    if (*s) *s++ = 0;
+    *save = s;
+    return tok;
+}
+
+char *strtok(char *s, const char *delim) {
+    static char *save;
+    return strtok_r(s, delim, &save);
+}
+
+int strcmp(const char *a, const char *b) {
+    while (*a && *a == *b) a++, b++;
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
+int strncmp(const char *a, const char *b, size_t n) {
+    for (; n; n--, a++, b++) {
+        if (*a != *b) return (unsigned char)*a - (unsigned char)*b;
+        if (!*a) break;
     }
-    
-    if (!*saveptr) {
-        return NULL;
+    return 0;
+}
+
+int strcasecmp(const char *a, const char *b) {
+    while (*a && tolower(*a) == tolower(*b)) a++, b++;
+    return tolower((unsigned char)*a) - tolower((unsigned char)*b);
+}
+
+char *strchr(const char *s, int c) {
+    for (;; s++) {
+        if (*s == (char)c) return (char *)s;
+        if (!*s) return NULL;
     }
-    
-    // Skip leading delimiters
-    *saveptr += strspn(*saveptr, delim);
-    
-    if (**saveptr == '\0') {
-        *saveptr = NULL;
-        return NULL;
+}
+
+char *strrchr(const char *s, int c) {
+    const char *r = NULL;
+    for (;; s++) {
+        if (*s == (char)c) r = s;
+        if (!*s) return (char *)r;
     }
-    
-    char *token_start = *saveptr;
-    
-    // Find end of token
-    *saveptr += strcspn(*saveptr, delim);
-    
-    if (**saveptr != '\0') {
-        **saveptr = '\0';
-        (*saveptr)++;
-    } else {
-        *saveptr = NULL;
-    }
-    
-    return token_start;
+}
+
+char *strstr(const char *h, const char *n) {
+    size_t len = strlen(n);
+    for (; *h; h++)
+        if (!strncmp(h, n, len)) return (char *)h;
+    return len ? NULL : (char *)h;
+}
+
+char *strdup(const char *s) {
+    size_t n = strlen(s) + 1;
+    char *p = malloc(n);
+    return p ? memcpy(p, s, n) : NULL;
+}
+
+static const struct { unsigned char code; const char *msg; } errors[] = {
+    { EPERM, "Operation not permitted" },
+    { ENOENT, "No such file or directory" },
+    { ESRCH, "No such process" },
+    { EINTR, "Interrupted system call" },
+    { EIO, "Input/output error" },
+    { ENXIO, "No such device or address" },
+    { E2BIG, "Argument list too long" },
+    { ENOEXEC, "Exec format error" },
+    { EBADF, "Bad file descriptor" },
+    { ECHILD, "No child processes" },
+    { EAGAIN, "Resource temporarily unavailable" },
+    { ENOMEM, "Cannot allocate memory" },
+    { EACCES, "Permission denied" },
+    { EFAULT, "Bad address" },
+    { EBUSY, "Device or resource busy" },
+    { EEXIST, "File exists" },
+    { EXDEV, "Invalid cross-device link" },
+    { ENODEV, "No such device" },
+    { ENOTDIR, "Not a directory" },
+    { EISDIR, "Is a directory" },
+    { EINVAL, "Invalid argument" },
+    { ENFILE, "Too many open files in system" },
+    { EMFILE, "Too many open files" },
+    { ENOTTY, "Inappropriate ioctl for device" },
+    { EFBIG, "File too large" },
+    { ENOSPC, "No space left on device" },
+    { ESPIPE, "Illegal seek" },
+    { EROFS, "Read-only file system" },
+    { EMLINK, "Too many links" },
+    { EPIPE, "Broken pipe" },
+    { ERANGE, "Numerical result out of range" },
+    { ENAMETOOLONG, "File name too long" },
+    { ENOSYS, "Function not implemented" },
+    { ENOTEMPTY, "Directory not empty" },
+    { ELOOP, "Too many levels of symbolic links" },
+};
+
+char *strerror(int err) {
+    for (unsigned i = 0; i < sizeof errors / sizeof errors[0]; i++)
+        if (errors[i].code == err) return (char *)errors[i].msg;
+    return "Unknown error";
 }

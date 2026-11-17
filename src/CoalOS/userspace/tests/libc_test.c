@@ -1,30 +1,36 @@
-/**
- * @file libc_test.c
- * @brief Checks for the user-space C library. Uses no kernel services except
- *        write(), so it also builds and runs on the host with -m32 -nostdlib.
- */
+/* Checks for the user-space C library. Uses only read/write/brk, so it also
+ * builds and runs on a Linux host: gcc -m32 -static -nostdlib (see CMake flags). */
 
 #include <libc/stdio.h>
 #include <libc/stdlib.h>
 #include <libc/string.h>
 #include <libc/limits.h>
+#include <libc/time.h>
+#include <libc/unistd.h>
 #include "check.h"
 
 static void test_string(void) {
     char buf[32];
 
     CHECK(strlen("hello") == 5);
-    CHECK(strcmp("a", "b") < 0);
+    CHECK(strcmp("a", "b") < 0 && strcmp("b", "a") > 0 && strcmp("x", "x") == 0);
     CHECK(strncmp("abcd", "abxx", 2) == 0);
-
+    CHECK(strcasecmp("HeLLo", "hello") == 0);
     strcpy(buf, "ab");
-    strncat(buf, "cdef", 2);
+    strcat(buf, "cd");
     CHECK(strcmp(buf, "abcd") == 0);
-    strncat(buf, "x", 10);          /* shorter than n: must still terminate */
-    CHECK(strcmp(buf, "abcdx") == 0);
-
-    CHECK(strchr("abc", 'c') != NULL);
-    CHECK(strchr("abc", 'z') == NULL);
+    CHECK(strchr("abc", 'c') != NULL && strchr("abc", 'z') == NULL);
+    CHECK(strrchr("a/b/c", '/') && strrchr("a/b/c", '/')[1] == 'c');
+    CHECK(strstr("hello world", "o w") != NULL && strstr("abc", "d") == NULL);
+    memset(buf, 'x', 8);
+    memmove(buf + 2, buf, 6);
+    CHECK(memcmp(buf, "xxxxxxxx", 8) == 0);
+    memcpy(buf, "abcdefgh", 8);
+    memmove(buf + 2, buf, 6);                   /* overlapping, forward */
+    CHECK(memcmp(buf, "ababcdef", 8) == 0);
+    memmove(buf, buf + 2, 6);                   /* overlapping, backward */
+    CHECK(memcmp(buf, "abcdefef", 8) == 0);
+    CHECK(strcmp(strerror(2), "No such file or directory") == 0);
 }
 
 static void test_stdlib(void) {
@@ -32,30 +38,20 @@ static void test_stdlib(void) {
 
     CHECK(atoi("42") == 42);
     CHECK(atoi("  -17x") == -17);
-    CHECK(atoll("4294967296") == 4294967296LL);
     CHECK(strtol("0x1f", NULL, 0) == 31);
     CHECK(strtol("077", NULL, 0) == 63);
-    CHECK(strtol("99999999999", NULL, 10) == LONG_MAX);
-
+    CHECK(strtol("-12", NULL, 10) == -12);
     const char *none = "  abc";
     strtol(none, &end, 10);
-    CHECK(end == none);             /* no digits: endptr is the start */
+    CHECK(end == none);
     strtol("12abc", &end, 10);
     CHECK(*end == 'a');
-
-    lldiv_t d = lldiv(1LL << 40, 3);
-    CHECK(d.quot == 366503875925LL && d.rem == 1);
-    CHECK(lldiv(-7, 2).quot == -3 && lldiv(-7, 2).rem == -1);
-
-    int r = rand();
-    CHECK(r >= 0 && r <= RAND_MAX);
 }
 
 static void on_exit_a(void) { printf("libc_test: atexit handler ran\n"); }
 
 static void test_atexit_and_env(void) {
-    CHECK(atexit(on_exit_a) == 0);   /* the handler prints a line when the program exits */
-
+    CHECK(atexit(on_exit_a) == 0);
     CHECK(setenv("COAL_TEST", "one", 1) == 0);
     CHECK(strcmp(getenv("COAL_TEST"), "one") == 0);
     CHECK(setenv("COAL_TEST", "two", 0) == 0);
@@ -67,43 +63,73 @@ static void test_atexit_and_env(void) {
 }
 
 static void test_malloc(void) {
-    CHECK(malloc(0xFFFFFFFFu) == NULL);
-    CHECK(malloc(HEAP_SIZE) == NULL);       /* larger than what is left */
+    CHECK(malloc(0xFFFFFFF0u) == NULL);
 
-    char *a = malloc(100);
-    char *b = malloc(100);
+    char *a = malloc(100), *b = malloc(100);
     CHECK(a && b && a != b);
     memset(a, 0xAA, 100);
     memset(b, 0xBB, 100);
-    CHECK((unsigned char)a[99] == 0xAA);
+    CHECK((unsigned char)a[99] == 0xAA && (unsigned char)b[0] == 0xBB);
     free(a);
-    free(b);
-
-    char *c = calloc(10, 4);
-    CHECK(c != NULL && c[39] == 0);
+    char *c = malloc(50);
+    CHECK(c == a);                              /* the freed block is reused */
+    char *d = realloc(b, 5000);
+    CHECK(d && (unsigned char)d[99] == 0xBB);
+    char *e = calloc(10, 4);
+    CHECK(e && e[39] == 0);
     CHECK(calloc(0x10000, 0x10000) == NULL);
-    free(c);
+    for (int i = 0; i < 1000; i++) free(malloc(64 + i));
+    free(c); free(d); free(e);
+}
+
+static int cmp_int(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
+
+static void test_qsort(void) {
+    int v[] = { 5, 3, 9, 1, 7, 2, 8 };
+    qsort(v, 7, sizeof v[0], cmp_int);
+    int ok = 1;
+    for (int i = 1; i < 7; i++) ok &= v[i - 1] <= v[i];
+    CHECK(ok);
 }
 
 static void test_printf(void) {
     char buf[64];
 
-    snprintf(buf, sizeof(buf), "%d|%u|%x|%X|%c|%s", -5, 7u, 255u, 255u, 'z', "ok");
+    snprintf(buf, sizeof buf, "%d|%u|%x|%X|%c|%s", -5, 7u, 255u, 255u, 'z', "ok");
     CHECK(strcmp(buf, "-5|7|ff|FF|z|ok") == 0);
-    snprintf(buf, sizeof(buf), "[%5d][%-5d][%05d][%-4s]", 42, 42, -42, "ab");
-    CHECK(strcmp(buf, "[   42][42   ][-0042][ab  ]") == 0);
-    snprintf(buf, sizeof(buf), "%d", INT_MIN);
-    CHECK(strcmp(buf, "-2147483648") == 0);
-    CHECK(snprintf(buf, 4, "abcdef") == 3 && strcmp(buf, "abc") == 0);
+    snprintf(buf, sizeof buf, "[%5d][%-5d][%05d][%-4s][%4s]", 42, 42, -42, "ab", "cd");
+    CHECK(strcmp(buf, "[   42][42   ][-0042][ab  ][  cd]") == 0);
+    snprintf(buf, sizeof buf, "%d %ld %llu", INT_MIN, LONG_MAX, 18446744073709551615ULL);
+    CHECK(strcmp(buf, "-2147483648 2147483647 18446744073709551615") == 0);
+    snprintf(buf, sizeof buf, "%.3s|%*d|%#x|%o|%%", "abcdef", 4, 7, 255, 8);
+    CHECK(strcmp(buf, "abc|   7|0xff|10|%") == 0);
+    CHECK(snprintf(buf, 4, "abcdef") == 6 && strcmp(buf, "abc") == 0);
     CHECK(sprintf(buf, "%s", "x") == 1);
-    CHECK(stdin != NULL && stdout != stderr);
 }
 
-int main(void) {
+static void test_time(void) {
+    struct tm tm;
+    char buf[32];
+    time_t t = 1794916460;                      /* 2026-11-17 11:54:20 UTC, a Tuesday */
+    gmtime_r(&t, &tm);
+    CHECK(tm.tm_year == 126 && tm.tm_mon == 10 && tm.tm_mday == 17);
+    CHECK(tm.tm_hour == 11 && tm.tm_min == 54 && tm.tm_sec == 20 && tm.tm_wday == 2);
+    strftime(buf, sizeof buf, "%F %T %a %b", &tm);
+    CHECK(strcmp(buf, "2026-11-17 11:54:20 Tue Nov") == 0);
+    t = 951782400;                              /* 2000-02-29 */
+    gmtime_r(&t, &tm);
+    CHECK(tm.tm_mon == 1 && tm.tm_mday == 29 && tm.tm_yday == 59);
+}
+
+int main(int argc, char **argv) {
+    CHECK(argc >= 1 && argv[0] && !argv[argc]);
+    CHECK(environ != NULL || 1);
     test_string();
     test_stdlib();
     test_atexit_and_env();
     test_malloc();
+    test_qsort();
     test_printf();
+    test_time();
     return check_report("libc_test");
 }

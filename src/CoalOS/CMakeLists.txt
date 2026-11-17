@@ -44,23 +44,28 @@ target_link_libraries(kernel PRIVATE ${LIBGCC})
 # --- User programs ------------------------------------------------------------
 file(GLOB USER_LIBC_SOURCES CONFIGURE_DEPENDS userspace/libc/*.c)
 
-# Same flags as the kernel, but warnings are errors for user programs.
+# User programs are small: -Os, warnings are errors, no libgcc (the libc avoids
+# the helpers it would provide), unused sections are dropped and the result is stripped.
+set(USER_FLAGS
+    -m32 -march=i386 -ffreestanding -nostdinc
+    -fno-stack-protector -fno-pie -fno-pic
+    -mno-mmx -mno-sse -mno-sse2 -mno-red-zone
+    -Os -Wall -Wextra -Werror -Wno-unused-parameter
+    -fno-asynchronous-unwind-tables -fno-tree-loop-distribute-patterns
+    -ffunction-sections -fdata-sections)
+
 function(add_user_program name)
     add_executable(${name} ${ARGN} userspace/entry.asm ${USER_LIBC_SOURCES})
     set_target_properties(${name} PROPERTIES OUTPUT_NAME ${name}.elf)
     target_include_directories(${name} PRIVATE include)
-    target_compile_options(${name} PRIVATE
-        $<$<COMPILE_LANGUAGE:C>:${FREESTANDING_FLAGS}>
-        $<$<COMPILE_LANGUAGE:C>:-Werror>)
+    target_compile_options(${name} PRIVATE $<$<COMPILE_LANGUAGE:C>:${USER_FLAGS}>)
     target_link_options(${name} PRIVATE
-        -m32 -nostdlib -static -no-pie -Wl,--build-id=none -Wl,--no-warn-rwx-segments
-        -T${ARCH_DIR}/user.ld)
-    target_link_libraries(${name} PRIVATE ${LIBGCC})
+        -m32 -nostdlib -static -no-pie -s -Wl,--build-id=none -Wl,--no-warn-rwx-segments
+        -Wl,--gc-sections -T${ARCH_DIR}/user.ld)
 endfunction()
 
+add_user_program(shell userspace/sh/sh.c)      # installed as /bin/sh
 add_user_program(hello userspace/hello/hello.c)
-file(GLOB SHELL_SOURCES CONFIGURE_DEPENDS userspace/shell/shell_main.c userspace/shell/modules/*.c)
-add_user_program(shell ${SHELL_SOURCES})
 add_user_program(libc_test userspace/tests/libc_test.c)
 add_user_program(syscall_test userspace/tests/syscall_test.c)
 
