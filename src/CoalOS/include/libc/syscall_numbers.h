@@ -82,6 +82,9 @@
 #define SYS_REBOOT          88
 #define SYS_SYSLOG          103
 #define SYS_POLL            168
+#define SYS_SETRLIMIT       75
+#define SYS_UGETRLIMIT      191
+#define SYS_PRLIMIT64       340
 #define SYS_RT_SIGRETURN    173
 #define SYS_FCNTL64         221
 #define SYS_SET_THREAD_AREA 243

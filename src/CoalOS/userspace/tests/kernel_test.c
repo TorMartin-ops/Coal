@@ -689,6 +689,147 @@ static long free_kb(void) {
     return kb;
 }
 
+/* SIGCHLD reaches a parent that handles it, so a poll() sleeper wakes when a child exits. */
+static void test_sigchld(void) {
+    int fds[2];
+    struct pollfd pfd;
+
+    CHECK(pipe(fds) == 0);
+    pfd.fd = fds[0]; pfd.events = POLLIN;
+    set_handler(SIGCHLD, on_signal, 0);
+    hits = 0;
+    pid_t kid = fork();
+    if (kid == 0) { msleep(100); _exit(3); }
+    long t0 = now_ms();
+    CHECK(poll(&pfd, 1, 5000) < 0 && errno == EINTR && hits == 1 && now_ms() - t0 < 2000);
+    int st = 0;
+    CHECK(waitpid(kid, &st, 0) == kid && WEXITSTATUS(st) == 3);
+    set_handler(SIGCHLD, (void (*)(int))0, 0);
+    close(fds[0]); close(fds[1]);
+}
+
+struct krlimit { unsigned long cur, max; };
+
+#define RLIMIT_CPU   0
+#define RLIMIT_CORE  4
+#define RLIMIT_NPROC 6
+#define RLIMIT_AS    9
+#define MB           (1ul << 20)
+
+static long set_limit(int res, unsigned long cur, unsigned long max) {
+    struct krlimit l = { cur, max };
+    return __sc(SYS_SETRLIMIT, res, (long)&l, 0, 0, 0);
+}
+
+static long get_limit(int res, struct krlimit *l) { return __sc(SYS_UGETRLIMIT, res, (long)l, 0, 0, 0); }
+
+static int count_procs(void) {
+    char buf[1024];
+    int n = 0, fd = open("/proc", O_RDONLY | O_DIRECTORY);
+    for (long r; (r = __sc(SYS_GETDENTS64, fd, (long)buf, sizeof buf, 0, 0)) > 0; )
+        for (long off = 0; off < r; off += *(unsigned short *)(buf + off + 16))
+            n += buf[off + 19] >= '0' && buf[off + 19] <= '9';
+    close(fd);
+    return n;
+}
+
+/* True if /proc/self/status lists the limit among the RlimitHits. */
+static int hit_recorded(const char *what) {
+    char buf[256];
+    int fd = open("/proc/self/status", O_RDONLY);
+    long n = fd < 0 ? 0 : read(fd, buf, sizeof buf - 1);
+    if (fd >= 0) close(fd);
+    buf[n > 0 ? n : 0] = 0;
+    char *h = strstr(buf, "RlimitHits:");
+    return h && strstr(h, what) != NULL;
+}
+
+static int child_ok(pid_t kid) {
+    int st = 0;
+    return waitpid(kid, &st, 0) == kid && WIFEXITED(st) && WEXITSTATUS(st) == 0;
+}
+
+/* setrlimit/ugetrlimit/prlimit64 and the three enforced limits; each case runs in a child so the limits stay put. */
+static void test_rlimit(void) {
+    struct krlimit l;
+    unsigned long long pl[2] = { 0, 0 }, nl[2] = { 50, 60 };
+
+    CHECK(get_limit(RLIMIT_CPU, &l) == 0 && l.cur == ~0ul && l.max == ~0ul);
+    CHECK(get_limit(RLIMIT_CORE, &l) == 0 && l.cur == ~0ul);        /* not enforced: reported as unlimited */
+    CHECK(get_limit(99, &l) == -EINVAL);
+    CHECK(set_limit(RLIMIT_CORE, 0, 0) == -EINVAL);                 /* not enforced: refused, not faked */
+
+    /* cur above max is invalid; raising the hard limit is not permitted; values read back */
+    pid_t kid = fork();
+    if (kid == 0)
+        _exit(set_limit(RLIMIT_AS, 2, 1) == -EINVAL && set_limit(RLIMIT_NPROC, 100, 200) == 0 &&
+              set_limit(RLIMIT_NPROC, 100, 300) == -EPERM && get_limit(RLIMIT_NPROC, &l) == 0 &&
+              l.cur == 100 && l.max == 200 ? 0 : 1);
+    CHECK(child_ok(kid));
+
+    /* prlimit64 sees the same limits with 64-bit values */
+    CHECK(__sc(SYS_PRLIMIT64, 0, RLIMIT_NPROC, 0, (long)pl, 0) == 0 && pl[0] == ~0ull && pl[1] == ~0ull);
+    kid = fork();
+    if (kid == 0) {
+        long ok = __sc(SYS_PRLIMIT64, 0, RLIMIT_NPROC, (long)nl, (long)pl, 0) == 0 && pl[0] == ~0ull;
+        ok = ok && __sc(SYS_PRLIMIT64, 0, RLIMIT_NPROC, 0, (long)pl, 0) == 0 && pl[0] == 50 && pl[1] == 60;
+        _exit(ok ? 0 : 1);
+    }
+    CHECK(child_ok(kid));
+
+    /* RLIMIT_AS: a mapping or brk growth beyond the limit fails with ENOMEM, small ones still work */
+    kid = fork();
+    if (kid == 0) {
+        long cur = __sc(SYS_BRK, 0, 0, 0, 0, 0);
+        set_limit(RLIMIT_AS, 64 * MB, 64 * MB);
+        long big = __sc(SYS_MMAP2, 0, 128 * MB, 3, 0x22, -1);
+        long small = __sc(SYS_MMAP2, 0, 64 << 10, 3, 0x22, -1);
+        long grown = __sc(SYS_BRK, cur + 128 * MB, 0, 0, 0, 0);
+        _exit(big == -ENOMEM && small > 0 && grown == cur && hit_recorded("as") ? 0 : 1);
+    }
+    CHECK(child_ok(kid));
+
+    /* RLIMIT_NPROC: once the system holds that many processes fork fails with EAGAIN */
+    kid = fork();
+    if (kid == 0) {
+        set_limit(RLIMIT_NPROC, count_procs() + 1, ~0ul);
+        pid_t a = fork();
+        if (a == 0) { msleep(300); _exit(0); }
+        pid_t b = fork();
+        int blocked = b < 0 && errno == EAGAIN;
+        if (b == 0) _exit(0);
+        waitpid(a, NULL, 0);
+        _exit(a > 0 && blocked && hit_recorded("nproc") ? 0 : 1);
+    }
+    CHECK(child_ok(kid));
+
+    /* RLIMIT_CPU: SIGXCPU after one second of CPU time; a runaway loop does not outlive it */
+    kid = fork();
+    if (kid == 0) {
+        set_limit(RLIMIT_CPU, 1, 3);
+        for (;;) { }
+    }
+    int st = 0;
+    long t0 = now_ms();
+    CHECK(waitpid(kid, &st, 0) == kid && WIFSIGNALED(st) && WTERMSIG(st) == SIGXCPU);
+    CHECK(now_ms() - t0 < 6000);
+
+    /* a limit hit by a grandchild is visible on the process that waited for it */
+    kid = fork();
+    if (kid == 0) {
+        pid_t g = fork();
+        if (g == 0) {
+            set_limit(RLIMIT_AS, 64 * MB, 64 * MB);
+            __sc(SYS_MMAP2, 0, 128 * MB, 3, 0x22, -1);
+            _exit(0);
+        }
+        int before = hit_recorded("as");
+        waitpid(g, NULL, 0);
+        _exit(!before && hit_recorded("as") ? 0 : 1);
+    }
+    CHECK(child_ok(kid));
+}
+
 /* Two children each fill 60% of the free memory and hold it for a second, so memory runs out. */
 static void test_oom(void) {
     long before = free_kb(), mb = before / 1024 * 6 / 10;
@@ -728,6 +869,7 @@ int main(int argc, char **argv) {
         { "restart", test_sa_restart, 0 }, { "pipe", test_pipe_capacity, 0 }, { "dir", test_open_directory, 0 },
         { "select", test_select, 0 }, { "socketpair", test_socketpair, 0 },
         { "script", test_exec_script, 0 }, { "statfs", test_statfs_links, 0 },
+        { "sigchld", test_sigchld, 0 }, { "rlimit", test_rlimit, 0 },
         { "fpu", test_fpu, 0 }, { "loopback", test_loopback, 0 }, { "stream", test_loopback_stream, 0 },
         { "oom", test_oom, 1 },                     /* needs a small machine: run as "kernel_test oom" */
     };

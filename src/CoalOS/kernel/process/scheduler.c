@@ -199,6 +199,7 @@ void scheduler_tick(void) {
         if (cur && t->priority < cur->priority) g_need_reschedule = true;
     }
     if (!g_started || !cur) return;
+    if (cur != IDLE && cur->process) rlimit_tick(cur->process);
 
     if (cur == IDLE) {
         if (rq_bitmap) schedule();
