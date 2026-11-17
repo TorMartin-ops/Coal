@@ -40,6 +40,7 @@ typedef struct pcb {
     struct pcb *all_next;             /* list of every process */
     int      exit_status;             /* Linux wait status encoding */
     bool     wait_blocked;            /* parent is blocked in process_waitpid() */
+    bool     exiting;                 /* process_exit() has started */
     uint32_t pending_signals;
     uint32_t sig_blocked;             /* blocked signal mask (bit n = signal n) */
     uint32_t sig_saved;               /* mask to restore when sig_restore is set (pselect6) */

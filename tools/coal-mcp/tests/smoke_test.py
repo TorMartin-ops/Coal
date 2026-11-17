@@ -124,6 +124,15 @@ def main():
         check(not err and "data" in text, "restore brought the file back", text)
         err, text = c.tool("coal_sysinfo")
         check("/proc/uptime" in text, "sysinfo", text)
+        # --- kernel wave 6: out of memory on a 128 MB machine (the biggest process is killed, one log line) ---
+        c.tool("coal_shutdown")
+        err, text = c.tool("coal_boot", memory_mb=128)
+        check(not err and "mcpd is ready" in text, "boot with 128 MB", text)
+        err, text = c.tool("coal_run", command="/usr/bin/kernel_test oom", timeout_ms=60000)
+        check("0 failed" in text and "exit code: 0" in text, "kernel_test oom: one of two memory hogs is killed, the other finishes", text)
+        err, text = c.tool("coal_run", command="dmesg | grep 'out of memory'")
+        check(text.count("killing pid") == 1, "the OOM killer logged exactly one line", text)
+        # --- end kernel wave 6 ---
     finally:
         c.tool("coal_shutdown")
         c.p.kill()

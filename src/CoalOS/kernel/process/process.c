@@ -281,6 +281,7 @@ void process_exit(int status) {
     pcb_t *init, *c;
 
     if (!me) KERNEL_PANIC_HALT("process_exit without a current process");
+    me->exiting = true;
     uintptr_t irq = local_irq_save();
     drv_wait_cancel(&me->task);           /* a signal can kill a task that still sits on a wait queue */
     local_irq_restore(irq);

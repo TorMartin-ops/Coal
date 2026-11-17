@@ -403,13 +403,58 @@ static void test_socketpair(void) {
     close(sv[1]);
 }
 
+//============================================================================
+// Out of memory: the biggest process is killed, the rest carries on
+//============================================================================
+
+static long free_kb(void) {
+    char buf[256];
+    int fd = open("/proc/meminfo", O_RDONLY);
+    long n = fd < 0 ? 0 : read(fd, buf, sizeof buf - 1), kb = 0;
+
+    if (fd >= 0) close(fd);
+    buf[n > 0 ? n : 0] = 0;
+    const char *p = strstr(buf, "MemFree:");
+    for (p = p ? p + 8 : ""; *p == ' '; p++) { }
+    while (*p >= '0' && *p <= '9') kb = kb * 10 + *p++ - '0';
+    return kb;
+}
+
+/* Two children each fill 60% of the free memory and hold it for a second, so memory runs out. */
+static void test_oom(void) {
+    long before = free_kb(), mb = before / 1024 * 6 / 10;
+    int killed = 0, finished = 0;
+
+    CHECK(mb >= 16);
+    for (int i = 0; i < 2; i++) {
+        if (fork() == 0) {
+            volatile char *m = (volatile char *)__sc(SYS_MMAP2, 0, mb << 20, 3, 0x22, -1);
+            for (long off = 0; off < mb << 20; off += 4096) m[off] = (char)(off >> 12);
+            sleep(1);
+            for (long off = 0; off < mb << 20; off += 4096)
+                if (m[off] != (char)(off >> 12)) _exit(2);
+            _exit(0);
+        }
+    }
+    for (int i = 0; i < 2; i++) {
+        int st = 0;
+        waitpid(-1, &st, 0);
+        killed += WIFSIGNALED(st) && WTERMSIG(st) == SIGKILL;
+        finished += WIFEXITED(st) && WEXITSTATUS(st) == 0;
+    }
+    CHECK(killed == 1 && finished == 1);            /* the biggest user died, the other one kept its data intact */
+    CHECK(free_kb() > before / 10 * 9);             /* and its memory came back */
+    CHECK(getpid() > 0 && write(1, "", 0) == 0);    /* the parent never noticed */
+}
+
 int main(int argc, char **argv) {
-    static const struct { const char *name; void (*fn)(void); } tests[] = {
-        { "restart", test_sa_restart }, { "pipe", test_pipe_capacity }, { "dir", test_open_directory },
-        { "select", test_select }, { "socketpair", test_socketpair },
+    static const struct { const char *name; void (*fn)(void); int by_name_only; } tests[] = {
+        { "restart", test_sa_restart, 0 }, { "pipe", test_pipe_capacity, 0 }, { "dir", test_open_directory, 0 },
+        { "select", test_select, 0 }, { "socketpair", test_socketpair, 0 },
+        { "oom", test_oom, 1 },                     /* needs a small machine: run as "kernel_test oom" */
     };
 
     for (unsigned i = 0; i < sizeof tests / sizeof tests[0]; i++)
-        if (argc < 2 || !strcmp(argv[1], tests[i].name)) tests[i].fn();
+        if (argc < 2 ? !tests[i].by_name_only : !strcmp(argv[1], tests[i].name)) tests[i].fn();
     return check_report("kernel_test");
 }

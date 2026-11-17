@@ -6,6 +6,7 @@
 #include <kernel/memory/mm.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/memory/frame.h>
+#include <kernel/process/oom.h>
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/lib/string.h>
 
@@ -282,6 +283,14 @@ static int resolve(mm_struct_t *mm, uint32_t prot, uintptr_t page, bool write) {
     return VM_FAULT_OK;
 }
 
+/* resolve(); if memory is short the OOM killer frees some and the allocation is tried again. */
+static int resolve_or_kill(mm_struct_t *mm, uint32_t prot, uintptr_t page, bool write) {
+    int r;
+
+    for (int i = 0; (r = resolve(mm, prot, page, write)) == VM_FAULT_OOM && i < OOM_RETRIES && oom_make_room(); i++) { }
+    return r;
+}
+
 static bool vma_allows(const vma_struct_t *v, bool write) {
     return !(v->vm_flags & VM_FILEBACKED) &&
            (write ? (v->vm_flags & VM_WRITE) : (v->vm_flags & (VM_READ | VM_EXEC | VM_WRITE)));
@@ -300,7 +309,7 @@ int mm_fault(mm_struct_t *mm, uintptr_t addr, uint32_t error_code) {
     uint32_t prot = ok ? v->page_prot : 0;
     spinlock_release_irqrestore(&mm->lock, flags);
 
-    return ok ? resolve(mm, prot, PAGE_ALIGN_DOWN(addr), write) : VM_FAULT_SEGV;
+    return ok ? resolve_or_kill(mm, prot, PAGE_ALIGN_DOWN(addr), write) : VM_FAULT_SEGV;
 }
 
 bool mm_access_ok(mm_struct_t *mm, uintptr_t addr, size_t len, bool write, bool populate) {
@@ -324,7 +333,7 @@ bool mm_access_ok(mm_struct_t *mm, uintptr_t addr, size_t len, bool write, bool 
             for (uintptr_t p = PAGE_ALIGN_DOWN(a); p < seg_end; p += PAGE_SIZE) {
                 uint32_t *pte = paging_pte(mm->pgd_phys, p, false);
                 if ((!pte || !(*pte & PAGE_PRESENT) || (write && !(*pte & PAGE_RW))) &&
-                    resolve(mm, prot, p, write) != VM_FAULT_OK)
+                    resolve_or_kill(mm, prot, p, write) != VM_FAULT_OK)
                     return false;
             }
         }

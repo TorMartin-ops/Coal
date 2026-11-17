@@ -22,11 +22,12 @@ void page_fault_handler(registers_t *regs) {
 
     pcb_t *p = get_current_process();
     int r = (p && p->mm) ? mm_fault(p->mm, addr, regs->err_code) : VM_FAULT_SEGV;
-    if (r != VM_FAULT_OK) {
-        KLOG_WARN(LOG_MODULE, "PID %u: %s at %#x (eip %#x)", (unsigned)p->pid,
-                  r == VM_FAULT_OOM ? "out of memory" : "segmentation fault",
+    if (r == VM_FAULT_OOM) {
+        signal_force(SIGKILL);                  /* mm_fault() already ran the OOM killer and logged the victim */
+    } else if (r != VM_FAULT_OK) {
+        KLOG_WARN(LOG_MODULE, "PID %u: segmentation fault at %#x (eip %#x)", (unsigned)p->pid,
                   (unsigned)addr, (unsigned)regs->eip);
-        signal_force(r == VM_FAULT_OOM ? SIGKILL : SIGSEGV);
+        signal_force(SIGSEGV);
     }
     signal_return_to_user((isr_frame_t *)regs, 0);
 }
