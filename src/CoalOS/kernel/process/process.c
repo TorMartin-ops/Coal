@@ -7,6 +7,7 @@
 #include <kernel/lib/assert.h>
 #include <kernel/cpu/gdt.h>
 #include <kernel/drivers/display/console_dev.h>
+#include <kernel/fs/procfs.h>
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/fs/vfs/sys_file.h>
 #include <kernel/lib/rbtree.h>
@@ -198,23 +199,17 @@ void process_reap_orphans(void) {
 
 /* ---- open files --------------------------------------------------------- */
 
+/** stdin, stdout and stderr share one open file on /dev/console. */
 static void fds_init_std(pcb_t *p) {
-    static const int modes[3] = { CONSOLE_STDIN_MODE, CONSOLE_STDOUT_MODE, CONSOLE_STDERR_MODE };
+    sys_file_t *sf = kmalloc(sizeof(*sf));
 
-    for (int i = 0; i < 3; i++) {
-        sys_file_t *sf = kmalloc(sizeof(*sf));
-        if (!sf) return;
-        memset(sf, 0, sizeof(*sf));
-        sf->vfs_file = create_console_file(modes[i]);
-        if (!sf->vfs_file) { kfree(sf); return; }
-        p->fd_table[i] = sf;
-    }
-}
-
-/** fork: the child shares every open-file object (and its offset) with the parent. */
-static void fds_dup(pcb_t *dst, const pcb_t *src) {
-    for (int i = 0; i < MAX_FD; i++)
-        if (src->fd_table[i]) dst->fd_table[i] = sys_file_get(src->fd_table[i]);
+    if (!sf) return;
+    memset(sf, 0, sizeof(*sf));
+    sf->flags = O_RDWR;
+    sf->vfs_file = create_console_file(O_RDWR);
+    if (!sf->vfs_file) { kfree(sf); return; }
+    sf->dups = 2;
+    p->fd_table[0] = p->fd_table[1] = p->fd_table[2] = sf;
 }
 
 static void fds_close_all(pcb_t *p) {
@@ -223,10 +218,7 @@ static void fds_close_all(pcb_t *p) {
         sys_file_t *sf = p->fd_table[i];
         p->fd_table[i] = NULL;
         spinlock_release_irqrestore(&p->fd_table_lock, flags);
-        if (sf && sys_file_put(sf)) {
-            vfs_close(sf->vfs_file);
-            kfree(sf);
-        }
+        if (sf) sys_file_put(sf);
     }
 }
 
@@ -242,6 +234,7 @@ pcb_t *create_user_process(const char *path) {
     if (exec_build_image(path, argv, envp, &img) != 0) { kstack_free_pages(p); kfree(p); return NULL; }
     p->mm = img.mm;
     p->page_directory_phys = img.mm->pgd_phys;
+    exec_set_name(p, path, argv);
     fds_init_std(p);
     process_init_user_frame(process_user_frame(p), img.entry, img.sp);
     process_set_entry_frame(p);
@@ -313,7 +306,10 @@ int process_fork(const isr_frame_t *regs) {
 
     child->mm = mm;
     child->page_directory_phys = mm->pgd_phys;
-    fds_dup(child, parent);
+    memcpy(child->name, parent->name, sizeof(child->name));
+    memcpy(child->cmdline, parent->cmdline, sizeof(child->cmdline));
+    child->cmdline_len = parent->cmdline_len;
+    sys_files_clone(child, parent);
     f = process_user_frame(child);
     *f = *regs;
     f->eax = 0;
@@ -416,4 +412,32 @@ int process_setpgid(pcb_t *p, uint32_t pgid) {
     if (p->sid == p->pid && p->pid != pgid) return -EPERM;      /* session leaders keep their group */
     p->pgid = pgid;
     return 0;
+}
+
+/* ---- /proc support ---------------------------------------------------------- */
+
+int proc_info_get(uint32_t pid, proc_info_t *out) {
+    uintptr_t flags = local_irq_save();
+    pcb_t *p = process_find(pid);
+
+    if (!p || !p->pid) { local_irq_restore(flags); return -ESRCH; }
+    out->pid = p->pid;
+    out->ppid = p->ppid;
+    out->state = p->task.state == TASK_ZOMBIE ? 'Z'
+               : p->task.state == TASK_RUNNING || p->task.state == TASK_READY ? 'R' : 'S';
+    memcpy(out->name, p->name, sizeof(out->name));
+    memcpy(out->cmdline, p->cmdline, sizeof(out->cmdline));
+    out->cmdline_len = p->cmdline_len;
+    local_irq_restore(flags);
+    return 0;
+}
+
+int proc_info_list(uint32_t *pids, int max) {
+    uintptr_t flags = local_irq_save();
+    int n = 0;
+
+    for (pcb_t *p = g_all; p && n < max; p = p->all_next)
+        if (p->pid) pids[n++] = p->pid;
+    local_irq_restore(flags);
+    return n;
 }

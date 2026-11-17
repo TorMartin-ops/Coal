@@ -206,6 +206,22 @@ out:
     return ret;
 }
 
+void exec_set_name(pcb_t *p, const char *path, const char *const *argv) {
+    const char *base = path;
+    size_t n = 0;
+
+    for (const char *c = path; *c; c++) if (*c == '/') base = c + 1;
+    strncpy(p->name, base, sizeof(p->name) - 1);
+    p->name[sizeof(p->name) - 1] = 0;
+    for (size_t i = 0; argv && argv[i]; i++) {
+        size_t l = strlen(argv[i]) + 1;
+        if (n + l > sizeof(p->cmdline)) break;
+        memcpy(p->cmdline + n, argv[i], l);
+        n += l;
+    }
+    p->cmdline_len = n;
+}
+
 int process_execve(const char *path, const char *const *argv, const char *const *envp,
                    isr_frame_t *regs) {
     pcb_t *p = get_current_process();
@@ -226,6 +242,7 @@ int process_execve(const char *path, const char *const *argv, const char *const 
     local_irq_restore(flags);
 
     if (old) exec_free_mm(old);
+    exec_set_name(p, path, argv);
     process_init_user_frame(regs, img.entry, img.sp);
     return 0;
 }

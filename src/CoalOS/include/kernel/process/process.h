@@ -44,6 +44,10 @@ typedef struct pcb {
     struct sys_file *fd_table[MAX_FD];
     spinlock_t       fd_table_lock;
 
+    char     name[16];
+    char     cmdline[128];            /* argv, NUL separated (for /proc) */
+    uint32_t cmdline_len;
+
     uint32_t *kernel_stack_vaddr_top;
     uintptr_t kstack_frames[KSTACK_PAGES];
 } pcb_t;

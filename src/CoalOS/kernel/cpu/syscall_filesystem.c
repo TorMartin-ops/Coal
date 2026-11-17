@@ -15,8 +15,8 @@
 #include "syscall_utils.h"
 #include "syscall_security.h"
 #include <kernel/fs/vfs/vfs.h>
+#include <sys/stat.h>
 #include <kernel/fs/vfs/fs_errno.h>
-#include <kernel/fs/vfs/dirent.h>
 // #include <kernel/fs/stat.h> - removed due to conflict with sys/stat.h
 #include <kernel/process/process.h>
 #include <kernel/memory/paging.h>
