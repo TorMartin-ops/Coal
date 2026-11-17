@@ -24,9 +24,9 @@ void* paging_temp_map(uintptr_t phys_addr);
 
 /**
  * @brief Unmap a temporary virtual address
- * @param temp_vaddr Virtual address returned by paging_temp_map (as uintptr_t)
+ * @param temp_vaddr Virtual address returned by paging_temp_map
  */
-void paging_temp_unmap(uintptr_t temp_vaddr);
+void paging_temp_unmap(void *temp_vaddr);
 
 /**
  * @brief Get statistics about temporary mappings

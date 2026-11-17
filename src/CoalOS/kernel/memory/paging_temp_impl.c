@@ -140,16 +140,16 @@ void* paging_temp_map_with_flags(uintptr_t phys_addr, uint32_t flags) {
 /**
  * @brief Unmap a temporary virtual address
  */
-void paging_temp_unmap(uintptr_t temp_vaddr) {
+void paging_temp_unmap(void *temp_vaddr) {
     if (!g_temp_initialized) {
         return;
     }
     
-    uintptr_t vaddr = temp_vaddr;
+    uintptr_t vaddr = (uintptr_t)temp_vaddr;
     
     // Validate address is in temp region
     if (vaddr < TEMP_MAP_VIRT_START || vaddr >= (TEMP_MAP_VIRT_START + TEMP_MAP_SIZE)) {
-        LOGGER_ERROR(LOG_MODULE, "Address %p not in temporary mapping region", (void*)temp_vaddr);
+        LOGGER_ERROR(LOG_MODULE, "Address %p not in temporary mapping region", temp_vaddr);
         return;
     }
     

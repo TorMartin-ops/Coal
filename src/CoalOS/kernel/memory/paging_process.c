@@ -98,7 +98,7 @@ uintptr_t paging_clone_directory(uint32_t* src_pd_phys) {
     
     // TODO: Clone user space mappings if needed (for fork())
     
-    paging_temp_unmap((uintptr_t)new_pd_virt);
+    paging_temp_unmap(new_pd_virt);
     
     LOGGER_DEBUG(LOG_MODULE, "Cloned page directory: %#x -> %#x", (uint32_t)src_pd_phys, new_pd_phys);
     
@@ -149,7 +149,7 @@ void paging_free_user_space(uint32_t* page_directory_phys) {
                     }
                 }
                 
-                paging_temp_unmap((uintptr_t)pt_virt);
+                paging_temp_unmap(pt_virt);
             }
             
             // Free the page table itself
@@ -162,7 +162,7 @@ void paging_free_user_space(uint32_t* page_directory_phys) {
     
     // Unmap if we used temp mapping
     if (pd_virt != g_kernel_page_directory_virt) {
-        paging_temp_unmap((uintptr_t)pd_virt);
+        paging_temp_unmap(pd_virt);
     }
     
     LOGGER_DEBUG(LOG_MODULE, "Freed user space for PD %p", page_directory_phys);

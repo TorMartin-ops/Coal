@@ -115,12 +115,12 @@ int paging_unmap_range(uint32_t* page_directory_phys,
         // Invalidate TLB
         paging_invalidate_page((void*)vaddr);
         
-        paging_temp_unmap((uintptr_t)pt_virt);
+        paging_temp_unmap(pt_virt);
     }
     
     // Unmap temporary mapping if used
     if (pd_virt != g_kernel_page_directory_virt) {
-        paging_temp_unmap((uintptr_t)pd_virt);
+        paging_temp_unmap(pd_virt);
     }
     
     return 0;
@@ -171,7 +171,7 @@ int paging_map_single_4k(uint32_t* page_directory_phys,
         pt_phys = frame_alloc();
         if (!pt_phys) {
             LOGGER_ERROR(LOG_MODULE, "Failed to allocate page table");
-            if (pd_is_temp) paging_temp_unmap((uintptr_t)pd_virt);
+            if (pd_is_temp) paging_temp_unmap(pd_virt);
             return -1;
         }
         need_new_pt = true;
@@ -188,7 +188,7 @@ int paging_map_single_4k(uint32_t* page_directory_phys,
             *pde = pt_phys | PAGE_PRESENT | PAGE_RW | (vaddr >= KERNEL_SPACE_VIRT_START ? 0 : PAGE_USER);
             
             // Unmap the PD to free up a temp slot
-            paging_temp_unmap((uintptr_t)pd_virt);
+            paging_temp_unmap(pd_virt);
             pd_is_temp = false;
             
             // Now map and clear the page table
@@ -203,7 +203,7 @@ int paging_map_single_4k(uint32_t* page_directory_phys,
             pt_virt[pt_index] = paddr | flags | PAGE_PRESENT;
             
             // Unmap page table
-            paging_temp_unmap((uintptr_t)pt_virt);
+            paging_temp_unmap(pt_virt);
         } else {
             // Kernel PD - can use temp mapping normally
             uint32_t* pt_virt = (uint32_t*)paging_temp_map(pt_phys);
@@ -220,14 +220,14 @@ int paging_map_single_4k(uint32_t* page_directory_phys,
             pt_virt[pt_index] = paddr | flags | PAGE_PRESENT;
             
             // Unmap page table
-            paging_temp_unmap((uintptr_t)pt_virt);
+            paging_temp_unmap(pt_virt);
         }
     } else {
         // Page table already exists - map it and set PTE
         
         // If we still have the PD mapped temporarily, unmap it first
         if (pd_is_temp) {
-            paging_temp_unmap((uintptr_t)pd_virt);
+            paging_temp_unmap(pd_virt);
             pd_is_temp = false;
         }
         
@@ -241,7 +241,7 @@ int paging_map_single_4k(uint32_t* page_directory_phys,
         pt_virt[pt_index] = paddr | flags | PAGE_PRESENT;
         
         // Unmap page table
-        paging_temp_unmap((uintptr_t)pt_virt);
+        paging_temp_unmap(pt_virt);
     }
     
     // Invalidate TLB
@@ -284,7 +284,7 @@ int paging_get_physical_address_and_flags(uint32_t* page_directory_phys,
     
     if (!(pde & PAGE_PRESENT)) {
         if (pd_virt != g_kernel_page_directory_virt) {
-            paging_temp_unmap((uintptr_t)pd_virt);
+            paging_temp_unmap(pd_virt);
         }
         return -1; // Not mapped
     }
@@ -294,7 +294,7 @@ int paging_get_physical_address_and_flags(uint32_t* page_directory_phys,
     uint32_t* pt_virt = (uint32_t*)paging_temp_map(pt_phys);
     if (!pt_virt) {
         if (pd_virt != g_kernel_page_directory_virt) {
-            paging_temp_unmap((uintptr_t)pd_virt);
+            paging_temp_unmap(pd_virt);
         }
         return -1;
     }
@@ -304,9 +304,9 @@ int paging_get_physical_address_and_flags(uint32_t* page_directory_phys,
     uint32_t pte = pt_virt[pt_index];
     
     if (!(pte & PAGE_PRESENT)) {
-        paging_temp_unmap((uintptr_t)pt_virt);
+        paging_temp_unmap(pt_virt);
         if (pd_virt != g_kernel_page_directory_virt) {
-            paging_temp_unmap((uintptr_t)pd_virt);
+            paging_temp_unmap(pd_virt);
         }
         return -1; // Not mapped
     }
@@ -316,9 +316,9 @@ int paging_get_physical_address_and_flags(uint32_t* page_directory_phys,
     *flags_out = pte & ~PAGING_ADDR_MASK;
     
     // Clean up temporary mappings
-    paging_temp_unmap((uintptr_t)pt_virt);
+    paging_temp_unmap(pt_virt);
     if (pd_virt != g_kernel_page_directory_virt) {
-        paging_temp_unmap((uintptr_t)pd_virt);
+        paging_temp_unmap(pd_virt);
     }
     
     return 0;
