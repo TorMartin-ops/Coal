@@ -332,11 +332,9 @@ static int ata_dma_command(block_device_t *d, uint64_t lba, sg_cursor_t *cur, ui
     return r;
 }
 
-int block_device_rw(block_device_t *d, uint64_t lba, const blk_seg_t *segs, unsigned nseg, bool write) {
+static int ata_rw(block_device_t *d, uint64_t lba, const blk_seg_t *segs, unsigned nseg, bool write) {
     uint64_t count = 0;
-    for (unsigned i = 0; d && i < nseg; i++) count += segs[i].sectors;
-    if (!d || !d->initialized || count == 0) return BLOCK_ERR_PARAMS;
-    if (lba >= d->total_sectors || count > d->total_sectors - lba) return BLOCK_ERR_BOUNDS;
+    for (unsigned i = 0; i < nseg; i++) count += segs[i].sectors;
     if (!d->lba48_supported && lba + count > LBA28_LIMIT) return BLOCK_ERR_BOUNDS;
 
     int r = BLOCK_ERR_OK;
@@ -367,7 +365,27 @@ int block_device_rw(block_device_t *d, uint64_t lba, const blk_seg_t *segs, unsi
     return r;
 }
 
+static int ata_flush(block_device_t *dev) {
+    channel_lock(dev->channel);
+    ata_select(dev);
+    outb(dev->io_base + ATA_REG_COMMAND, dev->lba48_supported ? ATA_CMD_FLUSH_EXT : ATA_CMD_FLUSH);
+    ata_delay_400ns(dev);
+    int r = ata_wait(dev, false);
+    channel_unlock(dev->channel);
+    return r;
+}
+
+static const blk_ops_t ata_ops = { ata_rw, ata_flush };
+
 /* ---- Public API -------------------------------------------------------- */
+
+int block_device_rw(block_device_t *d, uint64_t lba, const blk_seg_t *segs, unsigned nseg, bool write) {
+    uint64_t count = 0;
+    for (unsigned i = 0; d && i < nseg; i++) count += segs[i].sectors;
+    if (!d || !d->initialized || count == 0) return BLOCK_ERR_PARAMS;
+    if (lba >= d->total_sectors || count > d->total_sectors - lba) return BLOCK_ERR_BOUNDS;
+    return d->ops->rw(d, lba, segs, nseg, write);
+}
 
 int block_device_read(block_device_t *dev, uint64_t lba, void *buffer, size_t count) {
     blk_seg_t seg = { buffer, (uint32_t)count };
@@ -381,13 +399,7 @@ int block_device_write(block_device_t *dev, uint64_t lba, const void *buffer, si
 
 int block_device_flush(block_device_t *dev) {
     if (!dev || !dev->initialized) return BLOCK_ERR_PARAMS;
-    channel_lock(dev->channel);
-    ata_select(dev);
-    outb(dev->io_base + ATA_REG_COMMAND, dev->lba48_supported ? ATA_CMD_FLUSH_EXT : ATA_CMD_FLUSH);
-    ata_delay_400ns(dev);
-    int r = ata_wait(dev, false);
-    channel_unlock(dev->channel);
-    return r;
+    return dev->ops->flush(dev);
 }
 
 int block_device_init(const char *device, block_device_t *dev) {
@@ -396,6 +408,7 @@ int block_device_init(const char *device, block_device_t *dev) {
         return BLOCK_ERR_PARAMS;
     }
     memset(dev, 0, sizeof(*dev));
+    dev->ops          = &ata_ops;
     dev->device_name  = device;
     dev->channel      = (device[2] >= 'c');
     dev->is_slave     = (device[2] & 1) == 0; /* b, d */

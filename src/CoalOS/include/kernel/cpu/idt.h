@@ -87,6 +87,9 @@ void idt_init(void);
 void register_int_handler(int num, int_handler_t handler, void* data);
 
 
+/** The C handler on a vector, NULL if none. Lets a driver that shares an IRQ line call the one it replaced. */
+int_handler_t get_int_handler(int num);
+
 /** Number of interrupts taken on a vector (0..63) since boot. */
 uint32_t irq_count(unsigned vector);
 

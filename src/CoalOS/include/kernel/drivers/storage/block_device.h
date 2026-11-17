@@ -1,9 +1,11 @@
 /**
  * @file block_device.h
- * @brief ATA PIO block device (primary and secondary channel, LBA28/LBA48).
+ * @brief Block devices: an operations table over sector-addressed storage, and the ATA driver
+ *        (primary and secondary channel, LBA28/LBA48, bus-master DMA or PIO).
  *
- * Transfers are polled with interrupts enabled; the drive's own interrupt is
- * disabled (nIEN), so there is no completion IRQ to wait for.
+ * ATA transfers are polled with interrupts enabled; the drive's own interrupt is
+ * disabled (nIEN), so there is no completion IRQ to wait for. virtio-blk (see
+ * virtio_blk.h) plugs in through the same operations.
  */
 #ifndef BLOCK_DEVICE_H
 #define BLOCK_DEVICE_H
@@ -27,8 +29,18 @@ typedef struct {
     uint32_t sectors;
 } blk_seg_t;
 
-typedef struct {
-    const char *device_name;   /* "hda".."hdd" */
+typedef struct block_device block_device_t;
+
+/** What a driver provides; the checks in block_device_rw() have run when these are called. */
+typedef struct blk_ops {
+    int (*rw)(block_device_t *dev, uint64_t lba, const blk_seg_t *segs, unsigned nseg, bool write);
+    int (*flush)(block_device_t *dev);
+} blk_ops_t;
+
+struct block_device {
+    const blk_ops_t *ops;
+    void       *priv;          /* driver private */
+    const char *device_name;   /* "hda".."hdd", "vda".. */
     uint16_t io_base;
     uint16_t control_base;
     uint8_t  channel;          /* 0 = primary, 1 = secondary */
@@ -37,7 +49,7 @@ typedef struct {
     bool     lba48_supported;
     uint32_t sector_size;
     uint64_t total_sectors;
-} block_device_t;
+};
 
 /** Probes the named drive with IDENTIFY and fills in dev. */
 int block_device_init(const char *device, block_device_t *dev);
