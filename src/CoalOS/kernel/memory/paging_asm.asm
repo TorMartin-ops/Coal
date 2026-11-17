@@ -21,16 +21,16 @@ paging_invalidate_page:
 
 ; ----------------------------------------------------
 ; void paging_activate(uint32_t *page_directory_phys);
-; Loads a new page directory and enables paging.
+; Loads a page directory and enables paging and write protection (CR0.PG, CR0.WP).
 ; Argument page_directory_phys is at [esp + 4]
 ; ----------------------------------------------------
 paging_activate:
     mov eax, [esp + 4]  ; Get physical address of the Page Directory from the stack
     mov cr3, eax        ; Load the physical address into CR3
 
-    ; Enable paging bit (PG - bit 31) in CR0
-    mov eax, cr0        ; Read current CR0 value
-    or eax, 0x80000000  ; Set the PG bit (bit 31)
+    mov eax, cr0
+    or eax, 0x80010000  ; PG (bit 31) | WP (bit 16): the kernel honours read-only pages
     mov cr0, eax        ; Write the modified value back to CR0
 
     ret                 ; Return to caller
+section .note.GNU-stack noalloc noexec nowrite progbits

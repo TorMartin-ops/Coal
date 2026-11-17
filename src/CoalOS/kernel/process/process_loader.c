@@ -161,19 +161,8 @@ static error_t setup_standard_vmas(pcb_t *proc) {
         return E_INVAL;
     }
 
-    // Setup heap VMA (initially empty, starting at end_brk)
-    uintptr_t heap_start = proc->mm->end_brk;
-    KERNEL_ASSERT(heap_start < USER_STACK_BOTTOM_VIRT, "Heap start overlaps user stack area");
-    
-    uint32_t heap_page_prot = PAGE_PRESENT | PAGE_RW | PAGE_USER | (g_nx_supported ? PAGE_NX_BIT : 0);
-    if (!insert_vma(proc->mm, heap_start, heap_start, 
-                   VM_READ | VM_WRITE | VM_USER | VM_ANONYMOUS, heap_page_prot, NULL, 0)) {
-        KLOG_ERROR(LOG_MODULE, "Failed to insert heap VMA");
-        return E_NOMEM;
-    }
-    
-    KLOG_DEBUG(LOG_MODULE, "Initial Heap VMA placeholder added: [%#lx - %#lx)",
-                heap_start, heap_start);
+    KERNEL_ASSERT(proc->mm->end_brk < USER_STACK_BOTTOM_VIRT, "Heap start overlaps user stack area");
+    // The heap VMA is created by mm_brk() on first growth.
 
     // Setup user stack VMA
     uint32_t stack_page_prot = PAGE_PRESENT | PAGE_RW | PAGE_USER | (g_nx_supported ? PAGE_NX_BIT : 0);
