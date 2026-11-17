@@ -8,6 +8,7 @@
 #include <libc/string.h>
 #include <libc/unistd.h>
 #include <libc/fcntl.h>
+#include <libc/sys/stat.h>
 #include "check.h"
 
 #define PATH "/tmp/fs_stress.bin"
@@ -85,6 +86,82 @@ static void test_open_file_names(void) {
     close(fd);                                  /* frees the clusters */
 }
 
+static bool all_bytes(const uint8_t *p, size_t n, uint8_t v) {
+    for (size_t i = 0; i < n; i++) if (p[i] != v) return false;
+    return true;
+}
+
+static ssize_t pread(int fd, void *buf, size_t n, off_t off) {
+    return lseek(fd, off, 0) == off ? read(fd, buf, n) : -1;
+}
+
+/* Page cache edges: holes, truncation, overwrites across page boundaries, small appends, reuse of clusters. */
+static void test_page_cache_edges(void) {
+    static uint8_t buf[70000];
+    int fd = open("/tmp/fs_edge", O_RDWR | O_CREAT | O_TRUNC, 0644);
+
+    CHECK(fd >= 0);
+    memset(buf, 0xAA, 65536);                               /* old data that a new file must never show */
+    CHECK(write(fd, buf, 65536) == 65536);
+    close(fd);
+    CHECK(unlink("/tmp/fs_edge") == 0);
+
+    fd = open("/tmp/fs_edge", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    CHECK(fd >= 0 && write(fd, "head", 4) == 4);
+    CHECK(lseek(fd, 60000, 0) == 60000 && write(fd, "tail", 4) == 4);
+    CHECK(lseek(fd, 0, 0) == 0 && read(fd, buf, sizeof buf) == 60004);
+    CHECK(memcmp(buf, "head", 4) == 0 && all_bytes(buf + 4, 59996, 0) && memcmp(buf + 60000, "tail", 4) == 0);
+
+    CHECK(lseek(fd, 4090, 0) == 4090 && write(fd, "0123456789ABCDEFGHIJ", 20) == 20);     /* across a page boundary */
+    CHECK(pread(fd, buf, 24, 4088) == 24 && memcmp(buf + 2, "0123456789ABCDEFGHIJ", 20) == 0 && buf[0] == 0 && buf[23] == 0);
+
+    close(fd);                                              /* O_TRUNC: the pages of the old contents are gone */
+    fd = open("/tmp/fs_edge", O_RDWR | O_TRUNC);
+    CHECK(fd >= 0 && write(fd, "x", 1) == 1 && pread(fd, buf, 4, 0) == 1 && buf[0] == 'x');
+    close(fd);
+
+    fd = open("/tmp/fs_edge", O_WRONLY | O_TRUNC | O_APPEND);
+    CHECK(fd >= 0);
+    for (int i = 0; i < 3000; i++) CHECK(write(fd, "abcdefg", 7) == 7);
+    close(fd);
+    fd = open("/tmp/fs_edge", O_RDONLY);
+    CHECK(fd >= 0 && lseek(fd, 0, 2) == 21000);
+    CHECK(pread(fd, buf, 14, 20986) == 14 && memcmp(buf, "abcdefgabcdefg", 14) == 0);
+    close(fd);
+    CHECK(unlink("/tmp/fs_edge") == 0);
+}
+
+/* Name lookups stay right while entries come and go. */
+static void test_names(void) {
+    struct stat st;
+    char path[96];
+
+    CHECK(mkdir("/tmp/fs_dir", 0755) == 0);
+    for (int i = 0; i < 40; i++) {
+        snprintf(path, sizeof path, "/tmp/fs_dir/a rather long file name number %d.txt", i);
+        int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+        CHECK(fd >= 0 && write(fd, path, 3 + (size_t)i) == 3 + (ssize_t)i);
+        close(fd);
+    }
+    CHECK(stat("/tmp/fs_dir/A RATHER LONG FILE NAME NUMBER 7.TXT", &st) == 0 && st.st_size == 10);
+    CHECK(rename("/tmp/fs_dir/a rather long file name number 7.txt", "/tmp/fs_dir/seven") == 0);
+    CHECK(stat("/tmp/fs_dir/a rather long file name number 7.txt", &st) < 0);
+    CHECK(stat("/tmp/fs_dir/SEVEN", &st) == 0 && st.st_size == 10);
+    CHECK(unlink("/tmp/fs_dir/seven") == 0 && stat("/tmp/fs_dir/seven", &st) < 0);
+    int fd = open("/tmp/fs_dir/seven", O_WRONLY | O_CREAT | O_EXCL, 0644);          /* the freed slot is reused */
+    CHECK(fd >= 0 && write(fd, "new", 3) == 3);
+    close(fd);
+    CHECK(stat("/tmp/fs_dir/seven", &st) == 0 && st.st_size == 3);
+    for (int i = 0; i < 40; i++) {
+        snprintf(path, sizeof path, "/tmp/fs_dir/a rather long file name number %d.txt", i);
+        CHECK(i == 7 ? stat(path, &st) < 0 : unlink(path) == 0);
+    }
+    CHECK(rmdir("/tmp/fs_dir") < 0);                                                 /* "seven" is still there */
+    CHECK(unlink("/tmp/fs_dir/seven") == 0 && rmdir("/tmp/fs_dir") == 0);
+    CHECK(stat("/tmp/fs_dir/seven", &st) < 0);
+    CHECK(mkdir("/tmp/fs_dir", 0755) == 0 && stat("/tmp/fs_dir/seven", &st) < 0 && rmdir("/tmp/fs_dir") == 0);
+}
+
 int main(int argc, char **argv) {
     static const size_t sizes[] = { 1u << 20, 2u << 20, 4u << 20, 8u << 20, (3u << 20) + 12345 };
     static const size_t chunks[] = { 512, 4096, 65536, 1u << 20, 12345 };
@@ -92,6 +169,8 @@ int main(int argc, char **argv) {
     unsigned nsizes = argc > 1 && strcmp(argv[1], "quick") == 0 ? 1 : sizeof sizes / sizeof sizes[0];
 
     test_open_file_names();
+    test_page_cache_edges();
+    test_names();
     for (unsigned i = 0; i < nsizes; i++) {
         for (unsigned j = 0; j < sizeof chunks / sizeof chunks[0]; j++) {
             uint32_t seed = 0x9e3779b9u * (i + 1) + j;

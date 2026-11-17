@@ -33,9 +33,9 @@ static fat_node_t *node_get(fat_fs_t *fs, const fat_ent_t *e) {
         n->ent_lba = e->lba;
         n->ent_off = e->off;
         n->attr = e->attr;
-        n->mtime = e->mtime;
-        n->atime = e->atime;
-        n->ctime = e->ctime;
+        n->mtime = fat_dos_to_unix(e->mdate, e->mtim);
+        n->atime = fat_dos_to_unix(e->adate, 0);
+        n->ctime = fat_dos_to_unix(e->cdate, e->ctim);
         n->next = fs->nodes;
         fs->nodes = n;
     }
@@ -406,7 +406,7 @@ static int rename_locked(fat_fs_t *fs, const char *from, const char *to) {
     }
 
     fat_ent_t n;
-    rc = fat_dir_add(fs, ddir, dleaf, s.attr, s.cluster, s.size, s.mtime, &n);
+    rc = fat_dir_add(fs, ddir, dleaf, s.attr, s.cluster, s.size, fat_dos_to_unix(s.mdate, s.mtim), &n);
     if (rc < 0) return rc;
     fat_node_t *open = node_find(fs, s.lba, s.off);     /* an open file follows its entry */
     if (open) { open->ent_lba = n.lba; open->ent_off = n.off; }

@@ -101,7 +101,7 @@ typedef struct {
     uint8_t  sfn[11];
     uint8_t  attr;
     uint32_t cluster, size;
-    uint32_t mtime, atime, ctime;
+    uint16_t mdate, mtim, adate, cdate, ctim;   /* DOS timestamps as stored; converted only when used */
     uint32_t idx;               /* slot index of the 8.3 entry within its directory */
     uint32_t first_idx;         /* slot index of its first long-name slot */
     uint32_t lba, off;          /* where the 8.3 entry lives */

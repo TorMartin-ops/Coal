@@ -242,9 +242,11 @@ static void ent_decode(const fat_fs_t *fs, const uint8_t *e, fat_ent_t *out) {
     out->attr = de->attr;
     out->cluster = de->cluster_lo | (fs->type == 32 ? (uint32_t)de->cluster_hi << 16 : 0);
     out->size = de->size;
-    out->mtime = fat_dos_to_unix(de->mdate, de->mtime);
-    out->atime = fat_dos_to_unix(de->adate, 0);
-    out->ctime = fat_dos_to_unix(de->cdate, de->ctime);
+    out->mdate = de->mdate;
+    out->mtim = de->mtime;
+    out->adate = de->adate;
+    out->cdate = de->cdate;
+    out->ctim = de->ctime;
 }
 
 int fat_dir_next(fat_dir_t *d, uint32_t *pos, fat_ent_t *out) {
@@ -302,6 +304,12 @@ int fat_dir_next(fat_dir_t *d, uint32_t *pos, fat_ent_t *out) {
 
 /* Remembers where a name's slot is; the slot stays authoritative, so size, cluster and times are read from
  * it. Entries are dropped when their slot is freed (fat_dir_remove) and replaced when a name is created. */
+static bool sfn_eq(const uint8_t *a, const uint8_t *b) {
+    uint32_t a0, a1, b0, b1;
+    memcpy(&a0, a, 4); memcpy(&a1, a + 4, 4); memcpy(&b0, b, 4); memcpy(&b1, b + 4, 4);
+    return a0 == b0 && a1 == b1 && a[8] == b[8] && a[9] == b[9] && a[10] == b[10];
+}
+
 static fat_dcache_t *dc_slot(const fat_fs_t *fs, uint32_t dir, const char *name) {
     uint32_t h = dir * 2654435761u;
     for (const char *p = name; *p; p++) h = (h ^ (uint8_t)fold(*p)) * 16777619u;
@@ -332,7 +340,7 @@ static bool dc_get(fat_fs_t *fs, uint32_t dir, const char *name, fat_ent_t *out)
     buffer_t *b = fat_buf(fs, c->lba);
     if (!b) return false;
     const uint8_t *e = b->data + c->off;
-    bool ok = e[0] != 0x00 && e[0] != 0xE5 && e[11] != FAT_ATTR_LFN && memcmp(e, c->sfn, 11) == 0;
+    bool ok = e[0] != 0x00 && e[0] != 0xE5 && e[11] != FAT_ATTR_LFN && sfn_eq(e, c->sfn);
     if (ok) {
         ent_decode(fs, e, out);
         strcpy(out->name, name);
@@ -446,7 +454,8 @@ int fat_dir_add(fat_fs_t *fs, uint32_t dir, const char *name, uint8_t attr,
     out->attr = attr;
     out->cluster = cluster;
     out->size = size;
-    out->mtime = out->atime = out->ctime = mtime;
+    out->mdate = out->adate = out->cdate = date;
+    out->mtim = out->ctim = time;
     out->idx = idx;
     out->first_idx = start;
     out->lba = d.buf->block_number;
