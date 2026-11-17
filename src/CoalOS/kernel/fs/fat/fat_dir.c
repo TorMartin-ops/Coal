@@ -441,6 +441,7 @@ int fat_dir_add(fat_fs_t *fs, uint32_t dir, const char *name, uint8_t attr,
     de->nt = nt;
     de->ctime = de->mtime = time;
     de->cdate = de->mdate = de->adate = date;
+    de->attr = attr;
     de->cluster_lo = (uint16_t)cluster;
     de->cluster_hi = fs->type == 32 ? (uint16_t)(cluster >> 16) : 0;
     de->size = size;
@@ -483,12 +484,13 @@ int fat_dir_remove(fat_fs_t *fs, uint32_t dir, const fat_ent_t *ent) {
 }
 
 int fat_ent_update(fat_fs_t *fs, uint32_t lba, uint32_t off, uint32_t cluster,
-                   uint32_t size, uint32_t mtime) {
+                   uint32_t size, uint32_t mtime, uint8_t attr) {
     buffer_t *b = fat_buf(fs, lba);
     if (!b) return -EIO;
     fat_dirent_t *de = (fat_dirent_t *)(b->data + off);
     uint16_t date, time;
     fat_unix_to_dos(mtime, &date, &time);
+    de->attr = attr;
     de->cluster_lo = (uint16_t)cluster;
     de->cluster_hi = fs->type == 32 ? (uint16_t)(cluster >> 16) : 0;
     de->size = size;

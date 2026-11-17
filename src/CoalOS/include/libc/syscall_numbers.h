@@ -76,6 +76,8 @@
 #define SYS_UNLINK           87
 #define SYS_SYMLINK          88
 #define SYS_READLINK         89
+#define SYS_CHMOD            90
+#define SYS_FCHMOD           91
 #define SYS_CHOWN            92
 #define SYS_FCHOWN           93
 #define SYS_LCHOWN           94

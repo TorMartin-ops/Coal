@@ -154,6 +154,6 @@ int  fat_dir_add(fat_fs_t *fs, uint32_t dir, const char *name, uint8_t attr,
 int  fat_dir_remove(fat_fs_t *fs, uint32_t dir, const fat_ent_t *e);
 int  fat_dir_is_empty(fat_fs_t *fs, uint32_t dir);
 int  fat_ent_update(fat_fs_t *fs, uint32_t lba, uint32_t off, uint32_t cluster,
-                    uint32_t size, uint32_t mtime);
+                    uint32_t size, uint32_t mtime, uint8_t attr);
 
 #endif /* FAT_PRIV_H */

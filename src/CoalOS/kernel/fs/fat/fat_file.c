@@ -51,7 +51,7 @@ static void fill_root(fat_fs_t *fs, fat_ent_t *e) {
 
 static int node_flush_entry(fat_node_t *n) {
     if (n->ent_lba == FAT_NODE_ROOT_LBA || n->ent_lba == FAT_NODE_UNLINKED) return 0;
-    return fat_ent_update(n->fs, n->ent_lba, n->ent_off, n->first, n->size, n->mtime);
+    return fat_ent_update(n->fs, n->ent_lba, n->ent_off, n->first, n->size, n->mtime, n->attr);
 }
 
 static bool is_dir(const fat_node_t *n) { return n->attr & FAT_ATTR_DIR; }
@@ -215,6 +215,22 @@ static int fat_utime(vnode_t *v, uint32_t atime, uint32_t mtime) {
     fat_lock(fs);
     n->atime = atime;                       /* kept in memory only: FAT stores the access date, not the time */
     n->mtime = mtime;
+    int rc = node_flush_entry(n);
+    if (rc == 0) rc = fat_commit(fs);
+    fat_unlock(fs);
+    return rc;
+}
+
+/* FAT keeps one permission bit, read-only. Like Linux's vfat, the bits it cannot hold are dropped; directories
+ * are always writable. */
+static int fat_chmod(vnode_t *v, mode_t mode) {
+    fat_node_t *n = v->data;
+    fat_fs_t *fs = n->fs;
+
+    if (mode & 07000) return -EPERM;                /* setuid, setgid, sticky */
+    if (is_dir(n)) return 0;
+    fat_lock(fs);
+    if (mode & 0222) n->attr &= ~FAT_ATTR_RO; else n->attr |= FAT_ATTR_RO;
     int rc = node_flush_entry(n);
     if (rc == 0) rc = fat_commit(fs);
     fat_unlock(fs);
@@ -460,6 +476,7 @@ vfs_driver_t fat_driver = {
     .truncate = fat_truncate,
     .fsync    = fat_fsync,
     .utime    = fat_utime,
+    .chmod    = fat_chmod,
     .unlink   = fat_unlink,
     .mkdir    = fat_mkdir,
     .rmdir    = fat_rmdir,

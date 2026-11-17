@@ -323,6 +323,27 @@ long sc_fchown(uint32_t fd, uint32_t uid, uint32_t gid) {
     return chown_result(sys_fstat(fd, &st), uid, gid);
 }
 
+long sc_chmod(uintptr_t path, uint32_t mode) {
+    char kpath[PATH_MAX_SYS];
+    file_t *f;
+    int err = user_path(path, kpath, sizeof(kpath));
+
+    if (!err) err = vfs_open(kpath, O_RDONLY, 0, &f);
+    if (err) return err;
+    err = vfs_fchmod(f, mode);
+    vfs_close(f);
+    return err;
+}
+
+long sc_fchmod(uint32_t fd, uint32_t mode) {
+    sys_file_t *sf = sys_file_get(fd);
+
+    if (!sf) return -EBADF;
+    long r = vfs_fchmod(sf->vfs_file, mode);
+    sys_file_put(sf);
+    return r;
+}
+
 long sc_umask(uint32_t mask) {
     pcb_t *p = get_current_process();
     uint32_t old = p->umask;

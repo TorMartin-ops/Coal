@@ -429,6 +429,11 @@ int vfs_utime(const char *path, uint32_t atime, uint32_t mtime) {
     return rc;
 }
 
+int vfs_fchmod(file_t *f, mode_t mode) {
+    vfs_driver_t *d = f->vnode->fs_driver;
+    return d->chmod ? d->chmod(f->vnode, mode) : -EPERM;
+}
+
 enum ns_op { NS_UNLINK, NS_MKDIR, NS_RMDIR };
 
 static int ns_op(enum ns_op op, const char *path, mode_t mode) {

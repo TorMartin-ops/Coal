@@ -142,6 +142,8 @@ struct vfs_driver {
     int   (*sync)(void *fs);                        /* flush the whole file system */
     int   (*ioctl)(vnode_t *v, uint32_t cmd, void *arg);
     int   (*utime)(vnode_t *v, uint32_t atime, uint32_t mtime);
+    /** Store the permission bits the file system can represent. */
+    int   (*chmod)(vnode_t *v, mode_t mode);
     /** Readiness: POLLIN/POLLOUT/POLLHUP bits. Must not block. Without it a file is always ready. */
     void  (*set_nonblock)(vnode_t *v, bool on);     /* fcntl(F_SETFL) changed O_NONBLOCK */
     uint32_t (*poll)(vnode_t *v);
@@ -186,6 +188,7 @@ int  vfs_mkdir(const char *path, mode_t mode);
 int  vfs_rmdir(const char *path);
 int  vfs_rename(const char *from, const char *to);
 int  vfs_utime(const char *path, uint32_t atime, uint32_t mtime);
+int  vfs_fchmod(file_t *f, mode_t mode);
 
 /** Seconds since the Unix epoch used for new timestamps. */
 uint32_t vfs_time(void);
