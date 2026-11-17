@@ -133,12 +133,31 @@ static void put_num(long v) {
     while (i) put(t[--i]);
 }
 
-/* Escape n bytes as the inside of a JSON string; false if clipped for space. */
+/* Length of the valid UTF-8 sequence at s (at most n bytes are readable), or 0. */
+static size_t utf8_len(const u8 *s, size_t n) {
+    u8 c = s[0];
+    size_t len = c >= 0xC2 && c <= 0xDF ? 2 : c >= 0xE0 && c <= 0xEF ? 3 : c >= 0xF0 && c <= 0xF4 ? 4 : 0;
+    if (!len || len > n) return 0;
+    for (size_t i = 1; i < len; i++)
+        if ((s[i] & 0xC0) != 0x80) return 0;
+    if ((c == 0xE0 && s[1] < 0xA0) || (c == 0xED && s[1] > 0x9F) ||
+        (c == 0xF0 && s[1] < 0x90) || (c == 0xF4 && s[1] > 0x8F)) return 0;
+    return len;
+}
+
+/* Escape n bytes as the inside of a JSON string; invalid UTF-8 becomes U+FFFD. False if clipped for space. */
 static int put_jstr(const char *s, size_t n) {
     static const char hex[] = "0123456789abcdef";
     for (size_t i = 0; i < n; i++) {
         u8 c = (u8)s[i];
         if (olen + 6 + OUT_RESERVE > OUT_CAP) return 0;
+        if (c >= 0x80) {
+            size_t len = utf8_len((const u8 *)s + i, n - i);
+            if (!len) puts_("\\ufffd");
+            for (size_t k = 0; k < len; k++) put(s[i + k]);
+            if (len) i += len - 1;
+            continue;
+        }
         if (c == '"' || c == '\\') { put('\\'); put((char)c); }
         else if (c == '\n') puts_("\\n");
         else if (c == '\r') puts_("\\r");
@@ -189,6 +208,50 @@ struct req {
     long offset, max, timeout_ms, mode;
     int append, more;              /* more: keep the file open, another chunk follows */
 };
+
+/* True if s holds no quote, backslash or control character and is valid UTF-8, so it can be echoed as is. */
+static int plain_string(const u8 *s, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] == '"' || s[i] == '\\' || s[i] < 0x20) return 0;
+        if (s[i] >= 0x80) {
+            size_t len = utf8_len(s + i, n - i);
+            if (!len) return 0;
+            i += len - 1;
+        }
+    }
+    return 1;
+}
+
+/* True if s is exactly a JSON number, true, false or null. */
+static int json_scalar(const char *s, size_t n) {
+    size_t i = 0;
+    static const char *const lits[] = { "null", "true", "false" };
+    for (int k = 0; k < 3; k++) {
+        size_t m = slen(lits[k]);
+        if (m == n) {
+            size_t j = 0;
+            while (j < n && s[j] == lits[k][j]) j++;
+            if (j == n) return 1;
+        }
+    }
+    if (i < n && s[i] == '-') i++;
+    if (i < n && s[i] == '0') i++;
+    else if (i < n && s[i] >= '1' && s[i] <= '9') while (i < n && s[i] >= '0' && s[i] <= '9') i++;
+    else return 0;
+    if (i < n && s[i] == '.') {
+        size_t d = ++i;
+        while (i < n && s[i] >= '0' && s[i] <= '9') i++;
+        if (i == d) return 0;
+    }
+    if (i < n && (s[i] == 'e' || s[i] == 'E')) {
+        i++;
+        if (i < n && (s[i] == '+' || s[i] == '-')) i++;
+        size_t d = i;
+        while (i < n && s[i] >= '0' && s[i] <= '9') i++;
+        if (i == d) return 0;
+    }
+    return i == n;
+}
 
 static void skip_ws(char **p) {
     while (**p == ' ' || **p == '\t' || **p == '\r' || **p == '\n') (*p)++;
@@ -340,18 +403,13 @@ static int parse_req(char *line, struct req *r) {
             if (*p == '"') {
                 char *v = parse_str(&p, &vlen);
                 if (!v) return -1;
-                if (vlen < sizeof r->id - 2) {
-                    size_t i = 0;
-                    for (; i < vlen; i++)
-                        if (v[i] == '"' || v[i] == '\\' || (u8)v[i] < 0x20) break;
-                    if (i == vlen) {
-                        r->id[0] = '"'; mcopy(r->id + 1, v, vlen);
-                        r->id[vlen + 1] = '"'; r->id[vlen + 2] = 0;
-                    }
+                if (vlen < sizeof r->id - 2 && plain_string((const u8 *)v, vlen)) {
+                    r->id[0] = '"'; mcopy(r->id + 1, v, vlen);
+                    r->id[vlen + 1] = '"'; r->id[vlen + 2] = 0;
                 }
             } else {
                 if (skip_value(&p, 0) < 0) return -1;
-                if (p - b < (long)sizeof r->id && *b != '{' && *b != '[') {
+                if (p - b < (long)sizeof r->id && json_scalar(b, (size_t)(p - b))) {
                     mcopy(r->id, b, (size_t)(p - b));
                     r->id[p - b] = 0;
                 }
