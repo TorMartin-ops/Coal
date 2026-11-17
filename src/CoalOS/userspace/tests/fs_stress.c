@@ -71,11 +71,28 @@ static bool read_check(size_t size, size_t rchunk, uint32_t seed, uint32_t want)
     return same && done == size && h == want;
 }
 
-int main(void) {
+/* POSIX: an open file survives unlink and rename of its name. */
+static void test_open_file_names(void) {
+    char buf[8] = { 0 };
+    int fd = open("/tmp/fs_open_a", O_RDWR | O_CREAT | O_TRUNC, 0644);
+
+    CHECK(fd >= 0 && write(fd, "abc", 3) == 3);
+    CHECK(rename("/tmp/fs_open_a", "/tmp/fs_open_b") == 0);
+    CHECK(write(fd, "def", 3) == 3);
+    CHECK(unlink("/tmp/fs_open_b") == 0);
+    CHECK(open("/tmp/fs_open_b", O_RDONLY) < 0);
+    CHECK(lseek(fd, 0, 0) == 0 && read(fd, buf, 7) == 6 && memcmp(buf, "abcdef", 6) == 0);
+    close(fd);                                  /* frees the clusters */
+}
+
+int main(int argc, char **argv) {
     static const size_t sizes[] = { 1u << 20, 2u << 20, 4u << 20, 8u << 20, (3u << 20) + 12345 };
     static const size_t chunks[] = { 512, 4096, 65536, 1u << 20, 12345 };
 
-    for (unsigned i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+    unsigned nsizes = argc > 1 && strcmp(argv[1], "quick") == 0 ? 1 : sizeof sizes / sizeof sizes[0];
+
+    test_open_file_names();
+    for (unsigned i = 0; i < nsizes; i++) {
         for (unsigned j = 0; j < sizeof chunks / sizeof chunks[0]; j++) {
             uint32_t seed = 0x9e3779b9u * (i + 1) + j;
             uint32_t h = write_file(sizes[i], chunks[j], seed);

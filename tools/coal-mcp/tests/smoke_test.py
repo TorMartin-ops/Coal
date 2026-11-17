@@ -71,6 +71,8 @@ def main():
         check("0 failed" in text, "fault_test: user-mode exceptions become signals", text)
         err, text = c.tool("coal_run", command="echo still alive")
         check("still alive" in text, "kernel survived the faults", text)
+        err, text = c.tool("coal_run", command="/usr/bin/fs_stress quick", timeout_ms=120000)
+        check("0 failed" in text, "fs_stress: file I/O round trip and unlink/rename of open files", text)
         # --- end kernel ---
         err, text = c.tool("coal_run", command="dmesg")
         for _ in range(20):                 # DHCP needs about a second after boot

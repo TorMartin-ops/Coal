@@ -21,6 +21,7 @@
 
 #define FAT_ENT_SIZE    32u
 #define FAT_NODE_ROOT_LBA 0u    /* ent_lba of the root pseudo entry */
+#define FAT_NODE_UNLINKED 0xFFFFFFFFu   /* ent_lba of an open file whose name was removed */
 
 /** 8.3 directory entry. */
 typedef struct __attribute__((packed)) {
