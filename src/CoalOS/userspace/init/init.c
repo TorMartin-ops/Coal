@@ -8,6 +8,7 @@
 #include <libc/fcntl.h>
 #include <libc/time.h>
 #include <libc/errno.h>
+#include <libc/syscall.h>
 #include <libc/sys/wait.h>
 
 struct service {
@@ -55,11 +56,61 @@ static void start(struct service *s) {
     s->pid = pid;
 }
 
+/* Test mode: "coal.test=PROG,ARG,..." on the kernel command line runs that one program with stdout and stderr
+ * on COM1, prints its result and powers off. The run needs no input from the host, so it is repeatable. */
+static int run_test(char *spec) {
+    char *argv[16];
+    int argc = 0, status = -1;
+
+    for (char *p = spec; argc < 15; p++) {
+        argv[argc++] = p;
+        while (*p && *p != ',') p++;
+        if (!*p) break;
+        *p = '\0';
+    }
+    argv[argc] = NULL;
+    int serial = open("/dev/ttyS0", O_RDWR), null = open("/dev/null", O_RDWR);
+    dup2(null, 0);
+    dup2(serial, 1);
+    dup2(serial, 2);
+    pid_t pid = fork();
+    if (pid == 0) {
+        execve(argv[0], argv, environ);
+        fprintf(stderr, "init: cannot run %s: %s\n", argv[0], strerror(errno));
+        _exit(127);
+    }
+    if (pid > 0) waitpid(pid, &status, 0);
+    printf("\n@@COALTEST exit=%d signal=%d\n", (status & 0x7f) ? -1 : (status >> 8) & 0xff, status & 0x7f);
+    fflush(stdout);
+    sync();
+    __syscall_ret(__sc(SYS_REBOOT, 0xfee1dead, 672274793, 0x4321fedcu, 0, 0));
+    return 1;
+}
+
+static char *cmdline_test(char *buf, size_t cap) {
+    int fd = open("/proc/cmdline", O_RDONLY);
+    ssize_t n = fd < 0 ? -1 : read(fd, buf, cap - 1);
+    char *w;
+
+    if (fd >= 0) close(fd);
+    if (n <= 0) return NULL;
+    buf[n] = '\0';
+    w = strstr(buf, "coal.test=");
+    if (!w) return NULL;
+    w += 10;
+    for (char *e = w; ; e++)
+        if (!*e || *e == ' ' || *e == '\n') { *e = '\0'; break; }
+    return w;
+}
+
 int main(void) {
-    open_console();
+    char line[256], *test = cmdline_test(line, sizeof line);
+
     setenv("PATH", "/bin:/sbin:/usr/bin", 0);
     setenv("HOME", "/root", 0);
     setenv("TERM", "linux", 0);
+    if (test) return run_test(test);
+    open_console();
     puts("Coal OS init");
     for (;;) {
         for (int i = 0; i < NSERVICES; i++)
