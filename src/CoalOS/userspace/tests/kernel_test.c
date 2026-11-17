@@ -839,13 +839,13 @@ static void test_rlimit(void) {
     /* a limit hit by a grandchild is visible on the process that waited for it */
     kid = fork();
     if (kid == 0) {
+        int before = hit_recorded("as");        /* read before the grandchild can run and exit */
         pid_t g = fork();
         if (g == 0) {
             set_limit(RLIMIT_AS, 64 * MB, 64 * MB);
             __sc6(SYS_MMAP, 0, 128 * MB, 3, 0x22, -1, 0);
             _exit(0);
         }
-        int before = hit_recorded("as");
         waitpid(g, NULL, 0);
         _exit(!before && hit_recorded("as") ? 0 : 1);
     }
