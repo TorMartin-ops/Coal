@@ -10,7 +10,6 @@
 #include <kernel/memory/paging.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/process/process.h>
-#include <kernel/process/process_manager.h>
 #include <kernel/lib/string.h>
 #include <libc/stdarg.h>
 

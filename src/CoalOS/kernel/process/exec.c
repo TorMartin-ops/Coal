@@ -171,9 +171,7 @@ int exec_build_image(const char *path, const char *const *argv, const char *cons
 
     mm->start_brk = mm->end_brk = ei.brk;
     mm->start_stack = USER_STACK_TOP_VIRT_ADDR;
-    if (!insert_vma(mm, ei.brk, ei.brk, VM_READ | VM_WRITE | VM_USER | VM_ANONYMOUS,
-                    PAGE_PRESENT | PAGE_RW | PAGE_USER | nx_flag(), NULL, 0) ||
-        !insert_vma(mm, USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR,
+    if (!insert_vma(mm, USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR,
                     VM_READ | VM_WRITE | VM_USER | VM_GROWS_DOWN | VM_ANONYMOUS,
                     PAGE_PRESENT | PAGE_RW | PAGE_USER | nx_flag(), NULL, 0)) {
         ret = -ENOMEM;
