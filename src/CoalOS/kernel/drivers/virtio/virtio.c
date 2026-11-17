@@ -20,10 +20,10 @@
 #define RESET_SPINS   1000000u
 #define POLL_MS       1
 
-extern const virtio_driver_t virtio_blk_driver, virtio_console_driver;
+extern const virtio_driver_t virtio_blk_driver, virtio_console_driver, virtio_rng_driver;
 
 static const virtio_driver_t *const g_drivers[] = {
-    &virtio_blk_driver, &virtio_console_driver,
+    &virtio_blk_driver, &virtio_console_driver, &virtio_rng_driver,
 };
 
 static virtio_device_t *g_devices[MAX_DEVICES];
