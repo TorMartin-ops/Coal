@@ -54,6 +54,7 @@ typedef struct fat_fs {
     uint32_t dirty_lo, dirty_hi;/* dirty FAT sector range, lo > hi when clean */
     struct fat_node *nodes;     /* open files and directories */
     mutex_t lock;
+    bool unsynced;              /* changes sit in the buffer cache, not yet on the disk */
 } fat_fs_t;
 
 /** In-memory state of an open file or directory, shared by all openers. */
@@ -108,6 +109,7 @@ int      fat_alloc(fat_fs_t *fs, uint32_t prev);
 void     fat_set_eoc(fat_fs_t *fs, uint32_t cluster);
 void     fat_free_chain(fat_fs_t *fs, uint32_t first);
 int      fat_commit(fat_fs_t *fs);
+int      fat_flush(fat_fs_t *fs);
 void     fat_unix_to_dos(uint32_t t, uint16_t *date, uint16_t *time);
 uint32_t fat_dos_to_unix(uint16_t date, uint16_t time);
 

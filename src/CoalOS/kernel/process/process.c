@@ -230,6 +230,17 @@ pcb_t *create_user_process(const char *path) {
     return p;
 }
 
+pcb_t *process_spawn_kernel(const char *name, void (*entry)(void)) {
+    pcb_t *p = pcb_new();
+
+    if (!p) return NULL;
+    strncpy(p->name, name, sizeof(p->name) - 1);
+    p->task.context = scheduler_make_context(p->kernel_stack_vaddr_top, entry, 0x202);
+    pcb_publish(p, NULL);
+    scheduler_add_task(p);
+    return p;
+}
+
 int process_fork(const isr_frame_t *regs) {
     pcb_t *parent = get_current_process();
     pcb_t *child;

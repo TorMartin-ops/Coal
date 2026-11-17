@@ -68,6 +68,9 @@ pcb_t *process_all(void);           /* head of the list linked by all_next */
 /** Loads path as a new process (argv = {path}). The caller schedules it. */
 pcb_t *create_user_process(const char *path);
 
+/** Starts a kernel thread: a process without user space that runs entry() (which must not return). */
+pcb_t *process_spawn_kernel(const char *name, void (*entry)(void));
+
 /**
  * Linux fork(): duplicates the address space (copy-on-write through
  * paging_clone_directory) and shares the open files. The child resumes from

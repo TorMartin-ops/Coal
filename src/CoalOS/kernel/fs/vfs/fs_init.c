@@ -4,6 +4,8 @@
  */
 #define LOG_MODULE "fs"
 #include <kernel/core/log.h>
+#include <kernel/process/process.h>
+#include <kernel/process/scheduler.h>
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/lib/string.h>
 #include <kernel/fs/vfs/fs_init.h>
@@ -31,6 +33,20 @@ int fs_attach_disk(const char *name) {
         return 0;
     }
     return -ENODEV;
+}
+
+/* Writes cached changes to the disk every few seconds, so a crash loses only a short window. */
+#define FLUSH_INTERVAL_MS 5000
+
+static void flusher(void) {
+    for (;;) {
+        sleep_ms(FLUSH_INTERVAL_MS);
+        vfs_sync();
+    }
+}
+
+void fs_start_flusher(void) {
+    if (!process_spawn_kernel("flush", flusher)) LOG_WARN("no flusher thread");
 }
 
 int fs_init(void) {

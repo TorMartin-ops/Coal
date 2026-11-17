@@ -66,6 +66,8 @@
 #define SYS_MOUNT           21
 #define SYS_UTIME           30
 #define SYS_SYNC            36
+#define SYS_FSYNC           118
+#define SYS_FDATASYNC       148
 #define SYS_RENAME          38
 #define SYS_UMOUNT2         52
 #define SYS_REBOOT          88

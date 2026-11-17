@@ -150,6 +150,7 @@ static ssize_t write_locked(fat_node_t *n, uint32_t pos, const void *buf, uint32
     if (rc > 0 && pos + (uint32_t)rc > n->size) n->size = pos + (uint32_t)rc;
     n->mtime = vfs_time();
     n->dirty = true;
+    n->fs->unsynced = true;
     int e = node_flush_entry(n);
     return rc < 0 ? rc : e < 0 ? e : rc;
 }

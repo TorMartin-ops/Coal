@@ -311,6 +311,14 @@ long sc_sync(void) {
 
 /* mount(source, target, fstype): "fat" mounts an ATA disk given as "hdb" or "/dev/hdb";
  * the root disk is already mounted (-EBUSY). devfs and procfs take no device. */
+long sc_fsync(uint32_t fd) {
+    sys_file_t *sf = sys_file_get(fd);
+    if (!sf) return -EBADF;
+    long rc = vfs_fsync(sf->vfs_file);
+    sys_file_put(sf);
+    return rc;
+}
+
 long sc_mount(uint32_t source, uint32_t target, uint32_t fstype) {
     char dev[16], fs[16];
     const char *name = NULL;

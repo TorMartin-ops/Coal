@@ -165,22 +165,33 @@ static bool fit_sfn(const uint16_t *u, int n, uint8_t *sfn, uint8_t *nt) {
     return true;
 }
 
-static bool sfn_taken(fat_fs_t *fs, uint32_t dir, const uint8_t *sfn) {
-    fat_dir_t d;
-    fat_ent_t e;
-    uint32_t pos = 0;
-    bool taken = false;
-    fat_dir_open(&d, fs, dir);
-    while (!taken && fat_dir_next(&d, &pos, &e) > 0) taken = memcmp(e.sfn, sfn, 11) == 0;
-    fat_dir_close(&d);
-    return taken;
+/* Numeric tails below this are tracked in a bitmap; above it the highest tail seen plus one is used. */
+#define TAIL_BITS 4096
+
+static int tail_len(uint32_t k) {
+    int n = 0;
+    for (; k; k /= 10) n++;
+    return n;
 }
 
-/* Build a unique "BASE~N.EXT" alias for a name that needs a long-name entry. */
+/* "BASE~N.EXT" for the tail k: the base is cut so that the name stays within 8 characters. */
+static void alias_name(uint8_t *sfn, const uint8_t *base, int blen, const uint8_t *ext, uint32_t k) {
+    int tl = tail_len(k);
+    int keep = blen < 7 - tl ? blen : 7 - tl;
+
+    memset(sfn, ' ', 11);
+    memcpy(sfn, base, (size_t)keep);
+    sfn[keep] = '~';
+    for (int i = tl - 1, v = (int)k; i >= 0; i--, v /= 10) sfn[keep + 1 + i] = (uint8_t)('0' + v % 10);
+    memcpy(sfn + 8, ext, 3);
+}
+
+/* Build a unique "BASE~N.EXT" alias for a name that needs a long-name entry. One scan of the
+ * directory records which tails exist for this base and extension. */
 static int make_alias(fat_fs_t *fs, uint32_t dir, const uint16_t *u, int n, uint8_t *sfn) {
     int ld = -1;
     for (int i = 0; i < n; i++) if (u[i] == '.') ld = i;
-    uint8_t base[8], ext[3];
+    uint8_t base[8], ext[3] = { ' ', ' ', ' ' };
     int blen = 0, elen = 0;
     for (int i = 0; i < n; i++) {
         uint16_t c = u[i];
@@ -191,19 +202,35 @@ static int make_alias(fat_fs_t *fs, uint32_t dir, const uint16_t *u, int n, uint
     }
     if (blen == 0) base[blen++] = '_';
 
-    for (uint32_t k = 1; k < 1000000; k++) {
-        char tag[8];
-        int tl = 0;
-        for (uint32_t v = k; v; v /= 10) tag[tl++] = (char)('0' + v % 10);
-        int keep = blen < 7 - tl ? blen : 7 - tl;
-        memset(sfn, ' ', 11);
-        memcpy(sfn, base, (size_t)keep);
-        sfn[keep] = '~';
-        for (int i = 0; i < tl; i++) sfn[keep + 1 + i] = (uint8_t)tag[tl - 1 - i];
-        memcpy(sfn + 8, ext, (size_t)elen);
-        if (!sfn_taken(fs, dir, sfn)) return 0;
+    uint8_t used[TAIL_BITS / 8] = { 0 };
+    uint8_t cand[11];
+    uint32_t top = 0, pos = 0;
+    fat_dir_t d;
+    fat_ent_t e;
+    fat_dir_open(&d, fs, dir);
+    int rc;
+    while ((rc = fat_dir_next(&d, &pos, &e)) > 0) {
+        const uint8_t *s = e.sfn;
+        int p = 1;
+        while (p < 8 && s[p] != '~') p++;
+        uint32_t k = 0;
+        int q = p + 1;
+        while (p < 8 && q < 8 && s[q] >= '0' && s[q] <= '9') k = k * 10 + (uint32_t)(s[q++] - '0');
+        if (p == 8 || q == p + 1 || k == 0 || (q < 8 && s[q] != ' ')) continue;
+        alias_name(cand, base, blen, ext, k);       /* only the exact alias of this name and tail counts */
+        if (memcmp(cand, s, 11) != 0) continue;
+        if (k < TAIL_BITS) used[k / 8] |= (uint8_t)(1u << (k % 8));
+        if (k > top) top = k;
     }
-    return -ENOSPC;
+    fat_dir_close(&d);
+    if (rc < 0) return rc;
+
+    uint32_t k = 1;
+    while (k < TAIL_BITS && (used[k / 8] >> (k % 8) & 1)) k++;
+    if (k == TAIL_BITS) k = top + 1;
+    if (k > 999999) return -ENOSPC;
+    alias_name(sfn, base, blen, ext, k);
+    return 0;
 }
 
 /* ---- Iteration and lookup ------------------------------------------------- */
