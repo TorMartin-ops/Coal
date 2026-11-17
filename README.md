@@ -11,7 +11,7 @@ security boundary. See [SECURITY.md](SECURITY.md) and [Limitations](#limitations
 
 ## Features
 
-- **Kernel**: Multiboot2 boot through GRUB, O(1) preemptive priority scheduler, wait queues,
+- **Kernel**: Multiboot2 boot through GRUB, EEVDF preemptive scheduler with nice levels, tickless timer wheel, wait queues,
   paging with copy-on-write `fork`, demand-paged VMAs, frame/buddy/slab allocators, signals with
   user handlers, `poll`, TLS, a 16 KiB kernel log ring (`dmesg`).
 - **File systems**: VFS with FAT16/32 (long file names) on ATA, devfs, procfs, pipes. Linux

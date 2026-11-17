@@ -10,7 +10,7 @@ including an IPv4 stack.
    and jumps to `_start` in `boot/multiboot2.asm`, which calls `main()`.
 2. `kernel_main_init()` (`kernel/core/init.c`) runs straight through: serial ports,
    VGA terminal, GDT, memory (the largest free Multiboot region becomes the
-   heap), IDT, PIT (1000 Hz), scheduler, keyboard, file systems, then creates
+   heap), IDT, timers (TSC clock, local APIC or PIT clock event), scheduler, keyboard, file systems, then creates
    `/sbin/init`, sets up the keyboard controller, enables interrupts and starts
    the scheduler. A failure before that point panics.
 3. `/sbin/init` (PID 1, `userspace/init`) starts `/bin/sh` on the console and
@@ -35,9 +35,15 @@ including an IPv4 stack.
 - `pcb_t` (`include/kernel/process/process.h`) holds ids, the address space, 32
   descriptors, cwd, close-on-exec bits, signal state and the TLS descriptor.
   Everything per process lives in the PCB; fork copies it, execve resets it.
-- O(1) scheduler (`scheduler.c`): four priority levels with a bitmap of non-empty
-  FIFO queues, 20 ms slices, a sorted sleep list. System calls run with
-  interrupts on, so a task in the kernel can be preempted.
+- EEVDF scheduler (`scheduler.c`): Linux nice weights, eligibility by lag, earliest virtual
+  deadline first, two red-black trees, 3 ms slices (0.75 ms for tasks that sleep a lot). A running
+  task keeps the CPU until its slice ends. System calls run with interrupts on, so a task in the
+  kernel can be preempted.
+- Timers (`drivers/timer/`): `clock_ns()` counts the TSC (calibrated against the PIT). All kernel
+  timers live in one hierarchical timer wheel (`timer.c`, millisecond resolution). One clock event
+  device is armed for the earliest deadline only: TSC-deadline or one-shot local APIC timer
+  (`lapic.c`), else the PIT in one-shot mode, else (no TSC) a 1 kHz periodic PIT. An idle system
+  takes almost no timer interrupts; `/proc/interrupts` shows the counts.
 - Blocking uses wait queues (`drivers/wait.c`): tty, serial, pipes and `poll`/`select`
   sleep until a driver wakes them. `poll` asks each driver for readiness. A restartable call
   interrupted by a `SA_RESTART` handler is restarted by rewinding `eip` over `int 0x80`.

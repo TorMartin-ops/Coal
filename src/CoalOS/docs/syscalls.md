@@ -28,6 +28,7 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 24 | getuid | `sc_zero` |  |
 | 30 | utime | `sc_utime` |  |
 | 33 | access | `sc_access` |  |
+| 34 | nice | `sc_nice` | no permission checks; the level is clamped to -20..19 |
 | 36 | sync | `sc_sync` |  |
 | 37 | kill | `sc_kill` |  |
 | 38 | rename | `sc_rename` |  |
@@ -52,6 +53,8 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 85 | readlink | `sc_readlink` | EINVAL: no symbolic links |
 | 88 | reboot | `sc_reboot` |  |
 | 91 | munmap | `sc_munmap` |  |
+| 96 | getpriority | `sc_getpriority` | `PRIO_PROCESS` only; returns 20 - nice like Linux |
+| 97 | setpriority | `sc_setpriority` | `PRIO_PROCESS` only |
 | 99 | statfs | `sc_statfs` |  |
 | 100 | fstatfs | `sc_fstatfs` |  |
 | 102 | socketcall | `sc_socketcall` | multiplexer for the calls below |
