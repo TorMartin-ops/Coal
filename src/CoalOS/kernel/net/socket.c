@@ -602,6 +602,7 @@ static int sockfs_ioctl(vnode_t *v, uint32_t cmd, void *arg) {
 
 static vfs_driver_t sockfs = {
     .fs_name = "sockfs",
+    .magic = 0x534F434B,                            /* SOCKFS_MAGIC */
     .open = sockfs_open,
     .close = sockfs_close,
     .read = sockfs_read,

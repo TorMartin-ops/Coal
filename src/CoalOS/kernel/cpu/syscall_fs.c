@@ -358,6 +358,66 @@ long sc_fstatat64(int dirfd, uint32_t path, uint32_t buf, uint32_t flags) {
     return sc_stat64(path, buf);
 }
 
+/* The old statfs layout has 32-bit counters; the 64-bit one is copied as is. */
+static long put_statfs(uint32_t buf, const struct kstatfs64 *st, bool wide) {
+    if (wide) return copy_to_user((void *)buf, st, sizeof(*st)) ? -EFAULT : 0;
+    struct { uint32_t type, bsize, blocks, bfree, bavail, files, ffree; int32_t fsid[2]; uint32_t namelen, frsize, flags, spare[4]; } o = {
+        st->f_type, st->f_bsize, (uint32_t)st->f_blocks, (uint32_t)st->f_bfree, (uint32_t)st->f_bavail,
+        (uint32_t)st->f_files, (uint32_t)st->f_ffree, { st->f_fsid[0], st->f_fsid[1] }, st->f_namelen, st->f_frsize,
+        st->f_flags, { 0 } };
+    return copy_to_user((void *)buf, &o, sizeof(o)) ? -EFAULT : 0;
+}
+
+static long statfs_path(uint32_t path, uint32_t buf, bool wide) {
+    struct kstatfs64 st;
+    char kpath[PATH_MAX_SYS];
+    int err = user_path(path, kpath, sizeof(kpath));
+
+    if (!err) err = vfs_statfs(kpath, &st);
+    return err ? err : put_statfs(buf, &st, wide);
+}
+
+static long statfs_fd(uint32_t fd, uint32_t buf, bool wide) {
+    struct kstatfs64 st;
+    int err = sys_fstatfs((int)fd, &st);
+    return err ? err : put_statfs(buf, &st, wide);
+}
+
+long sc_statfs(uint32_t path, uint32_t buf) { return statfs_path(path, buf, false); }
+long sc_fstatfs(uint32_t fd, uint32_t buf) { return statfs_fd(fd, buf, false); }
+long sc_statfs64(uint32_t path, uint32_t size, uint32_t buf) { return size == sizeof(struct kstatfs64) ? statfs_path(path, buf, true) : -EINVAL; }
+long sc_fstatfs64(uint32_t fd, uint32_t size, uint32_t buf) { return size == sizeof(struct kstatfs64) ? statfs_fd(fd, buf, true) : -EINVAL; }
+
+/* FAT has no hard or symbolic links, which is how Linux's vfat answers too. */
+long sc_link(uint32_t from, uint32_t to) {
+    struct kstat64 st;
+    char a[PATH_MAX_SYS], b[PATH_MAX_SYS];
+    int err = user_path(from, a, sizeof(a));
+
+    if (!err) err = user_path(to, b, sizeof(b));
+    if (!err) err = vfs_stat(a, &st);
+    return err ? err : -EPERM;
+}
+
+long sc_symlink(uint32_t target, uint32_t linkpath) {
+    char a[PATH_MAX_SYS], b[PATH_MAX_SYS];
+    int err = user_path(target, a, sizeof(a));
+
+    if (!err) err = user_path(linkpath, b, sizeof(b));
+    return err ? err : vfs_stat(b, &(struct kstat64){ 0 }) == 0 ? -EEXIST : -EPERM;
+}
+
+/* Nothing here is a symbolic link: existing paths are "not a link", the rest do not exist. */
+long sc_readlink(uint32_t path, uint32_t buf, uint32_t size) {
+    struct kstat64 st;
+    char kpath[PATH_MAX_SYS];
+    int err = user_path(path, kpath, sizeof(kpath));
+
+    (void)buf;
+    if (!err) err = (int)size > 0 ? vfs_stat(kpath, &st) : -EINVAL;
+    return err ? err : -EINVAL;
+}
+
 long sc_getdents64(uint32_t fd, uint32_t buf, uint32_t count) {
     size_t len = count < IO_CHUNK ? count : IO_CHUNK;
     char *kbuf = kmalloc(len ? len : 1);

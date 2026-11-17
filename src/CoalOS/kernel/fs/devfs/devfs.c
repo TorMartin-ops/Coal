@@ -106,6 +106,7 @@ static int devfs_getattr(vnode_t *v, struct kstat64 *st) {
 
 static vfs_driver_t devfs_driver = {
     .fs_name = "devfs",
+    .magic = 0x1373,                                /* DEVFS_SUPER_MAGIC */
     .mount = devfs_mount,
     .unmount = devfs_unmount,
     .open = devfs_open,

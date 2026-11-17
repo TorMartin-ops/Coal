@@ -219,6 +219,7 @@ static int procfs_getattr(vnode_t *v, struct kstat64 *st) {
 
 static vfs_driver_t procfs_driver = {
     .fs_name = "procfs",
+    .magic = 0x9fa0,                                /* PROC_SUPER_MAGIC */
     .mount = procfs_mount,
     .unmount = procfs_unmount,
     .open = procfs_open,

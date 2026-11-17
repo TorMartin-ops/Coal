@@ -75,6 +75,14 @@ struct kstat64 {
     uint64_t st_ino;
 } __attribute__((packed));
 
+/** Layout of Linux struct statfs64 on i386 (84 bytes). */
+struct kstatfs64 {
+    uint32_t f_type, f_bsize;
+    uint64_t f_blocks, f_bfree, f_bavail, f_files, f_ffree;
+    int32_t  f_fsid[2];
+    uint32_t f_namelen, f_frsize, f_flags, f_spare[4];
+} __attribute__((packed));
+
 /** Layout of Linux struct linux_dirent64 (getdents64 records). */
 struct linux_dirent64 {
     uint64_t d_ino;
@@ -117,6 +125,9 @@ typedef struct file {
  */
 struct vfs_driver {
     const char *fs_name;
+    uint32_t magic;                                 /* statfs f_type */
+    /** Space figures of the file system; without it statfs reports 0 blocks. */
+    int   (*statfs)(void *fs, struct kstatfs64 *st);
     void *(*mount)(const char *device);
     int   (*unmount)(void *fs);                     /* -EBUSY if still in use */
     /** Open or create. Must honour O_CREAT/O_EXCL; fills v->data and v->type. */
@@ -160,6 +171,7 @@ ssize_t vfs_write(file_t *f, const void *buf, size_t len);
 off_t   vfs_lseek(file_t *f, off_t off, int whence);
 int     vfs_getdents64(file_t *f, void *buf, size_t len);
 int     vfs_fstat(file_t *f, struct kstat64 *st);
+int     vfs_fstatfs(file_t *f, struct kstatfs64 *st);
 int     vfs_ftruncate(file_t *f, off_t len);
 int     vfs_fsync(file_t *f);
 int     vfs_ioctl(file_t *f, uint32_t cmd, void *arg);
@@ -167,6 +179,7 @@ uint32_t vfs_poll(file_t *f);
 
 /* Namespace operations */
 int  vfs_stat(const char *path, struct kstat64 *st);
+int  vfs_statfs(const char *path, struct kstatfs64 *st);
 int  vfs_unlink(const char *path);
 int  vfs_mkdir(const char *path, mode_t mode);
 int  vfs_rmdir(const char *path);

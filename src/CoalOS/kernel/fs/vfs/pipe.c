@@ -164,6 +164,7 @@ static uint32_t pipe_poll(vnode_t *v) {
 
 static vfs_driver_t pipe_driver = {
     .fs_name = "pipefs",
+    .magic = 0x50495045,                            /* PIPEFS_MAGIC */
     .open = pipe_open,
     .close = pipe_close,
     .read = pipe_read,

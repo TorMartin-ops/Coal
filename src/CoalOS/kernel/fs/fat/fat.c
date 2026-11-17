@@ -61,6 +61,12 @@ static void fat_set(fat_fs_t *fs, uint32_t c, uint32_t v) {
     if (sec > fs->dirty_hi) fs->dirty_hi = sec;
 }
 
+uint32_t fat_free_clusters(const fat_fs_t *fs) {
+    uint32_t n = 0;
+    for (uint32_t c = 2; c < fs->nclusters + 2; c++) n += fat_get(fs, c) == 0;
+    return n;
+}
+
 /* Next cluster of the chain, or 0 at its end (or on a corrupt link). */
 uint32_t fat_next(const fat_fs_t *fs, uint32_t c) {
     if (!cluster_ok(fs, c)) return 0;

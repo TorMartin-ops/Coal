@@ -474,8 +474,21 @@ static int fat_rename(void *ctx, const char *from, const char *to) {
     return rc;
 }
 
+static int fat_statfs(void *ctx, struct kstatfs64 *st) {
+    fat_fs_t *fs = ctx;
+
+    fat_lock(fs);
+    st->f_bsize = st->f_frsize = fs->cluster_bytes;
+    st->f_blocks = fs->nclusters;
+    st->f_bfree = st->f_bavail = fat_free_clusters(fs);
+    fat_unlock(fs);
+    return 0;
+}
+
 vfs_driver_t fat_driver = {
     .fs_name  = "fat",
+    .magic    = 0x4d44,                             /* MSDOS_SUPER_MAGIC */
+    .statfs   = fat_statfs,
     .mount    = fat_mount,
     .unmount  = fat_unmount,
     .sync     = fat_sync,

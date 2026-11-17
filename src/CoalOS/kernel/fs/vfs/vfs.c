@@ -346,6 +346,27 @@ int vfs_fstat(file_t *f, struct kstat64 *st) {
     return rc;
 }
 
+int vfs_fstatfs(file_t *f, struct kstatfs64 *st) {
+    vnode_t *v = f->vnode;
+    int rc = 0;
+
+    memset(st, 0, sizeof(*st));
+    st->f_type = v->fs_driver->magic;
+    st->f_bsize = st->f_frsize = 4096;
+    st->f_namelen = VFS_NAME_MAX;
+    if (v->mnt && v->mnt->ctx && v->fs_driver->statfs) rc = v->fs_driver->statfs(v->mnt->ctx, st);
+    return rc;
+}
+
+int vfs_statfs(const char *path, struct kstatfs64 *st) {
+    file_t *f;
+    int rc = vfs_open(path, O_RDONLY, 0, &f);
+    if (rc < 0) return rc;
+    rc = vfs_fstatfs(f, st);
+    vfs_close(f);
+    return rc;
+}
+
 int vfs_ftruncate(file_t *f, off_t len) {
     vnode_t *v = f->vnode;
     if ((f->flags & O_ACCMODE) == O_RDONLY || len < 0) return -EINVAL;

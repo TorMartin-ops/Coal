@@ -105,6 +105,7 @@ int      fat_sync(void *ctx);
 buffer_t *fat_buf(fat_fs_t *fs, uint32_t lba);
 uint32_t fat_cluster_lba(const fat_fs_t *fs, uint32_t cluster);
 uint32_t fat_next(const fat_fs_t *fs, uint32_t cluster);
+uint32_t fat_free_clusters(const fat_fs_t *fs);
 uint32_t fat_nth(const fat_fs_t *fs, uint32_t first, uint32_t n);
 int      fat_alloc(fat_fs_t *fs, uint32_t prev);
 void     fat_set_eoc(fat_fs_t *fs, uint32_t cluster);

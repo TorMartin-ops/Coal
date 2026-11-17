@@ -31,6 +31,7 @@ ssize_t sys_write(int fd, const void *buf, size_t count);
 off_t   sys_lseek(int fd, off_t offset, int whence);
 int     sys_getdents64(int fd, void *buf, size_t count);
 int     sys_fstat(int fd, struct kstat64 *st);
+int     sys_fstatfs(int fd, struct kstatfs64 *st);
 int     sys_ioctl(int fd, uint32_t cmd, void *arg);
 int     sys_dup(int oldfd);
 int     sys_dup2(int oldfd, int newfd);
