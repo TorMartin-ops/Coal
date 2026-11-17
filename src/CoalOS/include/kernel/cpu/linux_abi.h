@@ -37,7 +37,7 @@
 #endif
 
 #define AT_FDCWD        (-100)
-#define PATH_MAX_SYS    1024            /* longest path accepted; kernel stacks are small */
+#define PATH_MAX_SYS    4096            /* Linux PATH_MAX; same limit as the VFS */
 
 /* open(2) flags beyond the access mode live in <kernel/fs/vfs/sys_file.h> */
 #define LINUX_O_CLOEXEC 02000000

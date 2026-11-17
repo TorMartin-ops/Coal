@@ -63,7 +63,7 @@ function(add_user_program name)
     target_include_directories(${name} PRIVATE include)
     target_compile_options(${name} PRIVATE $<$<COMPILE_LANGUAGE:C>:${USER_FLAGS}>)
     target_link_options(${name} PRIVATE
-        -m32 -nostdlib -static -no-pie -s -Wl,--build-id=none -Wl,--no-warn-rwx-segments
+        -m32 -nostdlib -static -no-pie -s -Wl,--build-id=none
         -Wl,--gc-sections -T${ARCH_DIR}/user.ld)
 endfunction()
 
@@ -84,7 +84,7 @@ set_target_properties(abi_test PROPERTIES OUTPUT_NAME abi_test.elf)
 target_compile_options(abi_test PRIVATE -m32 -ffreestanding -nostdlib -fno-pie -fno-pic
     -fno-stack-protector -mno-sse -O1 -Wall -Wextra -Werror)
 target_link_options(abi_test PRIVATE -m32 -nostdlib -static -no-pie -s -Wl,--build-id=none
-    -Wl,--no-warn-rwx-segments -T${ARCH_DIR}/user.ld)
+    -T${ARCH_DIR}/user.ld)
 
 # --- Disk image (FAT16, long file names) with a Linux directory layout ---------
 # Static files for the image live in rootfs/ in the source tree.

@@ -276,11 +276,17 @@ long sc_mkdir(uint32_t path, uint32_t mode) {
     return err ? err : vfs_mkdir(kpath, mode & 07777);
 }
 
+/* Two path buffers on the heap: PATH_MAX is too large for two on the kernel stack. */
 long sc_rename(uint32_t from, uint32_t to) {
-    char a[PATH_MAX_SYS], b[PATH_MAX_SYS];
-    int err = user_path(from, a, sizeof(a));
-    if (!err) err = user_path(to, b, sizeof(b));
-    return err ? err : vfs_rename(a, b);
+    char *a = kmalloc(2 * PATH_MAX_SYS), *b = a + PATH_MAX_SYS;
+    int err;
+
+    if (!a) return -ENOMEM;
+    err = user_path(from, a, PATH_MAX_SYS);
+    if (!err) err = user_path(to, b, PATH_MAX_SYS);
+    if (!err) err = vfs_rename(a, b);
+    kfree(a);
+    return err;
 }
 
 long sc_utime(uint32_t path, uint32_t utimes) {
@@ -303,12 +309,17 @@ long sc_sync(void) {
 }
 
 long sc_mount(uint32_t source, uint32_t target, uint32_t fstype) {
-    char dev[PATH_MAX_SYS], dir[PATH_MAX_SYS], fs[32];
-    int err = user_path(source, dev, sizeof(dev));
+    char *dev = kmalloc(2 * PATH_MAX_SYS), *dir = dev + PATH_MAX_SYS;
+    char fs[32];
+    int err;
 
-    if (!err) err = user_path(target, dir, sizeof(dir));
+    if (!dev) return -ENOMEM;
+    err = user_path(source, dev, PATH_MAX_SYS);
+    if (!err) err = user_path(target, dir, PATH_MAX_SYS);
     if (!err) err = copy_path_from_user((const char *)fstype, fs, sizeof(fs));
-    return err ? err : vfs_mount(dir, fs, dev);
+    if (!err) err = vfs_mount(dir, fs, dev);
+    kfree(dev);
+    return err;
 }
 
 long sc_umount2(uint32_t target, uint32_t flags) {
