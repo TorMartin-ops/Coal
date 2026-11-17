@@ -85,6 +85,21 @@ static const syscall_fn_t syscall_table[NR_SYSCALLS] = {
     [SYS_POLL]            = SC(sc_poll),
     [SYS_RT_SIGRETURN]    = SC(sc_rt_sigreturn),
     [SYS_FCNTL64]         = SC(sc_fcntl64),
+    [SYS_SOCKETCALL       ] = SC(sc_socketcall),
+    [SYS_SOCKET           ] = SC(sc_socket),
+    [SYS_BIND             ] = SC(sc_bind),
+    [SYS_CONNECT          ] = SC(sc_connect),
+    [SYS_LISTEN           ] = SC(sc_listen),
+    [SYS_ACCEPT4          ] = SC(sc_accept4),
+    [SYS_GETSOCKOPT       ] = SC(sc_getsockopt),
+    [SYS_SETSOCKOPT       ] = SC(sc_setsockopt),
+    [SYS_GETSOCKNAME      ] = SC(sc_getsockname),
+    [SYS_GETPEERNAME      ] = SC(sc_getpeername),
+    [SYS_SENDTO           ] = SC(sc_sendto),
+    [SYS_SENDMSG          ] = SC(sc_sendmsg),
+    [SYS_RECVFROM         ] = SC(sc_recvfrom),
+    [SYS_RECVMSG          ] = SC(sc_recvmsg),
+    [SYS_SHUTDOWN         ] = SC(sc_shutdown),
 };
 
 void syscall_dispatch(isr_frame_t *r) {

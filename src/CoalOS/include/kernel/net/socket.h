@@ -38,7 +38,6 @@
 #define SO_LINGER       13
 #define SO_RCVTIMEO     20
 #define SO_SNDTIMEO     21
-#define IPPROTO_TCP_LVL 6
 #define TCP_NODELAY     1
 
 #define NET_MAX_SOCKS   64

@@ -62,7 +62,7 @@
 #define RX_DESCS    32
 #define TX_DESCS    16
 #define BUF_SIZE    2048
-#define MMIO_VA     0xEFF00000u     /* inside the shared kernel page tables, above the kernel stack window */
+#define MMIO_VA     KERNEL_MMIO_VADDR_START
 #define MMIO_PAGES  32              /* BAR0 is 128 KiB */
 
 struct rx_desc { uint64_t addr; uint16_t len, csum; uint8_t status, errors; uint16_t special; };

@@ -80,5 +80,20 @@
 #define SYS_OPENAT          295
 #define SYS_FSTATAT64       300
 #define SYS_PIPE2           331
+#define SYS_SOCKETCALL      102
+#define SYS_SOCKET          359
+#define SYS_BIND            361
+#define SYS_CONNECT         362
+#define SYS_LISTEN          363
+#define SYS_ACCEPT4         364
+#define SYS_GETSOCKOPT      365
+#define SYS_SETSOCKOPT      366
+#define SYS_GETSOCKNAME     367
+#define SYS_GETPEERNAME     368
+#define SYS_SENDTO          369
+#define SYS_SENDMSG         370
+#define SYS_RECVFROM        371
+#define SYS_RECVMSG         372
+#define SYS_SHUTDOWN        373
 
 #endif /* LIBC_SYSCALL_NUMBERS_H */

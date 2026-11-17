@@ -91,6 +91,7 @@ void memory_init(uintptr_t heap_phys, size_t heap_size) {
     for (uintptr_t va = KERNEL_STACK_VADDR_START; va < KERNEL_STACK_VADDR_END; va += BIG_PAGE)
         early_pte(pd, va);
     early_pte(pd, KMAP_VADDR_START);
+    early_pte(pd, KERNEL_MMIO_VADDR_START);
     pd[RECURSIVE_PDE_INDEX] = (uintptr_t)pd | PAGE_PRESENT | PAGE_RW;
 
     /* Page descriptors for the whole region, in lowmem right after the tables. */

@@ -21,6 +21,7 @@
 #include <kernel/process/scheduler.h>
 #include <kernel/process/process.h>
 #include <kernel/fs/vfs/vfs.h>
+#include <kernel/net/net.h>
 #include <kernel/fs/vfs/fs_init.h>
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/lib/port_io.h>
@@ -117,6 +118,7 @@ void kernel_main_init(uint32_t magic, uint32_t mb_info_phys_addr) {
     scheduler_init();
     keyboard_init();
     keymap_load(KEYMAP_NORWEGIAN);
+    net_init();
 
     if (fs_init() != FS_SUCCESS) KERNEL_PANIC_HALT("cannot mount the root file system");
     pcb_t *init = create_user_process(INIT_PATH);

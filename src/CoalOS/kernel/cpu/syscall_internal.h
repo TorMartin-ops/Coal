@@ -96,4 +96,21 @@ DECL(sc_rt_sigreturn(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
 DECL(sc_rt_sigaction(uint32_t, uint32_t, uint32_t, uint32_t))
 DECL(sc_rt_sigprocmask(uint32_t, uint32_t, uint32_t, uint32_t))
 
+/* syscall_socket.c */
+DECL(sc_socketcall(uint32_t, uint32_t))
+DECL(sc_socket(uint32_t, uint32_t, uint32_t))
+DECL(sc_bind(uint32_t, uint32_t, uint32_t))
+DECL(sc_connect(uint32_t, uint32_t, uint32_t))
+DECL(sc_listen(uint32_t, uint32_t))
+DECL(sc_accept4(uint32_t, uint32_t, uint32_t, uint32_t))
+DECL(sc_getsockopt(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t))
+DECL(sc_setsockopt(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t))
+DECL(sc_getsockname(uint32_t, uint32_t, uint32_t))
+DECL(sc_getpeername(uint32_t, uint32_t, uint32_t))
+DECL(sc_sendto(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t))
+DECL(sc_sendmsg(uint32_t, uint32_t, uint32_t))
+DECL(sc_recvfrom(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t))
+DECL(sc_recvmsg(uint32_t, uint32_t, uint32_t))
+DECL(sc_shutdown(uint32_t, uint32_t))
+
 #endif

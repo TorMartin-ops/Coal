@@ -11,6 +11,7 @@
  *                             virt = phys + KERNEL_SPACE_VIRT_START.
  *   0xF8000000 - 0xF8FFFFFF  kernel stacks (page tables pre-allocated, shared).
  *   0xFA000000 - 0xFA003FFF  kmap slots (highmem frames, see kmap.h).
+ *   0xFB000000 - 0xFB3FFFFF  device registers (uncached).
  *   0xFFC00000 - 0xFFFFFFFF  recursive page-directory mapping.
  *
  * RAM above 896 MiB is highmem: it is handed out only for user pages and is
@@ -77,6 +78,7 @@ extern "C" {
 #define KERNEL_STACK_VADDR_START 0xF8000000u
 #define KERNEL_STACK_VADDR_END   0xF9000000u
 #define KMAP_VADDR_START         0xFA000000u
+#define KERNEL_MMIO_VADDR_START  0xFB000000u   /* device registers, mapped uncached (4 MiB window) */
 
 #define VGA_PHYS_ADDR 0xB8000u
 #define VGA_VIRT_ADDR (KERNEL_SPACE_VIRT_START + VGA_PHYS_ADDR)

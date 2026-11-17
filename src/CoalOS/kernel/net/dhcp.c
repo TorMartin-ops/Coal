@@ -64,14 +64,20 @@ static void send_msg(uint8_t type) {
     udp_send(0, CLIENT_PORT, IP4_BROADCAST, SERVER_PORT, &m, sizeof(m));
 }
 
-static void configure(uint32_t ip, uint32_t mask, uint32_t gw, uint32_t dns, const char *how) {
+static unsigned prefix_len(uint32_t mask) {
+    unsigned n = 0;
+    for (; mask & 0x80000000u; mask <<= 1) n++;
+    return n;
+}
+
+static void configure(uint32_t ip, uint32_t mask, uint32_t gw, uint32_t dns, uint32_t lease, const char *how) {
     net_if.ip = ip;
     net_if.mask = mask;
     net_if.gw = gw;
     net_if.dns = dns;
     state = BOUND;
-    LOG_INFO("%s: " IP4_FMT "/%u gw " IP4_FMT " dns " IP4_FMT, how, IP4_ARGS(ip),
-             (unsigned)__builtin_popcount(mask), IP4_ARGS(gw), IP4_ARGS(dns));
+    LOG_INFO("%s: " IP4_FMT "/%u gw " IP4_FMT " dns " IP4_FMT " lease %us", how, IP4_ARGS(ip),
+             prefix_len(mask), IP4_ARGS(gw), IP4_ARGS(dns), (unsigned)lease);
 }
 
 void dhcp_start(void) {
@@ -86,7 +92,7 @@ void dhcp_tick(void) {
     if ((state != SELECTING && state != REQUESTING) || (int32_t)(net_now() - retry_at) < 0) return;
     if (tries >= MAX_TRIES) {
         LOG_WARN("no answer, using the static QEMU defaults");
-        configure(FALLBACK_IP, FALLBACK_MASK, FALLBACK_GW, FALLBACK_DNS, "static");
+        configure(FALLBACK_IP, FALLBACK_MASK, FALLBACK_GW, FALLBACK_DNS, 0, "static");
         return;
     }
     tries++;
@@ -127,7 +133,6 @@ void dhcp_input(const uint8_t *msg, size_t len) {
         retry_at = net_now() + RETRY_MS;
         send_msg(REQUEST);
     } else if (type == ACK && state == REQUESTING) {
-        (void)lease;
-        configure(ntohl(m->yiaddr), mask ? mask : FALLBACK_MASK, gw, dns, "lease");
+        configure(ntohl(m->yiaddr), mask ? mask : FALLBACK_MASK, gw, dns, lease, "lease");
     }
 }
