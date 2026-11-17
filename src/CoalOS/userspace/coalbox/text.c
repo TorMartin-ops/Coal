@@ -173,7 +173,7 @@ int wc_main(int argc, char **argv) {
     return rc;
 }
 
-/* --- grep: Kernighan/Pike matcher with ^ $ . * and backslash escapes --- */
+/* --- grep: Kernighan/Pike matcher with ^ $ . * [...] and backslash escapes --- */
 
 static int g_icase, g_fixed;
 
@@ -181,25 +181,46 @@ static int eq(int a, int b) {
     return g_icase ? tolower(a) == tolower(b) : a == b;
 }
 
-static int match_here(const char *re, const char *t);
-
-static int match_star(int c, int any, const char *re, const char *t) {
-    for (;; t++) {
-        if (match_here(re, t)) return 1;
-        if (!*t || !(any || eq(c, *t))) return 0;
+/* The pattern atom at re ends here: one character, an escape or a complete [...] class. */
+static const char *atom_end(const char *re) {
+    if (g_fixed) return re + 1;
+    if (*re == '\\' && re[1]) return re + 2;
+    if (*re == '[') {
+        const char *q = re + 1;
+        q += *q == '^';
+        q += *q == ']';
+        while (*q && *q != ']') q++;
+        if (*q) return q + 1;
     }
+    return re + 1;
+}
+
+static int atom_match(const char *re, const char *end, int t) {
+    if (g_fixed) return eq(*re, t);
+    if (*re == '\\' && re[1]) return eq(re[1], t);
+    if (*re == '.') return 1;
+    if (*re != '[' || end - re < 3) return eq(*re, t);
+    const char *q = re + 1;
+    int neg = *q == '^', hit = 0;
+    q += neg;
+    for (const char *c = q; c < end - 1; c++) {
+        if (c[1] == '-' && c + 2 < end - 1) { hit |= eq(c[0], t) || (t >= c[0] && t <= c[2]); c += 2; }
+        else hit |= eq(*c, t);
+    }
+    return hit != neg;
 }
 
 static int match_here(const char *re, const char *t) {
     if (!*re) return 1;
-    int c = *re, lit = g_fixed;
-    const char *next = re + 1;
-    if (c == '\\' && re[1] && !g_fixed) { c = re[1]; lit = 1; next = re + 2; }
-    int any = c == '.' && !lit;
-    if (*next == '*' && !g_fixed) return match_star(c, any, next + 1, t);
-    if (c == '$' && !lit && !re[1]) return !*t;
-    if (*t && (any || eq(c, *t))) return match_here(next, t + 1);
-    return 0;
+    if (*re == '$' && !re[1] && !g_fixed) return !*t;
+    const char *end = atom_end(re);
+    if (*end == '*' && !g_fixed) {
+        for (;; t++) {
+            if (match_here(end + 1, t)) return 1;
+            if (!*t || !atom_match(re, end, *t)) return 0;
+        }
+    }
+    return *t && atom_match(re, end, *t) && match_here(end, t + 1);
 }
 
 static int match(const char *re, const char *t) {

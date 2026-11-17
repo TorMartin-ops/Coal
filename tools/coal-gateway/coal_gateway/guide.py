@@ -2,7 +2,7 @@
 
 GUIDE_URI = "coal://guide"
 INSTRUCTIONS = (
-    "Drives a Coal OS virtual machine (a small Linux-compatible i386 OS) in QEMU. You have full control: "
+    "Drives a Coal OS virtual machine (a small Linux-compatible x86_64 OS) in QEMU. You have full control: "
     "commands run as root inside the VM, which is the sandbox. Call coal_guide once for the system guide "
     "(layout, commands, limits). Start with coal_boot, then use coal_run, coal_read_file, coal_write_file, "
     "coal_ls, coal_ps, coal_sysinfo; coal_spawn starts a long command as a job you poll with coal_job_status and coal_job_output; coal_kernel_log and coal_screen show what the kernel printed; coal_keys types on the console "
@@ -14,7 +14,7 @@ INSTRUCTIONS = (
 GUIDE = """Coal OS system guide
 
 WHAT IT IS
-A small Linux-ABI-compatible i386 kernel (static ELF32 Linux binaries run), single CPU, an e1000 NIC on
+A small Linux-ABI-compatible x86_64 kernel (static ELF64 Linux binaries run), single CPU, an e1000 NIC on
 QEMU user networking (DHCP), no SMP, no users (everything is root). Boot to agentd takes about half a second;
 512 MiB RAM by default, about 1.7 MB in use after boot.
 
@@ -40,19 +40,18 @@ FILE SYSTEM (FAT16 disk image, persistent; long file names, no symlinks, no perm
 COMPILING C FOR COAL
 Coal has no compiler; build on the host with tools/coal-cc and copy the result in:
   tools/coal-cc -o /tmp/prog prog.c        then   coal_write_file path=/usr/bin/prog host_path=/tmp/prog   and run it
-It needs gcc with -m32 support and nasm. The exact command it runs (SRC = src/CoalOS in this repo):
-  nasm -f elf32 $SRC/userspace/entry.asm -o entry.o
-  gcc -m32 -march=i386 -ffreestanding -nostdinc -fno-stack-protector -fno-pie -fno-pic -mno-mmx -mno-sse -mno-sse2
-      -mno-red-zone -Os -Wall -Wextra -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections
+It needs a 64-bit gcc and nasm. The exact command it runs (SRC = src/CoalOS in this repo):
+  nasm -f elf64 $SRC/userspace/entry.asm -o entry.o
+  gcc -m64 -ffreestanding -nostdinc -fno-stack-protector -fno-pie -fno-pic
+      -Os -Wall -Wextra -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections
       -I$SRC/include prog.c $SRC/userspace/libc/*.c entry.o -nostdlib -static -no-pie -s -Wl,--gc-sections
-      -T$SRC/src/arch/i386/user.ld -o prog
-Include Coal's headers as <libc/stdio.h>, <libc/stdlib.h>, <libc/unistd.h> ... (there is no glibc, no FPU:
-no float/double math, printf %f is done in integers). main(argc, argv) is the entry point.
+      -T$SRC/src/arch/x86_64/user.ld -o prog
+Include Coal's headers as <libc/stdio.h>, <libc/stdlib.h>, <libc/unistd.h> ... (there is no glibc; printf %f is done in integers). main(argc, argv) is the entry point.
 
 SYSTEM CALLS
-The Linux i386 ABI (int 0x80, Linux numbers and struct layouts): files, directories, pipes, dup, fork/execve
-(copy-on-write), wait4, signals with handlers (rt_sigaction, rt_sigreturn), poll, brk/mmap2/munmap (anonymous),
-clock_gettime, nanosleep, uname, syslog, reboot, AF_INET sockets (socketcall and the direct socket calls:
+The Linux x86_64 ABI (SYSCALL, Linux numbers and struct layouts): files, directories, pipes, dup, fork/execve
+(copy-on-write), wait4, signals with handlers (rt_sigaction, rt_sigreturn), poll, brk/mmap/munmap/mprotect (anonymous),
+clock_gettime, nanosleep, uname, syslog, reboot, AF_INET sockets (the direct socket calls:
 TCP streams, UDP, raw ICMP). No threads/clone, ptrace, symlinks, chmod/chown.
 Unimplemented calls return -ENOSYS.
 
