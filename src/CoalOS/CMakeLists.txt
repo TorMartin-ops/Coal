@@ -76,7 +76,7 @@ add_user_program(hello userspace/hello/hello.c)
 add_user_program(snake userspace/games/snake.c)
 add_user_program(libc_test userspace/tests/libc_test.c)
 add_user_program(syscall_test userspace/tests/syscall_test.c)
-add_user_program(mcpd userspace/mcpd/mcpd.c)
+add_user_program(agentd userspace/agentd/agentd.c)
 add_user_program(memtest userspace/tests/memtest.c)
 add_user_program(fault_test userspace/tests/fault_test.c)
 add_user_program(fs_stress userspace/tests/fs_stress.c)
@@ -107,7 +107,7 @@ add_custom_command(
     COMMAND mcopy ${IMG} $<TARGET_FILE:shell> ::/bin/sh
     COMMAND mcopy ${IMG} $<TARGET_FILE:coalbox> ::/bin/coalbox
     COMMAND mcopy ${IMG} $<TARGET_FILE:init> ::/sbin/init
-    COMMAND mcopy ${IMG} $<TARGET_FILE:mcpd> ::/sbin/mcpd
+    COMMAND mcopy ${IMG} $<TARGET_FILE:agentd> ::/sbin/agentd
     COMMAND mcopy ${IMG} $<TARGET_FILE:hello> ::/usr/bin/hello
     COMMAND mcopy ${IMG} $<TARGET_FILE:snake> ::/usr/bin/snake
     COMMAND mcopy ${IMG} $<TARGET_FILE:libc_test> ::/usr/bin/libc_test
@@ -122,7 +122,7 @@ add_custom_command(
     COMMAND mcopy ${IMG} ${CMAKE_CURRENT_SOURCE_DIR}/userspace/tests/sh_test.sh ::/usr/bin/sh_test.sh
     COMMAND mcopy ${IMG} ${CMAKE_CURRENT_SOURCE_DIR}/userspace/tests/applet_test.sh ::/usr/bin/applet_test.sh
     COMMAND mcopy ${IMG} ${ROOTFS_ETC} ::/etc/
-    DEPENDS hello snake shell coalbox init mcpd libc_test syscall_test abi_test memtest fault_test fs_stress kernel_test coalbench coalbench_null ${ROOTFS_ETC}
+    DEPENDS hello snake shell coalbox init agentd libc_test syscall_test abi_test memtest fault_test fs_stress kernel_test coalbench coalbench_null ${ROOTFS_ETC}
     COMMENT "Creating FAT16 disk image"
     VERBATIM)
 
