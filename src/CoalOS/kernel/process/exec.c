@@ -155,8 +155,51 @@ out:
     return ret;
 }
 
-int exec_build_image(const char *path, const char *const *argv, const char *const *envp,
-                     exec_image_t *img) {
+#define SHEBANG_MAX   255       /* longest "#!" line, like Linux BINPRM_BUF_SIZE - 1 */
+#define SHEBANG_DEPTH 4
+
+static int build_image(const char *path, const char *const *argv, const char *const *envp,
+                       exec_image_t *img, int depth);
+
+/* "#!interp [arg]": runs interp with the optional single argument, the script path and the old arguments. */
+static int exec_script(const char *path, const void *file, size_t fsize, const char *const *argv,
+                       const char *const *envp, exec_image_t *img, int depth) {
+    char line[SHEBANG_MAX + 1], *interp, *arg = NULL, *end;
+    const char **nargv;
+    size_t n = fsize < SHEBANG_MAX ? fsize : SHEBANG_MAX, argc = 0, k = 0;
+    int ret;
+
+    if (depth >= SHEBANG_DEPTH) return -ELOOP;
+    memcpy(line, file, n);
+    line[n] = 0;
+    for (end = line; *end && *end != '\n'; end++) { }
+    if (!*end && fsize > SHEBANG_MAX) return -ENOEXEC;       /* line too long */
+    while (end > line && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) end--;
+    *end = 0;
+    for (interp = line + 2; *interp == ' ' || *interp == '\t'; interp++) { }
+    if (!*interp) return -ENOEXEC;
+    for (char *c = interp; *c; c++) {
+        if (*c != ' ' && *c != '\t') continue;
+        *c++ = 0;
+        while (*c == ' ' || *c == '\t') c++;
+        if (*c) arg = c;                                    /* the rest of the line is one argument */
+        break;
+    }
+    while (argv && argv[argc]) argc++;
+    nargv = kmalloc((argc + 4) * sizeof(*nargv));
+    if (!nargv) return -ENOMEM;
+    nargv[k++] = interp;
+    if (arg) nargv[k++] = arg;
+    nargv[k++] = path;
+    for (size_t i = 1; i < argc; i++) nargv[k++] = argv[i];
+    nargv[k] = NULL;
+    ret = build_image(interp, nargv, envp, img, depth + 1);
+    kfree(nargv);
+    return ret;
+}
+
+static int build_image(const char *path, const char *const *argv, const char *const *envp,
+                       exec_image_t *img, int depth) {
     mm_struct_t *mm = NULL;
     elf_info_t ei;
     size_t fsize = 0;
@@ -164,6 +207,11 @@ int exec_build_image(const char *path, const char *const *argv, const char *cons
     int ret;
 
     if (!file) return -ENOENT;
+    if (fsize >= 2 && ((char *)file)[0] == '#' && ((char *)file)[1] == '!') {
+        ret = exec_script(path, file, fsize, argv, envp, img, depth);
+        kfree(file);
+        return ret;
+    }
     ret = new_address_space(&mm);
     if (ret) goto out;
     ret = elf_load(mm, file, fsize, &ei);
@@ -186,6 +234,11 @@ fail:
 out:
     kfree(file);
     return ret;
+}
+
+int exec_build_image(const char *path, const char *const *argv, const char *const *envp,
+                     exec_image_t *img) {
+    return build_image(path, argv, envp, img, 0);
 }
 
 void exec_set_name(pcb_t *p, const char *path, const char *const *argv) {
