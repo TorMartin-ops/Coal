@@ -133,6 +133,7 @@ static pcb_t *pcb_new(void) {
     spinlock_init(&p->fd_table_lock);
     p->task.process = p;
     p->task.priority = SCHED_DEFAULT_PRIORITY;
+    strcpy(p->cwd, "/");
     if (!kstack_alloc(p)) { kfree(p); return NULL; }
     return p;
 }
@@ -244,6 +245,12 @@ int process_fork(const isr_frame_t *regs) {
     memcpy(child->name, parent->name, sizeof(child->name));
     memcpy(child->cmdline, parent->cmdline, sizeof(child->cmdline));
     child->cmdline_len = parent->cmdline_len;
+    strcpy(child->cwd, parent->cwd);
+    child->cloexec = parent->cloexec;
+    child->tls_base = parent->tls_base;
+    child->tls_pages = parent->tls_pages;
+    child->sig_blocked = parent->sig_blocked;
+    memcpy(child->sigact, parent->sigact, sizeof(child->sigact));
     sys_files_clone(child, parent);
     f = process_user_frame(child);
     *f = *regs;

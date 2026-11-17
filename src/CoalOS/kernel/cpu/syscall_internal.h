@@ -11,22 +11,8 @@
 
 #define ARG_MAX_BYTES   32768       /* total size of argv + envp strings */
 #define ARG_MAX_VECS    256         /* argv + envp entries incl. terminators */
-#define CWD_MAX         256
 
-/* Per-process state the PCB has no room for, found by pid. */
-struct sigact { uint32_t handler, flags, restorer, mask; };
-struct pstate {
-    struct pstate *next;
-    uint32_t pid;
-    char     cwd[CWD_MAX];
-    uint32_t cloexec;               /* bit n: descriptor n is closed by execve */
-    uint32_t blocked;               /* blocked signal mask */
-    struct sigact act[NSIG];
-};
-struct pstate *pstate_current(void);
-struct pstate *pstate_find(uint32_t pid);
-void pstate_fork(uint32_t child_pid);
-void pstate_exec(struct pstate *ps);        /* handlers back to default, close-on-exec files closed */
+void proc_exec_reset(pcb_t *p);   /* handlers back to default, close-on-exec files closed */
 
 /* Copy a NUL-terminated path from user space. 0, -EFAULT, -ENAMETOOLONG or -ENOENT (empty). */
 int copy_path_from_user(const char *user, char *kbuf, size_t size);
@@ -42,8 +28,6 @@ struct exec_args {
 long exec_args_copy(uint32_t user_argv, uint32_t user_envp, struct exec_args *out);
 void exec_args_free(struct exec_args *a);
 
-/* Delivers one pending signal with a user handler by building an rt signal frame. */
-void signal_deliver(isr_frame_t *regs);
 
 #define DECL(...) long __VA_ARGS__;
 /* Handlers; syscall.c refers to them. */

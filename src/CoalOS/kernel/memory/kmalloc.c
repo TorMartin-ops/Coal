@@ -1,25 +1,22 @@
 /**
  * @file kmalloc.c
- * @brief kmalloc/kfree on top of per-CPU slab caches and the buddy allocator.
+ * @brief kmalloc/kfree on top of slab caches and the buddy allocator.
  */
 
 #include <kernel/memory/kmalloc.h>
 #include <kernel/memory/slab.h>
 #include <kernel/memory/buddy.h>
 #include <kernel/memory/paging.h>
-#include <kernel/cpu/get_cpu_id.h>
 
-#define MAX_CPUS        4
 #define MIN_CLASS_SHIFT 4                       /* 16 bytes */
 #define NUM_CLASSES     7                       /* 16 .. 1024 */
 #define MAX_SLAB_SIZE   (16u << (NUM_CLASSES - 1))
 
-static slab_cache_t g_caches[MAX_CPUS][NUM_CLASSES];
+static slab_cache_t g_caches[NUM_CLASSES];
 
 void kmalloc_init(void) {
-    for (int cpu = 0; cpu < MAX_CPUS; cpu++)
-        for (int c = 0; c < NUM_CLASSES; c++)
-            slab_cache_init(&g_caches[cpu][c], (size_t)16 << c);
+    for (int c = 0; c < NUM_CLASSES; c++)
+        slab_cache_init(&g_caches[c], (size_t)16 << c);
 }
 
 /* Smallest class whose size is >= n (1 <= n <= MAX_SLAB_SIZE). */
@@ -34,7 +31,7 @@ void *kmalloc(size_t size) {
         return NULL;
 
     if (size <= MAX_SLAB_SIZE)
-        return slab_alloc(&g_caches[(unsigned)get_cpu_id() % MAX_CPUS][class_of(size)]);
+        return slab_alloc(&g_caches[class_of(size)]);
 
     if (size > ((size_t)PAGE_SIZE << BUDDY_MAX_ORDER))
         return NULL;

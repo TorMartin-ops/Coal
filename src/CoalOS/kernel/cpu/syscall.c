@@ -4,7 +4,6 @@
  */
 
 #include "syscall_internal.h"
-#include <kernel/drivers/display/serial.h>
 
 typedef long (*syscall_fn_t)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, isr_frame_t *);
 
@@ -94,8 +93,4 @@ void syscall_dispatch(isr_frame_t *r) {
 
     r->eax = fn ? (uint32_t)fn(r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp, r) : (uint32_t)-ENOSYS;
     signal_deliver(r);
-}
-
-void syscall_init(void) {
-    serial_write("[Syscall] Linux i386 ABI on int 0x80\n");
 }

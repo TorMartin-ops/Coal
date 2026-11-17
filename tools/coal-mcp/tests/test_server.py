@@ -88,11 +88,29 @@ class Protocol(unittest.TestCase):
         names = {t["name"] for t in tools}
         for n in ("coal_boot", "coal_shutdown", "coal_reboot", "coal_run", "coal_read_file",
                   "coal_write_file", "coal_ls", "coal_ps", "coal_sysinfo", "coal_kernel_log",
-                  "coal_screen", "coal_build"):
+                  "coal_screen", "coal_build", "coal_guide", "coal_snapshot", "coal_restore", "coal_reset"):
             self.assertIn(n, names)
         for t in tools:
             self.assertEqual(t["inputSchema"]["type"], "object")
             self.assertTrue(t["description"])
+
+    def test_guide_resource_and_instructions(self):
+        init = self.c.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                          "clientInfo": {"name": "t", "version": "1"}})["result"]
+        self.assertIn("coal_snapshot", init["instructions"])
+        self.assertIn("resources", init["capabilities"])
+        uri = self.c.call("resources/list")["result"]["resources"][0]["uri"]
+        text = self.c.call("resources/read", {"uri": uri})["result"]["contents"][0]["text"]
+        self.assertIn("RECOVERY", text)
+        err, text = self.c.tool("coal_guide")
+        self.assertFalse(err)
+        self.assertIn("/sbin/init", text)
+
+    def test_snapshot_names_are_validated(self):
+        for bad in ("../x", "a/b", "", ".hidden", "x" * 65):
+            r = self.c.call("tools/call", {"name": "coal_snapshot", "arguments": {"name": bad}})["result"]
+            err = r["isError"]
+            self.assertTrue(err, bad)
 
     def test_modern_era(self):
         meta = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",

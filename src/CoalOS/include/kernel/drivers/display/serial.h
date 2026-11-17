@@ -2,8 +2,7 @@
  * @file serial.h
  * @brief 16550 UART driver: COM1 is the kernel log, COM2 is for the MCP daemon.
  *
- * Kernel log (COM1): serial_putchar/serial_write/serial_printf, synchronous,
- * '\n' is sent as "\r\n".
+ * Kernel log (COM1): serial_write, synchronous.
  *
  * Port API (any port): interrupt-driven RX and TX ring buffers, raw bytes.
  * The first call to serial_port_read/serial_port_write on a port installs its
@@ -27,14 +26,11 @@ size_t serial_port_write(int port, const void *buf, size_t len);
 /** Blocks until at least one byte has arrived, then returns up to len bytes. */
 size_t serial_port_read(int port, void *buf, size_t len);
 
+
 /** Number of received bytes waiting in the RX ring. */
 size_t serial_port_rx_available(int port);
 
-/* Kernel log on COM1 */
-void serial_putchar(char c);
+/** Kernel log on COM1: synchronous, '\n' is sent as "\r\n". */
 void serial_write(const char *str);
-void serial_print_hex(uint32_t n);
-void serial_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-void serial_vprintf(const char *fmt, va_list args);
 
 #endif /* SERIAL_H */

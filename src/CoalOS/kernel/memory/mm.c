@@ -92,15 +92,6 @@ void destroy_mm(mm_struct_t *mm) {
     kfree(mm);
 }
 
-vma_struct_t *find_vma(mm_struct_t *mm, uintptr_t addr) {
-    if (!mm)
-        return NULL;
-    uintptr_t flags = spinlock_acquire_irqsave(&mm->lock);
-    vma_struct_t *v = rbtree_find_vma(mm->vma_tree.root, addr);
-    spinlock_release_irqrestore(&mm->lock, flags);
-    return v;
-}
-
 vma_struct_t *insert_vma(mm_struct_t *mm, uintptr_t start, uintptr_t end,
                          uint32_t vm_flags, uint32_t page_prot,
                          file_t *file, size_t offset) {

@@ -10,6 +10,7 @@
 #include <kernel/lib/port_io.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/lib/string.h>
+#include <kernel/core/log.h>
 
 #define NSEC_PER_SEC 1000000000u
 #define TLS_ENTRY    (GDT_TLS_SELECTOR >> 3)
@@ -122,7 +123,7 @@ long sc_uname(uint32_t ubuf) {
     memset(&u, 0, sizeof(u));
     strcpy(u.sysname, "Coal");
     strcpy(u.nodename, "coal");
-    strcpy(u.release, "0.1.0");
+    strcpy(u.release, COAL_VERSION);
     strcpy(u.version, "#1");
     strcpy(u.machine, "i386");
     return copy_to_user((void *)ubuf, &u, sizeof(u)) ? -EFAULT : 0;
@@ -134,7 +135,7 @@ long sc_zero(void) { return 0; }        /* uid, gid, euid, egid: single-user sys
 // Thread area (minimal, for static libc start-up)
 //============================================================================
 
-/* One TLS descriptor; libc loads GDT_TLS_SELECTOR into %gs. */
+/* One TLS descriptor per process (saved in the PCB, loaded on every switch); libc loads GDT_TLS_SELECTOR into %gs. */
 long sc_set_thread_area(uint32_t udesc) {
     struct linux_user_desc d;
 
@@ -142,6 +143,8 @@ long sc_set_thread_area(uint32_t udesc) {
     if (d.entry_number != 0xFFFFFFFFu && d.entry_number != TLS_ENTRY) return -EINVAL;
 
     uint32_t pages = (d.flags & LIMIT_IN_PAGES) ? d.limit : (d.limit + PAGE_SIZE - 1) / PAGE_SIZE;
+    get_current_process()->tls_base = d.base_addr;
+    get_current_process()->tls_pages = pages;
     gdt_set_tls_base(d.base_addr, pages);
     d.entry_number = TLS_ENTRY;
     return copy_to_user((void *)udesc, &d, sizeof(d)) ? -EFAULT : 0;
@@ -178,7 +181,7 @@ long sc_reboot(uint32_t magic1, uint32_t magic2, uint32_t cmd) {
 }
 
 long sc_syslog(uint32_t type, uint32_t ubuf, uint32_t len) {
-    if (type == SYSLOG_ACTION_SIZE_BUFFER) return klog_ring_size();
+    if (type == SYSLOG_ACTION_SIZE_BUFFER) return KLOG_RING_SIZE;
     if (type == SYSLOG_ACTION_CLEAR) { klog_ring_clear(); return 0; }
     if (type != SYSLOG_ACTION_READ_ALL && type != SYSLOG_ACTION_READ_CLEAR) return -EINVAL;
 

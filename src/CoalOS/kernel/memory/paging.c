@@ -110,11 +110,6 @@ int paging_get_physical_address_and_flags(uint32_t *pd, uintptr_t vaddr,
     return 0;
 }
 
-int paging_get_physical_address(uint32_t *pd, uintptr_t vaddr, uintptr_t *paddr_out) {
-    uint32_t flags;
-    return paging_get_physical_address_and_flags(pd, vaddr, paddr_out, &flags);
-}
-
 /* --- Per-process directories ---------------------------------------------- */
 
 void copy_kernel_pde_entries(uint32_t *new_pd_virt) {

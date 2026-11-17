@@ -48,7 +48,9 @@ managing QEMU.
 | `coal_boot` | Build if needed, start QEMU headless, wait until mcpd answers |
 | `coal_shutdown`, `coal_reboot` | Stop or hard-reset the VM (disk is kept) |
 | `coal_run` | `/bin/sh -c` a command; returns exit code, stdout, stderr (timeout, 64 KiB per stream) |
-| `coal_read_file`, `coal_write_file` | Binary-safe file transfer; can save to or upload from a host path |
+| `coal_read_file`, `coal_write_file` | Binary-safe file transfer; `save_to` / `host_path` read and write any host path the server user can access |
+| `coal_guide` (also the resource `coal://guide`) | System guide: layout, commands, limits, what is destructive, how to recover |
+| `coal_snapshot`, `coal_restore`, `coal_reset` | Save the disk under a name, put it back (reboots), or rebuild the pristine image (reboots) |
 | `coal_ls`, `coal_ps`, `coal_sysinfo` | Directory listing, process list (`/proc`), uname, uptime, meminfo |
 | `coal_kernel_log` | Tail of the COM1 serial log; first stop for boot failures and panics |
 | `coal_screen` | The 80x25 VGA text screen as text |
@@ -56,6 +58,19 @@ managing QEMU.
 
 The server speaks MCP 2026-07-28 (stateless, `server/discover`) and the
 `initialize` handshake of 2025-11-25 and earlier.
+
+## Trust model and safe use
+
+The MCP client gets full control: commands run as root inside the VM (the VM is the sandbox, it
+has no network), and `save_to` / `host_path` can read and write host files, so connect only clients
+you trust. The runtime directory holding the QEMU monitor and COM2 sockets is created with mode 0700
+so other local users cannot attach to the VM.
+
+Mistakes inside Coal are never fatal. The disk image persists between boots, so
+`coal_snapshot name=x` before risky changes, then `coal_restore name=x` to undo them, or `coal_reset` for
+a fresh image. Overwriting `/sbin/init`, `/sbin/mcpd` or `/bin/sh` is the way to lose the link to the VM;
+reset recovers it. Snapshots are stored in `<build-dir>/snapshots`; `coal_build clean=true` deletes them.
+The server `instructions` and the guide tell the model all of this.
 
 ## What the OS image needs
 
@@ -75,11 +90,11 @@ sends `{"event":"ready","version":1}`.
 
 ```
 > coal_boot
-booted in 4.2s; mcpd is ready
+booted in 0.5s; mcpd is ready
 > coal_run command="uname -a; ls /bin"
 exit code: 0
 --- stdout ---
-Linux coal 0.1.0 ...
+Coal coal 0.2.0 #1 i386
 > coal_write_file path="/tmp/hello.txt" content="hi\n"
 wrote 3 bytes to /tmp/hello.txt
 > coal_run command="cat /tmp/hello.txt"
@@ -90,7 +105,8 @@ wrote 3 bytes to /tmp/hello.txt
 ## Tests
 
 ```sh
-python3 tools/coal-mcp/tests/test_server.py
+python3 tools/coal-mcp/tests/test_server.py      # protocol and mcpd end-to-end on a pty
+python3 tools/coal-mcp/tests/smoke_test.py       # builds, boots in QEMU, runs commands, snapshot/restore
 ```
 
 Covers the MCP handshakes and tool list, and runs the real mcpd (built as a

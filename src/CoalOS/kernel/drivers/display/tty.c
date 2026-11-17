@@ -188,7 +188,7 @@ size_t tty_input_available(void) {
 }
 
 /** True when a read can return now (a complete record in canonical mode, any byte in raw mode). */
-static bool readable(void) {
+static bool ring_readable(void) {
     if (!(g.tio.c_lflag & TTY_ICANON)) return g.head != g.tail;
     for (uint32_t i = g.tail; i != g.head; i++) {
         if (g.ring[i & (RING_SIZE - 1)] & (E_EOR | E_EOF)) return true;
@@ -196,12 +196,19 @@ static bool readable(void) {
     return false;
 }
 
+bool tty_readable(void) {
+    uintptr_t flags = local_irq_save();
+    bool r = ring_readable();
+    local_irq_restore(flags);
+    return r;
+}
+
 ssize_t tty_read(void *buf, size_t len) {
     uint8_t *out = buf;
     if (!out || !len) return 0;
 
     uintptr_t flags = local_irq_save();
-    while (!readable()) {
+    while (!ring_readable()) {
         if (!(g.tio.c_lflag & TTY_ICANON) && g.tio.c_cc[TTY_VMIN] == 0) {
             local_irq_restore(flags);
             return 0;
@@ -244,22 +251,7 @@ void tty_set_termios(const tty_termios_t *in) {
     local_irq_restore(flags);
 }
 
-void tty_set_raw(bool raw) {
-    tty_termios_t t;
-    tty_get_termios(&t);
-    if (raw) {
-        t.c_lflag &= ~(uint32_t)(TTY_ICANON | TTY_ECHO | TTY_ISIG);
-        t.c_iflag &= ~(uint32_t)(TTY_ICRNL | TTY_INLCR | TTY_IGNCR);
-        t.c_cc[TTY_VMIN] = 1;
-    } else {
-        t.c_lflag |= TTY_ICANON | TTY_ECHO | TTY_ISIG;
-        t.c_iflag |= TTY_ICRNL;
-    }
-    tty_set_termios(&t);
-}
-
 uint32_t tty_get_fg_pgrp(void) { return g.fg_pgrp; }
-void tty_set_fg_pgrp(uint32_t pgid) { g.fg_pgrp = pgid; }
 
 int tty_ioctl(unsigned request, void *arg) {
     switch (request) {

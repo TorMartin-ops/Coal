@@ -7,21 +7,11 @@
  */
 #include <kernel/drivers/display/terminal.h>
 #include <kernel/drivers/display/vga_hardware.h>
-#include <kernel/drivers/display/serial.h>
 #include <kernel/lib/port_io.h>
 #include <kernel/lib/string.h>
 #include <kernel/sync/spinlock.h>
 
-/* Mirror kernel messages / user console output to COM1 (outside the lock). */
-#ifndef TERMINAL_MIRROR_KERNEL
-#define TERMINAL_MIRROR_KERNEL 1
-#endif
-#ifndef TERMINAL_MIRROR_CONSOLE
-#define TERMINAL_MIRROR_CONSOLE 0
-#endif
-
 #define TAB_WIDTH       8
-#define PRINTF_BUF_SIZE 256
 #define MAX_PARAMS      4
 #define DEFAULT_FG      VGA_COLOR_LIGHT_GREY
 #define DEFAULT_BG      VGA_COLOR_BLACK
@@ -285,40 +275,6 @@ static void write_locked(const char *data, size_t n) {
 void terminal_write_bytes(const char *data, size_t size) {
     if (!data || !size) return;
     write_locked(data, size);
-#if TERMINAL_MIRROR_CONSOLE
-    for (size_t i = 0; i < size; i++) serial_putchar(data[i]);
-#endif
-}
-
-void terminal_write(const char *str) {
-    if (!str) return;
-    write_locked(str, strlen(str));
-#if TERMINAL_MIRROR_KERNEL
-    serial_write(str);
-#endif
-}
-
-void terminal_putchar(char c) {
-    write_locked(&c, 1);
-#if TERMINAL_MIRROR_KERNEL
-    serial_putchar(c);
-#endif
-}
-
-void terminal_vprintf(const char *fmt, va_list args) {
-    char buf[PRINTF_BUF_SIZE];
-    int len = _vsnprintf(buf, sizeof(buf), fmt, args);
-    write_locked(buf, (size_t)len);
-#if TERMINAL_MIRROR_KERNEL
-    serial_write(buf);
-#endif
-}
-
-void terminal_printf(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    terminal_vprintf(fmt, args);
-    va_end(args);
 }
 
 static void clear_all(void) {

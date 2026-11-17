@@ -68,8 +68,6 @@ void scheduler_exit_current(void) __attribute__((noreturn));
 /** Timer interrupt hook: counts ticks, wakes sleepers, enforces time slices. */
 void scheduler_tick(void);
 
-uint32_t scheduler_get_ticks(void);
-
 tcb_t *get_current_task(void);
 
 /** True once scheduler_start() has switched to the first task. */

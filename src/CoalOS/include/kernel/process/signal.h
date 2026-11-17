@@ -37,4 +37,8 @@
 struct pcb;
 int signal_disposition(struct pcb *p, int sig);
 
+/* Before returning to user mode: builds an rt signal frame for one pending signal that has a handler. */
+struct isr_frame;
+void signal_deliver(struct isr_frame *regs);
+
 #endif

@@ -16,7 +16,6 @@
 #define MAX_PIDS 64
 #define SNAPSHOT_MAX 640
 
-extern const char *KERNEL_VERSION_STRING;
 
 enum kind { K_ROOT, K_PIDDIR, K_MEMINFO, K_UPTIME, K_VERSION, K_STATUS, K_CMDLINE };
 
@@ -74,7 +73,7 @@ static size_t render(const struct node *n, char *out) {
     case K_UPTIME:
         return (size_t)pf(out, SNAPSHOT_MAX, "%u.%u%u %u.00\n", ms / 1000, ms / 100 % 10, ms / 10 % 10, ms / 1000);
     case K_VERSION:
-        return (size_t)pf(out, SNAPSHOT_MAX, "Coal OS version %s (i386)\n", KERNEL_VERSION_STRING);
+        return (size_t)pf(out, SNAPSHOT_MAX, "Coal OS version %s (i386)\n", COAL_VERSION);
     case K_STATUS:
         if (proc_info_get(n->pid, &pi) < 0) return 0;
         return (size_t)pf(out, SNAPSHOT_MAX, "Name:\t%s\nState:\t%c\nPid:\t%u\nPPid:\t%u\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n",

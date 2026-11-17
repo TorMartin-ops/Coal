@@ -342,6 +342,11 @@ int vfs_fsync(file_t *f) {
     return v->fs_driver->sync ? v->fs_driver->sync(v->mnt->ctx) : 0;
 }
 
+uint32_t vfs_poll(file_t *f) {
+    vfs_driver_t *d = f->vnode->fs_driver;
+    return d->poll ? d->poll(f->vnode) : POLLIN | POLLOUT;
+}
+
 int vfs_ioctl(file_t *f, uint32_t cmd, void *arg) {
     vnode_t *v = f->vnode;
     return v->fs_driver->ioctl ? v->fs_driver->ioctl(v, cmd, arg) : -ENOTTY;
@@ -354,6 +359,16 @@ int vfs_stat(const char *path, struct kstat64 *st) {
     int rc = vfs_open(path, O_RDONLY, 0, &f);
     if (rc < 0) return rc;
     rc = vfs_fstat(f, st);
+    vfs_close(f);
+    return rc;
+}
+
+int vfs_utime(const char *path, uint32_t atime, uint32_t mtime) {
+    file_t *f;
+    int rc = vfs_open(path, O_RDONLY, 0, &f);
+    if (rc < 0) return rc;
+    vfs_driver_t *d = f->vnode->fs_driver;
+    rc = d->utime ? d->utime(f->vnode, atime, mtime) : -EROFS;
     vfs_close(f);
     return rc;
 }

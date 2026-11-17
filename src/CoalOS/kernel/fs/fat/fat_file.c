@@ -251,6 +251,19 @@ static int fat_close(vnode_t *v) {
     return rc;
 }
 
+static int fat_utime(vnode_t *v, uint32_t atime, uint32_t mtime) {
+    fat_node_t *n = v->data;
+    fat_fs_t *fs = n->fs;
+
+    fat_lock(fs);
+    n->atime = atime;                       /* kept in memory only: FAT stores the access date, not the time */
+    n->mtime = mtime;
+    int rc = node_flush_entry(n);
+    if (rc == 0) rc = fat_commit(fs);
+    fat_unlock(fs);
+    return rc;
+}
+
 static int fat_fsync(vnode_t *v) { return fat_sync(((fat_node_t *)v->data)->fs); }
 
 static int fat_getattr(vnode_t *v, struct kstat64 *st) {
@@ -468,6 +481,7 @@ vfs_driver_t fat_driver = {
     .getattr  = fat_getattr,
     .truncate = fat_truncate,
     .fsync    = fat_fsync,
+    .utime    = fat_utime,
     .unlink   = fat_unlink,
     .mkdir    = fat_mkdir,
     .rmdir    = fat_rmdir,

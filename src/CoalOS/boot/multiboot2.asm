@@ -40,3 +40,4 @@ section .bss
 stack_bottom:
     resb 4096 * 16
 stack_top:
+section .note.GNU-stack noalloc noexec nowrite progbits

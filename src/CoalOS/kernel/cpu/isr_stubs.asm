@@ -83,3 +83,5 @@ isr_stub_table:
     %endif
 %assign v v+1
 %endrep
+
+section .note.GNU-stack noalloc noexec nowrite progbits

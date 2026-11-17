@@ -27,6 +27,10 @@ struct sys_file;
 /* waitpid options */
 #define WNOHANG 1
 
+#define CWD_MAX 256
+
+struct sigact { uint32_t handler, flags, restorer, mask; };
+
 typedef struct pcb {
     tcb_t task;                       /* scheduling state; task.process == this */
 
@@ -37,6 +41,12 @@ typedef struct pcb {
     int      exit_status;             /* Linux wait status encoding */
     bool     wait_blocked;            /* parent is blocked in process_waitpid() */
     uint32_t pending_signals;
+    uint32_t sig_blocked;             /* blocked signal mask (bit n = signal n) */
+    struct sigact sigact[32];         /* NSIG entries */
+
+    uint32_t tls_base, tls_pages;     /* set_thread_area descriptor, loaded on every switch */
+    char     cwd[CWD_MAX];
+    uint32_t cloexec;                 /* bit n: descriptor n is closed by execve */
 
     struct mm_struct *mm;
     uint32_t *page_directory_phys;    /* 0 for the idle task: runs on any directory */
