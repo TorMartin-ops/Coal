@@ -96,6 +96,8 @@ long sc_fcntl64(uint32_t fd, uint32_t cmd, uint32_t arg) {
             r = sf->flags;
         } else {
             sf->flags = (sf->flags & ~(O_APPEND | O_NONBLOCK)) | (arg & (O_APPEND | O_NONBLOCK));
+            if (sf->vfs_file->vnode->fs_driver->set_nonblock)       /* drivers that block themselves (sockets) */
+                sf->vfs_file->vnode->fs_driver->set_nonblock(sf->vfs_file->vnode, (arg & O_NONBLOCK) != 0);
             r = 0;
         }
         sys_file_put(sf);

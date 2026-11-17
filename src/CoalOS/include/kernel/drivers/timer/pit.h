@@ -18,4 +18,7 @@ uint64_t timer_ticks(void);
 /** Milliseconds since init_pit(). */
 uint64_t timer_uptime_ms(void);
 
+/** Calls fn from the tick interrupt every millisecond (one hook; NULL removes it). */
+void timer_set_hook(void (*fn)(void));
+
 #endif /* PIT_H */

@@ -33,6 +33,7 @@ typedef struct tcb {
     uint32_t     slice;         /* ticks left in the current slice */
     uint32_t     wakeup_tick;
     struct tcb  *wait_next;     /* driver wait queue link (drivers/wait.h) */
+    struct drv_waitq *wait_q;   /* the queue the task sits on, NULL when none */
 } tcb_t;
 
 /** Creates the idle task. Call once, before any task is added. */

@@ -37,6 +37,10 @@ int     sys_dup2(int oldfd, int newfd);
 /** Anonymous pipe: fds[0] reads what is written to fds[1]. flags: O_NONBLOCK. */
 int     sys_pipe(int fds[2], int flags);
 
+/** Open file on a driver-private vnode (sockets): new descriptor in the current process, or -errno.
+ *  The driver's close() runs when the last descriptor goes; on error it still owns data. */
+int     sys_install_vnode(vfs_driver_t *drv, void *data, uint32_t type, int flags);
+
 /** Look up fd in the current process and take a reference; NULL if invalid. */
 sys_file_t *sys_file_get(int fd);
 /** Take an extra reference (fork, dup). */

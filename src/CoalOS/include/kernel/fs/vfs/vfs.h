@@ -131,6 +131,7 @@ struct vfs_driver {
     int   (*ioctl)(vnode_t *v, uint32_t cmd, void *arg);
     int   (*utime)(vnode_t *v, uint32_t atime, uint32_t mtime);
     /** Readiness: POLLIN/POLLOUT/POLLHUP bits. Must not block. Without it a file is always ready. */
+    void  (*set_nonblock)(vnode_t *v, bool on);     /* fcntl(F_SETFL) changed O_NONBLOCK */
     uint32_t (*poll)(vnode_t *v);
     int   (*unlink)(void *fs, const char *path);
     int   (*mkdir)(void *fs, const char *path, mode_t mode);

@@ -10,6 +10,7 @@
 #include <kernel/memory/kmalloc.h>
 #include <kernel/process/process.h>
 #include <kernel/sync/spinlock.h>
+#include <kernel/lib/string.h>
 
 sys_file_t *sys_file_ref(sys_file_t *sf) {
     sf->dups++;
@@ -119,4 +120,26 @@ void sys_files_clone(pcb_t *dst, pcb_t *src) {
         dst->fd_table[fd] = sf ? sys_file_ref(sf) : NULL;
     }
     spinlock_release_irqrestore(&src->fd_table_lock, fl);
+}
+
+int sys_install_vnode(vfs_driver_t *drv, void *data, uint32_t type, int flags) {
+    pcb_t *p = get_current_process();
+    sys_file_t *sf = kmalloc(sizeof(*sf));
+    file_t *f = kmalloc(sizeof(*f));
+    vnode_t *v = kmalloc(sizeof(*v));
+
+    if (!p || !sf || !f || !v) { kfree(sf); kfree(f); kfree(v); return -ENOMEM; }
+    memset(v, 0, sizeof(*v));
+    v->data = data;
+    v->fs_driver = drv;
+    v->type = type;
+    f->vnode = v;
+    f->flags = O_RDWR;
+    f->offset = 0;
+    sf->vfs_file = f;
+    sf->flags = O_RDWR | flags;
+    sf->dups = 0;
+    int fd = fd_install(p, sf);
+    if (fd < 0) { kfree(sf); kfree(f); kfree(v); }
+    return fd;
 }

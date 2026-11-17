@@ -24,6 +24,9 @@ void drv_wait(drv_waitq_t *q);
 /** Like drv_wait(), but returns after ms milliseconds at the latest. IRQs disabled. */
 void drv_wait_timeout(drv_waitq_t *q, uint32_t ms);
 
+/** Takes a task off the queue it waits on (a signal woke it, or it is exiting). IRQs disabled. */
+void drv_wait_cancel(tcb_t *t);
+
 /** Makes every waiter runnable again, and every task blocked in poll(2). Safe from interrupts. */
 void drv_wake_all(drv_waitq_t *q);
 

@@ -4,6 +4,7 @@
  */
 #include <kernel/process/process.h>
 #include <kernel/process/exec.h>
+#include <kernel/drivers/wait.h>
 #include <kernel/lib/assert.h>
 #include <kernel/cpu/gdt.h>
 #include <kernel/drivers/display/console_dev.h>
@@ -268,6 +269,9 @@ void process_exit(int status) {
     pcb_t *init, *c;
 
     if (!me) KERNEL_PANIC_HALT("process_exit without a current process");
+    uintptr_t irq = local_irq_save();
+    drv_wait_cancel(&me->task);           /* a signal can kill a task that still sits on a wait queue */
+    local_irq_restore(irq);
     fds_close_all(me);
     exec_release_mm(me);                  /* leaves the kernel page directory loaded */
 

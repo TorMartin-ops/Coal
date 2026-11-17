@@ -18,15 +18,23 @@
  * snapshot without disabling interrupts. */
 static volatile uint32_t s_ticks_lo;
 static volatile uint32_t s_ticks_hi;
+static void (*s_hook)(void);
 
 static void pit_irq_handler(isr_frame_t *frame) {
     (void)frame;
     if (++s_ticks_lo == 0) {
         s_ticks_hi++;
     }
+    if (s_hook) {
+        s_hook();
+    }
     /* EOI first: scheduler_tick() may switch tasks and not return here. */
     pic_send_eoi(0);
     scheduler_tick();
+}
+
+void timer_set_hook(void (*fn)(void)) {
+    s_hook = fn;
 }
 
 uint64_t timer_ticks(void) {
