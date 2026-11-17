@@ -1,245 +1,163 @@
 /**
  * @file parser.c
- * @brief Command parsing implementation for Coal OS Shell
- * @version 1.0
- * @author Modular refactoring
+ * @brief Command line parser
  */
 
 #include "parser.h"
-#include "string_utils.h"
-#include "io_utils.h"
 
-//============================================================================
-// Parser Implementation
-//============================================================================
-
-int parse_arguments(char *input, char **args, int max_args) {
-    int argc = 0;
-    char *p = input;
-    bool in_quotes = false;
-    bool in_single_quotes = false;
-    
-    if (!input || !args) return 0;
-    
-    // Skip leading whitespace
-    while (is_whitespace(*p)) p++;
-    
-    while (*p && argc < max_args - 1) {
-        // Start of new argument
-        args[argc] = p;
-        
-        // Process until end of argument
-        while (*p && (in_quotes || in_single_quotes || !is_whitespace(*p))) {
-            if (*p == '\\' && *(p + 1)) {
-                // Handle escape sequences
-                p += 2;
-            } else if (*p == '"' && !in_single_quotes) {
-                in_quotes = !in_quotes;
-                // Remove quotes by shifting
-                char *src = p + 1;
-                char *dst = p;
-                while (*src) *dst++ = *src++;
-                *dst = '\0';
-            } else if (*p == '\'' && !in_quotes) {
-                in_single_quotes = !in_single_quotes;
-                // Remove quotes by shifting
-                char *src = p + 1;
-                char *dst = p;
-                while (*src) *dst++ = *src++;
-                *dst = '\0';
-            } else {
-                p++;
-            }
-        }
-        
-        if (*p) {
-            *p++ = '\0'; // Null terminate argument
-            argc++;
-            
-            // Skip whitespace between arguments
-            while (is_whitespace(*p)) p++;
-        } else if (args[argc][0] != '\0') {
-            argc++; // Count last argument
-        }
-    }
-    
-    args[argc] = NULL; // Null terminate array
-    return argc;
+static bool is_blank(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
-int parse_pipeline(char *input, pipeline_t *pipeline) {
-    if (!input || !pipeline) return -1;
-    
-    pipeline->num_commands = 0;
-    pipeline->background = false;
-    
-    // Check for background job indicator
-    char *bg_marker = my_strchr(input, '&');
-    if (bg_marker) {
-        *bg_marker = '\0';
-        pipeline->background = true;
-    }
-    
-    // Split by pipes
-    char *p = input;
-    char *pipe_pos;
-    
-    while (p && pipeline->num_commands < MAX_ARGS) {
-        pipe_pos = my_strchr(p, '|');
-        if (pipe_pos) {
-            *pipe_pos = '\0';
-        }
-        
-        // Parse individual command
-        if (parse_command(p, &pipeline->commands[pipeline->num_commands]) == 0) {
-            pipeline->num_commands++;
-        }
-        
-        if (pipe_pos) {
-            p = pipe_pos + 1;
-            // Skip whitespace after pipe
-            while (is_whitespace(*p)) p++;
-        } else {
+char *trim_whitespace(char *str) {
+    while (is_blank(*str)) str++;
+    size_t len = strlen(str);
+    while (len > 0 && is_blank(str[len - 1])) len--;
+    str[len] = '\0';
+    return str;
+}
+
+/* Parser state: reads from src, writes unquoted text to pipeline->buf. */
+typedef struct {
+    const char *src;
+    char *out;          /* next free byte in buf */
+    char *out_end;      /* last usable byte; one is kept for the final NUL */
+} lexer_t;
+
+/*
+ * Read one word, removing quotes and backslashes. Returns a pointer to the
+ * NUL-terminated copy in buf, or NULL if there is no word, the quotes are
+ * unclosed or the buffer is full.
+ */
+static char *read_word(lexer_t *lx, bool *had_word) {
+    char *start = lx->out;
+    char quote = 0;
+    *had_word = false;
+
+    for (;;) {
+        char c = *lx->src;
+        if (c == '\0') break;
+        if (!quote && (is_blank(c) || c == '|' || c == '<' || c == '>' ||
+                       c == '&' || c == ';')) {
             break;
         }
-    }
-    
-    return (pipeline->num_commands > 0) ? 0 : -1;
-}
 
-int parse_command(char *input, command_t *cmd) {
-    if (!input || !cmd) return -1;
-    
-    // Initialize command structure
-    cmd->input_file = NULL;
-    cmd->output_file = NULL;
-    cmd->append_output = false;
-    cmd->background = false;
-    cmd->argc = 0;
-    
-    // Temporary storage for parsing
-    char temp[MAX_COMMAND_LENGTH];
-    my_strcpy(temp, input);
-    
-    // Handle redirections
-    char *p = temp;
-    char *new_cmd = temp;
-    char *write_pos = temp;
-    
-    while (*p) {
-        if (*p == '<') {
-            // Input redirection
-            *p++ = '\0';
-            while (is_whitespace(*p)) p++;
-            cmd->input_file = p;
-            while (*p && !is_whitespace(*p) && *p != '>' && *p != '<') p++;
-            if (*p) *p++ = '\0';
-        } else if (*p == '>' && *(p + 1) == '>') {
-            // Append output redirection
-            *p++ = '\0';
-            *p++ = '\0';
-            while (is_whitespace(*p)) p++;
-            cmd->output_file = p;
-            cmd->append_output = true;
-            while (*p && !is_whitespace(*p) && *p != '>' && *p != '<') p++;
-            if (*p) *p++ = '\0';
-        } else if (*p == '>') {
-            // Output redirection
-            *p++ = '\0';
-            while (is_whitespace(*p)) p++;
-            cmd->output_file = p;
-            cmd->append_output = false;
-            while (*p && !is_whitespace(*p) && *p != '>' && *p != '<') p++;
-            if (*p) *p++ = '\0';
-        } else {
-            // Regular character - copy to write position
-            if (write_pos != p) {
-                *write_pos = *p;
+        lx->src++;
+        *had_word = true;
+        if (quote) {
+            if (c == quote) {
+                quote = 0;
+                continue;
             }
-            write_pos++;
-            p++;
-        }
-    }
-    *write_pos = '\0';
-    
-    // Parse arguments from the cleaned command
-    cmd->argc = parse_arguments(new_cmd, cmd->args, MAX_ARGS);
-    
-    return (cmd->argc > 0) ? 0 : -1;
-}
-
-bool has_metacharacters(const char *str) {
-    if (!str) return false;
-    
-    while (*str) {
-        switch (*str) {
-            case '|':
-            case '<':
-            case '>':
-            case '&':
-            case ';':
-            case '(':
-            case ')':
-            case '*':
-            case '?':
-            case '[':
-            case ']':
-            case '$':
-            case '`':
-            case '\\':
-            case '"':
-            case '\'':
-                return true;
-        }
-        str++;
-    }
-    return false;
-}
-
-int tokenize(char *input, char **tokens, int max_tokens) {
-    return parse_arguments(input, tokens, max_tokens);
-}
-
-int parse_quotes(const char *str, char *output, size_t output_size) {
-    if (!str || !output || output_size == 0) return -1;
-    
-    const char *src = str;
-    char *dst = output;
-    char *dst_end = output + output_size - 1;
-    bool in_quotes = false;
-    bool in_single_quotes = false;
-    
-    while (*src && dst < dst_end) {
-        if (*src == '\\' && *(src + 1) && !in_single_quotes) {
-            // Handle escape sequences
-            src++; // Skip backslash
-            switch (*src) {
-                case 'n': *dst++ = '\n'; break;
-                case 't': *dst++ = '\t'; break;
-                case 'r': *dst++ = '\r'; break;
-                case '\\': *dst++ = '\\'; break;
-                case '"': *dst++ = '"'; break;
-                case '\'': *dst++ = '\''; break;
-                default: *dst++ = *src; break;
+            /* Inside double quotes a backslash escapes \ and " only. */
+            if (quote == '"' && c == '\\' && (*lx->src == '\\' || *lx->src == '"')) {
+                c = *lx->src++;
             }
-            src++;
-        } else if (*src == '"' && !in_single_quotes) {
-            in_quotes = !in_quotes;
-            src++;
-        } else if (*src == '\'' && !in_quotes) {
-            in_single_quotes = !in_single_quotes;
-            src++;
-        } else {
-            *dst++ = *src++;
+        } else if (c == '"' || c == '\'') {
+            quote = c;
+            continue;
+        } else if (c == '\\' && *lx->src) {
+            c = *lx->src++;
         }
+
+        if (lx->out >= lx->out_end) return NULL;
+        *lx->out++ = c;
     }
-    
-    *dst = '\0';
-    
-    // Check for unclosed quotes
-    if (in_quotes || in_single_quotes) {
-        return -1;
+
+    if (quote) return NULL;
+    if (lx->out >= lx->out_end + 1) return NULL;
+    *lx->out++ = '\0';
+    return start;
+}
+
+static void skip_blanks(lexer_t *lx) {
+    while (is_blank(*lx->src)) lx->src++;
+}
+
+int parse_pipeline(const char *input, pipeline_t *pl, const char **rest) {
+    lexer_t lx;
+    lx.src = input;
+    lx.out = pl->buf;
+    lx.out_end = pl->buf + sizeof(pl->buf) - 2;
+
+    pl->num_commands = 0;
+    pl->background = false;
+
+    command_t *cmd = NULL;   /* command being built, NULL between pipes */
+    bool after_pipe = false;
+
+    for (;;) {
+        skip_blanks(&lx);
+        char c = *lx.src;
+
+        if (c == '\0' || c == ';') {
+            if (c == ';') lx.src++;
+            break;
+        }
+
+        if (c == '|') {
+            if (!cmd || cmd->argc == 0) goto syntax_error;
+            lx.src++;
+            cmd = NULL;
+            after_pipe = true;
+            continue;
+        }
+
+        if (c == '&') {
+            lx.src++;
+            skip_blanks(&lx);
+            if (!cmd || cmd->argc == 0) goto syntax_error;
+            if (*lx.src != '\0' && *lx.src != ';') goto syntax_error;
+            pl->background = true;
+            continue;
+        }
+
+        if (!cmd) {
+            if (pl->num_commands >= MAX_COMMANDS) goto syntax_error;
+            cmd = &pl->commands[pl->num_commands++];
+            memset(cmd, 0, sizeof(*cmd));
+            after_pipe = false;
+        }
+
+        if (c == '<' || c == '>') {
+            bool append = false;
+            lx.src++;
+            if (c == '>' && *lx.src == '>') {
+                append = true;
+                lx.src++;
+            }
+            skip_blanks(&lx);
+            bool had_word;
+            char *name = read_word(&lx, &had_word);
+            if (!name || !had_word) goto syntax_error;
+            if (c == '<') {
+                cmd->input_file = name;
+            } else {
+                cmd->output_file = name;
+                cmd->append_output = append;
+            }
+            continue;
+        }
+
+        bool had_word;
+        char *word = read_word(&lx, &had_word);
+        if (!word) goto syntax_error;
+        if (cmd->argc >= MAX_ARGS - 1) goto syntax_error;
+        cmd->args[cmd->argc++] = word;
+        cmd->args[cmd->argc] = NULL;
     }
-    
+
+    if (after_pipe) goto syntax_error;
+    /* A command with only redirections and no program name is an error. */
+    for (int i = 0; i < pl->num_commands; i++) {
+        if (pl->commands[i].argc == 0) goto syntax_error;
+    }
+    *rest = lx.src;
     return 0;
+
+syntax_error:
+    /* Skip to the end of the line so the caller does not run the remainder. */
+    *rest = lx.src + strlen(lx.src);
+    pl->num_commands = 0;
+    return -1;
 }

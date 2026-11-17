@@ -1,389 +1,282 @@
 /**
  * @file shell_main.c
- * @brief Main entry point and core logic for Coal OS Shell
- * @version 2.0
- * @author Modular refactoring
+ * @brief Coal OS shell: read-eval loop and command execution
  */
 
 #include "shell_types.h"
-#include "modules/syscall_wrapper.h"
-#include "modules/string_utils.h"
-#include "modules/io_utils.h"
+#include <libc/syscall.h>
+#include "modules/builtins.h"
 #include "modules/env_vars.h"
 #include "modules/parser.h"
-#include "modules/builtins.h"
 
-//============================================================================
-// Global State
-//============================================================================
+#define SHELL_VERSION "0.1"
 
 shell_state_t g_shell;
-static char g_input_buffer[MAX_COMMAND_LENGTH];
+static pipeline_t g_pipeline;       /* too big for the stack, reused per command */
 
 //============================================================================
-// Forward Declarations
+// Prompt and input
 //============================================================================
 
-static void shell_init(void);
-static void show_prompt(void);
-static int read_command(char *buffer, size_t size);
-static int execute_command(char *command);
-static int execute_pipeline(pipeline_t *pipeline);
-static int execute_simple_command(command_t *cmd);
-static void add_to_history(const char *command);
-static void reap_children(void);
-
-//============================================================================
-// Shell Entry Point
-//============================================================================
-
-int main(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
-    
-    // Initialize shell
-    shell_init();
-    
-    // Display welcome message
-    print_colored(COLOR_GREEN, "Coal OS Shell v2.0\n");
-    print_str("Type 'help' for built-in commands\n\n");
-    
-    // Main shell loop
-    while (g_shell.running) {
-        // Reap zombie children
-        reap_children();
-        
-        // Show prompt
-        show_prompt();
-        
-        // Read command
-        if (read_command(g_input_buffer, sizeof(g_input_buffer)) < 0) {
-            continue;
-        }
-        
-        // Skip empty commands
-        char *trimmed = trim_whitespace(g_input_buffer);
-        if (!trimmed || *trimmed == '\0') {
-            continue;
-        }
-        
-        // Add to history
-        add_to_history(trimmed);
-        
-        // Expand environment variables
-        char expanded[MAX_COMMAND_LENGTH];
-        expand_variables(trimmed, expanded, sizeof(expanded));
-        
-        // Execute command
-        g_shell.last_exit_status = execute_command(expanded);
-    }
-    
-    return g_shell.last_exit_status;
+/* Append s to buf at *len, never writing past size - 1 bytes. */
+static void put(char *buf, size_t size, size_t *len, const char *s) {
+    while (*s && *len < size - 1) buf[(*len)++] = *s++;
 }
-
-//============================================================================
-// Shell Initialization
-//============================================================================
-
-static void shell_init(void) {
-    // Initialize shell state
-    my_memset(&g_shell, 0, sizeof(g_shell));
-    g_shell.running = true;
-    g_shell.tab_completion_enabled = true;
-    g_shell.history_navigation_enabled = true;
-    g_shell.auto_cd_enabled = true;
-    
-    // Get initial working directory
-    if (sys_getcwd(g_shell.cwd, sizeof(g_shell.cwd)) == 0) {
-        my_strcpy(g_shell.cwd, "/");
-    }
-    
-    // Initialize environment variables
-    env_init();
-    
-    // Set up signal handlers (if supported)
-    // sys_signal(SIGINT, SIG_IGN);  // Ignore Ctrl+C
-    // sys_signal(SIGCHLD, sigchld_handler);  // Handle child termination
-}
-
-//============================================================================
-// Command Execution
-//============================================================================
 
 static void show_prompt(void) {
-    char *prompt = get_env("PS1");
-    if (!prompt) prompt = "$ ";
-    
-    // Support simple prompt expansions
-    char expanded_prompt[256];
-    const char *src = prompt;
-    char *dst = expanded_prompt;
-    
-    while (*src && dst < expanded_prompt + sizeof(expanded_prompt) - 1) {
-        if (*src == '\\' && *(src + 1)) {
-            src++; // Skip backslash
-            switch (*src) {
-                case 'w': // Working directory
-                    {
-                        const char *cwd = g_shell.cwd;
-                        while (*cwd && dst < expanded_prompt + sizeof(expanded_prompt) - 1) {
-                            *dst++ = *cwd++;
-                        }
-                    }
-                    break;
-                case 'u': // Username
-                    {
-                        char *user = get_env("USER");
-                        if (user) {
-                            while (*user && dst < expanded_prompt + sizeof(expanded_prompt) - 1) {
-                                *dst++ = *user++;
-                            }
-                        }
-                    }
-                    break;
-                case 'h': // Hostname
-                    *dst++ = 'c';
-                    *dst++ = 'o';
-                    *dst++ = 'a';
-                    *dst++ = 'l';
-                    break;
-                case '$': // $ for user, # for root
-                    *dst++ = '$';
-                    break;
-                default:
-                    *dst++ = *src;
-                    break;
+    char prompt[256];
+    size_t len = 0;
+    const char *ps1 = getenv("PS1");
+    if (!ps1) ps1 = "$ ";
+
+    for (const char *p = ps1; *p; p++) {
+        if (*p != '\\' || !p[1]) {
+            char one[2] = { *p, '\0' };
+            put(prompt, sizeof(prompt), &len, one);
+            continue;
+        }
+        p++;
+        switch (*p) {
+            case 'w': {
+                char cwd[MAX_PATH_LENGTH];
+                put(prompt, sizeof(prompt), &len, getcwd(cwd, sizeof(cwd)) ? cwd : "?");
+                break;
             }
-            src++;
-        } else {
-            *dst++ = *src++;
+            case 'u': {
+                const char *user = getenv("USER");
+                if (user) put(prompt, sizeof(prompt), &len, user);
+                break;
+            }
+            case 'h': put(prompt, sizeof(prompt), &len, "coal"); break;
+            case '$': put(prompt, sizeof(prompt), &len, "$"); break;
+            default: {
+                char one[2] = { *p, '\0' };
+                put(prompt, sizeof(prompt), &len, one);
+            }
         }
     }
-    *dst = '\0';
-    
-    print_colored(COLOR_CYAN, expanded_prompt);
+    prompt[len] = '\0';
+    write(STDOUT_FILENO, prompt, len);
 }
 
+/*
+ * Read one line. Uses the terminal line-read system call and falls back to a
+ * plain read() on stdin if the kernel does not provide it.
+ * Returns the line length, or -1 at end of input or on a persistent error.
+ */
 static int read_command(char *buffer, size_t size) {
-    // Simple line reading for now
-    // TODO: Implement advanced features like history navigation and tab completion
-    ssize_t n = sys_read_terminal_line(buffer, size - 1);
+    static int errors = 0;
+    int n = syscall(SYS_READ_TERMINAL_LINE, (int)(uintptr_t)buffer, (int)size - 1, 0);
+    if (n < 0) n = (int)read(STDIN_FILENO, buffer, size - 1);
+
     if (n < 0) {
+        if (++errors >= 3) return -1;   /* do not spin on a broken terminal */
+        buffer[0] = '\0';
+        return 0;
+    }
+    errors = 0;
+    if (n == 0) return -1;              /* end of input */
+
+    buffer[n] = '\0';
+    if (n > 0 && buffer[n - 1] == '\n') buffer[n - 1] = '\0';
+    return n;
+}
+
+static void add_to_history(const char *command) {
+    if (g_shell.history_count > 0 &&
+        strcmp(g_shell.history[g_shell.history_count - 1], command) == 0) {
+        return;
+    }
+    if (g_shell.history_count == MAX_HISTORY) {
+        memmove(g_shell.history[0], g_shell.history[1],
+                (MAX_HISTORY - 1) * sizeof(g_shell.history[0]));
+        g_shell.history_count--;
+    }
+    strncpy(g_shell.history[g_shell.history_count], command, MAX_COMMAND_LENGTH - 1);
+    g_shell.history[g_shell.history_count][MAX_COMMAND_LENGTH - 1] = '\0';
+    g_shell.history_count++;
+}
+
+//============================================================================
+// Redirection
+//============================================================================
+
+/* Put back the shell's own stdin/stdout after a redirected built-in. */
+static void redirect_end(const int saved[2]) {
+    if (saved[0] >= 0) {
+        dup2(saved[0], STDIN_FILENO);
+        close(saved[0]);
+    }
+    if (saved[1] >= 0) {
+        dup2(saved[1], STDOUT_FILENO);
+        close(saved[1]);
+    }
+}
+
+/* Make fd (opened with flags) the new fd target. */
+static int redirect_one(const char *path, int flags, int target, int save_as, int *saved) {
+    int fd = open(path, flags, 0644);
+    if (fd < 0) return -1;
+    if (save_as >= 0) {
+        if (dup2(target, save_as) < 0) {
+            close(fd);
+            return -1;
+        }
+        *saved = save_as;
+    }
+    if (dup2(fd, target) < 0) {
+        close(fd);
         return -1;
     }
-    
-    // Remove newline if present
-    if (n > 0 && buffer[n - 1] == '\n') {
-        buffer[n - 1] = '\0';
-    } else {
-        buffer[n] = '\0';
-    }
-    
+    close(fd);
     return 0;
 }
 
-static int execute_command(char *command) {
-    // Check for compound commands (;)
-    char *semicolon = my_strchr(command, ';');
-    if (semicolon) {
-        *semicolon = '\0';
-        execute_command(command);
-        return execute_command(semicolon + 1);
-    }
-    
-    // Parse pipeline
-    pipeline_t pipeline;
-    if (parse_pipeline(command, &pipeline) < 0) {
-        error("syntax error");
-        return 1;
-    }
-    
-    return execute_pipeline(&pipeline);
-}
+/*
+ * Apply the redirections of cmd. If save is true the old stdin/stdout are kept
+ * in saved[] so that redirect_end can restore them. On failure everything
+ * done so far is undone.
+ */
+static int redirect_begin(const command_t *cmd, bool save, int saved[2]) {
+    saved[0] = saved[1] = -1;
 
-static int execute_pipeline(pipeline_t *pipeline) {
-    if (pipeline->num_commands == 1) {
-        // Single command - check for built-ins
-        command_t *cmd = &pipeline->commands[0];
-        if (cmd->argc > 0) {
-            const builtin_cmd_t *builtin = find_builtin(cmd->args[0]);
-            if (builtin) {
-                // Handle I/O redirection for built-ins
-                int saved_stdin = -1;
-                int saved_stdout = -1;
-                
-                if (cmd->input_file) {
-                    saved_stdin = sys_dup2(STDIN_FILENO, 100);
-                    int fd = sys_open(cmd->input_file, O_RDONLY, 0);
-                    if (fd < 0) {
-                        error("cannot open input file");
-                        return 1;
-                    }
-                    sys_dup2(fd, STDIN_FILENO);
-                    sys_close(fd);
-                }
-                
-                if (cmd->output_file) {
-                    saved_stdout = sys_dup2(STDOUT_FILENO, 101);
-                    int flags = O_WRONLY | O_CREAT;
-                    if (cmd->append_output) {
-                        flags |= O_APPEND;
-                    } else {
-                        flags |= O_TRUNC;
-                    }
-                    int fd = sys_open(cmd->output_file, flags, 0644);
-                    if (fd < 0) {
-                        error("cannot open output file");
-                        return 1;
-                    }
-                    sys_dup2(fd, STDOUT_FILENO);
-                    sys_close(fd);
-                }
-                
-                // Execute built-in
-                int status = execute_builtin(builtin, cmd->args);
-                
-                // Restore I/O
-                if (saved_stdin >= 0) {
-                    sys_dup2(saved_stdin, STDIN_FILENO);
-                    sys_close(saved_stdin);
-                }
-                if (saved_stdout >= 0) {
-                    sys_dup2(saved_stdout, STDOUT_FILENO);
-                    sys_close(saved_stdout);
-                }
-                
-                return status;
-            }
+    if (cmd->input_file &&
+        redirect_one(cmd->input_file, O_RDONLY, STDIN_FILENO,
+                     save ? SAVED_STDIN_FD : -1, &saved[0]) < 0) {
+        shell_error("cannot open input file");
+        redirect_end(saved);
+        return -1;
+    }
+    if (cmd->output_file) {
+        int flags = O_WRONLY | O_CREAT | (cmd->append_output ? O_APPEND : O_TRUNC);
+        if (redirect_one(cmd->output_file, flags, STDOUT_FILENO,
+                         save ? SAVED_STDOUT_FD : -1, &saved[1]) < 0) {
+            shell_error("cannot open output file");
+            redirect_end(saved);
+            return -1;
         }
-        
-        // Not a built-in - execute as external command
-        return execute_simple_command(cmd);
     }
-    
-    // Multiple commands in pipeline
-    // TODO: Implement pipe support
-    error("pipelines not yet implemented");
-    return 1;
+    return 0;
 }
 
-static int execute_simple_command(command_t *cmd) {
-    if (cmd->argc == 0) return 0;
-    
-    // Fork and execute
-    pid_t pid = sys_fork();
+//============================================================================
+// Execution
+//============================================================================
+
+static int run_builtin(const builtin_cmd_t *builtin, command_t *cmd) {
+    int saved[2];
+    if (redirect_begin(cmd, true, saved) < 0) return 1;
+    int status = builtin->function(cmd->args);
+    redirect_end(saved);
+    return status;
+}
+
+/* Try to execute name, then /bin/name, then /bin/name.elf. Returns only on failure. */
+static void exec_program(char **args) {
+    char path[MAX_PATH_LENGTH];
+
+    execve(args[0], args, environ);
+    if (strchr(args[0], '/')) return;
+
+    if (snprintf(path, sizeof(path), "/bin/%s", args[0]) < (int)sizeof(path) - 1) {
+        execve(path, args, environ);
+    }
+    if (snprintf(path, sizeof(path), "/bin/%s.elf", args[0]) < (int)sizeof(path) - 1) {
+        execve(path, args, environ);
+    }
+}
+
+static int run_external(command_t *cmd, bool background) {
+    int saved[2];
+    pid_t pid = fork();
     if (pid < 0) {
-        error("fork failed");
+        shell_error("fork failed");
         return 1;
     }
-    
+
     if (pid == 0) {
-        // Child process
-        
-        // Handle I/O redirection
-        if (cmd->input_file) {
-            int fd = sys_open(cmd->input_file, O_RDONLY, 0);
-            if (fd < 0) {
-                error("cannot open input file");
-                sys_exit(1);
-            }
-            sys_dup2(fd, STDIN_FILENO);
-            sys_close(fd);
-        }
-        
-        if (cmd->output_file) {
-            int flags = O_WRONLY | O_CREAT;
-            if (cmd->append_output) {
-                flags |= O_APPEND;
-            } else {
-                flags |= O_TRUNC;
-            }
-            int fd = sys_open(cmd->output_file, flags, 0644);
-            if (fd < 0) {
-                error("cannot open output file");
-                sys_exit(1);
-            }
-            sys_dup2(fd, STDOUT_FILENO);
-            sys_close(fd);
-        }
-        
-        // Try to execute command
-        // First try as-is
-        sys_execve(cmd->args[0], cmd->args, NULL);
-        
-        // If that fails, try with /bin/ prefix
-        char path[256] = "/bin/";
-        my_strcat(path, cmd->args[0]);
-        sys_execve(path, cmd->args, NULL);
-        
-        // If still fails, command not found
-        error("command not found");
-        sys_exit(127);
+        if (redirect_begin(cmd, false, saved) < 0) _exit(1);
+        exec_program(cmd->args);
+        shell_error("command not found");
+        _exit(127);
     }
-    
-    // Parent process
-    if (!cmd->background) {
-        // Wait for child
-        int status;
-        sys_waitpid(pid, &status, 0);
-        return status;
-    } else {
-        // Background job
-        print_str("[");
-        print_int(pid);
-        print_str("] ");
-        print_int(pid);
-        print_str("\n");
-        
-        // TODO: Add to job list
+
+    if (background) {
+        g_shell.background_children++;
+        printf("[bg] %d\n", pid);
         return 0;
     }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return 1;
+    return status;
 }
 
-//============================================================================
-// History Management
-//============================================================================
-
-static void add_to_history(const char *command) {
-    // Don't add empty commands or duplicates
-    if (!command || *command == '\0') return;
-    
-    if (g_shell.history_count > 0 && 
-        my_strcmp(g_shell.history[g_shell.history_count - 1], command) == 0) {
-        return;
+static int run_pipeline(pipeline_t *pl) {
+    if (pl->num_commands == 0) return g_shell.last_exit_status;
+    if (pl->num_commands > 1) {
+        shell_error("pipes are not supported yet");
+        return 1;
     }
-    
-    // Add to history (simplified - no dynamic allocation)
-    static char history_storage[MAX_HISTORY][MAX_COMMAND_LENGTH];
-    
-    if (g_shell.history_count < MAX_HISTORY) {
-        my_strcpy(history_storage[g_shell.history_count], command);
-        g_shell.history[g_shell.history_count] = history_storage[g_shell.history_count];
-        g_shell.history_count++;
-    } else {
-        // History full - shift everything up
-        for (int i = 0; i < MAX_HISTORY - 1; i++) {
-            my_strcpy(history_storage[i], history_storage[i + 1]);
-            g_shell.history[i] = history_storage[i];
+
+    command_t *cmd = &pl->commands[0];
+    const builtin_cmd_t *builtin = find_builtin(cmd->args[0]);
+    if (builtin) return run_builtin(builtin, cmd);
+    return run_external(cmd, pl->background);
+}
+
+/* Run every ';' separated command on the line. */
+static int execute_line(const char *line) {
+    int status = 0;
+    while (*line) {
+        const char *rest;
+        if (parse_pipeline(line, &g_pipeline, &rest) < 0) {
+            shell_error("syntax error");
+            return 1;
         }
-        my_strcpy(history_storage[MAX_HISTORY - 1], command);
-        g_shell.history[MAX_HISTORY - 1] = history_storage[MAX_HISTORY - 1];
+        status = run_pipeline(&g_pipeline);
+        g_shell.last_exit_status = status;
+        if (!g_shell.running) break;
+        line = rest;
     }
-    
-    g_shell.history_index = g_shell.history_count;
+    return status;
 }
-
-//============================================================================
-// Process Management
-//============================================================================
 
 static void reap_children(void) {
-    // Reap any zombie children
-    pid_t pid;
     int status;
-    
-    while ((pid = sys_waitpid(-1, &status, 1)) > 0) { // WNOHANG = 1
-        // Child reaped
-        // TODO: Update job list
+    while (g_shell.background_children > 0 && waitpid(-1, &status, WNOHANG) > 0) {
+        g_shell.background_children--;
     }
+}
+
+//============================================================================
+// Main
+//============================================================================
+
+int main(int argc, char **argv) {
+    static char input[MAX_COMMAND_LENGTH];
+    static char expanded[MAX_COMMAND_LENGTH];
+    (void)argc;
+    (void)argv;
+
+    g_shell.running = true;
+    env_init();
+
+    printf("Coal OS shell " SHELL_VERSION "\nType 'help' for the built-in commands.\n\n");
+
+    while (g_shell.running) {
+        reap_children();
+        show_prompt();
+
+        if (read_command(input, sizeof(input)) < 0) break;
+
+        char *line = trim_whitespace(input);
+        if (*line == '\0') continue;
+
+        add_to_history(line);
+        expand_variables(line, expanded, sizeof(expanded));
+        g_shell.last_exit_status = execute_line(expanded);
+    }
+
+    return g_shell.last_exit_status;
 }

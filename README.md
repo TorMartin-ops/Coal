@@ -1,53 +1,57 @@
 # Coal OS
 
-A 32-bit x86 hobby operating system written from scratch in C and x86 assembly.
+A 32-bit x86 hobby operating system written in C and assembly. It started as a
+group project in IKT218 Advanced Operating Systems at the University of Agder
+(spring 2025) and is now maintained by one person.
 
-Coal OS started as a group project in IKT218 Advanced Operating Systems at the University of Agder (spring 2025). After the course I kept working on it alone, added my own libc and Linux-compatible system calls, and cleaned up the architecture.
+## What exists
 
-## What it does
+- Boot through GRUB with Multiboot2; the kernel is linked at 1 MiB
+- GDT, IDT, PIT timer at 1000 Hz, PS/2 keyboard, VGA text mode, serial port
+- Memory: frame allocator, buddy and slab allocators, paging
+- Processes: ELF loader, user mode, preemptive priority scheduler
+- System calls through `int 0x80`, numbered like Linux i386
+- VFS with a FAT16 driver on an ATA disk
+- User space: a small libc, a shell, a hello world program and two test programs
 
-- **Boot:** Multiboot2, higher-half kernel at `0xC0100000`
-- **Interrupts:** GDT, IDT, ISR/IRQ handling, PIT timer at 1000 Hz
-- **Memory:** physical frame allocator, buddy allocator, slab allocator, paging and virtual memory
-- **Processes:** ELF loader, user mode, preemptive priority scheduler, signals, process groups
-- **System calls:** native calls plus a Linux i386-compatible dispatcher (`fork`, `exec`, `read`, `write`, `open`, `close` and more)
-- **File system:** VFS layer and FAT16 with long file names, read and write, buffer cache
-- **Drivers:** PS/2 keyboard, VGA text mode, serial port, IDE/ATA disk
-- **User space:** own small libc and a shell with a command parser
+Not finished: `fork`, `execve`, `waitpid`, pipes and several other system
+calls are stubs, so the shell cannot start other programs yet. See
+[src/CoalOS/docs/syscalls.md](src/CoalOS/docs/syscalls.md).
 
-## Project layout
+## Build and run
 
-```
-src/CoalOS/
-├── boot/        Multiboot2 entry and early setup
-├── kernel/      cpu, memory, process, fs, drivers, lib
-├── include/     kernel headers
-├── userspace/   libc and shell
-├── tests/       kernel test suite
-├── scripts/     QEMU and disk image helpers
-└── docs/        architecture and development notes
-```
-
-More detail is in [`src/CoalOS/docs/ARCHITECTURE.md`](src/CoalOS/docs/ARCHITECTURE.md).
-
-## Building and running
-
-The easiest way is the dev container in `.devcontainer/` (VS Code: "Reopen in Container"). It has the i686-elf cross compiler, NASM, CMake and QEMU.
+Needed: CMake 3.22 or newer, NASM, a C compiler for 32-bit x86
+(`i686-elf-gcc`, or `gcc` with 32-bit support, for example `gcc-multilib`),
+`grub-mkrescue` with `xorriso` and `grub-pc-bin`, `mtools`, `dosfstools` and
+`qemu-system-i386`. `.devcontainer/Dockerfile` installs all of them, with an
+`i686-elf` cross compiler.
 
 ```bash
-mkdir -p build/CoalOS && cd build/CoalOS
-cmake ../../src/CoalOS/
-make
-../../src/CoalOS/scripts/start_qemu.sh kernel.iso
+cmake -S src/CoalOS -B build/CoalOS
+cmake --build build/CoalOS            # builds kernel.bin, user programs, disk.img, kernel.iso
+cmake --build build/CoalOS --target run   # starts QEMU, serial output in the terminal
 ```
 
-Requirements outside the container: `i686-elf-gcc`, NASM, CMake 3.22+, QEMU, `xorriso` and `mtools`.
+Targets: `kernel`, `hello`, `shell`, `libc_test`, `syscall_test`, `image`
+(ISO and disk image), `run`.
+
+To debug with gdb, start QEMU with
+`src/CoalOS/scripts/start_qemu.sh --debug build/CoalOS/kernel.iso` and
+attach with the "Qemu Debug" launch configuration in VS Code.
+
+`libc_test` is built for the same 32-bit ABI as Linux i386, so on a Linux
+machine that can run 32-bit programs it can also be run directly:
+`build/CoalOS/libc_test.elf`.
+
+## Layout
+
+See [src/CoalOS/docs/ARCHITECTURE.md](src/CoalOS/docs/ARCHITECTURE.md).
 
 ## Credits
 
-- **Tor Martin Kohle** – most of the kernel, memory management, processes, file system, libc and shell
-- **Bjarte Wik** – group member in IKT218
-- **Per-Arne Andersen** – course template and build setup for IKT218 at UiA
+- Tor Martin Kohle: kernel, memory management, processes, file system, libc, shell
+- Bjarte Wik: group member in IKT218
+- Per-Arne Andersen: course template and build setup for IKT218 at UiA
 - The [OSDev wiki](https://wiki.osdev.org) community
 
 ## License

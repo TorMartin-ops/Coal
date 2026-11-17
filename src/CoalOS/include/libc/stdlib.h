@@ -27,9 +27,6 @@ int atoi(const char *str);
 long atol(const char *str);
 long long atoll(const char *str);
 long strtol(const char *str, char **endptr, int base);
-unsigned long strtoul(const char *str, char **endptr, int base);
-long long strtoll(const char *str, char **endptr, int base);
-unsigned long long strtoull(const char *str, char **endptr, int base);
 
 // Random number generation
 int rand(void);
@@ -71,11 +68,5 @@ typedef struct {
 div_t div(int numer, int denom);
 ldiv_t ldiv(long numer, long denom);
 lldiv_t lldiv(long long numer, long long denom);
-
-// Searching and sorting
-void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
-              int (*compar)(const void *, const void *));
-void qsort(void *base, size_t nmemb, size_t size,
-           int (*compar)(const void *, const void *));
 
 #endif // LIBC_STDLIB_H

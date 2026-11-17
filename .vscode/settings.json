@@ -11,11 +11,6 @@
         "stddef.h": "c",
         "stdio.h": "c",
         "stdint.h": "c",
-        "system.h": "c",
-        "multiboot2.h": "c",
-        "interrupts.h": "c",
-        "memory.h": "c",
         "limits.h": "c"
     }
-
 }
