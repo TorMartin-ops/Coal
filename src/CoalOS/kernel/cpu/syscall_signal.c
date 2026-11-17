@@ -40,17 +40,16 @@ struct rt_sigframe {
 };
 
 int signal_disposition(struct pcb *p, int sig) {
-    struct pstate *ps = pstate_find(p->pid);
     uint32_t h;
 
-    if (!ps || sig == SIGKILL || sig == SIGSTOP) return SIGDISP_DEFAULT;
-    h = ps->act[sig].handler;
+    if (sig == SIGKILL || sig == SIGSTOP) return SIGDISP_DEFAULT;
+    h = p->sigact[sig].handler;
     if (h == SIG_IGN) return SIGDISP_IGNORE;
-    return (ps->blocked & (1u << sig)) || h > SIG_IGN ? SIGDISP_HOLD : SIGDISP_DEFAULT;
+    return (p->sig_blocked & (1u << sig)) || h > SIG_IGN ? SIGDISP_HOLD : SIGDISP_DEFAULT;
 }
 
 long sc_rt_sigaction(uint32_t sig, uint32_t uact, uint32_t uoact, uint32_t size) {
-    struct pstate *ps = pstate_current();
+    pcb_t *ps = get_current_process();
     struct linux_sigaction act;
 
     if (size != KSIGSET_SIZE || sig == 0 || sig >= NSIG) return -EINVAL;
@@ -59,29 +58,29 @@ long sc_rt_sigaction(uint32_t sig, uint32_t uact, uint32_t uoact, uint32_t size)
         if (copy_from_user(&act, (const void *)uact, sizeof(act)) != 0) return -EFAULT;
     }
     if (uoact) {
-        struct sigact *o = &ps->act[sig];
+        struct sigact *o = &ps->sigact[sig];
         struct linux_sigaction old = { o->handler, o->flags, o->restorer, { o->mask, 0 } };
         if (copy_to_user((void *)uoact, &old, sizeof(old)) != 0) return -EFAULT;
     }
     if (uact) {
-        ps->act[sig] = (struct sigact){ act.handler, act.flags, act.restorer, act.mask[0] };
+        ps->sigact[sig] = (struct sigact){ act.handler, act.flags, act.restorer, act.mask[0] };
         if (act.handler == SIG_IGN) get_current_process()->pending_signals &= ~(1u << sig);
     }
     return 0;
 }
 
 long sc_rt_sigprocmask(uint32_t how, uint32_t uset, uint32_t uoset, uint32_t size) {
-    struct pstate *ps = pstate_current();
-    uint32_t set[2] = {0, 0}, old = ps->blocked;
+    pcb_t *ps = get_current_process();
+    uint32_t set[2] = {0, 0}, old = ps->sig_blocked;
 
     if (size != KSIGSET_SIZE) return -EINVAL;
     if (uset) {
         if (copy_from_user(set, (const void *)uset, sizeof(set)) != 0) return -EFAULT;
         uint32_t m = mask_from_user(set[0]);
         switch (how) {
-        case SIG_BLOCK:   ps->blocked |= m; break;
-        case SIG_UNBLOCK: ps->blocked &= ~m; break;
-        case SIG_SETMASK: ps->blocked = m; break;
+        case SIG_BLOCK:   ps->sig_blocked |= m; break;
+        case SIG_UNBLOCK: ps->sig_blocked &= ~m; break;
+        case SIG_SETMASK: ps->sig_blocked = m; break;
         default:          return -EINVAL;
         }
     }
@@ -95,16 +94,15 @@ long sc_rt_sigprocmask(uint32_t how, uint32_t uset, uint32_t uoset, uint32_t siz
 
 void signal_deliver(isr_frame_t *regs) {
     pcb_t *p = get_current_process();
-    struct pstate *ps = pstate_find(p->pid);
     uint32_t ready;
     int sig;
 
-    if (!ps || !(ready = p->pending_signals & ~ps->blocked)) return;
+    if (!(ready = p->pending_signals & ~p->sig_blocked)) return;
     for (sig = 1; sig < NSIG; sig++)
-        if ((ready & (1u << sig)) && ps->act[sig].handler > SIG_IGN) break;
+        if ((ready & (1u << sig)) && p->sigact[sig].handler > SIG_IGN) break;
     if (sig == NSIG) return;
 
-    struct sigact act = ps->act[sig];
+    struct sigact act = p->sigact[sig];
     struct rt_sigframe f;
     memset(&f, 0, sizeof(f));
 
@@ -115,21 +113,21 @@ void signal_deliver(isr_frame_t *regs) {
     f.puc = sp + offsetof(struct rt_sigframe, uc);
     *(int32_t *)f.info = sig;
     memcpy(f.retcode, (uint8_t[]){0xB8, SYS_RT_SIGRETURN, 0, 0, 0, 0xCD, 0x80}, 7);
-    f.uc.sigmask[0] = mask_to_user(ps->blocked);
+    f.uc.sigmask[0] = mask_to_user(p->sig_blocked);
     f.uc.sc = (struct sigcontext){
         .gs = regs->gs, .fs = regs->fs, .es = regs->es, .ds = regs->ds,
         .edi = regs->edi, .esi = regs->esi, .ebp = regs->ebp, .esp = regs->useresp,
         .ebx = regs->ebx, .edx = regs->edx, .ecx = regs->ecx, .eax = regs->eax,
         .eip = regs->eip, .cs = regs->cs, .eflags = regs->eflags,
-        .esp_at_signal = regs->useresp, .ss = regs->ss, .oldmask = mask_to_user(ps->blocked),
+        .esp_at_signal = regs->useresp, .ss = regs->ss, .oldmask = mask_to_user(p->sig_blocked),
     };
 
     p->pending_signals &= ~(1u << sig);
     if (copy_to_user((void *)sp, &f, sizeof(f)) != 0)
         process_exit(SIGSEGV);                  /* no usable stack: Linux forces SIGSEGV */
 
-    ps->blocked |= mask_from_user(act.mask) | ((act.flags & SA_NODEFER) ? 0 : 1u << sig);
-    if (act.flags & SA_RESETHAND) ps->act[sig] = (struct sigact){0};
+    p->sig_blocked |= mask_from_user(act.mask) | ((act.flags & SA_NODEFER) ? 0 : 1u << sig);
+    if (act.flags & SA_RESETHAND) p->sigact[sig] = (struct sigact){0};
     regs->eip = act.handler;
     regs->useresp = sp;
     regs->eflags &= ~0x500u;                    /* DF and TF clear on handler entry */
@@ -137,7 +135,7 @@ void signal_deliver(isr_frame_t *regs) {
 
 long sc_rt_sigreturn(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t ebp_arg, isr_frame_t *regs) {
     (void)a; (void)b; (void)c; (void)d; (void)e; (void)ebp_arg;
-    struct pstate *ps = pstate_current();
+    pcb_t *ps = get_current_process();
     struct rt_sigframe f;
 
     /* The handler's ret popped pretcode, so esp is one word past the frame start. */
@@ -151,6 +149,6 @@ long sc_rt_sigreturn(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e,
     regs->eip = sc->eip;
     regs->useresp = sc->esp;
     regs->eflags = (sc->eflags & EFLAGS_USER) | EFLAGS_IF | 0x2;
-    ps->blocked = mask_from_user(f.uc.sigmask[0]);
+    ps->sig_blocked = mask_from_user(f.uc.sigmask[0]);
     return regs->eax;                           /* the dispatcher stores this back into eax */
 }

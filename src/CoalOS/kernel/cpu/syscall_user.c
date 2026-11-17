@@ -35,7 +35,7 @@ int user_path(uint32_t user, char *out, size_t size) {
     if (raw[0] == '/') {
         full[0] = 0;
     } else {
-        strcpy(full, pstate_current()->cwd);
+        strcpy(full, get_current_process()->cwd);
         strcat(full, "/");
     }
     if (strlen(full) + strlen(raw) >= sizeof(full)) return -ENAMETOOLONG;

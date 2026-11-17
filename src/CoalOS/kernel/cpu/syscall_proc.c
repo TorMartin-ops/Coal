@@ -17,9 +17,7 @@ long sc_exit(uint32_t code) {
 
 long sc_fork(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, isr_frame_t *regs) {
     (void)a; (void)b; (void)c; (void)d; (void)e; (void)f;
-    int pid = process_fork(regs);
-    if (pid > 0) pstate_fork(pid);
-    return pid;
+    return process_fork(regs);
 }
 
 long sc_execve(uint32_t path, uint32_t argv, uint32_t envp, uint32_t d, uint32_t e, uint32_t f, isr_frame_t *regs) {
@@ -35,10 +33,17 @@ long sc_execve(uint32_t path, uint32_t argv, uint32_t envp, uint32_t d, uint32_t
     err = process_execve(kpath, (const char *const *)args.argv, (const char *const *)args.envp, regs);
     exec_args_free(&args);
     if (err == 0) {
-        pstate_exec(pstate_current());
+        proc_exec_reset(get_current_process());
         return regs->eax;               /* the new image's initial eax */
     }
     return err;
+}
+
+void proc_exec_reset(pcb_t *p) {
+    memset(p->sigact, 0, sizeof(p->sigact));       /* handlers do not survive execve */
+    for (int fd = 0; fd < MAX_FD; fd++)
+        if (p->cloexec & (1u << fd)) sc_close(fd);
+    p->cloexec = 0;
 }
 
 long sc_wait4(int32_t pid, uint32_t ustatus, uint32_t options, uint32_t rusage) {

@@ -19,9 +19,9 @@
 _Static_assert(sizeof(struct kstat64) == 96, "struct stat64 is 96 bytes on i386");
 
 static void set_cloexec(int fd, bool on) {
-    struct pstate *ps = pstate_current();
-    if (fd < 0 || fd >= MAX_FD || !ps) return;
-    if (on) ps->cloexec |= 1u << fd; else ps->cloexec &= ~(1u << fd);
+    pcb_t *p = get_current_process();
+    if (fd < 0 || fd >= MAX_FD) return;
+    if (on) p->cloexec |= 1u << fd; else p->cloexec &= ~(1u << fd);
 }
 
 //============================================================================
@@ -89,7 +89,7 @@ long sc_fcntl64(uint32_t fd, uint32_t cmd, uint32_t arg) {
     case F_SETFL:
         if (!(sf = sys_file_get(fd))) return -EBADF;
         if (cmd == F_GETFD) {
-            r = (pstate_current()->cloexec >> fd) & 1 ? FD_CLOEXEC : 0;
+            r = (get_current_process()->cloexec >> fd) & 1 ? FD_CLOEXEC : 0;
         } else if (cmd == F_GETFL) {
             r = sf->flags;
         } else {
@@ -289,12 +289,12 @@ long sc_chdir(uint32_t path) {
     if (err) return err;
     if (!S_ISDIR(st.st_mode)) return -ENOTDIR;
     if (strlen(kpath) >= CWD_MAX) return -ENAMETOOLONG;
-    strcpy(pstate_current()->cwd, kpath);
+    strcpy(get_current_process()->cwd, kpath);
     return 0;
 }
 
 long sc_getcwd(uint32_t buf, uint32_t size) {
-    const char *cwd = pstate_current()->cwd;
+    const char *cwd = get_current_process()->cwd;
     size_t len = strlen(cwd) + 1;
 
     if (size < len) return -ERANGE;
