@@ -126,6 +126,8 @@ add_custom_command(
     VERBATIM)
 
 add_custom_target(image ALL DEPENDS ${ISO_IMAGE} ${DISK_IMAGE})
+# Kernel only; leaves the disk image (and the files on it) untouched.
+add_custom_target(iso DEPENDS ${ISO_IMAGE})
 
 set(COAL_MEMORY_MB 512 CACHE STRING "Guest RAM in MiB for the run target")
 add_custom_target(run

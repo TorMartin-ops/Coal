@@ -284,6 +284,11 @@ class Machine:
                 if not ok:
                     raise ToolError("build failed:\n" + summarize_build(text))
                 note = "built OS; "
+            else:
+                # Pick up kernel source changes; the disk image keeps its files.
+                ok, text = self.build(target="iso")
+                if not ok:
+                    raise ToolError("kernel build failed:\n" + summarize_build(text))
             self._cleanup_workdir()
             self.workdir = tempfile.mkdtemp(prefix="coal-mcp-")      # mode 0700: QEMU monitor and COM2 sockets
             os.chmod(self.workdir, 0o700)
