@@ -100,6 +100,7 @@ static void configure_keyboard_controller(void) {
 }
 
 void kernel_main_init(uint32_t magic, uint32_t mb_info_phys_addr) {
+    timer_early_init();
     serial_init(SERIAL_COM1);
     serial_init(SERIAL_COM2);
     terminal_init();
@@ -129,6 +130,7 @@ void kernel_main_init(uint32_t magic, uint32_t mb_info_phys_addr) {
     configure_keyboard_controller();
     LOG_INFO("starting %s", INIT_PATH);
     klog_console_quiet();
+    timer_start();
     asm volatile("sti");
     scheduler_start();
     KERNEL_PANIC_HALT("scheduler_start() returned");
