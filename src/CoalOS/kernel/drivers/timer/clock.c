@@ -12,13 +12,6 @@
 
 static struct vdso_data clk;            /* the parameters; user space reads a copy of them */
 
-static inline uint64_t rdtsc(void) {
-    uint64_t tsc;
-
-    asm volatile("rdtsc" : "=A"(tsc));
-    return tsc;
-}
-
 /* ns = tsc delta * mult >> shift with the largest shift that keeps mult below 2^32 (vdso_scale needs 1..31). */
 static bool compute_scale(uint32_t khz) {
     uint32_t shift = 31, mult, rem;
@@ -34,7 +27,7 @@ static bool compute_scale(uint32_t khz) {
 
 static uint64_t since_boot_ns(void) {
     if (!clk.mult) return pit_tick_ns();
-    return clk.mono_base_ns + vdso_scale(rdtsc() - clk.tsc_base, clk.mult, clk.shift);
+    return clk.mono_base_ns + vdso_scale(tsc_read() - clk.tsc_base, clk.mult, clk.shift);
 }
 
 void clock_calibrate(void) {

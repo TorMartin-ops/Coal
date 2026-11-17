@@ -42,4 +42,4 @@ if [ $debug -eq 1 ]; then
 fi
 
 echo "Starting QEMU: iso=$iso disk=$disk log=$log"
-exec qemu-system-i386 "${args[@]}"
+exec qemu-system-x86_64 "${args[@]}"

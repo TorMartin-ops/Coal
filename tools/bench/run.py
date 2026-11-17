@@ -113,7 +113,7 @@ def environment(qemu_args, memory_mb):
     except (OSError, StopIteration):
         pass
     return {"host_cpu": cpu, "host_cpus": os.cpu_count(), "loadavg": os.getloadavg(),
-            "qemu": sh("qemu-system-i386", "--version").splitlines()[0],
+            "qemu": sh("qemu-system-x86_64", "--version").splitlines()[0],
             "qemu_args": qemu_args, "guest_memory_mb": memory_mb, "python": sys.version.split()[0]}
 
 

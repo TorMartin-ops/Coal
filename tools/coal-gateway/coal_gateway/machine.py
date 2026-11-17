@@ -79,9 +79,9 @@ class Machine:
                 return "attached to an existing Coal instance; nothing to boot"
             if self.running():
                 return "already running (pid %d)" % self.proc.pid
-            qemu = shutil.which("qemu-system-i386")
+            qemu = shutil.which("qemu-system-x86_64")
             if qemu is None:
-                raise ToolError("qemu-system-i386 is not installed")
+                raise ToolError("qemu-system-x86_64 is not installed")
             iso, disk = self.images()
             note = ""
             if rebuild or not (os.path.exists(iso) and os.path.exists(disk)):

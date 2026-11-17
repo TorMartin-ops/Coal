@@ -222,7 +222,7 @@ def parse_args(argv):
     ap.add_argument("--memory", type=int, default=128, help="guest RAM in MiB (default 128)")
     ap.add_argument("--timeout", type=int, default=60, help="seconds per boot (default 60)")
     ap.add_argument("--linger", type=int, default=1500, help="ms to keep logging after the ping reply (default 1500)")
-    ap.add_argument("--qemu", default="qemu-system-i386")
+    ap.add_argument("--qemu", default="qemu-system-x86_64")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
     args, extra = ap.parse_known_args(argv)
     args.qemu_args = [a for a in extra if a != "--"]

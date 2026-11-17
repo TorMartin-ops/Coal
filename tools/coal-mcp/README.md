@@ -14,7 +14,7 @@ Claude  <-- MCP / stdio -->  server.py  <-- COM2, framed JSON -->  /sbin/agentd 
 ## Requirements
 
 `cmake`, a C toolchain that builds Coal OS, `nasm`, `mtools`, `grub-mkrescue`
-(see the top-level README) and `qemu-system-i386`.
+(see the top-level README) and `qemu-system-x86_64`.
 
 ## Add it to Claude Code
 

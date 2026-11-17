@@ -264,7 +264,7 @@ if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then echo "KVM_RW=yes"; else echo "KVM_RW
 echo "CPU_VIRT=$(grep -c -E 'vmx|svm' /proc/cpuinfo)"
 if command -v kvm-ok >/dev/null 2>&1; then echo "KVM_OK=$(kvm-ok 2>&1 | tr '\n' ' ')"; else echo "KVM_OK=unavailable"; fi
 echo "USER_GROUPS=$(id -nG)"
-for q in qemu-system-x86_64 qemu-system-i386; do
+for q in qemu-system-x86_64; do
   if command -v $q >/dev/null 2>&1; then echo "QEMU_$q=yes"; else echo "QEMU_$q=missing"; fi
 done
 if command -v apt-get >/dev/null 2>&1; then echo "APT=yes"; else echo "APT=no"; fi
@@ -296,7 +296,7 @@ if (-not ($wslOk -and $wslDistro)) {
         Add-Result '/dev/kvm in WSL' 'FAIL' ("could not run bash in {0}: {1}" -f $wslDistro, $probe.Text)
     } else {
         $p = $probe.Pairs
-        $needQemu = ($p['QEMU_qemu-system-x86_64'] -ne 'yes') -or ($p['QEMU_qemu-system-i386'] -ne 'yes')
+        $needQemu = ($p['QEMU_qemu-system-x86_64'] -ne 'yes')
         if ($needQemu -and $p['APT'] -eq 'yes') {
             if (Confirm-Action "Install qemu-system-x86 in $wslDistro (apt, runs as root in WSL)?") {
                 $null = Invoke-WslScript "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq qemu-system-x86 cpu-checker" 'root'
@@ -315,8 +315,8 @@ if (-not ($wslOk -and $wslDistro)) {
         } else {
             Add-Result '/dev/kvm in WSL' 'FAIL' 'missing; needs Windows 11, nestedVirtualization=true in .wslconfig and "wsl --shutdown"'
         }
-        if ($p['QEMU_qemu-system-x86_64'] -eq 'yes' -and $p['QEMU_qemu-system-i386'] -eq 'yes') {
-            Add-Result 'QEMU in WSL' 'PASS' 'qemu-system-x86_64 and qemu-system-i386 installed'
+        if ($p['QEMU_qemu-system-x86_64'] -eq 'yes') {
+            Add-Result 'QEMU in WSL' 'PASS' 'qemu-system-x86_64 installed'
             $qemuInWsl = $true
         } elseif ($p['APT'] -eq 'yes') {
             Add-Result 'QEMU in WSL' 'FAIL' "missing; run in WSL: sudo apt install qemu-system-x86"
@@ -377,7 +377,7 @@ foreach ($r in $script:Results) {
 Write-Host ""
 $ok = $true
 if ($kvmReady -and $qemuInWsl) {
-    Write-Host 'Recommended path: KVM in WSL2. Run Coal OS with QEMU inside WSL: qemu-system-i386 -accel kvm ...' -ForegroundColor Green
+    Write-Host 'Recommended path: KVM in WSL2. Run Coal OS with QEMU inside WSL: qemu-system-x86_64 -accel kvm ...' -ForegroundColor Green
 } elseif ($whpxReady) {
     Write-Host 'Recommended path: QEMU with WHPX on Windows (KVM in WSL2 is not ready): qemu-system-x86_64 -accel whpx ...' -ForegroundColor Yellow
 } else {

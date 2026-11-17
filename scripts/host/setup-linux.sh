@@ -73,7 +73,7 @@ fi
 # --- QEMU ---------------------------------------------------------------------------------------
 
 missing_qemu() {
-    ! command -v qemu-system-i386 >/dev/null 2>&1 || ! command -v qemu-system-x86_64 >/dev/null 2>&1
+    ! command -v qemu-system-x86_64 >/dev/null 2>&1
 }
 
 if missing_qemu && ask "Install QEMU (qemu-system-x86) now?"; then
@@ -81,7 +81,7 @@ if missing_qemu && ask "Install QEMU (qemu-system-x86) now?"; then
 fi
 
 if missing_qemu; then
-    report FAIL "QEMU" "qemu-system-i386 / qemu-system-x86_64 not found; install qemu-system-x86 (apt, dnf, pacman) or run with -y"
+    report FAIL "QEMU" "qemu-system-x86_64 not found; install qemu-system-x86 (apt, dnf, pacman) or run with -y"
 else
     report PASS "QEMU" "$(qemu-system-x86_64 --version | head -n 1)"
 fi

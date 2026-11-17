@@ -1,5 +1,5 @@
 #include <kernel/lib/random.h>
-#include <kernel/cpu/msr.h>
+#include <kernel/drivers/timer/pit.h>
 
 #define CPUID1_ECX_RDRAND (1u << 30)
 
@@ -25,7 +25,7 @@ static bool have_rdrand(void) {
 
 /* xorshift64*, reseeded from the TSC on every call: not cryptographic, but different on every boot and call. */
 static uint64_t fallback64(void) {
-    uint64_t x = rdtsc() | 1;
+    uint64_t x = tsc_read() | 1;
 
     x ^= x >> 12; x ^= x << 25; x ^= x >> 27;
     return x * 0x2545F4914F6CDD1Dull;

@@ -82,8 +82,8 @@ class QemuAgent:
     reports_rlimits = True
 
     def __init__(self):
-        if not shutil.which("qemu-system-i386"):
-            raise unittest.SkipTest("qemu-system-i386 not available")
+        if not shutil.which("qemu-system-x86_64"):
+            raise unittest.SkipTest("qemu-system-x86_64 not available")
         self.build = os.environ.get("COAL_TEST_BUILD", os.path.join(tempfile.gettempdir(), "coal-gateway-test-build"))
         src = os.path.join(REPO, "src", "CoalOS")
         for cmd in (["cmake", "-S", src, "-B", self.build], ["cmake", "--build", self.build, "-j", str(os.cpu_count() or 2)]):
@@ -93,7 +93,7 @@ class QemuAgent:
         self.tmp = tempfile.mkdtemp(prefix="coal-qemu-test-")
         self.socket = os.path.join(self.tmp, "com2.sock")
         self.proc = subprocess.Popen(
-            ["qemu-system-i386", "-display", "none", "-m", "128", "-snapshot", "-boot", "d",
+            ["qemu-system-x86_64", "-display", "none", "-m", "128", "-snapshot", "-boot", "d",
              "-cdrom", os.path.join(self.build, "kernel.iso"), "-hda", os.path.join(self.build, "disk.img"),
              "-serial", "file:" + os.path.join(self.tmp, "com1.log"),
              "-serial", "unix:%s,server=on,wait=off" % self.socket, "-nic", "none", "-no-reboot"],

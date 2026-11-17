@@ -5,7 +5,8 @@ ENTRY(_start)
 KERNEL_VMA = 0xFFFFFFFF80000000;
 
 PHDRS {
-    boot   PT_LOAD FLAGS(7);
+    boot   PT_LOAD FLAGS(5);
+    bootrw PT_LOAD FLAGS(6);
     text   PT_LOAD FLAGS(5);
     rodata PT_LOAD FLAGS(4);
     data   PT_LOAD FLAGS(6);
@@ -19,13 +20,13 @@ SECTIONS {
     .boot : {
         KEEP(*(.boot.header))
         *(.boot.text)
-        *(.boot.data)
     } :boot
 
     .note : { *(.note.Xen) } :boot :note
 
-    /* Boot page tables and the 32-bit stack: zero-filled by the loader, not stored in the file. */
-    .boot.bss ALIGN(4096) : { *(.boot.bss) } :boot
+    /* Boot variables, page tables and the 32-bit stack; the tables are zero-filled by the loader. */
+    .boot.data ALIGN(4096) : { *(.boot.data) } :bootrw
+    .boot.bss : { *(.boot.bss) } :bootrw
 
     . = ALIGN(4096);
     . += KERNEL_VMA;
