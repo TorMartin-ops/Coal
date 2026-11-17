@@ -13,7 +13,7 @@ global isr14                    ; exposed to IDT setup
 ; External C function references
 extern page_fault_handler       ; void page_fault_handler(isr_frame_t *frame)
 extern find_exception_fixup     ; uint32_t find_exception_fixup(uint32_t fault_eip)
-extern invoke_kernel_panic_from_isr ; void invoke_kernel_panic_from_isr(void)
+extern kernel_fault_panic       ; void kernel_fault_panic(isr_frame_t *frame)
 
 
 isr14:
@@ -51,10 +51,8 @@ isr14:
 
 ; Unhandled kernel page fault -> panic
 .kernel_fault_unhandled_pf:
-    call invoke_kernel_panic_from_isr ; This C function will call KERNEL_PANIC_HALT
-    ; Should not return from panic
-    cli
-    hlt                     ; Halt if it somehow returns
+    push esp                ; isr_frame_t *
+    call kernel_fault_panic ; prints the registers and halts
 
 .handle_kernel_fixup:
     ; EAX contains the fixup_addr. We need to set the EIP in the saved stack frame.

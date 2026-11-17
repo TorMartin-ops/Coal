@@ -73,7 +73,7 @@ void abi_main(void) {
         check(*(volatile char *)m == 7 && sc3(NR_munmap, m, 4096, 0) == 0, "anonymous page usable, munmap");
     }
 
-    int fd = sc3(NR_open, "/bin/abi_test.elf", 0, 0);
+    int fd = sc3(NR_open, "/usr/bin/abi_test", 0, 0);
     check(fd >= 0, "open own image");
     if (fd >= 0) {
         check(sc3(NR_read, fd, buf, 4) == 4 && buf[0] == 0x7f && buf[1] == 'E', "read ELF magic");

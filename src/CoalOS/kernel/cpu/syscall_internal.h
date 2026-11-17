@@ -44,7 +44,6 @@ void exec_args_free(struct exec_args *a);
 
 /* Delivers one pending signal with a user handler by building an rt signal frame. */
 void signal_deliver(isr_frame_t *regs);
-long sc_rt_sigreturn(isr_frame_t *regs);
 
 #define DECL(...) long __VA_ARGS__;
 /* Handlers; syscall.c refers to them. */
@@ -109,6 +108,7 @@ DECL(sc_reboot(uint32_t, uint32_t, uint32_t))
 DECL(sc_syslog(uint32_t, uint32_t, uint32_t))
 DECL(sc_set_thread_area(uint32_t))
 DECL(sc_set_tid_address(uint32_t))
+DECL(sc_rt_sigreturn(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, isr_frame_t *))
 DECL(sc_rt_sigaction(uint32_t, uint32_t, uint32_t, uint32_t))
 DECL(sc_rt_sigprocmask(uint32_t, uint32_t, uint32_t, uint32_t))
 

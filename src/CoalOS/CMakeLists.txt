@@ -73,6 +73,14 @@ add_user_program(libc_test userspace/tests/libc_test.c)
 add_user_program(syscall_test userspace/tests/syscall_test.c)
 add_user_program(mcpd userspace/mcpd/mcpd.c)
 
+# Raw int 0x80 smoke test: no libc, no start-up code.
+add_executable(abi_test userspace/tests/abi_test.c)
+set_target_properties(abi_test PROPERTIES OUTPUT_NAME abi_test.elf)
+target_compile_options(abi_test PRIVATE -m32 -ffreestanding -nostdlib -fno-pie -fno-pic
+    -fno-stack-protector -mno-sse -O1 -Wall -Wextra -Werror)
+target_link_options(abi_test PRIVATE -m32 -nostdlib -static -no-pie -s -Wl,--build-id=none
+    -Wl,--no-warn-rwx-segments -T${ARCH_DIR}/user.ld)
+
 # --- Disk image (FAT16, long file names) with a Linux directory layout ---------
 # Static files for the image live in rootfs/ in the source tree.
 set(ROOTFS_DIR ${CMAKE_SOURCE_DIR}/rootfs)
@@ -94,8 +102,9 @@ add_custom_command(
     COMMAND mcopy ${IMG} $<TARGET_FILE:hello> ::/usr/bin/hello
     COMMAND mcopy ${IMG} $<TARGET_FILE:libc_test> ::/usr/bin/libc_test
     COMMAND mcopy ${IMG} $<TARGET_FILE:syscall_test> ::/usr/bin/syscall_test
+    COMMAND mcopy ${IMG} $<TARGET_FILE:abi_test> ::/usr/bin/abi_test
     COMMAND mcopy ${IMG} ${ROOTFS_ETC} ::/etc/
-    DEPENDS hello shell coalbox init mcpd libc_test syscall_test ${ROOTFS_ETC}
+    DEPENDS hello shell coalbox init mcpd libc_test syscall_test abi_test ${ROOTFS_ETC}
     COMMENT "Creating FAT16 disk image"
     VERBATIM)
 

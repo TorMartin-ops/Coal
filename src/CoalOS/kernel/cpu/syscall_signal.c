@@ -135,7 +135,8 @@ void signal_deliver(isr_frame_t *regs) {
     regs->eflags &= ~0x500u;                    /* DF and TF clear on handler entry */
 }
 
-long sc_rt_sigreturn(isr_frame_t *regs) {
+long sc_rt_sigreturn(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t ebp_arg, isr_frame_t *regs) {
+    (void)a; (void)b; (void)c; (void)d; (void)e; (void)ebp_arg;
     struct pstate *ps = pstate_current();
     struct rt_sigframe f;
 

@@ -113,6 +113,17 @@ static void dump_frame(const isr_frame_t *f) {
                   (unsigned long)f->esi, (unsigned long)f->edi, (unsigned long)f->ebp);
 }
 
+// Page fault in kernel mode that no exception-table entry covers.
+void kernel_fault_panic(isr_frame_t *frame) {
+    uint32_t cr2;
+    asm volatile("mov %%cr2, %0" : "=r"(cr2));
+    dump_frame(frame);
+    serial_printf(" cr2=%08lx\n", (unsigned long)cr2);
+    terminal_write("\n*** KERNEL PANIC ***\nKernel page fault, see the serial log.\n");
+    for (;;)
+        asm volatile("cli; hlt");
+}
+
 // Called by the stubs for every vector except page faults and syscalls.
 void isr_common_handler(isr_frame_t *frame) {
     interrupt_handler_info_t *entry = &interrupt_c_handlers[frame->int_no];
