@@ -22,6 +22,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 SERVER_INFO = {"name": "coal-mcp", "version": "1.0.0"}
@@ -42,13 +44,13 @@ GUIDE_URI = "coal://guide"
 GUIDE = """Coal OS system guide
 
 WHAT IT IS
-A small Linux-ABI-compatible i386 kernel (static ELF32 Linux binaries run), single CPU, 128 MB RAM, no
-network, no SMP, no users (everything is root). Boot to prompt takes about one second.
+A small Linux-ABI-compatible i386 kernel (static ELF32 Linux binaries run), single CPU, an e1000 NIC on
+QEMU user networking (DHCP), no SMP, no users (everything is root). Boot to prompt takes about one second.
 
 FILE SYSTEM (FAT16 disk image, persistent; long file names, no symlinks, no permissions enforcement)
   /bin/coalbox   one multi-call binary; applets: basename cat clear cp date dirname dmesg echo env false free
-                 grep halt head hexdump kill ls mkdir mount mv poweroff ps pwd reboot rm rmdir sleep sort sync
-                 tail touch true umount uname uptime wc which yes
+                 grep halt head hexdump ifconfig kill ls mkdir mount mv nc nslookup ping poweroff ps pwd reboot rm rmdir
+                 sleep sort sync tail touch true umount uname uptime wc wget which yes
   /bin/sh        the shell: pipes, redirection, && || ;, & (background), quotes, $VAR, cd/export/exit builtins.
                  No job control, no subshells ( ), no $!, no command substitution
   /sbin/init     PID 1: starts mcpd and a login shell
@@ -60,8 +62,17 @@ FILE SYSTEM (FAT16 disk image, persistent; long file names, no symlinks, no perm
 SYSTEM CALLS
 The Linux i386 ABI (int 0x80, Linux numbers and struct layouts): files, directories, pipes, dup, fork/execve
 (copy-on-write), wait4, signals with handlers (rt_sigaction, rt_sigreturn), poll, brk/mmap2/munmap (anonymous),
-clock_gettime, nanosleep, uname, syslog, reboot. No sockets, threads/clone, ptrace, symlinks, chmod/chown.
+clock_gettime, nanosleep, uname, syslog, reboot, AF_INET sockets (socketcall and the direct socket calls:
+TCP streams, UDP, raw ICMP). No threads/clone, ptrace, symlinks, chmod/chown.
 Unimplemented calls return -ENOSYS.
+
+NETWORK
+TCP, UDP, ICMP over IPv4; DHCP at boot (falls back to 10.0.2.15/24, gateway 10.0.2.2, DNS 10.0.2.3).
+Commands: ifconfig, ping -c N host, nslookup name, wget [-O file] http://host/path, nc host port, nc -l port.
+Coal speaks plain HTTP only: wget refuses https://. Use coal_download (the host fetches http and https, then
+writes the file into Coal) for HTTPS. The guest is NAT'ed (QEMU user networking): it reaches the host at
+10.0.2.2 and the internet if the host has it, but nothing connects in unless QEMU forwards a port.
+No IPv6, no loopback interface, no fragment reassembly, TCP drops out-of-order segments.
 
 LIMITS
 FAT16 volume (32 MiB image). 32 descriptors per process. Output of coal_run is capped at 64 KiB per
@@ -281,7 +292,8 @@ class Machine:
                    "-cdrom", iso, "-hda", disk, "-boot", "d", "-no-shutdown",
                    "-serial", "file:" + self._p("com1.log"),
                    "-serial", "unix:%s,server=on,wait=off" % com2,
-                   "-monitor", "unix:%s,server=on,wait=off" % mon]
+                   "-monitor", "unix:%s,server=on,wait=off" % mon,
+                   "-nic", os.environ.get("COAL_NIC", "user,model=e1000")]
             if snapshot:
                 cmd.append("-snapshot")
             cmd += os.environ.get("COAL_QEMU_ARGS", "").split()
@@ -605,6 +617,32 @@ def tool_write_file(m, a):
     return "wrote %d bytes to %s" % (len(data), path)
 
 
+def tool_download(m, a):
+    url = _str(a, "url")
+    path = _str(a, "path")
+    limit = _int(a, "max_bytes", 16 * 1024 * 1024, 1, 256 * 1024 * 1024)
+    timeout = _int(a, "timeout_s", 30, 1, 600)
+    if not re.match(r"https?://", url, re.I):
+        raise ToolError("url must start with http:// or https://")
+    req = urllib.request.Request(url, headers={"User-Agent": "coal-mcp"})
+    chunks, size = [], 0
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            while True:
+                part = resp.read(65536)
+                if not part:
+                    break
+                size += len(part)
+                if size > limit:
+                    raise ToolError("download exceeds max_bytes (%d)" % limit)
+                chunks.append(part)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise ToolError("download failed: %s" % e)
+    data = b"".join(chunks)
+    tool_write_file(m, {"path": path, "content_base64": base64.b64encode(data).decode(), "mode": a.get("mode", 0o644)})
+    return "downloaded %d bytes from %s to %s" % (len(data), url, path)
+
+
 def tool_ls(m, a):
     path = a.get("path", "/")
     link = m.need_link()
@@ -715,6 +753,15 @@ TOOLS = [
              "append": {"type": "boolean", "description": "Append instead of truncating."},
              "mode": {"type": ["integer", "string"], "description": "Permissions for a new file, e.g. \"755\" (octal string) or 493."}},
             ["path"]), ann("Write file in Coal OS", destructive=True, idem=True), tool_write_file),
+    ("coal_download", "Download a URL on the HOST (http and https) and write it into the Coal file system. "
+     "Gives Coal HTTPS downloads, which Coal itself cannot do yet. Overwrites an existing file; the same "
+     "cautions as coal_write_file apply.",
+     schema({"url": {**S, "description": "http:// or https:// URL."},
+             "path": {**S, "description": "Absolute destination path inside Coal."},
+             "max_bytes": {"type": "integer", "description": "Abort above this size (default 16 MiB, max 256 MiB)."},
+             "timeout_s": {"type": "integer", "description": "Network timeout in seconds (default 30)."},
+             "mode": {"type": ["integer", "string"], "description": "Permissions, e.g. \"755\"."}},
+            ["url", "path"]), ann("Download a URL into Coal OS", destructive=True, idem=True), tool_download),
     ("coal_ls", "List a directory in Coal OS in ls -l style (type/mode, uid, gid, size, name).",
      schema({"path": {**S, "description": "Directory (default /)."}}),
      ann("List directory in Coal OS", read_only=True), tool_ls),

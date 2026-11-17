@@ -183,6 +183,23 @@ static const struct { unsigned char code; const char *msg; } errors[] = {
     { ENOSYS, "Function not implemented" },
     { ENOTEMPTY, "Directory not empty" },
     { ELOOP, "Too many levels of symbolic links" },
+    { ENOTSOCK, "Socket operation on non-socket" },
+    { EMSGSIZE, "Message too long" },
+    { EPROTONOSUPPORT, "Protocol not supported" },
+    { EAFNOSUPPORT, "Address family not supported" },
+    { EADDRINUSE, "Address already in use" },
+    { EADDRNOTAVAIL, "Cannot assign requested address" },
+    { ENETDOWN, "Network is down" },
+    { ENETUNREACH, "Network is unreachable" },
+    { ECONNABORTED, "Software caused connection abort" },
+    { ECONNRESET, "Connection reset by peer" },
+    { EISCONN, "Transport endpoint is already connected" },
+    { ENOTCONN, "Transport endpoint is not connected" },
+    { ETIMEDOUT, "Connection timed out" },
+    { ECONNREFUSED, "Connection refused" },
+    { EHOSTUNREACH, "No route to host" },
+    { EALREADY, "Operation already in progress" },
+    { EINPROGRESS, "Operation now in progress" },
 };
 
 char *strerror(int err) {
