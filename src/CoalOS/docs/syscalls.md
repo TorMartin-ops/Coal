@@ -23,7 +23,7 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 13 | time | `sc_time` |  |
 | 19 | lseek | `sc_lseek` |  |
 | 20 | getpid | `sc_getpid` |  |
-| 21 | mount | `sc_mount` |  |
+| 21 | mount | `sc_mount` | types `fat` (device `hdb`..`hdd` or `/dev/hdX`) and `procfs` |
 | 24 | getuid | `sc_zero` |  |
 | 30 | utime | `sc_utime` |  |
 | 33 | access | `sc_access` |  |
@@ -51,10 +51,12 @@ compares `include/libc/syscall_numbers.h` with the Linux headers.
 | 102 | socketcall | `sc_socketcall` | multiplexer for the calls below |
 | 103 | syslog | `sc_syslog` |  |
 | 114 | wait4 | `sc_wait4` |  |
+| 118 | fsync | `sc_fsync` | writes the file's data and metadata to disk |
 | 122 | uname | `sc_uname` |  |
 | 132 | getpgid | `sc_getpgid` |  |
 | 140 | llseek | `sc_llseek` |  |
 | 145 | readv | `sc_readv` |  |
+| 148 | fdatasync | `sc_fsync` | same as fsync |
 | 146 | writev | `sc_writev` |  |
 | 147 | getsid | `sc_getsid` |  |
 | 158 | sched_yield | `sc_sched_yield` |  |

@@ -146,8 +146,10 @@ Start with [ARCHITECTURE.md](src/CoalOS/docs/ARCHITECTURE.md).
 - Network: IPv4 only, no TLS, no loopback interface, no IP fragment reassembly, no DHCP lease
   renewal, TCP drops out-of-order segments.
 - The shell has no subshells, `$!` or command substitution.
-- The serial link to the host receives into a 2 KiB ring without flow control, so `mcpd` requests
-  are kept small and file transfer is slow (see above).
+- File data and metadata are written to disk on `sync`, `fsync`, unmount and by a flush thread every
+  5 s; a hard reset can lose the last few seconds of changes.
+- `mount` attaches extra FAT disks (`mount -t fat /dev/hdb /mnt`); the root disk is `hda`.
+- Interrupted blocking calls return `EINTR` (no `SA_RESTART`).
 - Hobby quality: not audited and not a security boundary.
 
 ## Credits
