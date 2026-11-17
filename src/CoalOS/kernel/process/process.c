@@ -10,20 +10,18 @@
 #include <kernel/fs/procfs.h>
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/fs/vfs/sys_file.h>
-#include <kernel/lib/rbtree.h>
 #include <kernel/lib/string.h>
 #include <kernel/memory/frame.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/memory/mm.h>
-#include <kernel/memory/paging_core.h>
 #include <kernel/memory/paging_process.h>
 
 #define USER_EFLAGS 0x202                 /* IF set */
 
 /* Kernel stacks: a 16 MiB window of slots, each [guard page][stack pages].
- * The guard page is never mapped. The window's page tables are created at boot
- * so every address space shares them (see kstack_init). */
-#define KSTACK_VA_START 0xE0000000u
+ * The guard page is never mapped. The window's page tables exist from boot
+ * and are shared by every address space. */
+#define KSTACK_VA_START KERNEL_STACK_VADDR_START
 #define KSTACK_VA_END   0xE1000000u
 #define KSTACK_SLOT     ((KSTACK_PAGES + 1) * PAGE_SIZE)
 #define KSTACK_FREE_MAX 128
@@ -44,18 +42,6 @@ pcb_t *get_current_process(void) {
 
 /* ---- kernel stacks -------------------------------------------------- */
 
-void process_kstack_init(void) {
-    uint32_t *kpd = (uint32_t *)g_kernel_page_directory_phys;
-    uintptr_t f = frame_alloc();
-
-    if (!f) return;
-    for (uintptr_t va = KSTACK_VA_START; va < KSTACK_VA_END; va += 4u << 20) {
-        if (paging_map_single_4k(kpd, va, f, PTE_KERNEL_DATA_FLAGS) == 0)
-            paging_unmap_range(kpd, va, PAGE_SIZE);
-    }
-    put_frame(f);
-}
-
 static bool kstack_alloc(pcb_t *p) {
     uint32_t *kpd = (uint32_t *)g_kernel_page_directory_phys;
     uintptr_t va, flags = local_irq_save();
@@ -67,14 +53,14 @@ static bool kstack_alloc(pcb_t *p) {
     if (!va) return false;
 
     for (int i = 0; i < KSTACK_PAGES; i++) {
-        p->kstack_frames[i] = frame_alloc();
-        if (!p->kstack_frames[i] ||
-            paging_map_single_4k(kpd, va + PAGE_SIZE * (i + 1), p->kstack_frames[i], PTE_KERNEL_DATA_FLAGS)) {
-            if (p->kstack_frames[i]) put_frame(p->kstack_frames[i]);
-            while (i--) {
-                paging_unmap_range(kpd, va + PAGE_SIZE * (i + 1), PAGE_SIZE);
-                put_frame(p->kstack_frames[i]);
-            }
+        uintptr_t f = frame_alloc();
+
+        if (f && paging_map_single_4k(kpd, va + PAGE_SIZE * (i + 1), f, PTE_KERNEL_DATA_FLAGS)) {
+            put_frame(f);
+            f = 0;
+        }
+        if (!f) {
+            if (i) paging_unmap_range(kpd, va + PAGE_SIZE, i * PAGE_SIZE);   /* drops the frames */
             flags = local_irq_save();
             if (kstack_nfree < KSTACK_FREE_MAX) kstack_free[kstack_nfree++] = va;
             local_irq_restore(flags);
@@ -90,8 +76,7 @@ static void kstack_free_pages(pcb_t *p) {
     uintptr_t va = (uintptr_t)p->kernel_stack_vaddr_top - KSTACK_SLOT, flags;
 
     if (!p->kernel_stack_vaddr_top) return;
-    paging_unmap_range(kpd, va + PAGE_SIZE, KSTACK_PAGES * PAGE_SIZE);
-    for (int i = 0; i < KSTACK_PAGES; i++) put_frame(p->kstack_frames[i]);
+    paging_unmap_range(kpd, va + PAGE_SIZE, KSTACK_PAGES * PAGE_SIZE);   /* drops the frames */
     flags = local_irq_save();
     if (kstack_nfree < KSTACK_FREE_MAX) kstack_free[kstack_nfree++] = va;
     local_irq_restore(flags);
@@ -242,56 +227,6 @@ pcb_t *create_user_process(const char *path) {
     return p;
 }
 
-struct vma_list { vma_struct_t **v; int n; };
-
-static void collect_vma(vma_struct_t *v, void *arg) {
-    struct vma_list *l = arg;
-    l->v[l->n++] = v;
-}
-
-/* Ascending by start; an empty VMA (the heap) sorts after the one that ends where it starts. */
-static bool vma_before(const vma_struct_t *a, const vma_struct_t *b) {
-    if (a->vm_start != b->vm_start) return a->vm_start < b->vm_start;
-    return a->vm_end > b->vm_end;
-}
-
-/** Inserts src's VMAs into mm in address order, which is the order exec builds them in. */
-static bool clone_vmas(mm_struct_t *mm, const mm_struct_t *src) {
-    struct vma_list l = { kmalloc(sizeof(vma_struct_t *) * (src->map_count + 1)), 0 };
-    bool ok = l.v != NULL;
-
-    if (!ok) return false;
-    rbtree_postorder_traverse(src->vma_tree.root, collect_vma, &l);
-    for (int i = 1; i < l.n; i++) {                   /* insertion sort: a handful of entries */
-        vma_struct_t *x = l.v[i];
-        int j = i - 1;
-        while (j >= 0 && vma_before(x, l.v[j])) { l.v[j + 1] = l.v[j]; j--; }
-        l.v[j + 1] = x;
-    }
-    for (int i = 0; ok && i < l.n; i++) {
-        const vma_struct_t *v = l.v[i];
-        ok = insert_vma(mm, v->vm_start, v->vm_end, v->vm_flags, v->page_prot, v->vm_file, v->vm_offset) != NULL;
-    }
-    kfree(l.v);
-    return ok;
-}
-
-/** Duplicates src's address space: page tables via paging_clone_directory, VMAs here. */
-static mm_struct_t *mm_clone(const mm_struct_t *src) {
-    uintptr_t pd = paging_clone_directory(src->pgd_phys);
-    mm_struct_t *mm;
-
-    if (!pd) return NULL;
-    mm = create_mm((uint32_t *)pd);
-    if (!mm) { paging_free_user_space((uint32_t *)pd); put_frame(pd); return NULL; }
-    mm->start_code = src->start_code; mm->end_code = src->end_code;
-    mm->start_data = src->start_data; mm->end_data = src->end_data;
-    mm->start_brk = src->start_brk;   mm->end_brk = src->end_brk;
-    mm->start_stack = src->start_stack;
-    if (!clone_vmas(mm, src)) { exec_free_mm(mm); return NULL; }
-    return mm;
-}
-
 int process_fork(const isr_frame_t *regs) {
     pcb_t *parent = get_current_process();
     pcb_t *child;
@@ -301,7 +236,7 @@ int process_fork(const isr_frame_t *regs) {
     if (!parent || !parent->mm) return -ESRCH;
     child = pcb_new();
     if (!child) return -EAGAIN;
-    mm = mm_clone(parent->mm);
+    mm = dup_mm(parent->mm);
     if (!mm) { kstack_free_pages(child); kfree(child); return -ENOMEM; }
 
     child->mm = mm;

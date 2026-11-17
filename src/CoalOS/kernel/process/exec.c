@@ -10,9 +10,7 @@
 #include <kernel/lib/string.h>
 #include <kernel/memory/frame.h>
 #include <kernel/memory/kmalloc.h>
-#include <kernel/memory/paging_core.h>
 #include <kernel/memory/paging_process.h>
-#include <kernel/memory/paging_temp.h>
 
 /* Linux auxiliary vector types */
 #define AT_NULL 0
@@ -54,17 +52,10 @@ static void fill_random(uint8_t *out, size_t n) {
 }
 
 static int new_address_space(mm_struct_t **out) {
-    uintptr_t pd = frame_alloc();
-    uint32_t *v;
+    uintptr_t pd = paging_new_directory();
     mm_struct_t *mm;
 
     if (!pd) return -ENOMEM;
-    v = paging_temp_map(pd);
-    if (!v) { put_frame(pd); return -ENOMEM; }
-    memset(v, 0, PAGE_SIZE);
-    copy_kernel_pde_entries(v);
-    v[RECURSIVE_PDE_INDEX] = (pd & PAGING_ADDR_MASK) | PAGE_PRESENT | PAGE_RW | nx_flag();
-    paging_temp_unmap(v);
     mm = create_mm((uint32_t *)pd);
     if (!mm) { put_frame(pd); return -ENOMEM; }
     *out = mm;
@@ -73,14 +64,8 @@ static int new_address_space(mm_struct_t **out) {
 
 void exec_free_mm(mm_struct_t *mm) {
     uint32_t *pd = mm->pgd_phys;
-    uint32_t *v = paging_temp_map((uintptr_t)pd);
 
-    if (v) {                             /* PDE 0 is the kernel's shared low identity map, not ours to free */
-        v[0] = 0;
-        paging_temp_unmap(v);
-    }
-    paging_free_user_space(pd);          /* frames and page tables first: VMA teardown then has nothing to unmap */
-    destroy_mm(mm);
+    destroy_mm(mm);                      /* releases the user pages and page tables */
     put_frame((uintptr_t)pd);
 }
 

@@ -2,6 +2,7 @@
  * @file procfs.c
  * @brief Read-only /proc. Each open renders a small text snapshot.
  */
+#include <kernel/memory/frame.h>
 #include <kernel/fs/procfs.h>
 #include <kernel/fs/vfs/vfs.h>
 #include <kernel/drivers/display/terminal.h>
@@ -62,7 +63,9 @@ static size_t render(const struct node *n, char *out) {
     uint32_t ms = get_pit_ticks();
     switch (n->kind) {
     case K_MEMINFO: {
-        uint32_t total = (uint32_t)(buddy_total_space() / 1024), free = (uint32_t)(buddy_free_space() / 1024);
+        size_t tp, fp;
+        frame_stats(&tp, &fp);
+        uint32_t total = (uint32_t)(tp * (PAGE_SIZE / 1024)), free = (uint32_t)(fp * (PAGE_SIZE / 1024));
         return (size_t)pf(out, SNAPSHOT_MAX, "MemTotal:    %8u kB\nMemFree:     %8u kB\nMemAvailable:%8u kB\n",
                           total, free, free);
     }

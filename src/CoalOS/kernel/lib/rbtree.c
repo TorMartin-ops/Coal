@@ -343,23 +343,6 @@
      }
  }
  
- struct rb_node * rb_node_prev(struct rb_node *node_ptr) {
-      if (!node_ptr) return NULL;
-     if (node_ptr->left) {
-         // Predecessor is the maximum node in the left subtree
-         return rb_node_maximum(node_ptr->left);
-     } else {
-         // Predecessor is the lowest ancestor whose right child is also an ancestor
-         struct rb_node *p = rb_node_parent(node_ptr);
-         while (p && node_ptr == p->left) {
-             node_ptr = p;
-             p = rb_node_parent(node_ptr);
-         }
-         return p;
-     }
- }
- 
- 
  // --- VMA Specific Functions (using rb_entry macro) ---
  
  /**
@@ -389,61 +372,58 @@
  
  
  /**
-  * Finds a VMA overlapping the interval [start, end).
+  * Finds the lowest VMA overlapping [start, end).
+  * Tracks the last node whose vm_start <= start (the predecessor of start);
+  * if it does not reach start, the in-order successor is the only other candidate.
   */
  struct vma_struct* rbtree_find_overlap(struct rb_node *root, uintptr_t start, uintptr_t end) {
      struct rb_node *node = root;
-     struct vma_struct *candidate = NULL; // Most recent node visited
- 
-     // Find the node <= start address (potential overlap start)
+     struct rb_node *pred = NULL;
+
      while (node) {
-         candidate = rb_entry(node, vma_struct_t, rb_node);
-         if (start < candidate->vm_start) {
-              // Interval starts before this node, potential overlap could be here or left
-              node = node->left;
-         } else if (start >= candidate->vm_end) {
-              // Interval starts after this node, must go right
-              node = node->right;
+         vma_struct_t *v = rb_entry(node, vma_struct_t, rb_node);
+         if (start >= v->vm_start) {
+             pred = node;
+             node = node->right;
          } else {
-             // start is within candidate: definite overlap
-             return candidate;
+             node = node->left;
          }
      }
- 
-     // If loop finished, 'candidate' is the node with the largest start address <= 'start'
-     // (or NULL if tree is empty or start is before the first node).
-     // Check if this candidate actually overlaps [start, end).
-     if (candidate && candidate->vm_end > start) {
-         return candidate;
+
+     if (pred) {
+         vma_struct_t *v = rb_entry(pred, vma_struct_t, rb_node);
+         if (v->vm_end > start)
+             return v;
      }
- 
-     // If candidate didn't overlap, check its successor if it exists.
-     // The successor is the node with the smallest start address > candidate->vm_start.
-     // If this successor's start address is less than 'end', it overlaps.
-     if (candidate) {
-          struct rb_node* next_node_ptr = rb_node_next(&candidate->rb_node);
-          if (next_node_ptr) {
-               struct vma_struct* next_vma = rb_entry(next_node_ptr, vma_struct_t, rb_node);
-               if (next_vma->vm_start < end) {
-                    return next_vma; // Successor overlaps
-               }
-          }
-     } else {
-          // If no candidate found initially (start < first node), check the very first node
-          struct rb_node* first_node_ptr = root ? rb_node_minimum(root) : NULL;
-          if (first_node_ptr) {
-               struct vma_struct* first_vma = rb_entry(first_node_ptr, vma_struct_t, rb_node);
-               if (first_vma->vm_start < end) {
-                    return first_vma; // First node overlaps
-               }
-          }
+
+     struct rb_node *succ = pred ? rb_node_next(pred) : (root ? rb_node_minimum(root) : NULL);
+     if (succ) {
+         vma_struct_t *v = rb_entry(succ, vma_struct_t, rb_node);
+         if (v->vm_start < end)
+             return v;
      }
- 
- 
-     return NULL; // No overlap found
+     return NULL;
  }
- 
- 
+
+
+ /**
+  * Finds the VMA with the lowest vm_start greater than addr.
+  */
+ struct vma_struct* rbtree_find_first_above(struct rb_node *root, uintptr_t addr) {
+     struct vma_struct *best = NULL;
+     for (struct rb_node *node = root; node;) {
+         vma_struct_t *v = rb_entry(node, vma_struct_t, rb_node);
+         if (v->vm_start > addr) {
+             best = v;
+             node = node->left;
+         } else {
+             node = node->right;
+         }
+     }
+     return best;
+ }
+
+
  // --- Traversal Implementation ---
  
  /**
@@ -463,21 +443,4 @@
   */
  void rbtree_postorder_traverse(struct rb_node *root, rbtree_visit_func visit, void *data) {
      rbtree_postorder_recursive(root, visit, data);
- }
- 
- 
- // --- Initialization for VMA Nodes ---
- // (This could arguably be in mm.c, but keep it with RB logic for now)
- 
- /**
-  * Initializes the RB node part within a VMA structure.
-  */
- void rbtree_node_init(struct vma_struct *vma_node) {
-      // Parent/Color, Left, Right are typically zeroed/nulled by rbtree_insert_at
-      // or should be explicitly set there. This function might not be strictly needed
-      // if rbtree_insert_at handles initialization.
-      // If needed:
-      // vma_node->rb_node.parent_color = 0; // NULL parent, Red color initially
-      // vma_node->rb_node.left = NULL;
-      // vma_node->rb_node.right = NULL;
  }

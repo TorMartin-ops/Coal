@@ -1,61 +1,27 @@
 /**
  * @file paging_early.h
- * @brief Early boot paging initialization
+ * @brief Boot-time memory bring-up.
  */
-
-#ifndef COAL_MEMORY_PAGING_EARLY_H
-#define COAL_MEMORY_PAGING_EARLY_H
+#ifndef PAGING_EARLY_H
+#define PAGING_EARLY_H
 
 #include <kernel/core/types.h>
-#include <kernel/core/error.h>
 
 /**
- * @brief Initialize a new page directory for early boot
- * @param out_pd_phys Output physical address of the page directory
- * @return 0 on success, negative error code on failure
+ * Bring up all of memory management while paging is still off.
+ *
+ * Builds the kernel page directory (identity map, direct map of the heap,
+ * pre-allocated kernel stack tables), enables paging, then starts the frame
+ * allocator on whatever part of the heap the boot page tables did not use,
+ * and finally kmalloc. Halts the machine on failure.
+ *
+ * @param heap_phys  start of the largest usable RAM region (not overlapping the
+ *                   kernel image or the boot info)
+ * @param heap_size  its size in bytes (at most 256 MiB is used)
  */
-int paging_initialize_directory(uintptr_t* out_pd_phys);
+void memory_init(uintptr_t heap_phys, size_t heap_size);
 
-/**
- * @brief Set up early memory mappings (identity, kernel, heap)
- * @param page_directory_phys Physical address of page directory
- * @param kernel_phys_start Physical start of kernel
- * @param kernel_phys_end Physical end of kernel
- * @param heap_phys_start Physical start of heap
- * @param heap_size Size of heap
- * @return 0 on success, negative error code on failure
- */
-int paging_setup_early_maps(uintptr_t page_directory_phys,
-                            uintptr_t kernel_phys_start, 
-                            uintptr_t kernel_phys_end,
-                            uintptr_t heap_phys_start, 
-                            size_t heap_size);
+/** No-op kept for older callers: temporary mappings are not needed any more. */
+static inline int paging_temp_map_init(void) { return 0; }
 
-/**
- * @brief Finalize paging setup and activate
- * @param page_directory_phys Physical address of page directory
- * @param total_memory_bytes Total system memory
- * @return 0 on success, negative error code on failure
- */
-int paging_finalize_and_activate(uintptr_t page_directory_phys, 
-                                 uintptr_t total_memory_bytes);
-
-/**
- * @brief Allocate a physical frame during early boot
- * @return Physical address of allocated frame or 0 on failure
- */
-uintptr_t paging_alloc_early_frame_physical(void);
-
-/**
- * @brief Check and enable PSE (Page Size Extension) if supported
- * @return true if PSE is supported and enabled
- */
-bool check_and_enable_pse(void);
-
-/**
- * @brief Check and enable NX (No-Execute) bit if supported
- * @return true if NX is supported and enabled
- */
-bool check_and_enable_nx(void);
-
-#endif // COAL_MEMORY_PAGING_EARLY_H
+#endif /* PAGING_EARLY_H */

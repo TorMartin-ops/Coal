@@ -114,7 +114,6 @@ void scheduler_init(void) {
     uint8_t *stack = kmalloc(IDLE_STACK_SIZE);
 
     if (!stack) KERNEL_PANIC_HALT("no memory for the idle stack");
-    process_kstack_init();
     idle_pcb.task.process = &idle_pcb;
     idle_pcb.task.priority = SCHED_IDLE_PRIORITY;
     idle_pcb.kernel_stack_vaddr_top = (uint32_t *)(stack + IDLE_STACK_SIZE - 16);

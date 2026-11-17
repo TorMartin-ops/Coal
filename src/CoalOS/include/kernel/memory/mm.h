@@ -1,139 +1,104 @@
-// Include Guard
+/**
+ * @file mm.h
+ * @brief Per-process address spaces: VMAs, demand paging, copy-on-write.
+ *
+ * A VMA describes a page-aligned user range [vm_start, vm_end) with
+ * permissions. Pages are mapped lazily: the first touch of an anonymous page
+ * allocates a zeroed frame. File-backed VMAs are not implemented (their faults
+ * are rejected). VMAs never overlap and never cover the first 4 MiB or kernel
+ * space. Functions taking an mm lock mm->lock themselves.
+ *
+ * Return values: 0 or a positive result on success, negative errno on failure.
+ */
 #ifndef MM_H
 #define MM_H
 
 #include <kernel/core/types.h>
-#include <kernel/memory/paging.h>     // Include for PAGE_SIZE, KERNEL_SPACE_VIRT_START etc.
+#include <kernel/memory/paging.h>
 #include <kernel/sync/spinlock.h>
-#include <kernel/fs/vfs/vfs.h>        // Include for file_t definition used in vma_struct
-#include <kernel/lib/rbtree.h>     // Include for rb_node and rb_tree definitions
+#include <kernel/fs/vfs/vfs.h>
+#include <kernel/lib/rbtree.h>
 
-// Define temporary mapping address if not already defined elsewhere (e.g., paging.h)
-#ifndef TEMP_MAP_ADDR_PF
-#define TEMP_MAP_ADDR_PF (KERNEL_SPACE_VIRT_START - 5u * PAGE_SIZE) // Example address
-#endif
+#define VM_READ         0x00000001
+#define VM_WRITE        0x00000002
+#define VM_EXEC         0x00000004
+#define VM_SHARED       0x00000008
+#define VM_GROWS_DOWN   0x00000010  /* stack: grows towards lower addresses on demand */
+#define VM_ANONYMOUS    0x00000020
+#define VM_FILEBACKED   0x00000040
+#define VM_USER         0x00000080
+#define VM_HEAP         0x00000100
+#define VM_STACK        0x00000200
 
+#define MM_STACK_MAX    (8u * 1024 * 1024)      /* a VM_GROWS_DOWN VMA may grow to this size */
+#define MM_BRK_MAX      (256u * 1024 * 1024)
+#define MM_MMAP_BASE    0x40000000u             /* anonymous mmap placement window */
+#define MM_MMAP_LIMIT   0xB0000000u
 
-// --- Virtual Memory Area (VMA) Flags ---
-// Permissions
-#define VM_READ         0x00000001  // VMA is readable
-#define VM_WRITE        0x00000002  // VMA is writable
-#define VM_EXEC         0x00000004  // VMA is executable
-// Sharing/Type
-#define VM_SHARED       0x00000008  // VMA is shared (changes visible to others mapping same object)
-#define VM_PRIVATE      0x00000000  // VMA is private (default, implies Copy-on-Write if writable)
-// Behavior
-#define VM_GROWS_DOWN   0x00000010  // VMA is a stack that grows downwards
-#define VM_ANONYMOUS    0x00000020  // VMA is not backed by a file (e.g., heap, stack, anonymous mmap)
-#define VM_FILEBACKED   0x00000040  // VMA is backed by a file
-#define VM_USER         0x00000080  // VMA is accessible by user mode (redundant with PAGE_USER?)
-
-// --- ADDED VMA Type Flags (Example bits) ---
-#define VM_HEAP         0x00000100  // VMA represents the process heap (managed by brk/sbrk)
-#define VM_STACK        0x00000200  // VMA represents a stack region
-
-// Add more flags as needed (e.g., VM_LOCKED, VM_IO, VM_GUARD)
-
-
-/**
- * @brief Virtual Memory Area (VMA) structure.
- * Represents a contiguous range of virtual addresses with specific properties.
- */
 typedef struct vma_struct {
-    uintptr_t vm_start;         // Start virtual address (inclusive, page-aligned)
-    uintptr_t vm_end;           // End virtual address (exclusive, page-aligned)
-    uint32_t vm_flags;          // Flags describing the VMA (VM_READ, VM_WRITE, etc.)
-    uint32_t page_prot;         // Page protection flags (PTE flags: PAGE_PRESENT, PAGE_RW, PAGE_USER, PAGE_NX_BIT etc.)
-    file_t* vm_file;            // File backing the VMA (NULL for anonymous)
-    size_t vm_offset;           // Offset within the backing file (in bytes)
-    struct rb_node rb_node;     // Node for Red-Black tree linkage
-    struct mm_struct *vm_mm;    // Pointer back to the owning mm_struct
+    uintptr_t vm_start;         /* inclusive, page aligned */
+    uintptr_t vm_end;           /* exclusive, page aligned */
+    uint32_t vm_flags;
+    uint32_t page_prot;         /* PTE flags, derived from vm_flags */
+    file_t *vm_file;            /* unused: file-backed VMAs are not implemented */
+    size_t vm_offset;
+    struct rb_node rb_node;
+    struct mm_struct *vm_mm;
 } vma_struct_t;
 
-/**
- * @brief Memory Management structure for a process.
- * Contains the VMA tree, page directory pointer, and other memory-related info.
- */
 typedef struct mm_struct {
-    struct rb_tree vma_tree;    // Red-Black tree organizing VMAs for efficient lookup
-    uint32_t *pgd_phys;         // Physical address of the process's page directory
-    spinlock_t lock;            // Lock protecting this mm_struct (especially the VMA tree)
-    int map_count;              // Number of VMAs in the tree
-
-    // Optional fields for tracking specific memory regions
-    uintptr_t start_code, end_code; // Virtual address range of executable code
-    uintptr_t start_data, end_data; // Virtual address range of initialized data
-    uintptr_t start_brk, end_brk;   // Current program break (heap boundary)
-    uintptr_t start_stack;          // Base address of the main user stack VMA
-    // Add other fields as needed (e.g., arg_start, env_start)
+    struct rb_tree vma_tree;    /* ordered by vm_start */
+    uint32_t *pgd_phys;         /* physical address of the page directory */
+    spinlock_t lock;            /* protects the VMA tree */
+    int map_count;
+    uintptr_t start_code, end_code;
+    uintptr_t start_data, end_data;
+    uintptr_t start_brk, end_brk;   /* program break (see mm_brk()) */
+    uintptr_t start_stack;
 } mm_struct_t;
 
-// --- Function Signatures ---
+/** New empty address space around an existing page directory. */
+mm_struct_t *create_mm(uint32_t *pgd_phys);
 
-/**
- * @brief Creates and initializes a new mm_struct.
- * @param pgd_phys Physical address of the process's page directory.
- * @return Pointer to the new mm_struct, or NULL on allocation failure.
- */
-mm_struct_t *create_mm(uint32_t* pgd_phys);
-
-/**
- * @brief Destroys an mm_struct and frees associated resources.
- * This includes freeing all VMAs, unmapping user pages, freeing associated
- * physical frames and page tables (unless shared).
- * @param mm Pointer to the mm_struct to destroy.
- */
+/** Free all VMAs, user pages and user page tables and the mm itself. The page
+ *  directory frame is not freed; its owner releases it with put_frame(). */
 void destroy_mm(mm_struct_t *mm);
 
-/**
- * @brief Finds the VMA that contains a given virtual address.
- * @param mm Pointer to the process's mm_struct.
- * @param addr The virtual address to look up.
- * @return Pointer to the vma_struct containing the address, or NULL if not found.
- */
+/** VMA containing addr, or NULL. */
 vma_struct_t *find_vma(mm_struct_t *mm, uintptr_t addr);
 
-/**
- * @brief Inserts a new VMA into the process's address space.
- * Handles merging with adjacent compatible VMAs if possible.
- * @param mm Pointer to the process's mm_struct.
- * @param start Start virtual address (page-aligned).
- * @param end End virtual address (page-aligned, exclusive).
- * @param vm_flags Flags for the new VMA.
- * @param page_prot Page protection flags for the underlying pages.
- * @param file File backing the VMA (NULL for anonymous).
- * @param offset Offset within the file (if file-backed).
- * @return Pointer to the newly created or merged vma_struct on success, NULL on failure (e.g., overlap, allocation failure).
- */
-vma_struct_t* insert_vma(mm_struct_t *mm, uintptr_t start, uintptr_t end,
+/** Add a VMA. start and end must be page aligned with start < end and lie in
+ *  [4 MiB, KERNEL_SPACE_VIRT_START). page_prot is ignored (derived from
+ *  vm_flags; kept for source compatibility). NULL on overlap, bad range or OOM. */
+vma_struct_t *insert_vma(mm_struct_t *mm, uintptr_t start, uintptr_t end,
                          uint32_t vm_flags, uint32_t page_prot,
-                         file_t* file, size_t offset);
+                         file_t *file, size_t offset);
 
-/**
- * @brief Removes/modifies VMAs overlapping a given range.
- * Unmaps pages and frees corresponding physical frames (if not shared).
- * Requires complex RB Tree manipulation (splitting/removing nodes).
- * Used for operations like munmap.
- *
- * @param mm Pointer to the process's mm_struct_t.
- * @param start Start virtual address (page aligned).
- * @param length Length of the range (must be > 0).
- * @return 0 on success, negative error code on failure.
- */
-int remove_vma_range(mm_struct_t *mm, uintptr_t start, size_t length); // <-- Added for munmap
+/** munmap: unmap and free [start, start+length), splitting or trimming VMAs. */
+int remove_vma_range(mm_struct_t *mm, uintptr_t start, size_t length);
 
-/**
- * @brief Handles a page fault within the context of a VMA.
- * Implements demand paging (allocating/mapping frames for anonymous or file-backed pages)
- * and Copy-on-Write (COW) for private writable mappings.
- *
- * @param mm The process's memory structure.
- * @param vma The VMA covering the faulting address.
- * @param address The exact virtual address that caused the fault.
- * @param error_code The page fault error code provided by the CPU.
- * @return 0 if the fault was handled successfully, negative error code otherwise.
- */
-int handle_vma_fault(mm_struct_t *mm, vma_struct_t *vma, uintptr_t address, uint32_t error_code);
+/** Move the program break (Linux brk semantics). new_brk == 0 queries.
+ *  @return the resulting break; unchanged if the request could not be met. */
+uintptr_t mm_brk(mm_struct_t *mm, uintptr_t new_brk);
 
+/** Create an anonymous mapping of len bytes. hint is used if that range is free.
+ *  @return the address, or -ENOMEM / -EINVAL. */
+intptr_t mm_mmap_anon(mm_struct_t *mm, uintptr_t hint, size_t len, uint32_t vm_flags);
 
-#endif // MM_H
+/** Resolve a page fault in a user address space: demand-zero page, stack
+ *  growth, copy-on-write.
+ *  @return VM_FAULT_OK, VM_FAULT_SEGV or VM_FAULT_OOM (paging_fault.h). */
+int mm_fault(mm_struct_t *mm, uintptr_t addr, uint32_t error_code);
+
+/** Check that [addr, addr+len) is covered by VMAs allowing the access. With
+ *  populate, also faults every page in (and breaks copy-on-write for writes) so
+ *  that the kernel can then touch it without taking a page fault. */
+bool mm_access_ok(mm_struct_t *mm, uintptr_t addr, size_t len, bool write, bool populate);
+
+/** Duplicate an address space for fork: new page directory with copy-on-write
+ *  pages (paging_clone_directory) and copies of all VMAs and brk/stack fields.
+ *  The child's pgd_phys is owned by the caller (release with put_frame() after
+ *  destroy_mm()). NULL on failure; the parent is unchanged. */
+mm_struct_t *dup_mm(mm_struct_t *parent);
+
+#endif /* MM_H */

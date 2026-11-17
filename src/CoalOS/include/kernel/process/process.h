@@ -49,7 +49,6 @@ typedef struct pcb {
     uint32_t cmdline_len;
 
     uint32_t *kernel_stack_vaddr_top;
-    uintptr_t kstack_frames[KSTACK_PAGES];
 } pcb_t;
 
 pcb_t *get_current_process(void);
