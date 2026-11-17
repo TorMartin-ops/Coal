@@ -13,6 +13,7 @@
 #include <kernel/lib/string.h>
 #include <kernel/lib/assert.h>
 #include <kernel/memory/kmalloc.h>
+#include <kernel/memory/frame.h>
 
 _Static_assert(TIMER_HZ == 1000, "sleep_ms assumes a 1 kHz tick");
 
@@ -109,7 +110,8 @@ void yield(void) {
 static void idle_loop(void) {
     for (;;) {
         process_reap_orphans();
-        asm volatile("sti; hlt");
+        if (!frame_refill_zeroed())
+            asm volatile("sti; hlt");
     }
 }
 

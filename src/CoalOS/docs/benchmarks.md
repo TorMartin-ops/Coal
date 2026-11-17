@@ -67,3 +67,27 @@ instructions on syscall, pipe, mmap and fork paths) and 64 bytes less kernel tex
 | pipe_rw_1b (ns) | 1814.9 | 1800.9 |
 | fork_exit_wait (ns) | 52114.9 | 52071.1 |
 | open_close (ns) | 11915.4 | 11877.3 |
+
+### Frame reference counts without a lock; page tables copied without clearing
+
+`get_frame`/`put_frame` change the count with one `lock xaddw` instead of a spinlock with interrupt
+save/restore (fork touches one count per mapped page in both directions). `paging_clone_directory` no longer
+clears the new page table before filling it: every entry is written, and the table is published only when full.
+fork_exit_wait 52071 -> 50072 ns (icount), fork_exec_wait 119877 -> 119246.
+
+### Pre-zeroed frame pool
+
+The idle loop zeroes one frame at a time into a pool of 32 (`frame_refill_zeroed`); `frame_alloc*_zeroed`
+(demand-zero faults, page tables) take from it and fall back to clearing the frame themselves. The pool is
+bounded (128 KiB), counts as free in `/proc/meminfo`, is refilled only while the buddy allocator holds more than
+256 pages, and is drained by ordinary allocations when memory runs out. MemFree after boot is identical with and
+without it (127272 kB of 129168 kB at 128 MiB). An empty pool costs one load on the allocation path.
+New benchmark `page_fault_idle`: 16 first-touch faults right after a 10 ms sleep.
+
+| test | pool off | pool on |
+|------|----------|---------|
+| page_fault_idle (ns) | 1700.1 | 357.9 |
+| page_fault (ns), back-to-back, pool empty | 1634.6 (lock on every call) | 1594.6 |
+
+A throughput loop never idles, so `page_fault` itself cannot gain; the pool pays off for bursts that follow idle
+time (shell commands, program start-up).

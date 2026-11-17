@@ -16,7 +16,7 @@
 /** Lowmem frame with reference count 1, contents undefined. Returns its physical address, or 0 when out of memory. */
 uintptr_t frame_alloc(void);
 
-/** Same, zero-filled. */
+/** Same, zero-filled (from the pre-zeroed pool when it has one). */
 uintptr_t frame_alloc_zeroed(void);
 
 /** User-data frame (highmem preferred), contents undefined. */
@@ -24,6 +24,13 @@ uintptr_t frame_alloc_user(void);
 
 /** Same, zero-filled. */
 uintptr_t frame_alloc_user_zeroed(void);
+
+/** Idle-time work: zero one more frame for the pool that frame_alloc*_zeroed() draws from.
+ *  Returns false when the pool is full or memory is short, true if it did something. */
+bool frame_refill_zeroed(void);
+
+/** Frames waiting in the zeroed pool in a zone (they count as free memory). */
+size_t frame_pool_pages(unsigned zone);
 
 /** Copy one frame to another; either may be highmem. */
 void frame_copy(uintptr_t dst, uintptr_t src);
