@@ -68,7 +68,7 @@ static const syscall_fn_t syscall_table[NR_SYSCALLS] = {
     [SYS_GETEUID32]       = SC(sc_zero),
     [SYS_GETEGID32]       = SC(sc_zero),
     [SYS_GETDENTS64]      = SC(sc_getdents64),
-    [SYS_GETTID]          = SC(sc_gettid),
+    [SYS_GETTID]          = SC(sc_getpid),
     [SYS_SET_THREAD_AREA] = SC(sc_set_thread_area),
     [SYS_EXIT_GROUP]      = SC(sc_exit),
     [SYS_SET_TID_ADDRESS] = SC(sc_set_tid_address),
@@ -76,19 +76,24 @@ static const syscall_fn_t syscall_table[NR_SYSCALLS] = {
     [SYS_OPENAT]          = SC(sc_openat),
     [SYS_FSTATAT64]       = SC(sc_fstatat64),
     [SYS_PIPE2]           = SC(sc_pipe2),
+    [SYS_MOUNT]           = SC(sc_mount),
+    [SYS_UTIME]           = SC(sc_utime),
+    [SYS_SYNC]            = SC(sc_sync),
+    [SYS_RENAME]          = SC(sc_rename),
+    [SYS_UMOUNT2]         = SC(sc_umount2),
+    [SYS_REBOOT]          = SC(sc_reboot),
+    [SYS_SYSLOG]          = SC(sc_syslog),
+    [SYS_POLL]            = SC(sc_poll),
+    [SYS_RT_SIGRETURN]    = SC(sc_rt_sigreturn),
+    [SYS_FCNTL64]         = SC(sc_fcntl64),
 };
 
 void syscall_dispatch(isr_frame_t *r) {
     uint32_t nr = r->eax;
     syscall_fn_t fn = nr < NR_SYSCALLS ? syscall_table[nr] : NULL;
 
-    if (fn)
-        r->eax = (uint32_t)fn(r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp, r);
-    else if (nr == SYS_READ_TERMINAL_LINE)
-        r->eax = (uint32_t)sc_read_terminal_line(r->ebx, r->ecx);
-    else
-        r->eax = (uint32_t)-ENOSYS;
-    serial_printf("SC nr=%u a=%x b=%x c=%x -> %d\n", nr, r->ebx, r->ecx, r->edx, (int)r->eax);
+    r->eax = fn ? (uint32_t)fn(r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp, r) : (uint32_t)-ENOSYS;
+    signal_deliver(r);
 }
 
 void syscall_init(void) {

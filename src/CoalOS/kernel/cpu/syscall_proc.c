@@ -5,7 +5,6 @@
 
 #include "syscall_internal.h"
 #include <kernel/process/scheduler.h>
-#include <kernel/process/signal.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/lib/string.h>
 
@@ -13,17 +12,14 @@
 #define RUSAGE_SIZE 72                  /* struct rusage on i386 */
 
 long sc_exit(uint32_t code) {
-    pcb_t *p = get_current_process();
-
-    process_close_fds(p);
-    process_exit_with_status(p, (code & 0xff) << 8);    /* Linux wait status layout */
-    remove_current_task_with_code(code & 0xff);
-    return 0;                                           /* not reached */
+    process_exit(PROC_EXITCODE(code));
 }
 
 long sc_fork(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, isr_frame_t *regs) {
     (void)a; (void)b; (void)c; (void)d; (void)e; (void)f;
-    return process_fork(regs);
+    int pid = process_fork(regs);
+    if (pid > 0) pstate_fork(pid);
+    return pid;
 }
 
 long sc_execve(uint32_t path, uint32_t argv, uint32_t envp, uint32_t d, uint32_t e, uint32_t f, isr_frame_t *regs) {
@@ -31,42 +27,34 @@ long sc_execve(uint32_t path, uint32_t argv, uint32_t envp, uint32_t d, uint32_t
     struct exec_args args;
     (void)d; (void)e; (void)f;
 
-    long err = copy_path_from_user((const char *)path, kpath, sizeof(kpath));
+    long err = user_path(path, kpath, sizeof(kpath));
     if (err) return err;
     err = exec_args_copy(argv, envp, &args);
     if (err) return err;
 
-    err = process_execve(kpath, args.argv, args.envp, regs);
+    err = process_execve(kpath, (const char *const *)args.argv, (const char *const *)args.envp, regs);
     exec_args_free(&args);
+    if (err == 0) {
+        pstate_exec(pstate_current());
+        return regs->eax;               /* the new image's initial eax */
+    }
     return err;
 }
 
 long sc_wait4(int32_t pid, uint32_t ustatus, uint32_t options, uint32_t rusage) {
-    pcb_t *p = get_current_process();
-    int want = pid > 0 ? pid : -1;      /* process groups are not tracked: 0 and < -1 mean any child */
+    int status = 0;
 
     if (options & ~(uint32_t)(WNOHANG | WUNTRACED)) return -EINVAL;
-    if (ustatus && !access_ok(VERIFY_WRITE, (void *)ustatus, sizeof(int))) return -EFAULT;
-    if (rusage) {
+    if (ustatus && !access_ok(VERIFY_WRITE, (void *)ustatus, sizeof(status))) return -EFAULT;
+
+    long r = process_waitpid(pid, &status, options & WNOHANG);
+    if (r > 0 && ustatus && copy_to_user((void *)ustatus, &status, sizeof(status)) != 0)
+        return -EFAULT;
+    if (r > 0 && rusage) {
         char zero[RUSAGE_SIZE] = {0};
         if (copy_to_user((void *)rusage, zero, sizeof(zero)) != 0) return -EFAULT;
     }
-
-    for (;;) {
-        int status = 0;
-        int reaped = process_reap_child(p, want, &status);
-
-        if (reaped > 0) {
-            if (ustatus)
-                copy_to_user((void *)ustatus, &status, sizeof(status));   /* checked above */
-            return reaped;
-        }
-        if (want > 0 ? !process_find_child(p, want) : !p->children)
-            return -ECHILD;
-        if (options & WNOHANG)
-            return 0;
-        yield();                        /* children exist but none has exited yet */
-    }
+    return r;
 }
 
 long sc_waitpid(int32_t pid, uint32_t status, uint32_t options) {
@@ -74,16 +62,10 @@ long sc_waitpid(int32_t pid, uint32_t status, uint32_t options) {
 }
 
 long sc_kill(int32_t pid, uint32_t sig) {
-    pcb_t *p = get_current_process();
-
-    if (pid <= 0) return -ENOSYS;                       /* process groups */
-    if (sig >= SIGNAL_MAX) return -EINVAL;
-    if (sig == 0) return process_get_by_pid(pid) ? 0 : -ESRCH;
-    return signal_send(pid, sig, p->pid);
+    return process_kill(pid, sig);
 }
 
 long sc_getpid(void)  { return get_current_process()->pid; }
-long sc_gettid(void)  { return get_current_process()->pid; }
 long sc_getppid(void) { return get_current_process()->ppid; }
 
 long sc_sched_yield(void) {
@@ -97,14 +79,14 @@ long sc_sched_yield(void) {
 
 static pcb_t *target_process(uint32_t pid) {
     pcb_t *p = get_current_process();
-    return pid == 0 || pid == p->pid ? p : process_get_by_pid(pid);
+    return pid == 0 || pid == p->pid ? p : process_find(pid);
 }
 
 long sc_setsid(void) { return process_setsid(get_current_process()); }
 
 long sc_getsid(uint32_t pid) {
     pcb_t *t = target_process(pid);
-    return t ? (long)process_getsid(t) : -ESRCH;
+    return t ? (long)t->sid : -ESRCH;
 }
 
 long sc_setpgid(uint32_t pid, uint32_t pgid) {
@@ -114,7 +96,7 @@ long sc_setpgid(uint32_t pid, uint32_t pgid) {
 
 long sc_getpgid(uint32_t pid) {
     pcb_t *t = target_process(pid);
-    return t ? (long)process_getpgid(t) : -ESRCH;
+    return t ? (long)t->pgid : -ESRCH;
 }
 
-long sc_getpgrp(void) { return process_getpgid(get_current_process()); }
+long sc_getpgrp(void) { return get_current_process()->pgid; }

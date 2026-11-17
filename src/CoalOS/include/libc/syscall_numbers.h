@@ -63,6 +63,16 @@
 #define SYS_GETEGID32       202
 #define SYS_GETDENTS64      220
 #define SYS_GETTID          224
+#define SYS_MOUNT           21
+#define SYS_UTIME           30
+#define SYS_SYNC            36
+#define SYS_RENAME          38
+#define SYS_UMOUNT2         52
+#define SYS_REBOOT          88
+#define SYS_SYSLOG          103
+#define SYS_POLL            168
+#define SYS_RT_SIGRETURN    173
+#define SYS_FCNTL64         221
 #define SYS_SET_THREAD_AREA 243
 #define SYS_EXIT_GROUP      252
 #define SYS_SET_TID_ADDRESS 258
@@ -70,8 +80,5 @@
 #define SYS_OPENAT          295
 #define SYS_FSTATAT64       300
 #define SYS_PIPE2           331
-
-/* Coal-only calls live far above the Linux range. */
-#define SYS_READ_TERMINAL_LINE 0x1001
 
 #endif /* LIBC_SYSCALL_NUMBERS_H */

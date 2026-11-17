@@ -1,26 +1,26 @@
 /**
  * @file syscall_misc.c
- * @brief Time, identity, signals and thread-area system calls.
+ * @brief Time, identity, thread area, reboot and syslog system calls.
  */
 
 #include "syscall_internal.h"
 #include <kernel/cpu/gdt.h>
 #include <kernel/drivers/timer/pit.h>
 #include <kernel/process/scheduler.h>
-#include <kernel/process/signal.h>
+#include <kernel/lib/port_io.h>
+#include <kernel/memory/kmalloc.h>
 #include <kernel/lib/string.h>
 
 #define NSEC_PER_SEC 1000000000u
 #define TLS_ENTRY    (GDT_TLS_SELECTOR >> 3)
 #define LIMIT_IN_PAGES 0x10             /* user_desc.flags bit 4 */
-#define KSIGSET_SIZE   8                /* bytes in the kernel sigset_t */
 
 //============================================================================
 // Time: wall clock = RTC time at boot + uptime
 //============================================================================
 
 static void uptime(uint32_t *sec, uint32_t *msec) {
-    uint32_t ms = get_pit_ticks() / (TARGET_FREQUENCY / 1000);
+    uint32_t ms = (uint32_t)timer_uptime_ms();
     *sec = ms / 1000;
     *msec = ms % 1000;
 }
@@ -97,7 +97,7 @@ long sc_uname(uint32_t ubuf) {
 long sc_zero(void) { return 0; }        /* uid, gid, euid, egid: single-user system, always root */
 
 //============================================================================
-// Thread area and signals (minimal, for static libc start-up)
+// Thread area (minimal, for static libc start-up)
 //============================================================================
 
 /* One TLS descriptor; libc loads GDT_TLS_SELECTOR into %gs. */
@@ -119,39 +119,43 @@ long sc_set_tid_address(uint32_t ptr) {
     return get_current_process()->pid;
 }
 
-long sc_rt_sigaction(uint32_t sig, uint32_t uact, uint32_t uoact, uint32_t size) {
-    pcb_t *p = get_current_process();
-    struct linux_sigaction act;
+//============================================================================
+// reboot, syslog
+//============================================================================
 
-    if (size != KSIGSET_SIZE || sig == 0 || sig >= SIGNAL_MAX) return -EINVAL;
-    if (uact) {
-        if (sig == SIGKILL || sig == SIGSTOP) return -EINVAL;
-        if (copy_from_user(&act, (const void *)uact, sizeof(act)) != 0) return -EFAULT;
+long sc_reboot(uint32_t magic1, uint32_t magic2, uint32_t cmd) {
+    (void)magic2;
+    if (magic1 != LINUX_REBOOT_MAGIC1) return -EINVAL;
+
+    switch (cmd) {
+    case LINUX_REBOOT_CMD_POWER_OFF:
+    case LINUX_REBOOT_CMD_HALT:
+        vfs_sync();
+        outw(0x604, 0x2000);            /* QEMU ACPI PM1a */
+        outw(0xB004, 0x2000);           /* Bochs / old QEMU */
+        for (;;) __asm__ volatile("cli; hlt");
+    case LINUX_REBOOT_CMD_RESTART:
+        vfs_sync();
+        outb(0x64, 0xFE);               /* pulse the CPU reset line through the keyboard controller */
+        for (;;) __asm__ volatile("cli; hlt");
+    default:
+        return -EINVAL;
     }
-    if (uoact) {
-        struct linux_sigaction old = { .handler = (uint32_t)(uintptr_t)p->signal_handlers[sig - 1] };
-        if (copy_to_user((void *)uoact, &old, sizeof(old)) != 0) return -EFAULT;
-    }
-    if (uact)
-        signal_register_handler(p, sig, (void *)(uintptr_t)act.handler, act.flags);
-    return 0;
 }
 
-long sc_rt_sigprocmask(uint32_t how, uint32_t uset, uint32_t uoset, uint32_t size) {
-    pcb_t *p = get_current_process();
-    uint32_t set = 0, old;
+long sc_syslog(uint32_t type, uint32_t ubuf, uint32_t len) {
+    if (type == SYSLOG_ACTION_SIZE_BUFFER) return klog_ring_size();
+    if (type == SYSLOG_ACTION_CLEAR) { klog_ring_clear(); return 0; }
+    if (type != SYSLOG_ACTION_READ_ALL && type != SYSLOG_ACTION_READ_CLEAR) return -EINVAL;
 
-    if (size != KSIGSET_SIZE) return -EINVAL;
-    if (uset && copy_from_user(&set, (const void *)uset, sizeof(set)) != 0) return -EFAULT;
-    if (uset) {
-        int r = signal_mask_change(p, how, set, &old);
-        if (r) return r;
-    } else {
-        old = p->signal_mask;
-    }
-    if (uoset) {
-        uint32_t out[2] = { old, 0 };
-        if (copy_to_user((void *)uoset, out, sizeof(out)) != 0) return -EFAULT;
-    }
-    return 0;
+    size_t size = klog_ring_size();
+    if (len < size) size = len;
+    char *kbuf = kmalloc(size ? size : 1);
+    if (!kbuf) return -ENOMEM;
+
+    long n = klog_ring_copy(kbuf, size);            /* the most recent bytes */
+    if (copy_to_user((void *)ubuf, kbuf, n) != 0) n = -EFAULT;
+    kfree(kbuf);
+    if (n >= 0 && type == SYSLOG_ACTION_READ_CLEAR) klog_ring_clear();
+    return n;
 }

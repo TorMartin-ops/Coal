@@ -16,13 +16,10 @@
 #endif
 
 #define AT_FDCWD        (-100)
-#define PATH_MAX_SYS    4096            /* Linux PATH_MAX */
+#define PATH_MAX_SYS    1024            /* longest path accepted; kernel stacks are small */
 
 /* open(2) flags beyond the access mode live in <kernel/fs/vfs/sys_file.h> */
 #define LINUX_O_CLOEXEC 02000000
-
-/* wait4 options */
-#define WNOHANG         1
 
 /* mmap */
 #define PROT_READ       1
@@ -32,10 +29,6 @@
 #define MAP_PRIVATE     0x02
 #define MAP_FIXED       0x10
 #define MAP_ANONYMOUS   0x20
-
-/* ioctl */
-#define TCGETS          0x5401
-#define TIOCGWINSZ      0x5413
 
 #define CLOCK_REALTIME  0
 #define CLOCK_MONOTONIC 1
@@ -47,43 +40,7 @@ struct linux_utsname {
     char sysname[65], nodename[65], release[65], version[65], machine[65], domainname[65];
 };
 
-/* struct stat64 of the i386 kernel ABI (96 bytes). */
-struct linux_stat64 {
-    uint64_t st_dev;
-    uint8_t  __pad0[4];
-    uint32_t __st_ino;
-    uint32_t st_mode;
-    uint32_t st_nlink;
-    uint32_t st_uid;
-    uint32_t st_gid;
-    uint64_t st_rdev;
-    uint8_t  __pad3[4];
-    int64_t  st_size;
-    uint32_t st_blksize;
-    uint64_t st_blocks;
-    uint32_t st_atime_sec, st_atime_nsec;
-    uint32_t st_mtime_sec, st_mtime_nsec;
-    uint32_t st_ctime_sec, st_ctime_nsec;
-    uint64_t st_ino;
-} __attribute__((packed));
-
-struct linux_dirent64 {
-    uint64_t d_ino;
-    int64_t  d_off;
-    uint16_t d_reclen;
-    uint8_t  d_type;
-    char     d_name[];
-} __attribute__((packed));
-
 struct linux_iovec { uint32_t iov_base; uint32_t iov_len; };
-
-struct linux_termios {
-    uint32_t c_iflag, c_oflag, c_cflag, c_lflag;
-    uint8_t  c_line;
-    uint8_t  c_cc[19];
-};
-
-struct linux_winsize { uint16_t ws_row, ws_col, ws_xpixel, ws_ypixel; };
 
 struct linux_user_desc {
     uint32_t entry_number, base_addr, limit;
@@ -94,5 +51,43 @@ struct linux_sigaction {                /* i386 kernel struct sigaction */
     uint32_t handler, flags, restorer;
     uint32_t mask[2];
 };
+
+#define SA_NOCLDSTOP    0x00000001
+#define SA_SIGINFO      0x00000004
+#define SA_RESTORER     0x04000000
+#define SA_NODEFER      0x40000000
+#define SA_RESETHAND    0x80000000u
+#define SIG_DFL         0
+#define SIG_IGN         1
+#define SIG_BLOCK       0
+#define SIG_UNBLOCK     1
+#define SIG_SETMASK     2
+
+/* fcntl */
+#define F_DUPFD         0
+#define F_GETFD         1
+#define F_SETFD         2
+#define F_GETFL         3
+#define F_SETFL         4
+#define FD_CLOEXEC      1
+
+/* poll */
+#define POLLIN          0x0001
+#define POLLOUT         0x0004
+#define POLLERR         0x0008
+#define POLLNVAL        0x0020
+struct linux_pollfd { int32_t fd; int16_t events, revents; };
+
+/* reboot */
+#define LINUX_REBOOT_MAGIC1     0xfee1dead
+#define LINUX_REBOOT_CMD_RESTART    0x01234567
+#define LINUX_REBOOT_CMD_HALT       0xCDEF0123
+#define LINUX_REBOOT_CMD_POWER_OFF  0x4321FEDC
+
+/* syslog(2) actions */
+#define SYSLOG_ACTION_READ_ALL      3
+#define SYSLOG_ACTION_READ_CLEAR    4
+#define SYSLOG_ACTION_CLEAR         5
+#define SYSLOG_ACTION_SIZE_BUFFER   10
 
 #endif
