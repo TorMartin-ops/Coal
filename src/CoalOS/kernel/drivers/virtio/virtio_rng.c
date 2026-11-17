@@ -46,6 +46,7 @@ static int rng_probe(virtio_device_t *d) {
     g.timer.fn = reseed;
     virtio_device_ready(d);
     request();
+    LOG_INFO("entropy source");
     return 0;
 }
 
