@@ -33,14 +33,16 @@
 #define IIR_LINE   0x06
 
 #define UART_FIFO_DEPTH 16
-#define RING_SIZE       2048 /* power of two */
+#define RING_SIZE       2048 /* TX ring, power of two */
+#define RX_RING_SIZE    8192 /* RX ring: a task may be busy for a while between reads */
 
 typedef struct {
     uint16_t base;
     uint8_t  irq;
     bool     present;
     bool     irq_mode;
-    uint8_t  rx[RING_SIZE];
+    bool     rx_stalled;        /* ring full: bytes wait in the UART, which holds the sender back */
+    uint8_t  rx[RX_RING_SIZE];
     uint8_t  tx[RING_SIZE];
     volatile uint32_t rx_head, rx_tail; /* free-running indices */
     volatile uint32_t tx_head, tx_tail;
@@ -88,17 +90,20 @@ static void tx_pump(uart_t *u) {
         }
     }
     if (u->irq_mode) {
-        uint8_t ier = IER_RX | IER_STATUS | (u->tx_head != u->tx_tail ? IER_TX : 0);
+        uint8_t ier = (u->rx_stalled ? 0 : IER_RX) | IER_STATUS | (u->tx_head != u->tx_tail ? IER_TX : 0);
         outb(u->base + UART_IER, ier);
     }
 }
 
+/* Moves received bytes into the ring. A full ring stops the draining and the RX interrupt (see
+ * serial_port_read), so a fast sender is slowed down by the UART's own flow control instead of losing data. */
 static void rx_drain(uart_t *u) {
     while (inb(u->base + UART_LSR) & LSR_DR) {
-        uint8_t c = inb(u->base + UART_THR);
-        if (ring_count(u->rx_head, u->rx_tail) < RING_SIZE) {
-            u->rx[u->rx_head++ & (RING_SIZE - 1)] = c;
-        } /* else: overrun, drop */
+        if (ring_count(u->rx_head, u->rx_tail) == RX_RING_SIZE) {
+            u->rx_stalled = true;
+            return;
+        }
+        u->rx[u->rx_head++ & (RX_RING_SIZE - 1)] = inb(u->base + UART_THR);
     }
 }
 
@@ -160,7 +165,12 @@ size_t serial_port_read(int port, void *buf, size_t len) {
     }
     size_t n = 0;
     while (n < len && u->rx_head != u->rx_tail) {
-        p[n++] = u->rx[u->rx_tail++ & (RING_SIZE - 1)];
+        p[n++] = u->rx[u->rx_tail++ & (RX_RING_SIZE - 1)];
+    }
+    if (u->rx_stalled) {
+        u->rx_stalled = false;
+        rx_drain(u);
+        tx_pump(u);                         /* re-enables the RX interrupt */
     }
     local_irq_restore(flags);
     return n;
