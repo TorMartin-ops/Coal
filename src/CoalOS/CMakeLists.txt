@@ -44,19 +44,25 @@ target_link_libraries(kernel PRIVATE ${LIBGCC})
 # --- User programs ------------------------------------------------------------
 file(GLOB USER_LIBC_SOURCES CONFIGURE_DEPENDS userspace/libc/*.c)
 
+# Same flags as the kernel, but warnings are errors for user programs.
 function(add_user_program name)
     add_executable(${name} ${ARGN} userspace/entry.asm ${USER_LIBC_SOURCES})
     set_target_properties(${name} PROPERTIES OUTPUT_NAME ${name}.elf)
     target_include_directories(${name} PRIVATE include)
-    target_compile_options(${name} PRIVATE $<$<COMPILE_LANGUAGE:C>:${FREESTANDING_FLAGS}>)
+    target_compile_options(${name} PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:${FREESTANDING_FLAGS}>
+        $<$<COMPILE_LANGUAGE:C>:-Werror>)
     target_link_options(${name} PRIVATE
-        -m32 -nostdlib -static -no-pie -Wl,--build-id=none -T${ARCH_DIR}/user.ld)
+        -m32 -nostdlib -static -no-pie -Wl,--build-id=none -Wl,--no-warn-rwx-segments
+        -T${ARCH_DIR}/user.ld)
     target_link_libraries(${name} PRIVATE ${LIBGCC})
 endfunction()
 
 add_user_program(hello userspace/hello/hello.c)
 file(GLOB SHELL_SOURCES CONFIGURE_DEPENDS userspace/shell/shell_main.c userspace/shell/modules/*.c)
 add_user_program(shell ${SHELL_SOURCES})
+add_user_program(libc_test userspace/tests/libc_test.c)
+add_user_program(syscall_test userspace/tests/syscall_test.c)
 
 # --- Disk image (FAT16) with the user programs --------------------------------
 set(DISK_IMAGE ${CMAKE_BINARY_DIR}/disk.img)
@@ -67,7 +73,9 @@ add_custom_command(
     COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:hello> ::/hello.elf
     COMMAND mmd -i ${DISK_IMAGE} ::/bin
     COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:shell> ::/bin/shell.elf
-    DEPENDS hello shell
+    COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:libc_test> ::/bin/libc_test.elf
+    COMMAND mcopy -i ${DISK_IMAGE} $<TARGET_FILE:syscall_test> ::/bin/syscall_test.elf
+    DEPENDS hello shell libc_test syscall_test
     COMMENT "Creating FAT16 disk image"
     VERBATIM)
 

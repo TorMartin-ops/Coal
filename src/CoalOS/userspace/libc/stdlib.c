@@ -179,11 +179,13 @@ static unsigned long long parse_number(const char *nptr, char **endptr, int base
     for (;;) {
         int d = digit_value(*s);
         if (d < 0 || d >= base) break;
-        if (result > (ULLONG_MAX - (unsigned long long)d) / (unsigned long long)base) {
+        unsigned long long next;
+        if (__builtin_mul_overflow(result, (unsigned long long)base, &next) ||
+            __builtin_add_overflow(next, (unsigned long long)d, &next)) {
             *overflow = 1;
             result = ULLONG_MAX;
         } else if (!*overflow) {
-            result = result * (unsigned long long)base + (unsigned long long)d;
+            result = next;
         }
         any = 1;
         s++;
@@ -366,6 +368,24 @@ ldiv_t ldiv(long numer, long denom) {
     return result;
 }
 
+/*
+ * 64-bit division by shift and subtract. The target has no libgcc to provide
+ * __udivdi3, and the compiler would otherwise call it for "/" and "%".
+ */
+static unsigned long long udivmod64(unsigned long long n, unsigned long long d,
+                                    unsigned long long *rem) {
+    unsigned long long q = 0, r = 0;
+    for (int i = 63; i >= 0; i--) {
+        r = (r << 1) | ((n >> i) & 1);
+        if (r >= d) {
+            r -= d;
+            q |= 1ULL << i;
+        }
+    }
+    *rem = r;
+    return q;
+}
+
 lldiv_t lldiv(long long numer, long long denom) {
     lldiv_t result;
     if (denom == 0) {
@@ -373,8 +393,16 @@ lldiv_t lldiv(long long numer, long long denom) {
         result.rem = 0;
         return result;
     }
-    // 64-bit division on i386 is provided by libgcc (__divdi3, __moddi3).
-    result.quot = numer / denom;
-    result.rem = numer % denom;
+
+    // Work on magnitudes so that LLONG_MIN does not overflow.
+    unsigned long long un = numer < 0 ? 0ULL - (unsigned long long)numer : (unsigned long long)numer;
+    unsigned long long ud = denom < 0 ? 0ULL - (unsigned long long)denom : (unsigned long long)denom;
+    unsigned long long urem;
+    unsigned long long uq = udivmod64(un, ud, &urem);
+
+    // Truncate toward zero: quotient is negative if the signs differ, the
+    // remainder takes the sign of the numerator.
+    result.quot = (long long)(((numer < 0) != (denom < 0)) ? 0ULL - uq : uq);
+    result.rem = (long long)(numer < 0 ? 0ULL - urem : urem);
     return result;
 }
