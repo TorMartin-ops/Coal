@@ -762,7 +762,7 @@ _KEYS = {" ": "spc", "\n": "ret", "\t": "tab", "-": "slash", "_": "shift-slash",
          ")": "shift-9", "?": "shift-minus", "+": "minus", "*": "shift-backslash",
          "'": "backslash", "<": "less", ">": "shift-less", "|": "grave_accent"}
 NAMED_KEYS = {"up", "down", "left", "right", "ret", "esc", "spc", "tab", "backspace", "delete",
-              "home", "end", "pgup", "pgdn", "ctrl-c", "ctrl-d", "ctrl-l", "ctrl-u", "ctrl-z"}
+              "home", "end", "pgup", "pgdn", "ctrl-c", "ctrl-d", "ctrl-f", "ctrl-l", "ctrl-q", "ctrl-s", "ctrl-u", "ctrl-z"}
 
 
 def _qemu_key(ch):
@@ -890,7 +890,7 @@ TOOLS = [
      schema(), ann("Screen text", read_only=True), tool_screen),
     ("coal_keys", "Type on the VM's keyboard, as a person at the console would: `text` is typed key by key "
      "(letters, digits, space, newline and common punctuation), then each name in `keys` is pressed "
-     "(up, down, left, right, ret, esc, tab, backspace, ctrl-c, ctrl-d, ...). Use it for interactive, "
+     "(up, down, left, right, ret, esc, tab, backspace, ctrl-c, ctrl-d, ctrl-s, ctrl-q, ...). Use it for interactive, "
      "full-screen programs on the console (the shell on the screen, games, editors) and read the result "
      "with coal_screen. Input goes to whatever runs on the console; coal_run is better for scripted commands.",
      schema({"text": {**S, "description": "Characters to type."},
