@@ -8,14 +8,10 @@
 #include <libc/unistd.h>
 #include <libc/limits.h>
 #include <libc/stdbool.h>
-
-#ifndef SIZE_MAX
-#define SIZE_MAX ((size_t)-1)
-#endif
+#include <libc/stdint.h>
 
 // Simple heap allocator for userspace
 static char heap[HEAP_SIZE];
-static size_t heap_pos = 0;
 static bool heap_initialized = false;
 
 // Block structure for tracking allocations
@@ -38,8 +34,8 @@ static void init_heap(void) {
 }
 
 void *malloc(size_t size) {
-    if (size == 0) return NULL;
-    
+    if (size == 0 || size > HEAP_SIZE) return NULL;
+
     init_heap();
     
     // Align size to 8 bytes
@@ -135,297 +131,210 @@ void free(void *ptr) {
     }
 }
 
-// String conversion functions
-int atoi(const char *str) {
-    if (!str) return 0;
-    
-    int result = 0;
-    int sign = 1;
-    
-    // Skip whitespace
-    while (*str == ' ' || *str == '\t' || *str == '\n' || 
-           *str == '\r' || *str == '\f' || *str == '\v') {
-        str++;
-    }
-    
-    // Handle sign
-    if (*str == '-') {
-        sign = -1;
-        str++;
-    } else if (*str == '+') {
-        str++;
-    }
-    
-    // Convert digits
-    while (*str >= '0' && *str <= '9') {
-        result = result * 10 + (*str - '0');
-        str++;
-    }
-    
-    return result * sign;
+// String conversion
+
+static int is_space(int c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
 }
 
-long atol(const char *str) {
-    if (!str) return 0;
-    
-    long result = 0;
-    int sign = 1;
-    
-    // Skip whitespace
-    while (*str == ' ' || *str == '\t' || *str == '\n' || 
-           *str == '\r' || *str == '\f' || *str == '\v') {
-        str++;
-    }
-    
-    // Handle sign
-    if (*str == '-') {
-        sign = -1;
-        str++;
-    } else if (*str == '+') {
-        str++;
-    }
-    
-    // Convert digits
-    while (*str >= '0' && *str <= '9') {
-        result = result * 10 + (*str - '0');
-        str++;
-    }
-    
-    return result * sign;
+static int digit_value(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
+    return -1;
 }
 
-long long atoll(const char *str) {
-    if (!str) return 0;
-    
-    // For 32-bit safety, use long instead
-    long result = 0;
-    int sign = 1;
-    
-    // Skip whitespace
-    while (*str == ' ' || *str == '\t' || *str == '\n' || 
-           *str == '\r' || *str == '\f' || *str == '\v') {
-        str++;
+/*
+ * Shared parser behind atoi, atol, atoll and strtol. Returns the magnitude,
+ * saturated to ULLONG_MAX on overflow, and sets *negative. If no digits are
+ * found, *endptr is set to nptr.
+ */
+static unsigned long long parse_number(const char *nptr, char **endptr, int base,
+                                       int *negative, int *overflow) {
+    const char *s = nptr;
+    unsigned long long result = 0;
+    int any = 0;
+
+    *negative = 0;
+    *overflow = 0;
+    if (endptr) *endptr = (char *)nptr;
+    if (base < 0 || base == 1 || base > 36) return 0;
+
+    while (is_space(*s)) s++;
+    if (*s == '-') {
+        *negative = 1;
+        s++;
+    } else if (*s == '+') {
+        s++;
     }
-    
-    // Handle sign
-    if (*str == '-') {
-        sign = -1;
-        str++;
-    } else if (*str == '+') {
-        str++;
+
+    if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') &&
+        digit_value(s[2]) >= 0 && digit_value(s[2]) < 16) {
+        s += 2;
+        base = 16;
+    } else if (base == 0) {
+        base = (s[0] == '0') ? 8 : 10;
     }
-    
-    // Convert digits (limit to avoid overflow)
-    while (*str >= '0' && *str <= '9') {
-        long new_result = result * 10 + (*str - '0');
-        if (new_result < result) break; // Overflow check
-        result = new_result;
-        str++;
+
+    for (;;) {
+        int d = digit_value(*s);
+        if (d < 0 || d >= base) break;
+        if (result > (ULLONG_MAX - (unsigned long long)d) / (unsigned long long)base) {
+            *overflow = 1;
+            result = ULLONG_MAX;
+        } else if (!*overflow) {
+            result = result * (unsigned long long)base + (unsigned long long)d;
+        }
+        any = 1;
+        s++;
     }
-    
-    return (long long)(result * sign);
+
+    if (any && endptr) *endptr = (char *)s;
+    return any ? result : 0;
+}
+
+static long long strtoll_internal(const char *nptr, char **endptr, int base) {
+    int neg, ovf;
+    unsigned long long v = parse_number(nptr, endptr, base, &neg, &ovf);
+    if (neg) {
+        if (v > (unsigned long long)LLONG_MAX + 1ULL) return LLONG_MIN;
+        return (long long)(0ULL - v);
+    }
+    if (v > (unsigned long long)LLONG_MAX) return LLONG_MAX;
+    return (long long)v;
 }
 
 long strtol(const char *str, char **endptr, int base) {
-    if (!str) {
-        if (endptr) *endptr = (char*)str;
-        return 0;
-    }
-    
-    if (base < 0 || base == 1 || base > 36) {
-        if (endptr) *endptr = (char*)str;
-        return 0;
-    }
-    
-    const char *start = str;
-    long result = 0;
-    int sign = 1;
-    
-    // Skip whitespace
-    while (*str == ' ' || *str == '\t' || *str == '\n' || 
-           *str == '\r' || *str == '\f' || *str == '\v') {
-        str++;
-    }
-    
-    // Handle sign
-    if (*str == '-') {
-        sign = -1;
-        str++;
-    } else if (*str == '+') {
-        str++;
-    }
-    
-    // Auto-detect base if base == 0
-    if (base == 0) {
-        if (*str == '0') {
-            if (str[1] == 'x' || str[1] == 'X') {
-                base = 16;
-                str += 2;
-            } else {
-                base = 8;
-                str++;
-            }
-        } else {
-            base = 10;
-        }
-    } else if (base == 16 && *str == '0' && (str[1] == 'x' || str[1] == 'X')) {
-        str += 2;
-    }
-    
-    // Convert digits
-    while (*str) {
-        int digit;
-        if (*str >= '0' && *str <= '9') {
-            digit = *str - '0';
-        } else if (*str >= 'a' && *str <= 'z') {
-            digit = *str - 'a' + 10;
-        } else if (*str >= 'A' && *str <= 'Z') {
-            digit = *str - 'A' + 10;
-        } else {
-            break;
-        }
-        
-        if (digit >= base) break;
-        
-        result = result * base + digit;
-        str++;
-    }
-    
-    if (endptr) {
-        *endptr = (char*)(str == start ? start : str);
-    }
-    
-    return result * sign;
+    long long v = strtoll_internal(str ? str : "", endptr, base);
+    if (!str && endptr) *endptr = (char *)str;
+    if (v > LONG_MAX) return LONG_MAX;
+    if (v < LONG_MIN) return LONG_MIN;
+    return (long)v;
+}
+
+int atoi(const char *str) {
+    return (int)strtol(str, NULL, 10);
+}
+
+long atol(const char *str) {
+    return strtol(str, NULL, 10);
+}
+
+long long atoll(const char *str) {
+    return strtoll_internal(str ? str : "", NULL, 10);
 }
 
 // Random number generation (simple LCG)
-static unsigned long next_rand = 1;
+static unsigned int next_rand = 1;
 
 int rand(void) {
     next_rand = next_rand * 1103515245 + 12345;
-    return (unsigned int)(next_rand / 65536) % RAND_MAX;
+    return (int)((next_rand / 65536) % (RAND_MAX + 1));
 }
 
 void srand(unsigned int seed) {
     next_rand = seed;
 }
 
-// Environment variables (simple implementation)
+// Environment variables, stored as "NAME=value" strings.
 static char *environ_storage[MAX_ENV_VARS];
 static int environ_count = 0;
 
 char **environ = environ_storage;
 
-char *getenv(const char *name) {
-    if (!name) return NULL;
-    
-    size_t name_len = strlen(name);
-    
+/* Index of the variable called name, or -1. */
+static int env_find(const char *name, size_t name_len) {
     for (int i = 0; i < environ_count; i++) {
-        if (environ_storage[i] && 
-            strncmp(environ_storage[i], name, name_len) == 0 &&
+        if (strncmp(environ_storage[i], name, name_len) == 0 &&
             environ_storage[i][name_len] == '=') {
-            return environ_storage[i] + name_len + 1;
+            return i;
         }
     }
-    
-    return NULL;
+    return -1;
+}
+
+char *getenv(const char *name) {
+    if (!name) return NULL;
+    size_t name_len = strlen(name);
+    int i = env_find(name, name_len);
+    return i < 0 ? NULL : environ_storage[i] + name_len + 1;
 }
 
 int setenv(const char *name, const char *value, int overwrite) {
-    if (!name || !value || strchr(name, '=')) return -1;
-    
-    // Check if variable already exists
-    for (int i = 0; i < environ_count; i++) {
-        if (environ_storage[i]) {
-            size_t name_len = strlen(name);
-            if (strncmp(environ_storage[i], name, name_len) == 0 &&
-                environ_storage[i][name_len] == '=') {
-                
-                if (!overwrite) return 0;
-                
-                // Replace existing
-                free(environ_storage[i]);
-                size_t total_len = strlen(name) + strlen(value) + 2;
-                environ_storage[i] = malloc(total_len);
-                if (!environ_storage[i]) return -1;
-                
-                strcpy(environ_storage[i], name);
-                strcat(environ_storage[i], "=");
-                strcat(environ_storage[i], value);
-                return 0;
-            }
-        }
+    if (!name || !*name || !value || strchr(name, '=')) return -1;
+
+    size_t name_len = strlen(name);
+    int i = env_find(name, name_len);
+    if (i >= 0 && !overwrite) return 0;
+    if (i < 0 && environ_count >= MAX_ENV_VARS - 1) return -1;
+
+    char *entry = malloc(name_len + strlen(value) + 2);
+    if (!entry) return -1;
+    strcpy(entry, name);
+    strcat(entry, "=");
+    strcat(entry, value);
+
+    if (i >= 0) {
+        free(environ_storage[i]);
+        environ_storage[i] = entry;
+    } else {
+        environ_storage[environ_count++] = entry;
+        environ_storage[environ_count] = NULL;
     }
-    
-    // Add new variable
-    if (environ_count >= MAX_ENV_VARS - 1) return -1;
-    
-    size_t total_len = strlen(name) + strlen(value) + 2;
-    environ_storage[environ_count] = malloc(total_len);
-    if (!environ_storage[environ_count]) return -1;
-    
-    strcpy(environ_storage[environ_count], name);
-    strcat(environ_storage[environ_count], "=");
-    strcat(environ_storage[environ_count], value);
-    environ_count++;
-    environ_storage[environ_count] = NULL;
-    
     return 0;
 }
 
 int unsetenv(const char *name) {
-    if (!name || strchr(name, '=')) return -1;
-    
-    size_t name_len = strlen(name);
-    
-    for (int i = 0; i < environ_count; i++) {
-        if (environ_storage[i] &&
-            strncmp(environ_storage[i], name, name_len) == 0 &&
-            environ_storage[i][name_len] == '=') {
-            
-            free(environ_storage[i]);
-            
-            // Shift remaining entries
-            for (int j = i; j < environ_count - 1; j++) {
-                environ_storage[j] = environ_storage[j + 1];
-            }
-            environ_count--;
-            environ_storage[environ_count] = NULL;
-            return 0;
-        }
+    if (!name || !*name || strchr(name, '=')) return -1;
+
+    int i = env_find(name, strlen(name));
+    if (i < 0) return 0;
+
+    free(environ_storage[i]);
+    for (int j = i; j < environ_count - 1; j++) {
+        environ_storage[j] = environ_storage[j + 1];
     }
-    
+    environ_count--;
+    environ_storage[environ_count] = NULL;
     return 0;
 }
 
 // Process control
-void abort(void) {
-    // Send SIGABRT to self (when signals are implemented)
-    exit(1);
-}
+#define ATEXIT_MAX 32
+static void (*atexit_handlers[ATEXIT_MAX])(void);
+static int atexit_count = 0;
 
 int atexit(void (*function)(void)) {
-    // TODO: Implement atexit handlers
+    if (!function || atexit_count >= ATEXIT_MAX) return -1;
+    atexit_handlers[atexit_count++] = function;
     return 0;
+}
+
+void exit(int status) {
+    while (atexit_count > 0) {
+        atexit_handlers[--atexit_count]();
+    }
+    _exit(status);
+}
+
+void abort(void) {
+    _exit(134);
 }
 
 int system(const char *command) {
     if (!command) return 1; // Shell is available
-    
+
     pid_t pid = fork();
     if (pid == 0) {
-        // Child process
-        char *argv[] = {"/bin/sh", "-c", (char*)command, NULL};
-        execve("/bin/sh", argv, environ);
-        exit(127); // execve failed
+        char *argv[] = {"/bin/shell.elf", "-c", (char *)command, NULL};
+        execve("/bin/shell.elf", argv, environ);
+        _exit(127); // execve failed
     } else if (pid > 0) {
-        // Parent process
         int status;
         waitpid(pid, &status, 0);
         return status;
     }
-    
+
     return -1; // fork failed
 }
 
@@ -459,32 +368,13 @@ ldiv_t ldiv(long numer, long denom) {
 
 lldiv_t lldiv(long long numer, long long denom) {
     lldiv_t result;
-    // Simple implementation to avoid 64-bit division issues
     if (denom == 0) {
         result.quot = 0;
         result.rem = 0;
         return result;
     }
-    
-    // Use simple loop for 64-bit division on 32-bit target
-    result.quot = 0;
-    result.rem = numer;
-    
-    bool negative = false;
-    if ((numer < 0) != (denom < 0)) {
-        negative = true;
-    }
-    
-    if (numer < 0) numer = -numer;
-    if (denom < 0) denom = -denom;
-    
-    while (numer >= denom) {
-        numer -= denom;
-        result.quot++;
-    }
-    
-    result.rem = numer;
-    if (negative) result.quot = -result.quot;
-    
+    // 64-bit division on i386 is provided by libgcc (__divdi3, __moddi3).
+    result.quot = numer / denom;
+    result.rem = numer % denom;
     return result;
 }

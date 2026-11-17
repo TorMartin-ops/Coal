@@ -1,7 +1,12 @@
-// In include/libc/limits.h
 #pragma once
 
-#define INT_MAX 2147483647
-// Add these lines for a 32-bit system where long is 32 bits
-#define LONG_MAX 2147483647L
-#define LONG_MIN (-2147483647L - 1L)
+/* ILP32: int and long are 32 bits, long long is 64 bits. */
+#define INT_MAX   2147483647
+#define INT_MIN   (-2147483647 - 1)
+#define UINT_MAX  4294967295U
+#define LONG_MAX  2147483647L
+#define LONG_MIN  (-2147483647L - 1L)
+#define ULONG_MAX 4294967295UL
+#define LLONG_MAX  9223372036854775807LL
+#define LLONG_MIN  (-9223372036854775807LL - 1LL)
+#define ULLONG_MAX 18446744073709551615ULL

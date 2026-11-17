@@ -7,40 +7,22 @@
 #include <libc/string.h>
 #include <libc/stdarg.h>
 #include <libc/unistd.h>
-
-// File descriptors for standard streams
-#define STDIN_FILENO  0
-#define STDOUT_FILENO 1
-#define STDERR_FILENO 2
+#include <libc/limits.h>
 
 // Buffer size for printf operations
 #define PRINTF_BUFFER_SIZE 1024
 
-// System call numbers
-#define SYS_WRITE 4
-#define SYS_PUTS  7
+struct FILE {
+    int fd;
+};
 
-// System call wrapper
-static inline int syscall(int num, int arg1, int arg2, int arg3) {
-    int result;
-    __asm__ volatile (
-        "pushl %%ebx\n\t"
-        "pushl %%ecx\n\t"
-        "pushl %%edx\n\t"
-        "movl %1, %%eax\n\t"
-        "movl %2, %%ebx\n\t"
-        "movl %3, %%ecx\n\t"
-        "movl %4, %%edx\n\t"
-        "int $0x80\n\t"
-        "popl %%edx\n\t"
-        "popl %%ecx\n\t"
-        "popl %%ebx\n\t"
-        : "=a" (result)
-        : "m" (num), "m" (arg1), "m" (arg2), "m" (arg3)
-        : "cc", "memory"
-    );
-    return result;
-}
+static FILE stdin_file = { STDIN_FILENO };
+static FILE stdout_file = { STDOUT_FILENO };
+static FILE stderr_file = { STDERR_FILENO };
+
+FILE *stdin = &stdin_file;
+FILE *stdout = &stdout_file;
+FILE *stderr = &stderr_file;
 
 int putchar(int c) {
     char ch = (char)c;
@@ -60,12 +42,6 @@ int puts(const char *s) {
     return 0;
 }
 
-// Helper function to print a string of specific length
-bool print(const char* data, size_t length) {
-    if (!data || length == 0) return true;
-    return write(STDOUT_FILENO, data, length) == (ssize_t)length;
-}
-
 // Helper functions for number formatting
 static void reverse_string(char *str, int length) {
     int start = 0;
@@ -79,54 +55,32 @@ static void reverse_string(char *str, int length) {
     }
 }
 
-static int int_to_string(int num, char *str, int base) {
+// Write num in the given base into str, returning the length.
+static int uint_to_string(unsigned int num, char *str, int base) {
     int i = 0;
-    bool is_negative = false;
-    
+
     if (num == 0) {
         str[i++] = '0';
         str[i] = '\0';
         return i;
     }
-    
-    if (num < 0 && base == 10) {
-        is_negative = true;
-        num = -num;
-    }
-    
+
     while (num != 0) {
         int rem = num % base;
         str[i++] = (rem > 9) ? (rem - 10) + 'a' : rem + '0';
         num = num / base;
     }
-    
-    if (is_negative) {
-        str[i++] = '-';
-    }
-    
+
     str[i] = '\0';
     reverse_string(str, i);
     return i;
 }
 
-static int uint_to_string(unsigned int num, char *str, int base) {
-    int i = 0;
-    
-    if (num == 0) {
-        str[i++] = '0';
-        str[i] = '\0';
-        return i;
-    }
-    
-    while (num != 0) {
-        int rem = num % base;
-        str[i++] = (rem > 9) ? (rem - 10) + 'a' : rem + '0';
-        num = num / base;
-    }
-    
-    str[i] = '\0';
-    reverse_string(str, i);
-    return i;
+static int int_to_string(int num, char *str) {
+    if (num >= 0) return uint_to_string((unsigned int)num, str, 10);
+    // Negate as unsigned so that INT_MIN works.
+    str[0] = '-';
+    return 1 + uint_to_string(0u - (unsigned int)num, str + 1, 10);
 }
 
 int printf(const char* format, ...) {
@@ -170,7 +124,9 @@ int vsnprintf(char *str, size_t size, const char *format, va_list args) {
         }
         
         p++; // Skip '%'
-        
+        while (*p == 'l') p++; // long is 32 bits, same as int
+        if (!*p) break;
+
         // Handle format specifiers
         switch (*p) {
             case 'c': {
@@ -197,7 +153,7 @@ int vsnprintf(char *str, size_t size, const char *format, va_list args) {
             case 'd':
             case 'i': {
                 int num = va_arg(args, int);
-                int len = int_to_string(num, temp_buf, 10);
+                int len = int_to_string(num, temp_buf);
                 for (int i = 0; i < len && pos < size - 1; i++) {
                     str[pos++] = temp_buf[i];
                 }
@@ -262,18 +218,27 @@ int vsnprintf(char *str, size_t size, const char *format, va_list args) {
     return (int)pos;
 }
 
-int fprintf(FILE *stream, const char *format, ...) {
-    // For now, just redirect to stdout/stderr
-    // TODO: Implement proper FILE structure support
-    (void)stream; // Suppress unused parameter warning
+int sprintf(char *str, const char *format, ...) {
     va_list args;
     va_start(args, format);
-    int result = vprintf(format, args);
+    int result = vsprintf(str, format, args);
     va_end(args);
     return result;
 }
 
-// Minimal FILE structure support (stdout, stderr)
-FILE *stdout = (FILE*)1;
-FILE *stderr = (FILE*)2;
-FILE *stdin = (FILE*)0;
+int vsprintf(char *str, const char *format, va_list args) {
+    return vsnprintf(str, (size_t)INT_MAX, format, args);
+}
+
+int fprintf(FILE *stream, const char *format, ...) {
+    if (!stream) return -1;
+
+    char buffer[PRINTF_BUFFER_SIZE];
+    va_list args;
+    va_start(args, format);
+    int len = vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+
+    if (len > 0) write(stream->fd, buffer, len);
+    return len;
+}

@@ -188,12 +188,13 @@ char *strncat(char *dest, const char *src, size_t n) {
     }
     
     // Append up to n characters from src
-    for (size_t i = 0; i < n && src[i] != '\0'; i++) {
+    size_t i = 0;
+    for (; i < n && src[i] != '\0'; i++) {
         dest[i] = src[i];
     }
-    
+
     // Ensure null termination
-    dest[n] = '\0';
+    dest[i] = '\0';
     
     return original_dest;
 }
@@ -315,7 +316,6 @@ size_t strcspn(const char *s, const char *reject) {
     return count;
 }
 
-char *strtok_r(char *str, const char *delim, char **saveptr);
 
 char *strtok(char *str, const char *delim) {
     static char *saved_ptr = NULL;
