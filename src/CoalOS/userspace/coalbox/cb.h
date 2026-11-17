@@ -26,6 +26,8 @@ long cb_slurp(const char *path, char *buf, size_t cap);
 char **cb_list_dir(const char *path, int *count);
 void cb_free_names(char **names, int count);
 
+int pattern_match(const char *pat, const char *s);    /* shell wildcards, match.c */
+
 #define DECL(n) int n##_main(int argc, char **argv);
 #include "applets.h"
 APPLET_LIST(DECL)

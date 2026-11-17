@@ -62,17 +62,35 @@ QEMU user networking (DHCP), no SMP, no users (everything is root). Boot to mcpd
 512 MiB RAM by default, about 1.7 MB in use after boot.
 
 FILE SYSTEM (FAT16 disk image, persistent; long file names, no symlinks, no permissions enforcement)
-  /bin/coalbox   one multi-call binary; applets: basename cat clear cp date dirname dmesg echo env false free
-                 grep halt head hexdump ifconfig kill ls mkdir mount mv nc nslookup ping poweroff ps pwd reboot rm rmdir
-                 sleep sort sync tail touch true umount uname uptime wc wget which yes
-  /bin/sh        the shell: pipes, redirection, && || ;, & (background), quotes, $VAR and $? (expanded when each
-                 command runs), cd/export/exit builtins. No job control, no subshells ( ), no $!, no command
-                 substitution
+  /bin/coalbox   one multi-call binary; applets: [ basename cat chmod clear cmp cp cut date df diff dirname dmesg
+                 du echo edit env expr false find fold free grep halt head hexdump ifconfig kill ln ls mkdir mount mv
+                 nc nl nslookup ping poweroff printf ps pwd rev reboot rm rmdir seq sleep sort stat sync tail tee
+                 test top touch tr true umount uname uptime wc wget which xxd yes
+                 edit FILE is a full-screen editor (arrows, ^S save, ^Q quit, ^F find) you can drive with coal_keys;
+                 top refreshes ps every second (q quits); nc -w SECS gives up when idle; chmod and ln -s report
+                 when the kernel or FAT cannot do them; df needs statfs or /proc/mounts
+  /bin/sh        a POSIX-style shell: if/elif/else, while/until, for, case, functions, $(...) and backticks, ( )
+                 subshells, { }, pipes, redirections (including 2>&1 and here-documents), && || ; &, $! $? $# $@ $1..$9,
+                 ${var:-x} ${#v} ${v%x} ${v#x}, $((...)), shift, set -e/-x, trap, read, ., test/[; scripts starting
+                 with #! run through their interpreter. No job control, no aliases, no arrays
   /sbin/init     PID 1: starts mcpd and a login shell
   /sbin/mcpd     the agent that serves this MCP server over COM2
-  /usr/bin       test programs: hello, libc_test, syscall_test, abi_test
+  /usr/bin       test programs: hello, libc_test, syscall_test, abi_test, and the self-checking scripts
+                 sh_test.sh and applet_test.sh (run with /bin/sh /usr/bin/sh_test.sh)
   /etc /home /root /tmp /var   ordinary directories;   /dev  console, null, zero (devfs)
   /proc          meminfo, uptime, version, <pid>/status, self (procfs, read-only)
+
+COMPILING C FOR COAL
+Coal has no compiler; build on the host with tools/coal-cc and copy the result in:
+  tools/coal-cc -o /tmp/prog prog.c        then   coal_write_file path=/usr/bin/prog host_path=/tmp/prog   and run it
+It needs gcc with -m32 support and nasm. The exact command it runs (SRC = src/CoalOS in this repo):
+  nasm -f elf32 $SRC/userspace/entry.asm -o entry.o
+  gcc -m32 -march=i386 -ffreestanding -nostdinc -fno-stack-protector -fno-pie -fno-pic -mno-mmx -mno-sse -mno-sse2
+      -mno-red-zone -Os -Wall -Wextra -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections
+      -I$SRC/include prog.c $SRC/userspace/libc/*.c entry.o -nostdlib -static -no-pie -s -Wl,--gc-sections
+      -T$SRC/src/arch/i386/user.ld -o prog
+Include Coal's headers as <libc/stdio.h>, <libc/stdlib.h>, <libc/unistd.h> ... (there is no glibc, no FPU:
+no float/double math, printf %f is done in integers). main(argc, argv) is the entry point.
 
 SYSTEM CALLS
 The Linux i386 ABI (int 0x80, Linux numbers and struct layouts): files, directories, pipes, dup, fork/execve
@@ -744,7 +762,7 @@ _KEYS = {" ": "spc", "\n": "ret", "\t": "tab", "-": "slash", "_": "shift-slash",
          ")": "shift-9", "?": "shift-minus", "+": "minus", "*": "shift-backslash",
          "'": "backslash", "<": "less", ">": "shift-less", "|": "grave_accent"}
 NAMED_KEYS = {"up", "down", "left", "right", "ret", "esc", "spc", "tab", "backspace", "delete",
-              "home", "end", "pgup", "pgdn", "ctrl-c", "ctrl-d", "ctrl-l", "ctrl-u", "ctrl-z"}
+              "home", "end", "pgup", "pgdn", "ctrl-c", "ctrl-d", "ctrl-f", "ctrl-l", "ctrl-q", "ctrl-s", "ctrl-u", "ctrl-z"}
 
 
 def _qemu_key(ch):
@@ -872,7 +890,7 @@ TOOLS = [
      schema(), ann("Screen text", read_only=True), tool_screen),
     ("coal_keys", "Type on the VM's keyboard, as a person at the console would: `text` is typed key by key "
      "(letters, digits, space, newline and common punctuation), then each name in `keys` is pressed "
-     "(up, down, left, right, ret, esc, tab, backspace, ctrl-c, ctrl-d, ...). Use it for interactive, "
+     "(up, down, left, right, ret, esc, tab, backspace, ctrl-c, ctrl-d, ctrl-s, ctrl-q, ...). Use it for interactive, "
      "full-screen programs on the console (the shell on the screen, games, editors) and read the result "
      "with coal_screen. Input goes to whatever runs on the console; coal_run is better for scripted commands.",
      schema({"text": {**S, "description": "Characters to type."},

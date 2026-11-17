@@ -12,5 +12,5 @@
 #define ULLONG_MAX 18446744073709551615ULL
 #define CHAR_BIT  8
 #define UCHAR_MAX 255
-#define PATH_MAX  256
+#define PATH_MAX  4096
 #define NAME_MAX  255

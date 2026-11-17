@@ -184,6 +184,8 @@ int nslookup_main(int argc, char **argv) {
 
 /* ---- nc ------------------------------------------------------------------------- */
 
+static int nc_idle_ms = -1;                        /* -w: give up after this long without traffic */
+
 /* Copies stdin to the socket and the socket to stdout until the peer closes. */
 static int pump(int s) {
     char buf[1024];
@@ -192,7 +194,9 @@ static int pump(int s) {
 
     for (;;) {
         pf[0].fd = stdin_open ? 0 : -1;
-        if (poll(pf, 2, -1) < 0) { if (errno == EINTR) continue; return cb_err(NULL, "poll"); }
+        int ready = poll(pf, 2, nc_idle_ms);
+        if (ready == 0) return 0;
+        if (ready < 0) { if (errno == EINTR) continue; return cb_err(NULL, "poll"); }
         if (pf[1].revents & (POLLIN | POLLHUP | POLLERR)) {
             ssize_t n = recv(s, buf, sizeof buf, 0);
             if (n <= 0) return n < 0;
@@ -211,10 +215,11 @@ int nc_main(int argc, char **argv) {
     struct sockaddr_in sa = { AF_INET, 0, { INADDR_ANY }, { 0 } };
 
     optind = 1;
-    while ((opt = getopt(argc, argv, "lp:")) != -1) {
+    while ((opt = getopt(argc, argv, "lp:w:")) != -1) {
         if (opt == 'l') listen_mode = 1;
+        else if (opt == 'w') nc_idle_ms = atoi(optarg) * 1000;
         else if (opt == 'p') port = atoi(optarg);
-        else return cb_usage("host port | -l [-p] port");
+        else return cb_usage("[-w secs] host port | -l [-p] port");
     }
     int s = socket(AF_INET, SOCK_STREAM, 0);
     if (s < 0) return cb_err("socket", "AF_INET");
@@ -225,15 +230,19 @@ int nc_main(int argc, char **argv) {
         sa.sin_port = htons((unsigned short)port);
         if (!port || bind(s, (struct sockaddr *)&sa, sizeof sa) < 0 || listen(s, 1) < 0)
             return port ? cb_err("bind", argv[optind]) : cb_usage("-l [-p] port");
+        if (nc_idle_ms >= 0) {
+            struct pollfd lp = { s, POLLIN, 0 };
+            if (poll(&lp, 1, nc_idle_ms) <= 0) return 1;
+        }
         int c = accept(s, NULL, NULL);
         if (c < 0) return cb_err(NULL, "accept");
         close(s);
         return pump(c);
     }
-    if (optind != argc - 2) return cb_usage("host port | -l [-p] port");
+    if (optind != argc - 2) return cb_usage("[-w secs] host port | -l [-p] port");
     if (lookup(argv[optind], &sa.sin_addr) < 0) return 1;
     sa.sin_port = htons((unsigned short)atoi(argv[optind + 1]));
-    set_timeouts(s, 10);
+    set_timeouts(s, nc_idle_ms >= 0 ? (nc_idle_ms + 999) / 1000 : 10);
     if (connect(s, (struct sockaddr *)&sa, sizeof sa) < 0) return cb_err("connect", argv[optind]);
     struct timeval none = { 0, 0 };
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &none, sizeof none);

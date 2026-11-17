@@ -70,7 +70,8 @@ endfunction()
 file(GLOB COALBOX_SOURCES CONFIGURE_DEPENDS userspace/coalbox/*.c)
 add_user_program(coalbox ${COALBOX_SOURCES})   # installed as /bin/coalbox
 add_user_program(init userspace/init/init.c)   # installed as /sbin/init
-add_user_program(shell userspace/sh/sh.c)      # installed as /bin/sh
+file(GLOB SH_SOURCES CONFIGURE_DEPENDS userspace/sh/*.c)
+add_user_program(shell ${SH_SOURCES} userspace/coalbox/test.c userspace/coalbox/match.c)   # installed as /bin/sh
 add_user_program(hello userspace/hello/hello.c)
 add_user_program(snake userspace/games/snake.c)
 add_user_program(libc_test userspace/tests/libc_test.c)
@@ -80,6 +81,8 @@ add_user_program(memtest userspace/tests/memtest.c)
 add_user_program(fault_test userspace/tests/fault_test.c)
 add_user_program(fs_stress userspace/tests/fs_stress.c)
 add_user_program(kernel_test userspace/tests/kernel_test.c)
+add_user_program(coalbench userspace/bench/coalbench.c)
+add_user_program(coalbench_null userspace/bench/null.c)
 
 # Raw int 0x80 smoke test: no libc, no start-up code.
 add_executable(abi_test userspace/tests/abi_test.c)
@@ -114,8 +117,12 @@ add_custom_command(
     COMMAND mcopy ${IMG} $<TARGET_FILE:fault_test> ::/usr/bin/fault_test
     COMMAND mcopy ${IMG} $<TARGET_FILE:fs_stress> ::/usr/bin/fs_stress
     COMMAND mcopy ${IMG} $<TARGET_FILE:kernel_test> ::/usr/bin/kernel_test
+    COMMAND mcopy ${IMG} $<TARGET_FILE:coalbench> ::/usr/bin/coalbench
+    COMMAND mcopy ${IMG} $<TARGET_FILE:coalbench_null> ::/usr/bin/coalbench_null
+    COMMAND mcopy ${IMG} ${CMAKE_CURRENT_SOURCE_DIR}/userspace/tests/sh_test.sh ::/usr/bin/sh_test.sh
+    COMMAND mcopy ${IMG} ${CMAKE_CURRENT_SOURCE_DIR}/userspace/tests/applet_test.sh ::/usr/bin/applet_test.sh
     COMMAND mcopy ${IMG} ${ROOTFS_ETC} ::/etc/
-    DEPENDS hello snake shell coalbox init mcpd libc_test syscall_test abi_test memtest fault_test fs_stress kernel_test ${ROOTFS_ETC}
+    DEPENDS hello snake shell coalbox init mcpd libc_test syscall_test abi_test memtest fault_test fs_stress kernel_test coalbench coalbench_null ${ROOTFS_ETC}
     COMMENT "Creating FAT16 disk image"
     VERBATIM)
 

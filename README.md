@@ -20,8 +20,9 @@ security boundary. See [SECURITY.md](SECURITY.md) and [Limitations](#limitations
   calls. `ping`, `nslookup`, `wget` (http), `nc` and `ifconfig` are applets.
 - **System calls**: 99 Linux i386 calls with Linux numbers and struct layouts, one table
   ([docs/syscalls.md](src/CoalOS/docs/syscalls.md)). Unimplemented calls return `-ENOSYS`.
-- **User space**: a small libc, `coalbox` (BusyBox-style multi-call binary with 43 applets),
-  `sh` (pipes, redirection, `&&`, `||`, background jobs, history), `init`, and `mcpd`.
+- **User space**: a small libc, `coalbox` (BusyBox-style multi-call binary with 65 applets, including `edit`, `top`, `find`, `diff`, `tr`, `printf`, `expr`),
+  `sh` (POSIX-style: `if`/`while`/`for`/`case`, functions, `$(...)`, subshells, here-documents, `set -e`/`-x`, `trap`, `#!` scripts, history and Tab completion), `init`, and `mcpd`.
+  `tools/coal-cc` compiles C programs for Coal on the host with Coal's libc.
 - **MCP integration**: `tools/coal-mcp` lets Claude boot Coal in QEMU and run commands, transfer
   files, read the kernel log, take disk snapshots and roll back mistakes.
 - **Quality gates**: the kernel builds with `-O2 -Werror` and zero warnings; CI runs the build,
@@ -37,7 +38,7 @@ Measured on one development machine (QEMU/TCG, no KVM, 512 MiB guest, the defaul
 | Boot, QEMU start to `mcpd` answering | 0.4 - 0.5 s |
 | `kernel.bin` text (code and read-only data) / data / bss | 151.5 KB / 8.8 KB / 100.9 KB |
 | `kernel.bin` file size | 173 KB stripped, 747 KB with debug info |
-| `coalbox` / `sh` / `init` / `mcpd` | 40.6 KB / 20.8 KB / 10.3 KB / 14.9 KB |
+| `coalbox` / `sh` / `init` / `mcpd` | 64.1 KB / 42.8 KB (38.4 KB of code and data) / 10.3 KB / 14.9 KB |
 | Boot ISO (GRUB + kernel) / disk image | 5.9 MB / 32 MiB FAT16 (137 KB of files) |
 | RAM in use after boot | 1.7 MB of 509 MiB (`/proc/meminfo`: MemTotal 521296 kB, MemFree 519620 kB) |
 | Source size | about 11,100 lines of kernel C (15,300 with headers and assembly), 6,200 of user space |

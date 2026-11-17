@@ -5,6 +5,7 @@
 #include <libc/stdlib.h>
 #include <libc/string.h>
 #include <libc/limits.h>
+#include <libc/errno.h>
 #include <libc/time.h>
 #include <libc/unistd.h>
 #include "check.h"
@@ -33,6 +34,8 @@ static void test_string(void) {
     CHECK(strcmp(strerror(2), "No such file or directory") == 0);
 }
 
+static int cmp_int(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
+
 static void test_stdlib(void) {
     char *end;
 
@@ -46,6 +49,29 @@ static void test_stdlib(void) {
     CHECK(end == none);
     strtol("12abc", &end, 10);
     CHECK(*end == 'a');
+    errno = 0;
+    CHECK(strtol("99999999999", NULL, 10) == LONG_MAX && errno == ERANGE);
+    CHECK(strtol("-99999999999", NULL, 10) == LONG_MIN);
+    CHECK(strtol("-2147483648", NULL, 10) == LONG_MIN);
+    CHECK(strtoul("4294967295", NULL, 10) == ULONG_MAX);
+    CHECK(strtoll("-9223372036854775808", NULL, 10) == LLONG_MIN);
+    CHECK(strtoll("123456789012", NULL, 10) == 123456789012LL);
+    CHECK(strtoull("ffffffffffffffff", NULL, 16) == ULLONG_MAX);
+    errno = 0;
+    CHECK(strtoull("18446744073709551616", NULL, 10) == ULLONG_MAX && errno == ERANGE);
+    CHECK(PATH_MAX >= 4096);
+}
+
+static void test_errno_strings(void) {
+    CHECK(strcmp(strerror(EPERM), "Operation not permitted") == 0);
+    CHECK(strcmp(strerror(EOPNOTSUPP), "Operation not supported") == 0);
+    CHECK(strcmp(strerror(132), "Operation not possible due to RF-kill") == 0);
+    CHECK(strcmp(strerror(0), "Success") == 0);
+    CHECK(strcmp(strerror(5000), "Unknown error") == 0);
+    CHECK(strcmp(strerror(-1), "Unknown error") == 0);
+    int ok = 1;
+    for (int e = 1; e <= 132; e++) ok &= strcmp(strerror(e), "Unknown error") != 0 || e == 41 || e == 58;
+    CHECK(ok);
 }
 
 static void on_exit_a(void) { printf("libc_test: atexit handler ran\n"); }
@@ -82,7 +108,17 @@ static void test_malloc(void) {
     free(c); free(d); free(e);
 }
 
-static int cmp_int(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
+static void test_bsearch(void) {
+    int v[] = { 1, 3, 5, 7, 9, 11 };
+    int k = 7, miss = 4;
+    CHECK(bsearch(&k, v, 6, sizeof v[0], cmp_int) == &v[3]);
+    CHECK(bsearch(&miss, v, 6, sizeof v[0], cmp_int) == NULL);
+    k = 1;
+    CHECK(bsearch(&k, v, 6, sizeof v[0], cmp_int) == &v[0]);
+    k = 11;
+    CHECK(bsearch(&k, v, 6, sizeof v[0], cmp_int) == &v[5]);
+    CHECK(bsearch(&k, v, 0, sizeof v[0], cmp_int) == NULL);
+}
 
 static void test_qsort(void) {
     int v[] = { 5, 3, 9, 1, 7, 2, 8 };
@@ -105,6 +141,12 @@ static void test_printf(void) {
     CHECK(strcmp(buf, "abc|   7|0xff|10|%") == 0);
     CHECK(snprintf(buf, 4, "abcdef") == 6 && strcmp(buf, "abc") == 0);
     CHECK(sprintf(buf, "%s", "x") == 1);
+    snprintf(buf, sizeof buf, "%f|%.2f|%.0f|%.3f", 3.14159, 2.675, 2.5, -0.0005);
+    CHECK(strcmp(buf, "3.141590|2.67|2|-0.001") == 0 || strcmp(buf, "3.141590|2.68|2|-0.001") == 0);
+    snprintf(buf, sizeof buf, "%.1f|%6.2f|%-7.1f|%+.1f|%.2f", 0.25, 1.005, 9.96, 1.0, 1234567.891);
+    CHECK(strcmp(buf, "0.2|  1.00|10.0   |+1.0|1234567.89") == 0);
+    snprintf(buf, sizeof buf, "%.3f|%f|%.0f", 0.001, 100.0, 0.5);
+    CHECK(strcmp(buf, "0.001|100.000000|0") == 0);
 }
 
 static void test_time(void) {
@@ -126,8 +168,10 @@ int main(int argc, char **argv) {
     CHECK(environ != NULL || 1);
     test_string();
     test_stdlib();
+    test_errno_strings();
     test_atexit_and_env();
     test_malloc();
+    test_bsearch();
     test_qsort();
     test_printf();
     test_time();

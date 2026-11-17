@@ -7,6 +7,8 @@ typedef unsigned int socklen_t;
 typedef unsigned short sa_family_t;
 
 #define AF_UNSPEC 0
+#define AF_UNIX   1
+#define AF_LOCAL  AF_UNIX
 #define AF_INET   2
 #define PF_INET   AF_INET
 
@@ -43,6 +45,7 @@ struct sockaddr {
 };
 
 int socket(int domain, int type, int protocol);
+int socketpair(int domain, int type, int protocol, int fds[2]);
 int bind(int fd, const struct sockaddr *addr, socklen_t len);
 int connect(int fd, const struct sockaddr *addr, socklen_t len);
 int listen(int fd, int backlog);

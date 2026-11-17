@@ -1,0 +1,296 @@
+{
+ "git": {
+  "sha": "7c23c9fd4317",
+  "dirty": true,
+  "subject": "Docs: fsync, mount, deferred writes"
+ },
+ "date": "2026-11-17T15:53:57+0100",
+ "env": {
+  "host_cpu": "Intel(R) Xeon(R) Processor @ 2.30GHz",
+  "host_cpus": 2,
+  "loadavg": [
+   2.83544921875,
+   2.1533203125,
+   1.26806640625
+  ],
+  "qemu": "QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+  "qemu_args": "-accel tcg,thread=single -icount shift=0,sleep=off",
+  "guest_memory_mb": 128,
+  "python": "3.13.18"
+ },
+ "kernel": {
+  "text": 155879,
+  "data": 21084,
+  "bss": 101304,
+  "stripped": 189544
+ },
+ "boot": {
+  "median": 1457.7547080000386,
+  "p10": 1445.2947430000222,
+  "p90": 1512.0230144001198,
+  "n": 5,
+  "samples": [
+   1441.2531010000293,
+   1506.021452000141,
+   1457.7547080000386,
+   1451.3572060000115,
+   1516.0240560001057
+  ]
+ },
+ "bench": {
+  "reps": 21,
+  "tsc_mhz": 999.85,
+  "tests": {
+   "null_syscall": {
+    "unit": "ns",
+    "value": 104.05,
+    "p10": 104.03,
+    "p90": 104.05,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     104.05
+    ]
+   },
+   "read_zero_1b": {
+    "unit": "ns",
+    "value": 694.35,
+    "p10": 694.2,
+    "p90": 694.36,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     694.35
+    ]
+   },
+   "write_null_1b": {
+    "unit": "ns",
+    "value": 689.34,
+    "p10": 689.19,
+    "p90": 689.35,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     689.34
+    ]
+   },
+   "gettimeofday": {
+    "unit": "ns",
+    "value": 381.18,
+    "p10": 381.11,
+    "p90": 381.19,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     381.18
+    ]
+   },
+   "clock_gettime": {
+    "unit": "ns",
+    "value": 361.18,
+    "p10": 361.1,
+    "p90": 361.18,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     361.18
+    ]
+   },
+   "open_close": {
+    "unit": "ns",
+    "value": 14508.47,
+    "p10": 14506.04,
+    "p90": 14508.68,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     14508.47
+    ]
+   },
+   "stat": {
+    "unit": "ns",
+    "value": 14708.47,
+    "p10": 14706.07,
+    "p90": 14708.71,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     14708.47
+    ]
+   },
+   "pipe_rw_1b": {
+    "unit": "ns",
+    "value": 1483.72,
+    "p10": 1483.41,
+    "p90": 1483.75,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     1483.72
+    ]
+   },
+   "page_fault": {
+    "unit": "ns",
+    "value": 10797.12,
+    "p10": 10794.72,
+    "p90": 10797.15,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     10797.12
+    ]
+   },
+   "mmap_munmap_1m": {
+    "unit": "ns",
+    "value": 1340.68,
+    "p10": 1340.38,
+    "p90": 1340.68,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     1340.68
+    ]
+   },
+   "fork_exit_wait": {
+    "unit": "ns",
+    "value": 95176.09,
+    "p10": 95174.38,
+    "p90": 95193.91,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     95176.09
+    ]
+   },
+   "fork_exec_wait": {
+    "unit": "ns",
+    "value": 250358.7,
+    "p10": 250324.51,
+    "p90": 250362.0,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     250358.7
+    ]
+   },
+   "ctx_2": {
+    "unit": "ns",
+    "value": 811.03,
+    "p10": 811.0,
+    "p90": 811.04,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     811.03
+    ]
+   },
+   "ctx_8": {
+    "unit": "ns",
+    "value": 811.4,
+    "p10": 811.39,
+    "p90": 811.42,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     811.4
+    ]
+   },
+   "pipe_bw": {
+    "unit": "MB/s",
+    "value": 53.64,
+    "p10": 53.64,
+    "p90": 53.64,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     53.64
+    ]
+   },
+   "signal_roundtrip": {
+    "unit": "ns",
+    "value": 2536.79,
+    "p10": 2536.71,
+    "p90": 2537.34,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     2536.79
+    ]
+   },
+   "create_delete_0k": {
+    "unit": "ns",
+    "value": 28397.25,
+    "p10": 28396.74,
+    "p90": 28406.87,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     28397.25
+    ]
+   },
+   "create_delete_4k": {
+    "unit": "ns",
+    "value": 69599.74,
+    "p10": 69598.5,
+    "p90": 69599.74,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     69599.74
+    ]
+   },
+   "file_write_8m": {
+    "unit": "MB/s",
+    "value": 50.44,
+    "p10": 45.91,
+    "p90": 53.26,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     50.44
+    ]
+   },
+   "file_write_8m_nosync": {
+    "unit": "MB/s",
+    "value": 44.97,
+    "p10": 37.24,
+    "p90": 49.82,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     44.97
+    ]
+   },
+   "file_read_8m": {
+    "unit": "MB/s",
+    "value": 92.12,
+    "p10": 73.36,
+    "p90": 98.55,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     92.12
+    ]
+   },
+   "tcp_latency": {
+    "unit": "ns",
+    "value": null
+   },
+   "tcp_bw": {
+    "unit": "MB/s",
+    "value": null
+   },
+   "memcpy_bw": {
+    "unit": "MB/s",
+    "value": 999.53,
+    "p10": 999.52,
+    "p90": 999.67,
+    "n": 21,
+    "runs": 1,
+    "run_medians": [
+     999.53
+    ]
+   }
+  }
+ }
+}
