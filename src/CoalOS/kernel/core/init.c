@@ -47,8 +47,7 @@ extern uint8_t _kernel_end_phys;
 uint32_t g_multiboot_info_phys_addr_global = 0;
 
 const char *KERNEL_VERSION_STRING = "0.1.0";
-const char *INITIAL_TEST_PROGRAM_PATH = "/hello.elf";
-const char *SYSTEM_SHELL_PATH = "/bin/shell.elf";
+const char *INIT_PATH = "/sbin/init";
 
 #define MIN_USABLE_HEAP_SIZE (1 * 1024 * 1024)            // 1MB
 #define MAX_CLAMPED_INITIAL_HEAP_SIZE (256 * 1024 * 1024) // 256MB
@@ -141,7 +140,8 @@ init_result_t init_validate_multiboot(uint32_t magic, uint32_t mb_info_phys_addr
 init_result_t init_basic_io(void)
 {
     // Initialize serial communication first
-    serial_init();
+    serial_init(SERIAL_COM1);
+    serial_init(SERIAL_COM2);
     
     // Initialize terminal for user output
     terminal_init();
@@ -215,13 +215,8 @@ init_result_t init_launch_processes(bool filesystem_ready)
                            "Cannot launch processes - filesystem not ready");
     }
     
-    // Launch test program
-    launch_program(INITIAL_TEST_PROGRAM_PATH, "Test Suite");
-    
-    // Launch system shell
-    launch_program(SYSTEM_SHELL_PATH, "System Shell");
-    serial_printf("[Init] Shell launched\n");
-    
+    launch_program(INIT_PATH, "init");
+
     return init_success("Initial User Processes Launched");
 }
 

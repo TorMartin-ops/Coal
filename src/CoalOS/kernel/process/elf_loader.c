@@ -3,7 +3,6 @@
 #include <kernel/process/process.h>
 #include <kernel/memory/frame.h>
 #include <kernel/memory/paging.h>
-#include <kernel/memory/paging_temp.h>
 #include <kernel/lib/string.h>
 #include <kernel/fs/vfs/fs_errno.h>
 
@@ -44,7 +43,9 @@ static int load_page(uint32_t *pd, uintptr_t page, bool shared, uint32_t flags,
         flags |= old_flags & PAGE_RW;
         if (!(old_flags & PAGE_NX_BIT)) flags &= ~PAGE_NX_BIT;
     }
+    if (!fresh) get_frame(phys);             /* remapping releases the old reference */
     if (paging_map_single_4k(pd, page, phys, flags) != 0) {
+        if (!fresh) put_frame(phys);
         if (fresh) put_frame(phys);
         return -ENOMEM;
     }

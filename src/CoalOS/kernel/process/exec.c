@@ -10,9 +10,7 @@
 #include <kernel/lib/string.h>
 #include <kernel/memory/frame.h>
 #include <kernel/memory/kmalloc.h>
-#include <kernel/memory/paging_core.h>
 #include <kernel/memory/paging_process.h>
-#include <kernel/memory/paging_temp.h>
 
 /* Linux auxiliary vector types */
 #define AT_NULL 0
@@ -54,17 +52,10 @@ static void fill_random(uint8_t *out, size_t n) {
 }
 
 static int new_address_space(mm_struct_t **out) {
-    uintptr_t pd = frame_alloc();
-    uint32_t *v;
+    uintptr_t pd = paging_new_directory();
     mm_struct_t *mm;
 
     if (!pd) return -ENOMEM;
-    v = paging_temp_map(pd);
-    if (!v) { put_frame(pd); return -ENOMEM; }
-    memset(v, 0, PAGE_SIZE);
-    copy_kernel_pde_entries(v);
-    v[RECURSIVE_PDE_INDEX] = (pd & PAGING_ADDR_MASK) | PAGE_PRESENT | PAGE_RW | nx_flag();
-    paging_temp_unmap(v);
     mm = create_mm((uint32_t *)pd);
     if (!mm) { put_frame(pd); return -ENOMEM; }
     *out = mm;
@@ -73,14 +64,8 @@ static int new_address_space(mm_struct_t **out) {
 
 void exec_free_mm(mm_struct_t *mm) {
     uint32_t *pd = mm->pgd_phys;
-    uint32_t *v = paging_temp_map((uintptr_t)pd);
 
-    if (v) {                             /* PDE 0 is the kernel's shared low identity map, not ours to free */
-        v[0] = 0;
-        paging_temp_unmap(v);
-    }
-    paging_free_user_space(pd);          /* frames and page tables first: VMA teardown then has nothing to unmap */
-    destroy_mm(mm);
+    destroy_mm(mm);                      /* releases the user pages and page tables */
     put_frame((uintptr_t)pd);
 }
 
@@ -186,9 +171,7 @@ int exec_build_image(const char *path, const char *const *argv, const char *cons
 
     mm->start_brk = mm->end_brk = ei.brk;
     mm->start_stack = USER_STACK_TOP_VIRT_ADDR;
-    if (!insert_vma(mm, ei.brk, ei.brk, VM_READ | VM_WRITE | VM_USER | VM_ANONYMOUS,
-                    PAGE_PRESENT | PAGE_RW | PAGE_USER | nx_flag(), NULL, 0) ||
-        !insert_vma(mm, USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR,
+    if (!insert_vma(mm, USER_STACK_BOTTOM_VIRT, USER_STACK_TOP_VIRT_ADDR,
                     VM_READ | VM_WRITE | VM_USER | VM_GROWS_DOWN | VM_ANONYMOUS,
                     PAGE_PRESENT | PAGE_RW | PAGE_USER | nx_flag(), NULL, 0)) {
         ret = -ENOMEM;
@@ -204,6 +187,22 @@ fail:
 out:
     kfree(file);
     return ret;
+}
+
+void exec_set_name(pcb_t *p, const char *path, const char *const *argv) {
+    const char *base = path;
+    size_t n = 0;
+
+    for (const char *c = path; *c; c++) if (*c == '/') base = c + 1;
+    strncpy(p->name, base, sizeof(p->name) - 1);
+    p->name[sizeof(p->name) - 1] = 0;
+    for (size_t i = 0; argv && argv[i]; i++) {
+        size_t l = strlen(argv[i]) + 1;
+        if (n + l > sizeof(p->cmdline)) break;
+        memcpy(p->cmdline + n, argv[i], l);
+        n += l;
+    }
+    p->cmdline_len = n;
 }
 
 int process_execve(const char *path, const char *const *argv, const char *const *envp,
@@ -226,6 +225,7 @@ int process_execve(const char *path, const char *const *argv, const char *const 
     local_irq_restore(flags);
 
     if (old) exec_free_mm(old);
+    exec_set_name(p, path, argv);
     process_init_user_frame(regs, img.entry, img.sp);
     return 0;
 }

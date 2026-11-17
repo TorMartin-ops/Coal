@@ -4,19 +4,13 @@
  */
 #include <kernel/fs/devfs.h>
 #include <kernel/fs/vfs/vfs.h>
-#include <kernel/drivers/display/terminal.h>
+#include <kernel/drivers/display/tty.h>
+#include <kernel/drivers/display/serial.h>
 #include <kernel/memory/uaccess.h>
 #include <kernel/lib/string.h>
 
 #define MAX_DEVICES 16
 #define NAME_LEN    16
-#define CONSOLE_LINE_MAX 1024
-
-#define TCGETS      0x5401
-#define TCSETS      0x5402
-#define TCSETSW     0x5403
-#define TCSETSF     0x5404
-#define TIOCGWINSZ  0x5413
 
 static struct devfs_node {
     char name[NAME_LEN];
@@ -120,32 +114,36 @@ static vfs_driver_t devfs_driver = {
 
 /* ---- Built-in devices ----------------------------------------------------- */
 
-/* Line-oriented keyboard input; like a tty in canonical mode, the newline is part of the data. */
-static ssize_t console_read(void *priv, void *buf, size_t len) {
-    if (len == 0) return 0;
-    char *p = buf;
-    ssize_t n = terminal_read_line_blocking(p, len > CONSOLE_LINE_MAX ? CONSOLE_LINE_MAX : len);
-    if (n < 0) return n;
-    if ((size_t)n < len) p[n++] = '\n';
-    return n;
-}
+static ssize_t console_read(void *priv, void *buf, size_t len) { return tty_read(buf, len); }
+static ssize_t console_write(void *priv, const void *buf, size_t len) { return tty_write(buf, len); }
 
-static ssize_t console_write(void *priv, const void *buf, size_t len) {
-    terminal_write_len(buf, len);
-    return (ssize_t)len;
-}
-
-/* Enough tty ioctls for isatty() and window size queries; settings are accepted and ignored. */
+/* tty_ioctl works on kernel buffers; copy the argument across the user boundary here. */
 static int console_ioctl(void *priv, uint32_t cmd, void *arg) {
-    static const struct { uint32_t iflag, oflag, cflag, lflag; uint8_t line, cc[19]; } termios =
-        { 0x500, 0x5, 0xBF, 0x8A3B, 0, { 3, 28, 127, 21, 4, 0, 1, 0, 17, 19, 26, 0, 18, 15, 23, 22 } };
-    static const uint16_t winsize[4] = { 25, 80, 0, 0 };
+    union { tty_termios_t t; tty_winsize_t w; uint32_t u; } k;
+    size_t size;
+    bool in;
     switch (cmd) {
-    case TCGETS:     return copy_to_user(arg, &termios, sizeof(termios)) ? -EFAULT : 0;
-    case TIOCGWINSZ: return copy_to_user(arg, winsize, sizeof(winsize)) ? -EFAULT : 0;
-    case TCSETS: case TCSETSW: case TCSETSF: return 0;
-    default:         return -ENOTTY;
+    case TTY_TCGETS:    size = sizeof(k.t); in = false; break;
+    case TTY_TCSETS: case TTY_TCSETSW: case TTY_TCSETSF:
+                        size = sizeof(k.t); in = true;  break;
+    case TTY_TIOCGWINSZ: size = sizeof(k.w); in = false; break;
+    case TTY_TIOCGPGRP: case TTY_FIONREAD:
+                        size = sizeof(k.u); in = false; break;
+    case TTY_TIOCSPGRP: size = sizeof(k.u); in = true;  break;
+    default:            return -ENOTTY;
     }
+    if (in && copy_from_user(&k, arg, size)) return -EFAULT;
+    int rc = tty_ioctl(cmd, &k);
+    if (rc == 0 && !in && copy_to_user(arg, &k, size)) return -EFAULT;
+    return rc;
+}
+
+/* COM2 (/dev/ttyS1) is the link to the host MCP bridge; COM1 carries the kernel log. */
+static ssize_t serial_dev_read(void *priv, void *buf, size_t len) {
+    return (ssize_t)serial_port_read((int)(uintptr_t)priv, buf, len);
+}
+static ssize_t serial_dev_write(void *priv, const void *buf, size_t len) {
+    return (ssize_t)serial_port_write((int)(uintptr_t)priv, buf, len);
 }
 
 static ssize_t null_read(void *priv, void *buf, size_t len) { return 0; }
@@ -155,6 +153,8 @@ static ssize_t zero_read(void *priv, void *buf, size_t len) { memset(buf, 0, len
 static const devfs_char_ops_t console_ops = { console_read, console_write, console_ioctl, NULL, (5 << 8) | 1 };
 static const devfs_char_ops_t null_ops    = { null_read, sink_write, NULL, NULL, (1 << 8) | 3 };
 static const devfs_char_ops_t zero_ops    = { zero_read, sink_write, NULL, NULL, (1 << 8) | 5 };
+static const devfs_char_ops_t ttyS0_ops   = { serial_dev_read, serial_dev_write, NULL, (void *)SERIAL_COM1, (4 << 8) | 64 };
+static const devfs_char_ops_t ttyS1_ops   = { serial_dev_read, serial_dev_write, NULL, (void *)SERIAL_COM2, (4 << 8) | 65 };
 
 int devfs_init(void) {
     int rc = vfs_register_driver(&devfs_driver);
@@ -162,5 +162,7 @@ int devfs_init(void) {
     if (rc == 0) rc = devfs_register_char("tty", &console_ops);
     if (rc == 0) rc = devfs_register_char("null", &null_ops);
     if (rc == 0) rc = devfs_register_char("zero", &zero_ops);
+    if (rc == 0) rc = devfs_register_char("ttyS0", &ttyS0_ops);
+    if (rc == 0) rc = devfs_register_char("ttyS1", &ttyS1_ops);
     return rc;
 }

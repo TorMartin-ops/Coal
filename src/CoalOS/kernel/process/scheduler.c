@@ -12,7 +12,7 @@
 #include <kernel/lib/assert.h>
 #include <kernel/memory/kmalloc.h>
 
-_Static_assert(TARGET_FREQUENCY == 1000, "sleep_ms assumes a 1 kHz tick");
+_Static_assert(TIMER_HZ == 1000, "sleep_ms assumes a 1 kHz tick");
 
 #define IDLE_STACK_SIZE 4096
 
@@ -114,7 +114,6 @@ void scheduler_init(void) {
     uint8_t *stack = kmalloc(IDLE_STACK_SIZE);
 
     if (!stack) KERNEL_PANIC_HALT("no memory for the idle stack");
-    process_kstack_init();
     idle_pcb.task.process = &idle_pcb;
     idle_pcb.task.priority = SCHED_IDLE_PRIORITY;
     idle_pcb.kernel_stack_vaddr_top = (uint32_t *)(stack + IDLE_STACK_SIZE - 16);
@@ -215,4 +214,8 @@ uint32_t scheduler_get_ticks(void) {
 
 tcb_t *get_current_task(void) {
     return g_current;
+}
+
+bool scheduler_is_ready(void) {
+    return g_started;
 }
