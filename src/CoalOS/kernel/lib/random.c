@@ -1,46 +1,77 @@
+/**
+ * @file random.c
+ * @brief ChaCha20 based generator with fast key erasure (see random.h).
+ *
+ * Each output block's first 32 bytes become the next key and are never handed out, so a later
+ * compromise of the state does not reveal earlier output.
+ */
 #include <kernel/lib/random.h>
-#include <kernel/drivers/timer/pit.h>
+#include <kernel/lib/string.h>
+#include <kernel/sync/spinlock.h>
 
-#define CPUID1_ECX_RDRAND (1u << 30)
+static uint32_t g_key[8];
+static uint32_t g_counter;
+static bool     g_seeded;
 
-static bool rdrand64(uint64_t *v) {
-    for (int tries = 0; tries < 10; tries++) {
-        uint8_t ok;
-        asm volatile("rdrand %0; setc %1" : "=r"(*v), "=qm"(ok) : : "cc");
-        if (ok) return true;
+#define ROTL(v, n) (((v) << (n)) | ((v) >> (32 - (n))))
+#define QR(a, b, c, d) \
+    a += b; d ^= a; d = ROTL(d, 16); c += d; b ^= c; b = ROTL(b, 12); \
+    a += b; d ^= a; d = ROTL(d, 8);  c += d; b ^= c; b = ROTL(b, 7)
+
+/* One ChaCha20 block for the current key and counter. */
+static void block(uint32_t out[16]) {
+    uint32_t s[16] = { 0x61707865, 0x3320646e, 0x79622d32, 0x6b206574, 0, 0, 0, 0, 0, 0, 0, 0, g_counter++, 0, 0, 0 };
+    uint32_t x[16];
+
+    memcpy(s + 4, g_key, sizeof(g_key));
+    memcpy(x, s, sizeof(x));
+    for (int i = 0; i < 10; i++) {
+        QR(x[0], x[4], x[8],  x[12]); QR(x[1], x[5], x[9],  x[13]);
+        QR(x[2], x[6], x[10], x[14]); QR(x[3], x[7], x[11], x[15]);
+        QR(x[0], x[5], x[10], x[15]); QR(x[1], x[6], x[11], x[12]);
+        QR(x[2], x[7], x[8],  x[13]); QR(x[3], x[4], x[9],  x[14]);
     }
-    return false;
+    for (int i = 0; i < 16; i++) out[i] = x[i] + s[i];
 }
 
-static bool have_rdrand(void) {
-    static int cached = -1;
+/* XORs input into the key, then runs the generator once so every input bit reaches every key bit. */
+static void mix(const uint8_t *data, size_t len) {
+    uint32_t out[16];
 
-    if (cached < 0) {
-        uint32_t a = 1, b, c, d;
-        asm volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
-        cached = (c & CPUID1_ECX_RDRAND) != 0;
+    for (size_t i = 0; i < len; i++) ((uint8_t *)g_key)[i % sizeof(g_key)] ^= data[i];
+    block(out);
+    memcpy(g_key, out, sizeof(g_key));
+}
+
+static void seed_from_cycle_counter(void) {
+    for (int i = 0; i < 32; i++) {
+        uint32_t t[2];
+        asm volatile("rdtsc" : "=a"(t[0]), "=d"(t[1]));
+        mix((const uint8_t *)t, sizeof(t));
+        for (volatile int spin = 0; spin < 50 + i * 7; spin++) { }      /* let the counter move by a varying amount */
     }
-    return cached;
+    g_seeded = true;
 }
 
-/* xorshift64*, reseeded from the TSC on every call: not cryptographic, but different on every boot and call. */
-static uint64_t fallback64(void) {
-    uint64_t x = tsc_read() | 1;
-
-    x ^= x >> 12; x ^= x << 25; x ^= x >> 27;
-    return x * 0x2545F4914F6CDD1Dull;
+void random_add(const void *data, size_t len) {
+    uintptr_t fl = local_irq_save();
+    mix(data, len);
+    local_irq_restore(fl);
 }
 
-void random_bytes(void *out, size_t n) {
+void random_bytes(void *out, size_t len) {
     uint8_t *p = out;
+    uintptr_t fl = local_irq_save();
 
-    while (n) {
-        uint64_t v;
-        size_t k = n < sizeof(v) ? n : sizeof(v);
-
-        if (!have_rdrand() || !rdrand64(&v)) v = fallback64();
-        for (size_t i = 0; i < k; i++) p[i] = (uint8_t)(v >> (8 * i));
-        p += k;
-        n -= k;
+    if (!g_seeded) seed_from_cycle_counter();
+    while (len) {
+        uint32_t b[16];
+        size_t n = MIN(len, sizeof(b) / 2);
+        block(b);
+        memcpy(g_key, b, sizeof(g_key));                    /* the first half is the next key */
+        memcpy(p, b + 8, n);
+        p += n;
+        len -= n;
     }
+    local_irq_restore(fl);
 }

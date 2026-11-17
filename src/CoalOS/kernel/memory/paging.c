@@ -141,7 +141,7 @@ int paging_get_physical_address_and_flags(void *pd, uintptr_t vaddr, uintptr_t *
 
 /* --- Device registers ------------------------------------------------------- */
 
-void *ioremap(uintptr_t phys, size_t size) {
+volatile void *ioremap(uint64_t phys, size_t size) {
     static uintptr_t next = KERNEL_MMIO_VADDR_START;
     uintptr_t first = PAGE_ALIGN_DOWN(phys), last = PAGE_ALIGN_UP(phys + size);
     uintptr_t va = next;
@@ -153,7 +153,7 @@ void *ioremap(uintptr_t phys, size_t size) {
                                  PAGE_PRESENT | PAGE_RW | PAGE_PCD | PAGE_PWT | PAGE_NX | PAGE_GLOBAL) != 0)
             return NULL;
     next += last - first;
-    return (void *)(va + (phys - first));
+    return (volatile void *)(va + (phys - first));
 }
 
 /* --- Per-process address spaces -------------------------------------------- */

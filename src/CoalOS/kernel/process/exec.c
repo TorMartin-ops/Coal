@@ -11,12 +11,12 @@
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/fs/vfs/read_file.h>
 #include <kernel/lib/string.h>
-#include <kernel/lib/random.h>
 #include <kernel/cpu/percpu.h>
 #include <kernel/cpu/msr.h>
 #include <kernel/memory/frame.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/memory/paging_process.h>
+#include <kernel/lib/random.h>
 
 /* Linux auxiliary vector types */
 #define AT_NULL 0

@@ -6,6 +6,8 @@
 #include <kernel/core/init.h>
 #include <kernel/core/log.h>
 #include <kernel/core/boot_info.h>
+#include <kernel/core/cmdline.h>
+#include <kernel/drivers/virtio/virtio.h>
 #include <kernel/cpu/percpu.h>
 #include <kernel/cpu/idt.h>
 #include <kernel/cpu/syscall.h>
@@ -68,6 +70,7 @@ void kernel_main_init(uint32_t magic, uintptr_t boot_info) {
     kprintf("Coal OS %s", COAL_VERSION);
 
     cpu_init_boot();
+    cmdline_init(boot_info_cmdline(magic, boot_info));
     boot_info_memmap(magic, boot_info, &map);
     memory_init(&map);
     idt_init();
@@ -81,6 +84,7 @@ void kernel_main_init(uint32_t magic, uintptr_t boot_info) {
     keyboard_init();
     keymap_load(KEYMAP_NORWEGIAN);
     net_init();
+    virtio_init();
 
     if (fs_init() != FS_SUCCESS) KERNEL_PANIC_HALT("cannot mount the root file system");
     pcb_t *init = create_user_process(INIT_PATH);

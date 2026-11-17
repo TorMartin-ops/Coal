@@ -174,7 +174,7 @@ long sc_getrandom(uintptr_t ubuf, size_t len, uint32_t flags) {
     uint8_t kbuf[256];
     size_t done = 0;
 
-    (void)flags;
+    if (flags & ~3u) return -EINVAL;
     if (len > 0x7ffff000) len = 0x7ffff000;
     while (done < len) {
         size_t n = len - done < sizeof(kbuf) ? len - done : sizeof(kbuf);

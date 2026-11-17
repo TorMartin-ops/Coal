@@ -33,11 +33,14 @@ def default_token_file():
 
 def common_options():
     ap = argparse.ArgumentParser(add_help=False)
-    ap.add_argument("--attach", metavar="unix:PATH|tcp:HOST:PORT|vsock:CID:PORT",
+    ap.add_argument("--attach", metavar="unix:PATH|tcp:HOST:PORT|vsock:CID:PORT|hvsock:PATH:PORT",
                     help="use an already running agentd at this address instead of managing QEMU")
     ap.add_argument("--build-dir", help="CMake build directory (default: <repo>/build/coal-mcp)")
     ap.add_argument("--memory", type=int, metavar="MIB",
                     help="default guest RAM for coal_boot (default: $COAL_MEMORY_MB or 512)")
+    ap.add_argument("--virtio", metavar="blk,console,rng,vsock[=CID]",
+                    help="give the guest these virtio devices (default: $COAL_VIRTIO or none). Boots with a virtio-blk "
+                         "root; the agentd link moves to vsock (vhost-vsock-pci, guest CID default 3) or the console")
     ap.add_argument("--log-dir", help="where per-run JSONL logs go (default: <build-dir>/runs)")
     return ap
 
@@ -67,9 +70,9 @@ def build_gateway(args, name):
     try:
         if args.attach:
             parse_address(args.attach)
+        machine = Machine(args.attach, args.virtio)
     except ValueError as e:
-        raise SystemExit("--attach: %s" % e)
-    machine = Machine(args.attach)
+        raise SystemExit("coal-gateway: %s" % e)
     runlog = RunLog(args.log_dir or os.path.join(machine.build_dir, "runs"), lambda: machine.workspace_id)
     signal.signal(signal.SIGTERM, lambda *_: (machine.shutdown(), os._exit(0)))
     return machine, Gateway(machine, runlog, {"name": name, "version": repo_version()}, log)

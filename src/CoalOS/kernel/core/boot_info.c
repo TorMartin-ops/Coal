@@ -95,6 +95,20 @@ static void read_pvh(uintptr_t info, struct boot_memmap *m, size_t *size) {
     *size = sizeof(*si);
 }
 
+const char *boot_info_cmdline(uint32_t magic, uintptr_t info_phys) {
+    if (magic == PVH_START_MAGIC) {
+        struct pvh_start_info *si = phys_to_virt(info_phys);
+        return si->cmdline_paddr ? phys_to_virt(si->cmdline_paddr) : NULL;
+    }
+    uintptr_t base = (uintptr_t)phys_to_virt(info_phys);
+    uint32_t total = *(uint32_t *)base;
+    for (struct multiboot_tag *t = (void *)(base + 8); (uintptr_t)t < base + total && t->type != MULTIBOOT_TAG_TYPE_END;
+         t = (void *)((uintptr_t)t + ALIGN_UP(t->size, 8)))
+        if (t->type == MULTIBOOT_TAG_TYPE_CMDLINE)
+            return (const char *)t + sizeof(struct multiboot_tag);
+    return NULL;
+}
+
 void boot_info_memmap(uint32_t magic, uintptr_t info_phys, struct boot_memmap *out) {
     size_t size;
 

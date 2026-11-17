@@ -156,13 +156,74 @@ static void make_raw(int fd) {
     SYS3(SYS_IOCTL, fd, TCSETS, t);
 }
 
-static int link_open(const char *dev) {
-    long fd = SYS2(SYS_OPEN, dev, O_RDWR | O_NOCTTY);
-    if (fd < 0) return -1;
+/* The link is a serial device, or "vsock[:PORT]": listen on an AF_VSOCK port and serve one host connection at a time. */
+#define AF_VSOCK      40
+#define VSOCK_DEFAULT_PORT 1024
+#define VMADDR_CID_ANY 0xFFFFFFFFu
+#define EINTR_        4
+
+static int vsock_lfd = -1;
+
+static void link_use(long fd) {
     make_raw((int)fd);
     SYS2(SYS_DUP2, fd, 0);
     SYS2(SYS_DUP2, fd, 1);
     if (fd > 1) SYS1(SYS_CLOSE, fd);
+}
+
+static int vsock_accept(void) {
+    long fd;
+    while ((fd = SYS4(SYS_ACCEPT4, vsock_lfd, 0, 0, 0)) == -EINTR_) { }
+    if (fd < 0) return -1;
+    SYS2(SYS_DUP2, fd, 0);
+    SYS2(SYS_DUP2, fd, 1);
+    SYS1(SYS_CLOSE, fd);
+    return 0;
+}
+
+static int vsock_listen(const char *spec) {
+    u32 port = VSOCK_DEFAULT_PORT;
+    if (spec[0] == ':') for (port = 0, spec++; *spec >= '0' && *spec <= '9'; spec++) port = port * 10 + (u32)(*spec - '0');
+    long fd = SYS3(SYS_SOCKET, AF_VSOCK, 1 /* SOCK_STREAM */, 0);
+    if (fd < 0) return -1;
+    struct { unsigned short family, reserved; u32 port, cid; u8 zero[4]; } sa = { AF_VSOCK, 0, port, VMADDR_CID_ANY, { 0 } };
+    if (SYS3(SYS_BIND, fd, &sa, sizeof sa) < 0 || SYS2(SYS_LISTEN, fd, 1) < 0) { SYS1(SYS_CLOSE, fd); return -1; }
+    vsock_lfd = (int)fd;
+    return vsock_accept();
+}
+
+/* "agentd.link=" from the kernel command line, or NULL. */
+static const char *cmdline_link(char *buf, size_t cap) {
+    static const char key[] = "agentd.link=";
+    long fd = SYS2(SYS_OPEN, "/proc/cmdline", O_RDONLY);
+    if (fd < 0) return NULL;
+    long n = SYS3(SYS_READ, fd, buf, cap - 1);
+    SYS1(SYS_CLOSE, fd);
+    if (n <= 0) return NULL;
+    buf[n] = 0;
+    for (long i = 0; i + 12 <= n; i++) {
+        if (i && buf[i - 1] != ' ') continue;
+        size_t k = 0;
+        while (key[k] && buf[i + (long)k] == key[k]) k++;
+        if (key[k]) continue;
+        char *v = buf + i + 12, *e = v;
+        while (*e && *e != ' ' && *e != '\n') e++;
+        *e = 0;
+        return v;
+    }
+    return NULL;
+}
+
+static int link_open(const char *dev) {
+    char cl[512];
+    if (!dev) dev = cmdline_link(cl, sizeof cl);
+    if (dev && dev[0] == 'v' && dev[1] == 's' && dev[2] == 'o' && dev[3] == 'c' && dev[4] == 'k' && (!dev[5] || dev[5] == ':')) {
+        if (vsock_listen(dev + 5) == 0) return 0;
+        dev = NULL;                             /* no vsock device: fall back to the serial link */
+    }
+    long fd = SYS2(SYS_OPEN, dev ? dev : "/dev/ttyS1", O_RDWR | O_NOCTTY);
+    if (fd < 0) return -1;
+    link_use(fd);
     return 0;
 }
 
@@ -1762,10 +1823,18 @@ static void start_resync(const char *msg) {
     rx_deadline = now_ms() + RESYNC_QUIET_MS;
 }
 
+static void send_hello(void);
+
 /* Takes what the link has and runs every complete frame. */
 static void link_input(void) {
     long room = (long)(MAX_FRAME + 5 - rx_len);
     long n = SYS3(SYS_READ, 0, rx + rx_len, room);
+    if (n <= 0 && vsock_lfd >= 0) {            /* the host went away: wait for the next connection */
+        if (vsock_accept() < 0) msleep(10);
+        rx_len = 0; rx_deadline = 0; resync = 0;
+        send_hello();
+        return;
+    }
     if (n <= 0) { msleep(10); return; }        /* nothing there, or no carrier yet */
     if (resync) { rx_deadline = now_ms() + RESYNC_QUIET_MS; return; }
     rx_len += (size_t)n;
@@ -1806,8 +1875,15 @@ static void clean_spill_dir(void) {
     SYS1(SYS_CLOSE, fd);
 }
 
+static void send_hello(void) {
+    event_begin("hello");
+    put_hello();
+    put('}');
+    send_out();
+}
+
 int main(int argc, char **argv) {
-    const char *dev = argc > 1 && argv && argv[1] ? argv[1] : "/dev/ttyS1";
+    const char *dev = argc > 1 && argv && argv[1] ? argv[1] : NULL;
     if (argc > 2 && argv[2]) spill_dir = argv[2];
     if (link_open(dev) < 0) return 1;
 
@@ -1818,10 +1894,7 @@ int main(int argc, char **argv) {
     SYS4(SYS_RT_SIGACTION, SIGCHLD, &sa, 0, 8);
     clean_spill_dir();
 
-    event_begin("hello");
-    put_hello();
-    put('}');
-    send_out();
+    send_hello();
 
     for (;;) {
         struct pollfd fds[2 + 2 * MAX_JOBS];

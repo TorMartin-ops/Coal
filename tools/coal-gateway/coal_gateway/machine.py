@@ -20,6 +20,23 @@ SRC_DIR = os.path.join(ROOT, "src", "CoalOS")
 PROTO_VERSION = 1
 
 
+VIRTIO_FEATURES = ("blk", "console", "rng", "vsock")
+VSOCK_PORT = 1024
+
+
+def parse_virtio(spec):
+    """'blk,console,rng,vsock[=CID]' -> {feature: value}; empty for no virtio. Raises ValueError."""
+    out = {}
+    for item in (spec or "").split(","):
+        name, _, val = item.strip().partition("=")
+        if not name:
+            continue
+        if name not in VIRTIO_FEATURES or (val and name != "vsock") or (val and not val.isdigit()):
+            raise ValueError("--virtio takes a comma list of %s (vsock=CID), got %r" % (", ".join(VIRTIO_FEATURES), item))
+        out[name] = int(val) if val else 3
+    return out
+
+
 def default_memory_mb():
     try:
         return max(16, min(4096, int(os.environ.get("COAL_MEMORY_MB", "512"))))
@@ -30,7 +47,8 @@ def default_memory_mb():
 class Machine:
     """One guest: QEMU started by us, or an agentd that is already running (--attach)."""
 
-    def __init__(self, attach=None):
+    def __init__(self, attach=None, virtio=None):
+        self.virtio = parse_virtio(virtio if virtio is not None else os.environ.get("COAL_VIRTIO"))
         self.proc = None
         self.workdir = None
         self.agent = None
@@ -73,6 +91,34 @@ class Machine:
         return (os.path.join(self.build_dir, "kernel.iso"),
                 os.path.join(self.build_dir, "disk.img"))
 
+    def _virtio_setup(self, disk, com2):
+        """QEMU arguments, kernel command line and agentd link address for the configured virtio devices.
+
+        With virtio the kernel is booted directly (-kernel) so it can be given a command line. The link is the
+        vsock port if the guest has one, else the virtio console, else COM2.
+        """
+        v, args, cmdline = self.virtio, [], ["root=vda" if "blk" in self.virtio else "root=hda"]
+        if "blk" in v:
+            args += ["-drive", "file=%s,if=none,id=root,format=raw" % disk,
+                     "-device", "virtio-blk-pci,drive=root,disable-legacy=on"]
+        else:
+            args += ["-hda", disk]
+        if "console" in v:
+            args += ["-device", "virtio-serial-pci,disable-legacy=on",
+                     "-chardev", "socket,id=hvc0,path=%s,server=on,wait=off" % com2,
+                     "-device", "virtconsole,chardev=hvc0"]
+        else:
+            args += ["-serial", "unix:%s,server=on,wait=off" % com2]
+        if "rng" in v:
+            args += ["-device", "virtio-rng-pci,disable-legacy=on"]
+        if "vsock" in v:
+            args += ["-device", "vhost-vsock-pci,guest-cid=%d,disable-legacy=on" % v["vsock"]]
+            cmdline.append("agentd.link=vsock:%d" % VSOCK_PORT)
+            return args, cmdline, "vsock:%d:%d" % (v["vsock"], VSOCK_PORT)
+        if "console" in v:
+            cmdline.append("agentd.link=/dev/hvc0")
+        return args, cmdline, "unix:" + com2
+
     def boot(self, rebuild=False, memory_mb=None, snapshot=False, timeout=60):
         with self.lock:
             if self.attached:
@@ -98,22 +144,26 @@ class Machine:
             self.workdir = tempfile.mkdtemp(prefix="coal-mcp-")      # mode 0700: QEMU monitor and COM2 sockets
             os.chmod(self.workdir, 0o700)
             com2, mon = self._p("com2.sock"), self._p("monitor.sock")
-            cmd = [qemu, "-display", "none", "-m", str(memory_mb or default_memory_mb()),
-                   "-cdrom", iso, "-hda", disk, "-boot", "d", "-no-shutdown",
+            cmd = [qemu, "-display", "none", "-m", str(memory_mb or default_memory_mb()), "-no-shutdown",
                    "-serial", "file:" + self._p("com1.log"),
-                   "-serial", "unix:%s,server=on,wait=off" % com2,
                    "-monitor", "unix:%s,server=on,wait=off" % mon,
                    "-nic", os.environ.get("COAL_NIC", "user,model=e1000")]
+            link = "unix:" + com2
+            if self.virtio:
+                args, cmdline, link = self._virtio_setup(disk, com2)
+                cmd += args + ["-kernel", os.path.join(self.build_dir, "kernel.bin"), "-append", " ".join(cmdline)]
+            else:
+                cmd += ["-cdrom", iso, "-hda", disk, "-boot", "d", "-serial", "unix:%s,server=on,wait=off" % com2]
             if snapshot:
                 cmd.append("-snapshot")
             cmd += os.environ.get("COAL_QEMU_ARGS", "").split()
             self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                          preexec_fn=_die_with_parent)
-            self.agent = AgentClient(parse_address("unix:" + com2))
+            self.agent = AgentClient(parse_address(link))
             start = time.monotonic()
             deadline = start + timeout
-            while not os.path.exists(com2) and time.monotonic() < deadline and self.running():
+            while link.startswith("unix:") and not os.path.exists(com2) and time.monotonic() < deadline and self.running():
                 time.sleep(0.05)
         if self.agent.wait_ready(max(1.0, deadline - time.monotonic()), self.running):
             return "%sbooted in %.1fs; agentd is ready" % (note, time.monotonic() - start)

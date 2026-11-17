@@ -27,10 +27,10 @@ python3 tools/coal-gateway/gateway.py stdio                  # builds and boots 
 python3 tools/coal-mcp/server.py                             # the same thing, the original entry point
 ```
 
-Options (both entry points): `--attach unix:PATH|tcp:HOST:PORT|vsock:CID:PORT` uses an `agentd` that is
+Options (both entry points): `--attach unix:PATH|tcp:HOST:PORT|vsock:CID:PORT|hvsock:PATH:PORT` uses an `agentd` that is
 already running instead of managing QEMU; `--build-dir DIR` (default `build/coal-mcp`); `--memory MIB`
 (default guest RAM, else `$COAL_MEMORY_MB`, else 512); `--log-dir DIR` (default `<build-dir>/runs`).
-`COAL_QEMU_ARGS` adds QEMU arguments, `COAL_NIC` replaces the network device.
+`--virtio blk,console,rng,vsock[=CID]` (or `$COAL_VIRTIO`) gives the guest virtio devices and moves the agentd link off COM2 (see `virtio.md`). `COAL_QEMU_ARGS` adds QEMU arguments, `COAL_NIC` replaces the network device.
 
 ### Streamable HTTP
 

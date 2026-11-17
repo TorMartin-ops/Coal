@@ -60,6 +60,25 @@ static long put_addr(uintptr_t uaddr, uintptr_t ulen, const struct sockaddr_in *
     return 0;
 }
 
+/* Protocols behind struct sock_ops take the sockaddr as it came from user space. */
+#define RAW_ADDR_MAX 32
+
+static long get_raw_addr(uintptr_t uaddr, uint32_t len, uint8_t *kaddr, size_t *klen) {
+    if (len > RAW_ADDR_MAX) return -EINVAL;
+    *klen = len;
+    return copy_from_user(kaddr, (const void *)uaddr, len) ? -EFAULT : 0;
+}
+
+/* Like put_addr() for a raw sockaddr of klen bytes. */
+static long put_raw_addr(uintptr_t uaddr, uintptr_t ulen, const uint8_t *kaddr, size_t klen) {
+    uint32_t len, full = (uint32_t)klen;
+
+    if (!uaddr || !ulen) return 0;
+    if (copy_from_user(&len, (const void *)ulen, sizeof(len)) != 0) return -EFAULT;
+    if (copy_to_user((void *)uaddr, kaddr, MIN(len, full)) != 0 || copy_to_user((void *)ulen, &full, sizeof(full)) != 0) return -EFAULT;
+    return 0;
+}
+
 /* Sends len user bytes in chunks; a stream is written completely unless the socket is non-blocking. */
 static long send_user(struct sock *s, uintptr_t ubuf, size_t len, int flags, const struct sockaddr_in *to) {
     long total = 0;
@@ -121,8 +140,15 @@ long sc_bind(uint32_t fd, uintptr_t uaddr, uint32_t len) {
     struct sock *s = grab(fd, &sf, &r);
 
     if (!s) return r;
-    r = get_addr(uaddr, len, &sa);
-    if (!r) r = sock_bind(s, ntohl(sa.sin_addr), ntohs(sa.sin_port));
+    if (s->ops) {
+        uint8_t raw[RAW_ADDR_MAX];
+        size_t rlen;
+        r = get_raw_addr(uaddr, len, raw, &rlen);
+        if (!r) r = s->ops->bind(s, raw, rlen);
+    } else {
+        r = get_addr(uaddr, len, &sa);
+        if (!r) r = sock_bind(s, ntohl(sa.sin_addr), ntohs(sa.sin_port));
+    }
     sys_file_put(sf);
     return r;
 }
@@ -134,8 +160,15 @@ long sc_connect(uint32_t fd, uintptr_t uaddr, uint32_t len) {
     struct sock *s = grab(fd, &sf, &r);
 
     if (!s) return r;
-    r = get_addr(uaddr, len, &sa);
-    if (!r) r = sock_connect(s, ntohl(sa.sin_addr), ntohs(sa.sin_port));
+    if (s->ops) {
+        uint8_t raw[RAW_ADDR_MAX];
+        size_t rlen;
+        r = get_raw_addr(uaddr, len, raw, &rlen);
+        if (!r) r = s->ops->connect(s, raw, rlen);
+    } else {
+        r = get_addr(uaddr, len, &sa);
+        if (!r) r = sock_connect(s, ntohl(sa.sin_addr), ntohs(sa.sin_port));
+    }
     sys_file_put(sf);
     return r;
 }
@@ -160,13 +193,20 @@ long sc_accept4(uint32_t fd, uintptr_t uaddr, uintptr_t ulen, uint32_t flags) {
     struct sock *s = grab(fd, &sf, &r);
 
     if (!s) return r;
+    uint8_t raw[RAW_ADDR_MAX];
+    size_t rlen = 0;
     if (flags & ~(uint32_t)(SOCK_NONBLOCK | SOCK_CLOEXEC)) r = -EINVAL;
+    else if (s->ops) r = s->ops->accept(s, (int)flags, raw, &rlen);
     else r = sock_accept(s, &addr, &port, (int)flags);
     sys_file_put(sf);
     if (r < 0) return r;
     if (flags & SOCK_CLOEXEC) get_current_process()->cloexec |= 1u << r;
-    sa = (struct sockaddr_in){ AF_INET, htons(port), htonl(addr), { 0 } };
-    put_addr(uaddr, ulen, &sa);
+    if (rlen) {
+        put_raw_addr(uaddr, ulen, raw, rlen);
+    } else {
+        sa = (struct sockaddr_in){ AF_INET, htons(port), htonl(addr), { 0 } };
+        put_addr(uaddr, ulen, &sa);
+    }
     return r;
 }
 
@@ -177,7 +217,12 @@ static long name_of(uint32_t fd, uintptr_t uaddr, uintptr_t ulen, bool peer) {
     struct sock *s = grab(fd, &sf, &r);
 
     if (!s) return r;
-    if (peer && !s->connected && !s->tcp) r = -ENOTCONN;
+    if (s->ops) {
+        uint8_t raw[RAW_ADDR_MAX];
+        size_t rlen;
+        r = s->ops->name(s, peer, raw, &rlen);
+        if (!r) r = put_raw_addr(uaddr, ulen, raw, rlen);
+    } else if (peer && !s->connected && !s->tcp) r = -ENOTCONN;
     else { sock_name(s, peer, &sa); r = put_addr(uaddr, ulen, &sa); }
     sys_file_put(sf);
     return r;
@@ -193,8 +238,8 @@ long sc_sendto(uint32_t fd, uintptr_t buf, size_t len, uint32_t flags, uintptr_t
     struct sock *s = grab(fd, &sf, &r);
 
     if (!s) return r == -ENOTSOCK && is_socketpair(fd) ? sc_write(fd, buf, len) : r;
-    if (uaddr && (r = get_addr(uaddr, alen, &sa)) != 0) { sys_file_put(sf); return r; }
-    r = send_user(s, buf, len, (int)flags, uaddr ? &sa : NULL);
+    if (uaddr && !s->ops && (r = get_addr(uaddr, alen, &sa)) != 0) { sys_file_put(sf); return r; }
+    r = send_user(s, buf, len, (int)flags, uaddr && !s->ops ? &sa : NULL);
     sys_file_put(sf);
     return r;
 }
@@ -206,9 +251,9 @@ long sc_recvfrom(uint32_t fd, uintptr_t buf, size_t len, uint32_t flags, uintptr
     struct sock *s = grab(fd, &sf, &r);
 
     if (!s) return r == -ENOTSOCK && is_socketpair(fd) ? sc_read(fd, buf, len) : r;
-    r = recv_user(s, buf, len, (int)flags, uaddr ? &sa : NULL);
+    r = recv_user(s, buf, len, (int)flags, uaddr && !s->ops ? &sa : NULL);
     sys_file_put(sf);
-    if (r >= 0 && uaddr) put_addr(uaddr, ulen, &sa);
+    if (r >= 0 && uaddr && !s->ops) put_addr(uaddr, ulen, &sa);
     return r;
 }
 

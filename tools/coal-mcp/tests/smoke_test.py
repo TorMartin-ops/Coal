@@ -81,7 +81,7 @@ def main():
         err, text = c.tool("coal_run", command="ping -c 2 127.0.0.1")
         check("2 received" in text, "ping 127.0.0.1 over the loopback interface", text)
         err, text = c.tool("coal_run", command="cat /proc/mounts")
-        check("/dev/hda / vfat" in text, "/proc/mounts lists the root file system", text)
+        check("/ vfat" in text, "/proc/mounts lists the root file system", text)
         # --- end kernel wave 6 ---
         err, text = c.tool("coal_run", command="dmesg")
         for _ in range(20):                 # DHCP needs about a second after boot

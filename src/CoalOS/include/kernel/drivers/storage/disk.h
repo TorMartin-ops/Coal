@@ -25,7 +25,7 @@ typedef struct disk {
     partition_t    partitions[MAX_PARTITIONS_PER_DISK];
 } disk_t;
 
-/** Probes the named drive (e.g. "hda") and reads its partition table. */
+/** Probes the named drive ("hda".."hdd" ATA, "vda".. virtio) and reads its partition table. */
 int disk_init(disk_t *disk, const char *device_name);
 
 /** Whole-disk sector access (absolute LBA, partitions are ignored). */

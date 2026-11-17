@@ -9,6 +9,7 @@
 #include <kernel/net/socket.h>
 #include <kernel/net/net.h>
 #include <kernel/net/tcp.h>
+#include <kernel/net/vsock.h>
 #include <kernel/cpu/linux_abi.h>
 #include <kernel/fs/vfs/vfs.h>
 #include <kernel/memory/kmalloc.h>
@@ -48,15 +49,13 @@ struct ifreq {
 
 /* ---- waiting ------------------------------------------------------------------ */
 
-struct waiter { bool timed; uint32_t end; };
-
-static void waiter_init(struct waiter *w, uint32_t ms) {
+void sock_wait_init(sock_wait_t *w, uint32_t ms) {
     w->timed = ms != 0;
     w->end = net_now() + ms;
 }
 
 /* Sleeps until the socket changes. Interrupts are off. -EINTR for a signal, -EAGAIN at the deadline. */
-static int wait_event(struct sock *s, const struct waiter *w) {
+int sock_wait(struct sock *s, const sock_wait_t *w) {
     if (w->timed) {
         int32_t left = (int32_t)(w->end - net_now());
         if (left <= 0) return -EAGAIN;
@@ -118,7 +117,7 @@ struct sock *sock_find_listener(uint16_t port) {
     return NULL;
 }
 
-static struct sock *sock_new(int type, int protocol) {
+struct sock *sock_new(int type, int protocol) {
     struct sock *s = kmalloc(sizeof(*s));
     if (!s) return NULL;
     memset(s, 0, sizeof(*s));
@@ -131,7 +130,7 @@ static struct sock *sock_new(int type, int protocol) {
     return NULL;
 }
 
-static void sock_free(struct sock *s) {
+void sock_free(struct sock *s) {
     for (int i = 0; i < NET_MAX_SOCKS; i++)
         if (net_socks[i] == s) net_socks[i] = NULL;
     while (s->rxq) {
@@ -172,7 +171,7 @@ struct sock *sock_of(sys_file_t *sf) {
     return v->fs_driver == &sockfs ? v->data : NULL;
 }
 
-static int install(struct sock *s, int flags) {
+int sock_install(struct sock *s, int flags) {
     int fd = sys_install_vnode(&sockfs, s, S_IFSOCK, O_RDWR | flags);
     if (fd < 0) sock_free(s);
     return fd;
@@ -181,6 +180,7 @@ static int install(struct sock *s, int flags) {
 int sock_create(int domain, int type, int protocol) {
     int kind = type & 0xF, flags = type & SOCK_NONBLOCK;
 
+    if (domain == AF_VSOCK) return vsock_create(kind, protocol, flags);
     if (domain != AF_INET) return -EAFNOSUPPORT;
     if (kind == SOCK_STREAM && (protocol == 0 || protocol == IPPROTO_TCP)) protocol = IPPROTO_TCP;
     else if (kind == SOCK_DGRAM && (protocol == 0 || protocol == IPPROTO_UDP)) protocol = IPPROTO_UDP;
@@ -193,7 +193,7 @@ int sock_create(int domain, int type, int protocol) {
     if (!s) return -ENOMEM;
     s->nonblock = flags != 0;
     irq = local_irq_save();
-    int fd = install(s, flags);
+    int fd = sock_install(s, flags);
     local_irq_restore(irq);
     return fd;
 }
@@ -226,6 +226,7 @@ int sock_bind(struct sock *s, uint32_t addr, uint16_t port) {
 }
 
 int sock_listen(struct sock *s, int backlog) {
+    if (s->ops) return s->ops->listen(s, backlog);
     uintptr_t irq = local_irq_save();
     int rc = 0;
 
@@ -242,14 +243,14 @@ int sock_listen(struct sock *s, int backlog) {
 
 int sock_accept(struct sock *s, uint32_t *raddr, uint16_t *rport, int flags) {
     uintptr_t irq = local_irq_save();
-    struct waiter w;
+    sock_wait_t w;
     int rc = 0;
 
     if (!s->listening) { local_irq_restore(irq); return -EINVAL; }
-    waiter_init(&w, s->rcv_timeout_ms);
+    sock_wait_init(&w, s->rcv_timeout_ms);
     while (!s->acc_n) {
         if (s->nonblock) rc = -EAGAIN;
-        else rc = wait_event(s, &w);
+        else rc = sock_wait(s, &w);
         if (rc) { local_irq_restore(irq); return rc; }
     }
     struct tcp_conn *c = s->accq[0];
@@ -258,6 +259,7 @@ int sock_accept(struct sock *s, uint32_t *raddr, uint16_t *rport, int flags) {
     struct sock *n = sock_new(SOCK_STREAM, IPPROTO_TCP);
     if (!n) { tcp_close(c); local_irq_restore(irq); return -ENOMEM; }
     n->tcp = c;
+    n->nodelay = s->nodelay;                            /* inherited from the listener, as on Linux */
     n->connected = true;
     n->nonblock = (flags & SOCK_NONBLOCK) != 0;
     n->lport = s->lport;
@@ -266,7 +268,7 @@ int sock_accept(struct sock *s, uint32_t *raddr, uint16_t *rport, int flags) {
     tcp_attach(c, n);
     *raddr = n->raddr;
     *rport = n->rport;
-    rc = install(n, flags & SOCK_NONBLOCK);
+    rc = sock_install(n, flags & SOCK_NONBLOCK);
     if (rc < 0) tcp_close(c);           /* install() freed n; the connection is orphaned */
     local_irq_restore(irq);
     return rc;
@@ -274,7 +276,7 @@ int sock_accept(struct sock *s, uint32_t *raddr, uint16_t *rport, int flags) {
 
 int sock_connect(struct sock *s, uint32_t addr, uint16_t port) {
     uintptr_t irq = local_irq_save();
-    struct waiter w;
+    sock_wait_t w;
     int rc;
 
     if (s->type != SOCK_STREAM) {                       /* datagram: remember the default peer */
@@ -308,8 +310,8 @@ int sock_connect(struct sock *s, uint32_t addr, uint16_t port) {
     }
     if (s->nonblock) { local_irq_restore(irq); return -EINPROGRESS; }
 
-    waiter_init(&w, s->snd_timeout_ms);
-    while (tcp_state(s->tcp) == TCP_SYN_SENT && (rc = wait_event(s, &w)) == 0) { }
+    sock_wait_init(&w, s->snd_timeout_ms);
+    while (tcp_state(s->tcp) == TCP_SYN_SENT && (rc = sock_wait(s, &w)) == 0) { }
     if (rc == -EAGAIN) rc = -ETIMEDOUT;
     if (rc == 0) rc = tcp_state(s->tcp) == TCP_ESTABLISHED ? 0 : -tcp_take_error(s->tcp);
     if (rc == 0) s->connected = true;
@@ -323,11 +325,11 @@ int sock_connect(struct sock *s, uint32_t addr, uint16_t port) {
 
 static ssize_t send_stream(struct sock *s, const uint8_t *buf, size_t len, int flags) {
     uintptr_t irq = local_irq_save();
-    struct waiter w;
+    sock_wait_t w;
     size_t done = 0;
     int rc = 0;
 
-    waiter_init(&w, s->snd_timeout_ms);
+    sock_wait_init(&w, s->snd_timeout_ms);
     if (!s->tcp) rc = -ENOTCONN;
     else if (tcp_state(s->tcp) == TCP_SYN_SENT || tcp_state(s->tcp) == TCP_SYN_RCVD) rc = -ENOTCONN;
     while (!rc && done < len) {
@@ -341,7 +343,7 @@ static ssize_t send_stream(struct sock *s, const uint8_t *buf, size_t len, int f
         } else if (nonblocking(s, flags)) {
             rc = -EAGAIN;
         } else {
-            rc = wait_event(s, &w);
+            rc = sock_wait(s, &w);
         }
     }
     local_irq_restore(irq);
@@ -353,6 +355,8 @@ ssize_t sock_send(struct sock *s, const void *buf, size_t len, int flags, const 
     uint16_t dport = s->rport;
     uintptr_t irq;
     int rc;
+
+    if (s->ops) return s->ops->send(s, buf, len, flags);
 
     if (s->type == SOCK_STREAM) return send_stream(s, buf, len, flags);
     if (to) { dst = ntohl(to->sin_addr); dport = ntohs(to->sin_port); }
@@ -370,6 +374,7 @@ ssize_t sock_send(struct sock *s, const void *buf, size_t len, int flags, const 
     } else {
         memcpy(net_tx_payload(), buf, len);
         rc = net_ip_send(IPPROTO_ICMP, 0, dst, len);
+        net_lo_drain();
     }
     local_irq_restore(irq);
     return rc < 0 ? rc : (ssize_t)len;
@@ -384,11 +389,12 @@ static void fill_from(struct sockaddr_in *from, uint32_t addr, uint16_t port) {
 }
 
 ssize_t sock_recv(struct sock *s, void *buf, size_t len, int flags, struct sockaddr_in *from) {
+    if (s->ops) return s->ops->recv(s, buf, len, flags);
     uintptr_t irq = local_irq_save();
-    struct waiter w;
+    sock_wait_t w;
     ssize_t rc = 0;
 
-    waiter_init(&w, s->rcv_timeout_ms);
+    sock_wait_init(&w, s->rcv_timeout_ms);
     if (s->type == SOCK_STREAM) {
         if (!s->tcp || s->listening) rc = -ENOTCONN;
         else if (s->shut_rd) rc = 0;
@@ -397,7 +403,7 @@ ssize_t sock_recv(struct sock *s, void *buf, size_t len, int flags, struct socka
                 rc = tcp_read(s->tcp, buf, len, flags & MSG_PEEK);
                 if (rc != -EAGAIN) break;
                 if (nonblocking(s, flags)) break;
-                if ((rc = wait_event(s, &w)) != 0) break;
+                if ((rc = sock_wait(s, &w)) != 0) break;
             }
             if (rc >= 0) fill_from(from, s->raddr, s->rport);
         }
@@ -405,7 +411,7 @@ ssize_t sock_recv(struct sock *s, void *buf, size_t len, int flags, struct socka
         while (!s->rxq) {
             if (s->err) { rc = -s->err; s->err = 0; break; }        /* ICMP error for a connected socket */
             if (nonblocking(s, flags)) { rc = -EAGAIN; break; }
-            if ((rc = wait_event(s, &w)) != 0) break;
+            if ((rc = sock_wait(s, &w)) != 0) break;
         }
         if (s->rxq) {
             struct dgram *d = s->rxq;
@@ -424,6 +430,7 @@ ssize_t sock_recv(struct sock *s, void *buf, size_t len, int flags, struct socka
 }
 
 int sock_shutdown(struct sock *s, int how) {
+    if (s->ops) return s->ops->shutdown(s, how);
     uintptr_t irq = local_irq_save();
     int rc = 0;
 
@@ -463,7 +470,12 @@ int sock_setopt(struct sock *s, int level, int name, const void *val, size_t len
         case SO_BROADCAST: case SO_KEEPALIVE: case SO_SNDBUF: case SO_RCVBUF: case SO_LINGER: return 0;
         }
     } else if (level == IPPROTO_TCP && name == TCP_NODELAY) {
-        return 0;                                       /* segments are never delayed */
+        if (s->type != SOCK_STREAM) return -EOPNOTSUPP;
+        uintptr_t irq = local_irq_save();
+        s->nodelay = v != 0;
+        if (s->tcp) tcp_set_nodelay(s->tcp, s->nodelay);
+        local_irq_restore(irq);
+        return 0;
     }
     return -ENOPROTOOPT;
 }
@@ -471,6 +483,13 @@ int sock_setopt(struct sock *s, int level, int name, const void *val, size_t len
 int sock_getopt(struct sock *s, int level, int name, void *val, size_t *len) {
     int32_t v;
 
+    if (level == IPPROTO_TCP && name == TCP_NODELAY) {
+        v = s->nodelay;
+        if (*len < sizeof(v)) return -EINVAL;
+        memcpy(val, &v, sizeof(v));
+        *len = sizeof(v);
+        return 0;
+    }
     if (level != SOL_SOCKET) return -ENOPROTOOPT;
     switch (name) {
     case SO_TYPE:  v = s->type; break;
@@ -520,8 +539,12 @@ static int sockfs_close(vnode_t *v) {
     struct sock *s = v->data;
     uintptr_t irq = local_irq_save();
 
-    if (s->listening) tcp_drop_children(s);
-    if (s->tcp) tcp_close(s->tcp);
+    if (s->ops) {
+        s->ops->close(s);
+    } else {
+        if (s->listening) tcp_drop_children(s);
+        if (s->tcp) tcp_close(s->tcp);
+    }
     sock_free(s);
     local_irq_restore(irq);
     return 0;
@@ -540,6 +563,7 @@ static void sockfs_set_nonblock(vnode_t *v, bool on) {
 
 static uint32_t sockfs_poll(vnode_t *v) {
     struct sock *s = v->data;
+    if (s->ops) return s->ops->poll(s);
     uintptr_t irq = local_irq_save();
     uint32_t ev = 0;
 

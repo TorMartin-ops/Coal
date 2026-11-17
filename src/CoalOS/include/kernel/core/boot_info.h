@@ -24,4 +24,7 @@ struct boot_memmap {
  *  Halts if the magic is unknown or there is no memory map. */
 void boot_info_memmap(uint32_t magic, uintptr_t info_phys, struct boot_memmap *out);
 
+/** The kernel command line from the loader's structure (NUL terminated, inside the direct map), or NULL. */
+const char *boot_info_cmdline(uint32_t magic, uintptr_t info_phys);
+
 #endif

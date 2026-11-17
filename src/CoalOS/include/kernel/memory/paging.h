@@ -115,7 +115,7 @@ pte_t *paging_pte(void *pd, uintptr_t vaddr, bool create);
 
 /** Maps size bytes of device registers at phys uncached into the MMIO window; NULL if the window is full.
  *  The window is never freed. The mapping keeps phys' offset within its page. */
-void *ioremap(uintptr_t phys, size_t size);
+volatile void *ioremap(uint64_t phys, size_t size);
 
 static inline void paging_invalidate_page(void *vaddr) { asm volatile("invlpg (%0)" : : "r"(vaddr) : "memory"); }
 void paging_flush_tlb(void);                /* reload CR3 */

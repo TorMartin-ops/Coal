@@ -13,6 +13,13 @@
   e1000 use 64-bit clean addressing with buffers below 4 GiB. Removed: highmem and `kmap`, the `int 0x80`
   table, `sysenter`, `socketcall`, the i386 vDSO and all 32-bit structures. `rt_sigaction` now requires
   `SA_RESTORER`. coalbox `grep` understands bracket expressions.
+- virtio (modern only): split virtqueues, PCI and MMIO transports, and drivers for block (`root=vda`),
+  console (`/dev/hvc0`, kernel log with `console=hvc0`), rng and vsock (`AF_VSOCK` stream sockets with
+  credit flow control). `docs/agent-vm/virtio.md`.
+- Kernel: command line (`/proc/cmdline`) and a PVH entry for `qemu -kernel`; ChaCha20 random generator
+  with `getrandom(2)`, `/dev/random` and `/dev/urandom`; DMA and MMIO helpers.
+- agentd: link over vsock (`agentd.link=vsock`, port 1024), serial fallback. coal-gateway: `--virtio`
+  and `vsock:`/`hvsock:` addresses.
 - agentd replaces mcpd: length-prefixed JSON frames with multiplexed requests (a slow command no longer
   blocks a ping), a structured exec result (exit code, signal, duration, `killed_by`, per-stream byte
   counts), head and tail truncation with the full output kept in a file, non-interactive commands

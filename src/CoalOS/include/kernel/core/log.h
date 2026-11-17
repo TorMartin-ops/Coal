@@ -29,6 +29,9 @@ void kprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /** From now on INFO and below go only to COM1 and the log ring, not the screen. */
 void klog_console_quiet(void);
 
+/** One more destination for every log line (virtio-console): called with interrupts off, must not log. */
+void klog_set_sink(void (*sink)(const char *s, size_t n));
+
 size_t klog_ring_size(void);
 size_t klog_ring_copy(char *buf, size_t len);
 void   klog_ring_clear(void);

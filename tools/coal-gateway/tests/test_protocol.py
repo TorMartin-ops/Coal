@@ -13,7 +13,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from support import HostAgent, QemuAgent  # noqa: E402
+from support import HostAgent, QemuAgent, VirtioQemuAgent, VsockQemuAgent  # noqa: E402
 from coal_gateway.errors import AgentError, ToolError  # noqa: E402
 
 
@@ -342,6 +342,18 @@ class HostProtocol(ProtocolCases, unittest.TestCase):
 @unittest.skipIf(os.environ.get("COAL_TEST_NO_QEMU"), "COAL_TEST_NO_QEMU is set")
 class QemuProtocol(ProtocolCases, unittest.TestCase):
     fixture = QemuAgent
+
+
+@unittest.skipIf(os.environ.get("COAL_TEST_NO_QEMU"), "COAL_TEST_NO_QEMU is set")
+class QemuVirtioProtocol(ProtocolCases, unittest.TestCase):
+    """The same cases with a virtio-blk root and agentd on a virtio console."""
+    fixture = VirtioQemuAgent
+
+
+@unittest.skipIf(os.environ.get("COAL_TEST_NO_QEMU"), "COAL_TEST_NO_QEMU is set")
+class QemuVsockProtocol(ProtocolCases, unittest.TestCase):
+    """The same cases with agentd on virtio-vsock (needs vhost-device-vsock)."""
+    fixture = VsockQemuAgent
 
 
 if __name__ == "__main__":

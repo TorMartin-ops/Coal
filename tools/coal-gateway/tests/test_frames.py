@@ -10,7 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from coal_gateway import frames, runlog, transport  # noqa: E402
+from coal_gateway import frames, machine, runlog, transport  # noqa: E402
 
 
 class Codec(unittest.TestCase):
@@ -55,11 +55,34 @@ class Addresses(unittest.TestCase):
     def test_parse(self):
         self.assertIsInstance(transport.parse_address("unix:/tmp/x"), transport.SocketTransport)
         self.assertIsInstance(transport.parse_address("tcp:127.0.0.1:9"), transport.SocketTransport)
+        self.assertIsInstance(transport.parse_address("hvsock:/tmp/v.uds:1024"), transport.HybridVsockTransport)
 
     def test_bad(self):
-        for bad in ("", "unix:", "tcp:host", "tcp::9", "serial:/dev/x", "vsock:x:1"):
+        for bad in ("", "unix:", "tcp:host", "tcp::9", "serial:/dev/x", "vsock:x:1", "hvsock:/tmp/x", "hvsock::1"):
             with self.assertRaises(ValueError, msg=bad):
                 transport.parse_address(bad)
+
+
+class VirtioOptions(unittest.TestCase):
+    def test_parse(self):
+        self.assertEqual(machine.parse_virtio(None), {})
+        self.assertEqual(machine.parse_virtio("blk, rng"), {"blk": 3, "rng": 3})
+        self.assertEqual(machine.parse_virtio("vsock=42")["vsock"], 42)
+
+    def test_bad(self):
+        for bad in ("net", "blk=1", "vsock=x"):
+            with self.assertRaises(ValueError, msg=bad):
+                machine.parse_virtio(bad)
+
+    def test_link_priority(self):
+        link = lambda spec: machine.Machine(virtio=spec)._virtio_setup("d.img", "c.sock")
+        args, cmdline, address = link("blk,console")
+        self.assertEqual((cmdline, address), (["root=vda", "agentd.link=/dev/hvc0"], "unix:c.sock"))
+        self.assertIn("virtconsole,chardev=hvc0", args)
+        args, cmdline, address = link("blk,console,vsock=7")
+        self.assertEqual((cmdline[-1], address), ("agentd.link=vsock:1024", "vsock:7:1024"))
+        self.assertIn("vhost-vsock-pci,guest-cid=7,disable-legacy=on", args)
+        self.assertEqual(link("rng")[1:], (["root=hda"], "unix:c.sock"))
 
 
 class Redaction(unittest.TestCase):

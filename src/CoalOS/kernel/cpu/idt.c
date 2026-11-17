@@ -100,6 +100,10 @@ void register_int_handler(int vector, int_handler_t handler, void *data) {
     interrupt_c_handlers[vector].data    = data;
 }
 
+int_handler_t get_int_handler(int vector) {
+    return vector >= 0 && vector < IDT_ENTRIES ? interrupt_c_handlers[vector].handler : NULL;
+}
+
 static void dump_frame(const isr_frame_t *f) {
     kprintf("\n*** KERNEL PANIC: unhandled exception %lu ***", (unsigned long)f->int_no);
     kprintf(" err=%#lx rip=%#018lx cs=%#lx rflags=%#lx rsp=%#018lx", (unsigned long)f->err_code, (unsigned long)f->rip,
