@@ -30,11 +30,55 @@ LEGACY_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 META_VERSION = "io.modelcontextprotocol/protocolVersion"
 META_SERVER = "io.modelcontextprotocol/serverInfo"
 INSTRUCTIONS = (
-    "Drives a Coal OS virtual machine (a small Linux-compatible i386 OS) in QEMU. "
-    "Call coal_boot first (it builds the OS if needed), then use coal_run, "
-    "coal_read_file, coal_write_file, coal_ls, coal_ps and coal_sysinfo. Use "
-    "coal_kernel_log and coal_screen to see what the kernel itself printed. "
-    "Call coal_shutdown when finished.")
+    "Drives a Coal OS virtual machine (a small Linux-compatible i386 OS) in QEMU. You have full control: "
+    "commands run as root inside the VM, which is the sandbox. Call coal_guide once for the system guide "
+    "(layout, commands, limits). Start with coal_boot, then use coal_run, coal_read_file, coal_write_file, "
+    "coal_ls, coal_ps, coal_sysinfo; coal_kernel_log and coal_screen show what the kernel printed. "
+    "Changes persist on the disk image across reboots. Before risky changes run coal_snapshot; "
+    "coal_restore or coal_reset undo any mistake. Never overwrite /sbin/init, /sbin/mcpd or /bin/sh "
+    "without a snapshot: mcpd and the shell are how you reach the VM. Call coal_shutdown when finished.")
+
+GUIDE_URI = "coal://guide"
+GUIDE = """Coal OS system guide
+
+WHAT IT IS
+A small Linux-ABI-compatible i386 kernel (static ELF32 Linux binaries run), single CPU, 128 MB RAM, no
+network, no SMP, no users (everything is root). Boot to prompt takes about one second.
+
+FILE SYSTEM (FAT16 disk image, persistent; long file names, no symlinks, no permissions enforcement)
+  /bin/coalbox   one multi-call binary; applets: basename cat clear cp date dirname dmesg echo env false free
+                 grep halt head hexdump kill ls mkdir mount mv poweroff ps pwd reboot rm rmdir sleep sort sync
+                 tail touch true umount uname uptime wc which yes
+  /bin/sh        the shell: pipes, redirection, && || ;, & (background), quotes, $VAR, cd/export/exit builtins.
+                 No job control, no subshells ( ), no $!, no command substitution
+  /sbin/init     PID 1: starts mcpd and a login shell
+  /sbin/mcpd     the agent that serves this MCP server over COM2
+  /usr/bin       test programs: hello, libc_test, syscall_test, abi_test
+  /etc /home /root /tmp /var   ordinary directories;   /dev  console, null, zero (devfs)
+  /proc          meminfo, uptime, version, <pid>/status, self (procfs, read-only)
+
+SYSTEM CALLS
+The Linux i386 ABI (int 0x80, Linux numbers and struct layouts): files, directories, pipes, dup, fork/execve
+(copy-on-write), wait4, signals with handlers (rt_sigaction, rt_sigreturn), poll, brk/mmap2/munmap (anonymous),
+clock_gettime, nanosleep, uname, syslog, reboot. No sockets, threads/clone, ptrace, symlinks, chmod/chown.
+Unimplemented calls return -ENOSYS.
+
+LIMITS
+FAT16 volume (32 MiB image). 32 descriptors per process. Output of coal_run is capped at 64 KiB per
+stream and each command has a timeout (default 10 s). Files move in 64 KiB chunks.
+
+SAFE: ls cat ps free uptime uname dmesg, writing under /tmp /home /root, coal_kernel_log, coal_screen.
+DESTRUCTIVE: rm/mv/cp over existing files, coal_write_file over any existing file, writing /sbin/init,
+/sbin/mcpd, /bin/sh or /bin/coalbox (breaks boot or the link to the VM), mount/umount, writing /dev/*.
+poweroff, halt and reboot inside Coal end or restart the session (use coal_reboot / coal_shutdown instead).
+Everything done to the disk persists in the image until coal_restore / coal_reset.
+
+RECOVERY
+coal_snapshot NAME  saves the disk (runs sync first).  coal_restore NAME  puts it back and reboots.
+coal_reset  rebuilds the pristine image from the sources and reboots.  coal_reboot keeps the disk.
+If mcpd does not answer: coal_kernel_log and coal_screen show the state; coal_restore/coal_reset recovers
+even a broken /sbin/init. coal_boot with snapshot=true discards all disk writes when the VM stops.
+"""
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SRC_DIR = os.path.join(ROOT, "src", "CoalOS")
@@ -192,7 +236,7 @@ class Machine:
             raise ToolError("cmake is not installed")
         if clean:
             shutil.rmtree(self.build_dir, ignore_errors=True)
-        os.makedirs(self.build_dir, exist_ok=True)
+        os.makedirs(self.build_dir, mode=0o700, exist_ok=True)
         steps = [["cmake", "-S", SRC_DIR, "-B", self.build_dir],
                  ["cmake", "--build", self.build_dir, "-j", str(os.cpu_count() or 2)]
                  + (["--target", target] if target else [])]
@@ -230,7 +274,8 @@ class Machine:
                     raise ToolError("build failed:\n" + summarize_build(text))
                 note = "built OS; "
             self._cleanup_workdir()
-            self.workdir = tempfile.mkdtemp(prefix="coal-mcp-")
+            self.workdir = tempfile.mkdtemp(prefix="coal-mcp-")      # mode 0700: QEMU monitor and COM2 sockets
+            os.chmod(self.workdir, 0o700)
             com2, mon = self._p("com2.sock"), self._p("monitor.sock")
             cmd = [qemu, "-display", "none", "-m", str(memory_mb),
                    "-cdrom", iso, "-hda", disk, "-boot", "d", "-no-shutdown",
@@ -338,6 +383,53 @@ class Machine:
             data = f.read().decode("utf-8", "replace")
         return "\n".join([l for l in data.splitlines() if l.strip()][-lines:])
 
+    @property
+    def snap_dir(self):
+        return os.path.join(self.build_dir, "snapshots")
+
+    def _snap_path(self, name):
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name or "") or name.startswith("."):
+            raise ToolError("snapshot name must be 1-64 characters of A-Z a-z 0-9 _ . -")
+        return os.path.join(self.snap_dir, name + ".img")
+
+    def snapshot(self, name):
+        path = self._snap_path(name)
+        if self.attached:
+            raise ToolError("cannot snapshot an attached instance")
+        disk = self.images()[1]
+        if not os.path.exists(disk):
+            raise ToolError("no disk image yet; call coal_boot")
+        if self.running():
+            self.need_link().request("run", timeout=30, cmd="sync", timeout_ms=20000)
+        os.makedirs(self.snap_dir, mode=0o700, exist_ok=True)
+        shutil.copyfile(disk, path)
+        return "snapshot '%s' saved (%d bytes)" % (name, os.path.getsize(path))
+
+    def restore(self, name=None):
+        """Put a snapshot (or, without a name, a freshly built pristine image) in place and reboot."""
+        if self.attached:
+            raise ToolError("cannot restore an attached instance")
+        src = self._snap_path(name) if name else None
+        if src and not os.path.exists(src):
+            have = sorted(f[:-4] for f in os.listdir(self.snap_dir) if f.endswith(".img")) \
+                if os.path.isdir(self.snap_dir) else []
+            raise ToolError("no snapshot '%s'. Existing: %s" % (name, ", ".join(have) or "none"))
+        was_running = self.running()
+        self.shutdown()
+        disk = self.images()[1]
+        if src:
+            shutil.copyfile(src, disk)
+        else:
+            if os.path.exists(disk):
+                os.remove(disk)
+            ok, text = self.build()
+            if not ok:
+                raise ToolError("build failed:\n" + summarize_build(text))
+        what = "snapshot '%s'" % name if name else "the pristine image"
+        if was_running:
+            return "restored %s; %s" % (what, self.boot())
+        return "restored %s; call coal_boot" % what
+
     def need_link(self):
         if self.link is None or (not self.attached and not self.running()):
             raise ToolError("Coal is not running; call coal_boot first")
@@ -406,6 +498,22 @@ def tool_shutdown(m, a):
 
 def tool_reboot(m, a):
     return m.reboot(_int(a, "timeout_s", 60, 5, 600))
+
+
+def tool_guide(m, a):
+    return GUIDE
+
+
+def tool_snapshot(m, a):
+    return m.snapshot(_str(a, "name"))
+
+
+def tool_restore(m, a):
+    return m.restore(_str(a, "name"))
+
+
+def tool_reset(m, a):
+    return m.restore(None)
 
 
 def tool_build(m, a):
@@ -549,36 +657,50 @@ def ann(title, read_only=False, destructive=False, idem=False):
 
 S = {"type": "string"}
 TOOLS = [
+    ("coal_guide", "Return the Coal OS system guide: file system layout, available commands, supported system "
+     "calls, limits, what is safe or destructive and how to recover. Read it before changing anything.",
+     schema(), ann("Coal OS guide", read_only=True), tool_guide),
     ("coal_boot", "Boot Coal OS in QEMU (headless) and wait until its in-OS agent mcpd answers. "
-     "Builds the OS first if no images exist. Returns once the VM is usable or fails with the kernel log tail.",
+     "Builds the OS first if no images exist. Returns once the VM is usable or fails with the kernel log tail. "
+     "Disk changes persist between boots unless snapshot=true.",
      schema({"rebuild": {"type": "boolean", "description": "Rebuild before booting (default false)."},
              "memory_mb": {"type": "integer", "description": "Guest RAM in MiB (default 128)."},
              "snapshot": {"type": "boolean", "description": "Discard disk writes on shutdown (default false)."},
              "timeout_s": {"type": "integer", "description": "Seconds to wait for mcpd (default 60)."}}),
      ann("Boot Coal OS", idem=True), tool_boot),
-    ("coal_shutdown", "Stop the Coal OS virtual machine (QEMU) and clean up.",
+    ("coal_shutdown", "Power off the VM immediately (QEMU quit; unsynced writes may be lost, run `sync` first). "
+     "The disk image keeps its contents.",
      schema(), ann("Shut down Coal OS", idem=True), tool_shutdown),
-    ("coal_reboot", "Hard-reset the running VM and wait for mcpd again. Disk contents are kept.",
+    ("coal_reboot", "Hard-reset the running VM (like the reset button: unsynced writes may be lost) and wait for "
+     "mcpd again. Disk contents are kept. Use this instead of running reboot inside Coal.",
      schema({"timeout_s": {"type": "integer", "description": "Seconds to wait (default 60)."}}),
      ann("Reboot Coal OS"), tool_reboot),
-    ("coal_build", "Configure and build Coal OS with CMake. Returns warning/error counts and the diagnostics.",
+    ("coal_build", "Configure and build Coal OS with CMake. Returns warning/error counts and the diagnostics. "
+     "An existing disk.img is not rebuilt (use coal_reset for a fresh image); clean=true deletes the whole "
+     "build directory including snapshots.",
      schema({"clean": {"type": "boolean", "description": "Delete the build directory first."},
              "target": {"type": "string", "description": "CMake target (default: all)."}}),
      ann("Build Coal OS", idem=True), tool_build),
     ("coal_run", "Run a shell command inside Coal OS (/bin/sh -c) and return exit code, stdout and stderr. "
-     "Output is capped at 64 KiB per stream; the command is killed after timeout_ms.",
+     "Runs as root with full access; changes persist on the disk image. rm, mv, redirections (>), mount and "
+     "writes to /sbin/init, /sbin/mcpd or /bin/sh are destructive; poweroff/halt/reboot end the session. "
+     "No job control or network. Output is capped at 64 KiB per stream; the command is killed after timeout_ms.",
      schema({"command": {**S, "description": "Shell command line."},
              "timeout_ms": {"type": "integer", "description": "Kill after this many ms (default 10000, max 600000)."}},
             ["command"]), ann("Run command in Coal OS"), tool_run),
-    ("coal_read_file", "Read a file from the Coal OS file system. Text is returned as is, binary as base64.",
+    ("coal_read_file", "Read a file from the Coal OS file system. Text is returned as is, binary as base64. With save_to the "
+     "bytes are written to that path on the HOST (any path the server user can write, overwriting an "
+     "existing file).",
      schema({"path": {**S, "description": "Absolute path inside Coal."},
              "offset": {"type": "integer", "description": "Start offset in bytes."},
              "max_bytes": {"type": "integer", "description": "Bytes to read (default 65536, max 4 MiB)."},
              "encoding": {"type": "string", "enum": ["utf-8", "base64"], "description": "Force base64 output."},
-             "save_to": {**S, "description": "Host path to save the bytes to instead of returning them."}},
+             "save_to": {**S, "description": "Host path to write the bytes to instead of returning them (overwrites)."}},
             ["path"]), ann("Read file in Coal OS", read_only=True), tool_read_file),
     ("coal_write_file", "Write a file in the Coal OS file system. Provide exactly one of content, "
-     "content_base64 or host_path (a file on the host to upload).",
+     "content_base64 or host_path (any file readable on the host). Overwrites an existing file unless append "
+     "is set. Overwriting /sbin/init, /sbin/mcpd, /bin/sh or /bin/coalbox can make the VM unreachable "
+     "(recover with coal_restore/coal_reset); take a coal_snapshot first.",
      schema({"path": {**S, "description": "Absolute destination path inside Coal."},
              "content": {**S, "description": "Text content."},
              "content_base64": {**S, "description": "Binary content, base64 encoded."},
@@ -599,6 +721,17 @@ TOOLS = [
      ann("Kernel log", read_only=True), tool_kernel_log),
     ("coal_screen", "Read the 80x25 VGA text screen of the VM as plain text (what a monitor would show).",
      schema(), ann("Screen text", read_only=True), tool_screen),
+    ("coal_snapshot", "Save the current disk image under a name (runs sync first). Snapshots live in "
+     "<build-dir>/snapshots and survive reboots and coal_shutdown. Overwrites a snapshot of the same name.",
+     schema({"name": {**S, "description": "1-64 characters: letters, digits, _ . -"}}, ["name"]),
+     ann("Snapshot Coal OS disk", idem=True), tool_snapshot),
+    ("coal_restore", "DESTRUCTIVE: replace the disk image with a snapshot, discarding every change made since, "
+     "and reboot (the VM is stopped and, if it was running, booted again).",
+     schema({"name": {**S, "description": "Snapshot name from coal_snapshot."}}, ["name"]),
+     ann("Restore Coal OS snapshot", destructive=True, idem=True), tool_restore),
+    ("coal_reset", "DESTRUCTIVE: throw away the disk image, rebuild the pristine one from the sources and reboot. "
+     "Recovers from any mistake, including a broken /sbin/init; all files you created are lost.",
+     schema(), ann("Reset Coal OS to pristine", destructive=True, idem=True), tool_reset),
     ("coal_status", "Report whether the VM is running and which build directory is used.",
      schema(), ann("Coal OS status", read_only=True), tool_status),
 ]
@@ -683,7 +816,7 @@ class Server:
         self.send({"jsonrpc": "2.0", "id": rid, "result": result})
 
     def dispatch(self, method, params, modern):
-        caps = {"tools": {"listChanged": False}}
+        caps = {"tools": {"listChanged": False}, "resources": {"listChanged": False}}
         if method == "initialize":
             wanted = params.get("protocolVersion")
             ver = wanted if wanted in LEGACY_VERSIONS else LEGACY_VERSIONS[0]
@@ -694,6 +827,13 @@ class Server:
                     "instructions": INSTRUCTIONS, "ttlMs": 3600000, "cacheScope": "public"}
         if method == "ping":
             return {}
+        if method == "resources/list":
+            return {"resources": [{"uri": GUIDE_URI, "name": "coal-guide", "title": "Coal OS system guide",
+                                   "mimeType": "text/plain"}]}
+        if method == "resources/read":
+            if params.get("uri") != GUIDE_URI:
+                raise ValueError("Unknown resource: %s" % params.get("uri"))
+            return {"contents": [{"uri": GUIDE_URI, "mimeType": "text/plain", "text": GUIDE}]}
         if method == "tools/list":
             return {"tools": tool_list()}
         if method == "tools/call":
