@@ -852,10 +852,21 @@ static void test_rlimit(void) {
     CHECK(child_ok(kid));
 }
 
+/* Number of "out of memory" lines in the kernel log. */
+static int oom_log_lines(void) {
+    static char log[16384];
+    long n = __sc(SYS_SYSLOG, 3, (long)log, sizeof log - 1, 0, 0);
+    int lines = 0;
+    if (n <= 0) return -1;
+    log[n] = 0;
+    for (const char *p = log; (p = strstr(p, "out of memory: killing")); p++) lines++;
+    return lines;
+}
+
 /* Two children each fill 60% of the free memory and hold it for a second, so memory runs out. */
-static void test_oom(void) {
+static void test_oom_round(void) {
     long before = free_kb(), mb = before / 1024 * 6 / 10;
-    int killed = 0, finished = 0;
+    int killed = 0, finished = 0, logged = oom_log_lines(), sts[2] = {0, 0};
 
     CHECK(mb >= 16);
     for (int i = 0; i < 2; i++) {
@@ -871,12 +882,19 @@ static void test_oom(void) {
     for (int i = 0; i < 2; i++) {
         int st = 0;
         waitpid(-1, &st, 0);
+        sts[i] = st;
         killed += WIFSIGNALED(st) && WTERMSIG(st) == SIGKILL;
         finished += WIFEXITED(st) && WEXITSTATUS(st) == 0;
     }
+    if (killed != 1 || finished != 1) printf("DBGST %x %x\n", sts[0], sts[1]);
     CHECK(killed == 1 && finished == 1);            /* the biggest user died, the other one kept its data intact */
+    CHECK(oom_log_lines() == logged + 1);           /* and the kill was logged once */
     CHECK(free_kb() > before / 10 * 9);             /* and its memory came back */
     CHECK(getpid() > 0 && write(1, "", 0) == 0);    /* the parent never noticed */
+}
+
+static void test_oom(void) {
+    for (int i = 0; i < 20; i++) test_oom_round();
 }
 
 /* --- vDSO: the time page and the TF/signal corner cases --- */

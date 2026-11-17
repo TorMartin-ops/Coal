@@ -155,7 +155,7 @@ def main():
         err, text = c.tool("coal_run", command="/usr/bin/kernel_test oom", timeout_ms=60000)
         check("0 failed" in text and "exit code: 0" in text, "kernel_test oom: one of two memory hogs is killed, the other finishes", text)
         err, text = c.tool("coal_run", command="dmesg | grep 'out of memory'")
-        check(text.count("killing pid") == 1, "the OOM killer logged exactly one line", text)
+        check(text.count("killing pid") == 20, "the OOM killer logged one line per round (20 rounds)", text)
         # --- end kernel wave 6 ---
     finally:
         c.tool("coal_shutdown")

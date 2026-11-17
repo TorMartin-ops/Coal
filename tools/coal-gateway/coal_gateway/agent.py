@@ -31,6 +31,8 @@ class AgentClient:
         self.listeners = []
         self.hello = {}                        # last hello event
         self.boot_seq = 0                      # counts hello events: job ids are only valid within one
+        self.end_reason = ""                   # why the last connection ended
+        self.explain = None                    # optional callable: more about the other end (QEMU's fate)
         self.cond = threading.Condition(self.lock)
 
     # -- connection ---------------------------------------------------------
@@ -60,6 +62,7 @@ class AgentClient:
 
     def _reader(self):
         decoder = Decoder()
+        reason = "end of stream: the other end closed the connection"
         try:
             while True:
                 data = self.transport.recv()
@@ -67,9 +70,14 @@ class AgentClient:
                     break
                 for msg in decoder.feed(data):
                     self._dispatch(msg)
-        except (OSError, FrameError, AttributeError):
-            pass
+        except FrameError as e:
+            reason = "bad frame from agentd: %s" % e
+        except OSError as e:
+            reason = "read failed: %s" % e
+        except AttributeError:
+            reason = "connection closed locally"
         with self.lock:
+            self.end_reason = reason
             self.connected = False
         self.transport.close()
         self._fail_pending()
@@ -102,6 +110,15 @@ class AgentClient:
 
     # -- requests -----------------------------------------------------------
 
+    def lost(self):
+        """The message for a request that was cut off: why the link ended and what became of the guest."""
+        text = "connection to Coal was lost: %s" % (self.end_reason or "closed locally")
+        try:
+            extra = self.explain() if self.explain else ""
+        except Exception as e:                  # noqa: BLE001 - diagnostics must not hide the error
+            extra = "(no diagnosis: %s)" % e
+        return text + ("\n" + extra if extra else "")
+
     def _send(self, op, fields):
         with self.lock:
             rid = self.next_id
@@ -131,7 +148,7 @@ class AgentClient:
             raise ToolError(str(e))
         except (OSError, AttributeError):
             self.close()
-            raise ToolError("connection to Coal was lost; retry or call coal_boot")
+            raise ToolError(self.lost() + "\nretry or call coal_boot")
         deadline = time.monotonic() + timeout
         cancelled = False
         while not p.done.wait(0.05 if cancel is not None else max(0.0, deadline - time.monotonic())):
@@ -147,10 +164,12 @@ class AgentClient:
         if not p.done.is_set():
             with self.lock:
                 self.pending.pop(rid, None)
-            raise ToolError("no answer from agentd within %.0fs (is it running? see coal_kernel_log)" % timeout)
+            extra = self.explain() if self.explain else ""
+            raise ToolError("no answer from agentd within %.0fs (is it running? see coal_kernel_log)%s"
+                            % (timeout, "\n" + extra if extra else ""))
         resp = p.response
         if resp is None:
-            raise ToolError("connection to Coal was lost")
+            raise ToolError(self.lost())
         if not resp.get("ok"):
             raise AgentError(resp.get("error"))
         return resp
