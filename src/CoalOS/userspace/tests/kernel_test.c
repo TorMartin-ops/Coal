@@ -599,7 +599,8 @@ static void test_statfs_links(void) {
     long n = fd < 0 ? 0 : read(fd, mounts, sizeof mounts - 1);
     mounts[n > 0 ? n : 0] = 0;
     if (fd >= 0) close(fd);
-    CHECK(strstr(mounts, "/dev/hda / vfat rw 0 0\n") && strstr(mounts, "proc /proc proc "));
+    CHECK((strstr(mounts, "/dev/hda / vfat rw 0 0\n") || strstr(mounts, "/dev/vda / vfat rw 0 0\n")) &&
+          strstr(mounts, "proc /proc proc "));
 
     write_file("/tmp/k6f", "data");
     CHECK(__sc(SYS_LINK, (long)"/tmp/k6f", (long)"/tmp/k6g", 0, 0, 0) == -EPERM);
