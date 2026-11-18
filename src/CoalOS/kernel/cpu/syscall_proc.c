@@ -4,6 +4,7 @@
  */
 
 #include "syscall_internal.h"
+#include <kernel/sync/spinlock.h>
 #include <kernel/process/scheduler.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/lib/string.h>
@@ -110,18 +111,22 @@ long sc_getpriority(int which, uint32_t who) {
     pcb_t *p;
 
     if (which != PRIO_PROCESS) return -EINVAL;
+    uintptr_t fl = local_irq_save();       /* a pcb found by pid can be freed under preemption */
     p = who ? process_find(who) : get_current_process();
-    return p ? 20 - p->task.nice : -ESRCH;
+    long r = p ? 20 - p->task.nice : -ESRCH;
+    local_irq_restore(fl);
+    return r;
 }
 
 long sc_setpriority(int which, uint32_t who, int nice) {
     pcb_t *p;
 
     if (which != PRIO_PROCESS) return -EINVAL;
+    uintptr_t fl = local_irq_save();
     p = who ? process_find(who) : get_current_process();
-    if (!p) return -ESRCH;
-    scheduler_set_nice(&p->task, nice);
-    return 0;
+    if (p) scheduler_set_nice(&p->task, nice);
+    local_irq_restore(fl);
+    return p ? 0 : -ESRCH;
 }
 
 //============================================================================
@@ -136,18 +141,27 @@ static pcb_t *target_process(uint32_t pid) {
 long sc_setsid(void) { return process_setsid(get_current_process()); }
 
 long sc_getsid(uint32_t pid) {
+    uintptr_t fl = local_irq_save();
     pcb_t *t = target_process(pid);
-    return t ? (long)t->sid : -ESRCH;
+    long r = t ? (long)t->sid : -ESRCH;
+    local_irq_restore(fl);
+    return r;
 }
 
 long sc_setpgid(uint32_t pid, uint32_t pgid) {
+    uintptr_t fl = local_irq_save();
     pcb_t *t = target_process(pid);
-    return t ? process_setpgid(t, pgid ? pgid : t->pid) : -ESRCH;
+    long r = t ? process_setpgid(t, pgid ? pgid : t->pid) : -ESRCH;
+    local_irq_restore(fl);
+    return r;
 }
 
 long sc_getpgid(uint32_t pid) {
+    uintptr_t fl = local_irq_save();
     pcb_t *t = target_process(pid);
-    return t ? (long)t->pgid : -ESRCH;
+    long r = t ? (long)t->pgid : -ESRCH;
+    local_irq_restore(fl);
+    return r;
 }
 
 long sc_getpgrp(void) { return get_current_process()->pgid; }
@@ -158,15 +172,17 @@ long sc_getpgrp(void) { return get_current_process()->pgid; }
 
 /* getrlimit, setrlimit and prlimit64 all use the 64-bit struct rlimit { cur, max }. */
 long sc_prlimit64(uint32_t pid, uint32_t resource, uintptr_t unew, uintptr_t uold) {
-    pcb_t *t = target_process(pid);
     uint64_t nl[2], ol[2];
 
-    if (!t) return -ESRCH;
     if (unew && copy_from_user(nl, (const void *)unew, sizeof(nl)) != 0) return -EFAULT;
-    long err = rlimit_get(t, resource, &ol[0], &ol[1]);
+    uintptr_t fl = local_irq_save();        /* the target must not be freed between lookup and use */
+    pcb_t *t = target_process(pid);
+    long err = t ? rlimit_get(t, resource, &ol[0], &ol[1]) : -ESRCH;
+    if (!err && unew) err = rlimit_set(t, resource, nl[0], nl[1]);
+    local_irq_restore(fl);
     if (err) return err;
     if (uold && copy_to_user((void *)uold, ol, sizeof(ol)) != 0) return -EFAULT;
-    return unew ? rlimit_set(t, resource, nl[0], nl[1]) : 0;
+    return 0;
 }
 
 long sc_getrlimit(uint32_t resource, uintptr_t ulim) { return sc_prlimit64(0, resource, 0, ulim); }

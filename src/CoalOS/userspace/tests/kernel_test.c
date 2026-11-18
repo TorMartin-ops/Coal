@@ -922,10 +922,11 @@ static void test_exit_preempted(void) {
     CHECK(bad == 0);
 }
 
-/* kill() walks the process list while another process frees zombies: the walk must not step onto a freed entry
+/* kill(), getpgid(), getpriority() and prlimit() look processes up while others free zombies: no step onto a freed entry
  * (the debug kernel reports the stale read) */
 static void test_kill_walk(void) {
     pid_t reaper[3];
+    unsigned long lim[2];
     for (int r = 0; r < 3; r++) {
         reaper[r] = fork();
         if (reaper[r] == 0) {
@@ -941,6 +942,12 @@ static void test_kill_walk(void) {
     int left = 3, bad = 0;
     while (left) {
         for (int i = 0; i < 50; i++) ok += kill(-30000, 0) < 0 && errno == ESRCH;
+        for (int i = 0; i < 50; i++) {      /* lookups by pid while the reapers free their children */
+            long pid = 2 + (i + ok) % 40;
+            __sc(SYS_GETPGID, pid, 0, 0, 0, 0);
+            __sc(SYS_GETPRIORITY, 0, pid, 0, 0, 0);
+            __sc(SYS_PRLIMIT64, pid, 7, 0, (long)lim, 0);
+        }
         int st;
         pid_t w = waitpid(-1, &st, WNOHANG);
         if (w > 0) { left--; bad += !WIFEXITED(st) || WEXITSTATUS(st) != 0; }
