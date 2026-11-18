@@ -55,7 +55,7 @@ def judge(cases, text):
     text = KLOG.sub("", text.replace("\r", ""))
     seen, failed = {}, set()
     for m in re.finditer(r"@@CASE (\d+)\n(.*?)\n@@EXIT (\d+)\n", text, re.S):
-        seen[int(m.group(1))] = (m.group(2) + "\n" if m.group(2) else "", int(m.group(3)))
+        seen[int(m.group(1))] = (m.group(2), int(m.group(3)))
     for i, c in enumerate(cases):
         got = seen.get(i)
         if got is None or got[1] != c.exit_code or got[0] != c.stdout:
