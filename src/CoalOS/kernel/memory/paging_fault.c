@@ -15,11 +15,16 @@
 #include <kernel/cpu/idt.h>
 #include <kernel/cpu/exception_table.h>
 #include <kernel/cpu/msr.h>
+#include <kernel/memory/kfence.h>
 
 void page_fault_handler(isr_frame_t *regs) {
     uintptr_t addr = read_cr2();
 
     if (!(regs->err_code & PAGE_FAULT_USER)) {
+#ifdef COAL_DEBUG_KERNEL
+        if (kfence_handle_fault(addr, regs))
+            return;                             /* reported; the access goes on */
+#endif
         uint64_t fixup = find_exception_fixup(regs->rip);
         if (!fixup) kernel_fault_panic(regs);
         regs->rip = fixup;                      /* a user access inside a copy loop: the copy reports a short count */

@@ -42,6 +42,20 @@ struct bootp {
     uint8_t  options[64];
 } __attribute__((packed));
 
+/* Options sit at any byte offset: access them as bytes, not through a uint32_t pointer. */
+static uint32_t get32(const uint8_t *p) {
+    uint32_t v;
+
+    memcpy(&v, p, sizeof(v));
+    return ntohl(v);
+}
+
+static void put32(uint8_t *p, uint32_t host) {
+    uint32_t v = htonl(host);
+
+    memcpy(p, &v, sizeof(v));
+}
+
 static int      state;
 static uint32_t xid, retry_at, offered_ip, server_ip;
 static int      tries;
@@ -94,8 +108,8 @@ static void send_msg(uint8_t type) {
     m.magic = htonl(MAGIC);
     *o++ = OPT_TYPE; *o++ = 1; *o++ = type;
     if (type == REQUEST && state != RENEWING && state != REBINDING) {
-        *o++ = OPT_REQ_IP; *o++ = 4; *(uint32_t *)o = htonl(offered_ip); o += 4;
-        *o++ = OPT_SERVER; *o++ = 4; *(uint32_t *)o = htonl(server_ip); o += 4;
+        *o++ = OPT_REQ_IP; *o++ = 4; put32(o, offered_ip); o += 4;
+        *o++ = OPT_SERVER; *o++ = 4; put32(o, server_ip); o += 4;
     }
     *o++ = OPT_PARAMS; *o++ = 3; *o++ = OPT_MASK; *o++ = OPT_ROUTER; *o++ = OPT_DNS;
     *o++ = OPT_END;
@@ -198,13 +212,13 @@ void dhcp_input(const uint8_t *msg, size_t len) {
         if (i + 2 + n > len - offsetof(struct bootp, options)) break;
         switch (code) {
         case OPT_TYPE:   type = v[0]; break;
-        case OPT_MASK:   if (n >= 4) mask = ntohl(*(const uint32_t *)v); break;
-        case OPT_ROUTER: if (n >= 4) gw = ntohl(*(const uint32_t *)v); break;
-        case OPT_DNS:    if (n >= 4) dns = ntohl(*(const uint32_t *)v); break;
-        case OPT_LEASE:  if (n >= 4) lease = ntohl(*(const uint32_t *)v); break;
-        case OPT_T1:     if (n >= 4) t1 = ntohl(*(const uint32_t *)v); break;
-        case OPT_T2:     if (n >= 4) t2 = ntohl(*(const uint32_t *)v); break;
-        case OPT_SERVER: if (n >= 4) srv = ntohl(*(const uint32_t *)v); break;
+        case OPT_MASK:   if (n >= 4) mask = get32(v); break;
+        case OPT_ROUTER: if (n >= 4) gw = get32(v); break;
+        case OPT_DNS:    if (n >= 4) dns = get32(v); break;
+        case OPT_LEASE:  if (n >= 4) lease = get32(v); break;
+        case OPT_T1:     if (n >= 4) t1 = get32(v); break;
+        case OPT_T2:     if (n >= 4) t2 = get32(v); break;
+        case OPT_SERVER: if (n >= 4) srv = get32(v); break;
         }
         i += 2u + n;
     }

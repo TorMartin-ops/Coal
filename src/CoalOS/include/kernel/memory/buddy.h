@@ -25,6 +25,9 @@ struct page {
     uint32_t next, prev;                    /* free-list links (page indexes) */
     uint16_t refcount;                      /* frame.c: references by page-table entries */
     uint8_t  meta;                          /* free/allocated flag and block order */
+#ifdef COAL_DEBUG_KERNEL
+    uint8_t  dbg;                           /* freed and filled with 0x6b since it was last handed out */
+#endif
 };
 
 /** Bytes of struct page needed to manage a region of the given size. */
@@ -47,6 +50,11 @@ uintptr_t buddy_alloc_page_user(void);
 
 /** Free a block returned by one of the allocators. Panics on an invalid or double free. */
 void buddy_free_pages(uintptr_t phys);
+
+#ifdef COAL_DEBUG_KERNEL
+/** Order of the allocated block starting at phys, or -1 if phys is not the head of one. */
+int buddy_order_of(uintptr_t phys);
+#endif
 
 /** Page descriptor for a managed (not reserved) address, or NULL. */
 struct page *buddy_page(uintptr_t phys);
