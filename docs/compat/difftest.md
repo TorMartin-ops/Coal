@@ -3,6 +3,17 @@
 Tools: `tools/difftest/` (corpus, `difftest.py`, `fuzz.py`, `external/`). Machine-readable results: `docs/compat/difftest.json`.
 Kernel under test: branch `difftest`, Linux x86_64 reference: the build host (static musl binaries on both sides).
 
+## In the test kit
+
+`coaltest difftest/corpus` and `difftest/fuzz` run the corpus and 40 fixed fuzzer seeds (length 20) inside one guest each
+and compare the traces with the Linux host; both are deterministic (identical output under `--repeat 2`) and part of
+`--ci`. Known divergences are in `tools/testkit/baselines/difftest_known_divergences.txt` (corpus) and
+`difftest_fuzz_known.txt` (first divergence per seed); a new divergence or a listed one that no longer happens fails the
+test. `coaltest difftest/ltp` (tag `long`, about 25 minutes, not in `--all` or `--ci`) runs LTP through the gateway, one
+syscall directory per boot, against `ltp_known_failures.txt` in the same way. A test whose parent saw a garbage pid from
+`fork()` (`TBROK: waitpid(<7+ digit pid>) ECHILD` in the LTP library, about one run in a hundred, not reproducible in a
+fork stress loop) is reported as `flaky` and counts as neither new nor stale: it is an open kernel bug, not a result.
+
 ## How it works
 
 - `difftest.py` builds each `corpus/*.c` (static musl, raw `syscall`), runs it on the host and in Coal, normalises pids, addresses and times, and diffs the trace lines. A divergence is classified as *missing syscall* (Coal returns ENOSYS), *wrong errno*, *wrong semantics* (same call, different result) or *crash* (signal or missing output).
