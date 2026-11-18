@@ -47,7 +47,6 @@ dup/dup05
 dup/dup06
 dup2/dup203
 dup2/dup205
-exit/exit02
 exit_group/exit_group01
 fchdir/fchdir01
 fchdir/fchdir02
@@ -88,7 +87,6 @@ fcntl/fcntl26
 fcntl/fcntl26_64
 fcntl/fcntl27
 fcntl/fcntl27_64
-fcntl/fcntl29
 fcntl/fcntl30
 fcntl/fcntl30_64
 fcntl/fcntl31
