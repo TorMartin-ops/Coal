@@ -66,6 +66,7 @@ typedef struct pcb {
     char     cwd[CWD_MAX];
     uint32_t cloexec;                 /* bit n: descriptor n is closed by execve */
     uint32_t umask;
+    uint32_t uid[3], gid[3];          /* real, effective, saved */
 
     struct mm_struct *mm;
     void    *page_directory_phys;     /* PML4, physical; NULL for kernel tasks: they run on any directory */

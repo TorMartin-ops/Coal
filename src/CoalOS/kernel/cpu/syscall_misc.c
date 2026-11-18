@@ -135,7 +135,61 @@ long sc_uname(uintptr_t ubuf) {
     return copy_to_user((void *)ubuf, &u, sizeof(u)) ? -EFAULT : 0;
 }
 
-long sc_zero(void) { return 0; }        /* uid, gid, euid, egid: single-user system, always root */
+/* Credentials are kept and reported but not enforced: the file system has no owners or modes. */
+#define NOID ((uint32_t)-1)
+
+long sc_getuid(void)  { return get_current_process()->uid[0]; }
+long sc_geteuid(void) { return get_current_process()->uid[1]; }
+long sc_getgid(void)  { return get_current_process()->gid[0]; }
+long sc_getegid(void) { return get_current_process()->gid[1]; }
+
+static bool is_one_of(const uint32_t id[3], uint32_t x) { return x == id[0] || x == id[1] || x == id[2]; }
+
+/* setuid/setgid: root sets all three, others only the effective id to the real or saved one. */
+static long set_one(uint32_t id[3], uint32_t x, bool priv) {
+    if (priv) id[0] = id[1] = id[2] = x;
+    else if (x == id[0] || x == id[2]) id[1] = x;
+    else return -EPERM;
+    return 0;
+}
+
+static long set_re(uint32_t id[3], uint32_t r, uint32_t e, bool priv) {
+    uint32_t old_r = id[0];
+
+    if (!priv && ((r != NOID && r != id[0] && r != id[1]) || (e != NOID && !is_one_of(id, e)))) return -EPERM;
+    if (r != NOID) id[0] = r;
+    if (e != NOID) id[1] = e;
+    if (r != NOID || (e != NOID && e != old_r)) id[2] = id[1];
+    return 0;
+}
+
+static long set_res(uint32_t id[3], uint32_t r, uint32_t e, uint32_t s, bool priv) {
+    uint32_t n[3] = {r, e, s};
+
+    for (int i = 0; i < 3 && !priv; i++)
+        if (n[i] != NOID && !is_one_of(id, n[i])) return -EPERM;
+    for (int i = 0; i < 3; i++)
+        if (n[i] != NOID) id[i] = n[i];
+    return 0;
+}
+
+long sc_setuid(uint32_t u)  { pcb_t *p = get_current_process(); return set_one(p->uid, u, p->uid[1] == 0); }
+long sc_setgid(uint32_t g)  { pcb_t *p = get_current_process(); return set_one(p->gid, g, p->uid[1] == 0); }
+long sc_setreuid(uint32_t r, uint32_t e) { pcb_t *p = get_current_process(); return set_re(p->uid, r, e, p->uid[1] == 0); }
+long sc_setregid(uint32_t r, uint32_t e) { pcb_t *p = get_current_process(); return set_re(p->gid, r, e, p->uid[1] == 0); }
+long sc_setresuid(uint32_t r, uint32_t e, uint32_t s) { pcb_t *p = get_current_process(); return set_res(p->uid, r, e, s, p->uid[1] == 0); }
+long sc_setresgid(uint32_t r, uint32_t e, uint32_t s) { pcb_t *p = get_current_process(); return set_res(p->gid, r, e, s, p->uid[1] == 0); }
+
+static long get_res(const uint32_t id[3], uintptr_t r, uintptr_t e, uintptr_t s) {
+    const uintptr_t dst[3] = {r, e, s};
+
+    for (int i = 0; i < 3; i++)
+        if (copy_to_user((void *)dst[i], &id[i], sizeof(uint32_t))) return -EFAULT;
+    return 0;
+}
+
+long sc_getresuid(uintptr_t r, uintptr_t e, uintptr_t s) { return get_res(get_current_process()->uid, r, e, s); }
+long sc_getresgid(uintptr_t r, uintptr_t e, uintptr_t s) { return get_res(get_current_process()->gid, r, e, s); }
 
 //============================================================================
 // Thread pointer, thread id, random bytes, memory totals

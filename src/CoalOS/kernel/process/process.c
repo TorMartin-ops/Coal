@@ -259,6 +259,8 @@ int process_fork(const isr_frame_t *regs) {
     strcpy(child->cwd, parent->cwd);
     child->cloexec = parent->cloexec;
     child->umask = parent->umask;
+    memcpy(child->uid, parent->uid, sizeof(child->uid));
+    memcpy(child->gid, parent->gid, sizeof(child->gid));
     child->task.nice = parent->task.nice;
     rlimit_fork(child, parent);
     child->fs_base = parent->fs_base;
