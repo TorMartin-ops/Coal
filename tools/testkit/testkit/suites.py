@@ -108,11 +108,19 @@ def smoke_tests():
                  tags=("host-io", "network"), qemu=True, count=re.compile(r"^(ok)", re.M))]
 
 
+def all_net_cases_pass(text):
+    """run.py reports Coal's pass rate and exits 0 either way; the net category is expected to pass in full."""
+    m = re.search(r"^net\s+\d+\s+\d+\s+(\d+)/(\d+)", text, re.M)
+    if not m:
+        return "no net row in the corpus report"
+    return None if m.group(1) == m.group(2) else "Coal passes %s of %s net cases" % m.groups()
+
+
 def conformance_tests():
     from . import conformance
     net = host("conformance", "net_vs_host", ["tools/harness/conformance/run.py", "--target", "both", "--category", "net",
                                                "--build-dir", "{build}"], 60, tags=("host-io", "network"), qemu=True,
-               count=re.compile(r"^net\s+(\d+)", re.M))
+               count=re.compile(r"^net\s+(\d+)", re.M), check=all_net_cases_pass)
     return conformance.tests() + [net]
 
 

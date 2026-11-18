@@ -22,6 +22,9 @@ Boot with `-kernel kernel.bin -append "..."` (the PVH entry in `boot/boot.asm` s
 | `root=vda` | Mount the root file system from virtio-blk (`/dev/` prefix optional; default `hda`, the ATA disk) |
 | `console=hvc0` | Also send kernel log lines to the first virtio console |
 | `virtio_mmio.device=<size>@<base>:<irq>` | Probe a virtio-mmio device (repeatable; `K`/`M` size suffixes; IRQ 16 and above are polled every 1 ms). The command line is limited to 255 bytes |
+| `coal.seed=N` | Seed the kernel random generator (`/dev/urandom`, `getrandom`, `AT_RANDOM`) so that runs repeat; used by the test kit |
+| `coal.test=PROG,ARG,...` | `init` runs this one program with its output on COM1, prints `@@COALTEST exit=.. signal=.. timeout=.. ns=..` and powers off, instead of starting the shell and agentd |
+| `coal.budget=SECONDS` | With `coal.test=`: kill the program after this much guest time (default 120) |
 | `agentd.link=` | `vsock[:PORT]` or a device path such as `/dev/hvc0`; read by agentd from `/proc/cmdline` |
 
 ## Drivers

@@ -11,7 +11,8 @@ tools/testkit/coaltest --list                # suites, tests, tags, devices, cos
 python3 -m testkit ...                       # the same, from tools/testkit
 ```
 
-Python 3 standard library, QEMU, CMake, NASM, mtools and a C compiler are all it needs.
+Python 3 standard library, QEMU, CMake, NASM, mtools and a C compiler are all it needs. `tools/testkit/coal_test.sh` keeps
+the old "build and boot once" entry point (it runs `coaltest hello`).
 
 ## Philosophy
 
@@ -48,7 +49,7 @@ Python 3 standard library, QEMU, CMake, NASM, mtools and a C compiler are all it
 | `microvm` | the same on `-M microvm` with virtio-mmio | verdict and output |
 | `gateway` | agent protocol and agentd against the real kernel over COM2, virtio console, vsock | verdict only |
 | `smoke` | coal-mcp end to end (build, boot, commands, files, jobs, snapshots, network) | verdict only |
-| `conformance` | shell corpus on Linux and on Coal | verdict only |
+| `conformance` | the shell corpus, one guest per category (`files pipes processes signals text`) against `tools/testkit/baselines/conformance_known_failures.txt`: a case outside the list that fails is a regression, a listed case that passes makes the list stale. The `net` category talks to servers on the host and stays host-driven | categories: verdict and output; `net`: verdict only |
 | `bench` | boot timeline, `coalbench` | verdict only |
 
 "Verdict only" suites are driven from the host over a socket (COM2 or the network). Which guest instruction a
@@ -79,7 +80,7 @@ A failing guest test leaves `build/testkit-results/repro/<suite>-<test>-seed<N>/
 | `gateway_runlog/` | the gateway's per-run JSONL log, for host-driven tests |
 | `replay.sh` | `sh replay.sh` replays and checks the output; `sh replay.sh gdb` starts QEMU with `-icount rr=replay -s -S` and attaches gdb to `kernel.bin` |
 
-Reverse execution (`reverse-continue`, `reverse-step`) works in the replay. `coaltest --replay DIR [--gdb]` does the
+Breakpoints, `finish` and `reverse-stepi` were checked in a replay under gdb. `coaltest --replay DIR [--gdb]` does the
 same as `replay.sh`. Host-driven tests get the logs but no recording (QEMU is driven by the host there). The record run
 uses `sleep=on` because QEMU's record/replay hangs with `sleep=off`; the virtual time of the recording differs from the
 failing run only in how idle time is spent, which is what a replay of a recording needs.
