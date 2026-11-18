@@ -30,24 +30,35 @@ long sc_brk(uintptr_t addr) {
     return mm_brk(p->mm, addr);
 }
 
+/* Anonymous memory, or for a private file mapping a copy of the file range taken now. */
 long sc_mmap(uintptr_t addr, size_t len, uint32_t prot, uint32_t flags, int fd, long off) {
-    uint32_t vm = VM_ANONYMOUS | VM_USER | vm_rights(prot);
+    bool file = !(flags & MAP_ANONYMOUS);
+    uint32_t rights = vm_rights(prot);
+    uint32_t vm = VM_ANONYMOUS | VM_USER | (file ? (VM_READ | VM_WRITE) : rights);
 
-    (void)off;
-    if (!(flags & MAP_ANONYMOUS) || fd != -1) return -ENOSYS;   /* file mappings are not supported */
+    if (file && (flags & MAP_SHARED)) return -ENOSYS;           /* shared file mappings are not supported */
     if (!len) return -EINVAL;
+    if (file && (off < 0 || (off & (PAGE_SIZE - 1)))) return -EINVAL;
     len = PAGE_ALIGN_UP(len);
     if (flags & MAP_SHARED) vm |= VM_SHARED;
 
     if (!rlimit_vm_allowed(get_current_process(), len)) return -ENOMEM;
     mm_struct_t *mm = get_current_process()->mm;
+    long at;
     if (flags & MAP_FIXED) {                        /* replaces what was mapped there */
         if (!user_range(addr, len)) return -EINVAL;
         long rc = remove_vma_range(mm, addr, len);
         if (rc < 0) return rc;
-        return insert_vma(mm, addr, addr + len, vm) ? (long)addr : -ENOMEM;
+        at = insert_vma(mm, addr, addr + len, vm) ? (long)addr : -ENOMEM;
+    } else {
+        at = mm_mmap_anon(mm, addr, len, vm);
     }
-    return mm_mmap_anon(mm, addr, len, vm);
+    if (at < 0 || !file) return at;
+
+    long n = sc_pread64((uint32_t)fd, (uintptr_t)at, len, off);
+    long rc = n < 0 ? n : (rights == (VM_READ | VM_WRITE) ? 0 : mm_protect(mm, (uintptr_t)at, len, rights));
+    if (rc < 0) { remove_vma_range(mm, (uintptr_t)at, len); return rc == -ESPIPE ? -ENODEV : rc; }
+    return at;
 }
 
 long sc_munmap(uintptr_t addr, size_t len) {
