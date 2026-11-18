@@ -227,11 +227,13 @@ static int link_open(const char *dev) {
     return 0;
 }
 
-/* Writes everything; the serial driver may accept less than asked or nothing while its ring is full. */
+/* Writes everything; the serial driver may accept less than asked or nothing while its ring is full.
+ * SIGCHLD interrupts a write that is blocked on a full tty (EINTR, nothing written): retry, or the frame is lost. */
 static long write_all(int fd, const char *p, size_t n) {
     int stalls = 0;
     while (n) {
         long w = SYS3(SYS_WRITE, fd, p, n);
+        if (w == -EINTR_) continue;
         if (w < 0) return w;
         if (w == 0) {
             if (++stalls > 5000) return -5;      /* EIO: the peer stopped draining */

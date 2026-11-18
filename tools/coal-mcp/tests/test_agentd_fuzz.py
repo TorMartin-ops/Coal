@@ -239,6 +239,29 @@ class AgentdFuzz(unittest.TestCase):
         self.feed(b'{"op":"fs.write","path":"%s","data":"QQ==","more":true}' % path)   # left open, then abandoned
         self.feed(b'{"op":"ping"}')
 
+    def test_sigchld_during_replies_loses_no_frame(self):
+        """A child exiting while agentd writes a reply interrupts the write (EINTR, nothing written); the frame must
+        still arrive. Before write_all retried, a pong now and then went missing and the next request hung."""
+        for rnd in range(60):
+            data = b"".join(frame(b'{"id":"j%d","op":"spawn","cmd":"true"}' % n) +
+                            b"".join(frame(b'{"id":"p%d_%d","op":"ping"}' % (n, k)) for k in range(8))
+                            for n in range(8))
+            self.send(data + PING)
+            pongs, jobs, exited, synced = set(), set(), set(), False
+            while not synced or not jobs <= exited:        # exit events of earlier tests may be mixed in
+                msg = json.loads(self.read_frame().decode("utf-8"))
+                if msg.get("id") == "sync":
+                    synced = True
+                elif msg.get("pong"):
+                    pongs.add(msg["id"])
+                elif msg.get("event") == "job.exit":
+                    exited.add(msg["job_id"])
+                elif msg.get("ok") and "job_id" in msg and str(msg.get("id", "")).startswith("j"):
+                    jobs.add(msg["job_id"])
+            self.assertEqual(sorted({"p%d_%d" % (n, k) for n in range(8) for k in range(8)} - pongs), [])
+            for job in jobs:                                     # keep the job table free for the other tests
+                self.feed(b'{"op":"job.release","job_id":%d}' % job)
+
     def test_random_mutations(self):
         rng = random.Random(1234)
         seeds = [b'{"id":7,"op":"exec","cmd":"echo hi","timeout_ms":2000}',
