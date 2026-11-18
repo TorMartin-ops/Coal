@@ -5,10 +5,9 @@
 
 GatewayMachine implements it over tools/harness/mcpclient (coal-mcp). Another runner can pass any object with
 the same two methods, so the suites stay plain modules with run(machine). QEMU must be started under
-`flock /tmp/coal-testkit/slots/0` (the lock is held by the caller, not here).
+host admission slots (tools/testkit/testkit/slots.py); the gateway takes one when it boots.
 """
 import contextlib
-import fcntl
 import functools
 import http.server
 import os
@@ -21,16 +20,22 @@ from mcpclient import McpClient  # noqa: E402
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 
-SLOT = "/tmp/coal-testkit/slots/0"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "testkit"))
+from testkit import slots  # noqa: E402
 
 
 @contextlib.contextmanager
-def slot(path=SLOT):
-    """Hold the host-wide guest slot (the lock `flock <slot> <command>` takes) for the duration of a block."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+def slot():
+    """Hold one host admission slot for the block; the gateway started inside it inherits the slot instead of queueing."""
+    s = slots.acquire("difftest")
+    had = slots.HELD_ENV in os.environ
+    os.environ.update(slots.held_env(s))
+    try:
         yield
+    finally:
+        if not had:
+            os.environ.pop(slots.HELD_ENV, None)
+        s.release()
 
 
 class GatewayMachine:

@@ -50,6 +50,7 @@ the old "build and boot once" entry point (it runs `coaltest hello`).
 | `gateway` | agent protocol and agentd against the real kernel over COM2, virtio console, vsock | verdict only |
 | `smoke` | coal-mcp end to end (build, boot, commands, files, jobs, snapshots, network) | verdict only |
 | `conformance` | the shell corpus, one guest per category (`files pipes processes signals text`) against `tools/testkit/baselines/conformance_known_failures.txt`: a case outside the list that fails is a regression, a listed case that passes makes the list stale. The `net` category talks to servers on the host and stays host-driven | categories: verdict and output; `net`: verdict only |
+| `difftest` | `corpus` and `fuzz`: the syscall differential programs of `tools/difftest` run in one guest each and compared with the Linux host; known divergences in `baselines/difftest_*.txt`. `ltp`: the LTP syscalls subset through the gateway, tagged `long` (about an hour; not in `--all` or `--ci`, run it by name or `--tag long`) against `baselines/ltp_known_failures.txt` | corpus, fuzz: verdict and output; `ltp`: verdict only |
 | `bench` | boot timeline, `coalbench` | verdict only |
 
 "Verdict only" suites are driven from the host over a socket (COM2 or the network). Which guest instruction a
@@ -57,6 +58,9 @@ host byte arrives at depends on host timing, so output cannot be bit-identical a
 (and `network` where they talk to servers on the host). They still run under admission control, with timeouts scaled by
 host load (`COAL_TIMEOUT_SCALE`), and `--repeat` still demands the same verdict every time. Everything a guest can check
 by itself is in the deterministic suites; the host-driven ones test the host side of the link.
+
+Baselines work like the conformance one: a new divergence or failure fails the run, and an entry that no longer happens
+makes the list stale and fails it too. After a deliberate change run the test with `COAL_TESTKIT_UPDATE_BASELINES=1` to rewrite it.
 
 ## Admission control
 

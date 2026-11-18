@@ -5,7 +5,7 @@
     difftest.py fuzz [--seeds N] ...            (see fuzz.py)
 
 As a module: run(machine, only=None, out=None) -> result dict (JSON serialisable). Standard library only;
-the C programs are built with musl-gcc (static, x86_64). Run under `flock /tmp/coal-testkit/slots/0`.
+the C programs are built with musl-gcc (static, x86_64)..
 """
 import argparse
 import difflib

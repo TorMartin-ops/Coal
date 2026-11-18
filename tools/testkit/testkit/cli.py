@@ -12,13 +12,13 @@ from . import build as buildmod
 from . import changed, load, qemu, report, repro, runner, slots, suites
 from .model import BAD
 
-CI_TAGS_OFF = ("host-io", "network", "bench", "vsock")
+CI_TAGS_OFF = ("host-io", "network", "bench", "vsock", "long")
 
 
 def parse(argv):
     ap = argparse.ArgumentParser(prog="coaltest", description="Coal OS tests: deterministic, isolated, no retries.")
     ap.add_argument("select", nargs="*", help="suite names, suite/test ids or test name globs")
-    ap.add_argument("--all", action="store_true", help="every suite")
+    ap.add_argument("--all", action="store_true", help="every suite except the tests tagged long (use --tag long or name them)")
     ap.add_argument("--tag", action="append", default=[], help="only tests with this tag")
     ap.add_argument("--exclude-tag", action="append", default=[], help="skip tests with this tag")
     ap.add_argument("--changed", nargs="?", const="main", metavar="BASE",
@@ -65,6 +65,8 @@ def select(args, all_suites):
                 continue
             if ci and not args.select and tags & set(CI_TAGS_OFF):
                 continue
+            if args.all and not args.select and "long" in tags and "long" not in args.tag:
+                continue                        # hours of guest time: only by name or --tag long
             if args.tag and not tags & set(args.tag):
                 continue
             if tags & set(args.exclude_tag):

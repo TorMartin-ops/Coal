@@ -7,6 +7,7 @@ import glob
 import os
 import re
 
+from . import difftest_suites
 from .model import Suite, Test
 from .qemu import GuestSpec
 
@@ -157,6 +158,9 @@ def all_suites():
          Suite("conformance", "shell-level corpus: every category in a guest, compared with the Linux expectations; network cases host-driven",
                ("conformance",), ("tools/harness", SRC + "/userspace/coalbox", SRC + "/userspace/sh", "tools/testkit/baselines"),
                conformance_tests()),
+         Suite("difftest", "syscall differential corpus and file-operation fuzzer against Linux; LTP (long)", ("difftest",),
+               ("tools/difftest", SRC + "/kernel", SRC + "/include", SRC + "/userspace/libc", "tools/testkit/baselines"),
+               difftest_suites.tests()),
          Suite("bench", "boot time and micro-benchmarks", ("bench",), ("tools/bench", "tools/harness/boottime.py"),
                bench_tests())]
     for suite in s:

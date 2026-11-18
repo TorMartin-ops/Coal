@@ -5,7 +5,7 @@
 
 --ext is the output directory of build.sh (default build/difftest-external). Each test is one static program;
 its verdict comes from the TPASS/TFAIL/TBROK/TCONF lines it prints (or the summary of the new LTP API). As a
-module: run(machine, ext, only=None, host=True) -> JSON-serialisable dict. Run under `flock /tmp/coal-testkit/slots/0`.
+module: run(machine, ext, only=None, host=True) -> JSON-serialisable dict..
 """
 import argparse
 import json
@@ -125,11 +125,14 @@ def main(argv=None):
     ap.add_argument("--ext", default=os.path.join(REPO, "build", "difftest-external"))
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--no-host", action="store_true")
+    ap.add_argument("--ensure-built", action="store_true", help="run build.sh into --ext when it has no ltp directory")
     ap.add_argument("--timeout", type=int, default=30)
     ap.add_argument("--batch", type=int, default=10, help="syscall directories per boot; the slot lock is held one batch at a time")
     ap.add_argument("--json")
     ap.add_argument("--build-dir", default=os.environ.get("COAL_BUILD_DIR", os.path.join(tempfile.gettempdir(), "difftest-coal")))
     a = ap.parse_args(argv)
+    if a.ensure_built and not os.path.isdir(os.path.join(a.ext, "ltp")):
+        subprocess.run([os.path.join(HERE, "build.sh"), a.ext], check=True)
     from machine import GatewayMachine, slot
     dirs = sorted(d for d in os.listdir(os.path.join(a.ext, "ltp")) if not a.only or d in a.only)
     res = {"suite": "ltp", "tests": {}}

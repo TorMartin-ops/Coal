@@ -18,6 +18,7 @@ DEVICES = {
     "qemu": lambda: qemu.qemu_binary() is not None,
     "cmake": lambda: shutil.which("cmake") is not None,
     "gcc": lambda: shutil.which("gcc") is not None,
+    "musl-gcc": lambda: shutil.which("musl-gcc") is not None,
     "mtools": lambda: shutil.which("mcopy") is not None,
     "vhost-device-vsock": lambda: bool(os.environ.get("COAL_VHOST_DEVICE_VSOCK") or shutil.which("vhost-device-vsock")),
 }
