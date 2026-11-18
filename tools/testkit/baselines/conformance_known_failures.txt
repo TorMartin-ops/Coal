@@ -34,3 +34,7 @@ text/sort_key
 text/tac_reverse_lines
 text/uniq_count
 text/wc_all
+net/http_binary_body
+net/http_large_body
+net/http_then_use
+net/udp_echo

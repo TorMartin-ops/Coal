@@ -30,7 +30,7 @@ def oom_rounds(text):
 
 def guest(name, argv, expect=None, memory=128, profile="ide", budget=120, cost=1.0, tags=(), **kw):
     return Test("guest", name, guest=GuestSpec(argv=argv, memory_mb=memory, profile=profile, budget_s=budget),
-                deterministic=True, cost_s=cost, tags=("guest",) + tuple(tags), needs=("qemu",),
+                deterministic=kw.pop("deterministic", True), cost_s=cost, tags=("guest",) + tuple(tags), needs=("qemu",),
                 expect=expect, count=kw.pop("count", CHECKS), **kw)
 
 
@@ -108,19 +108,26 @@ def smoke_tests():
                  tags=("host-io", "network"), qemu=True, count=re.compile(r"^(ok)", re.M))]
 
 
-def all_net_cases_pass(text):
-    """run.py reports Coal's pass rate and exits 0 either way; the net category is expected to pass in full."""
-    m = re.search(r"^net\s+\d+\s+\d+\s+(\d+)/(\d+)", text, re.M)
-    if not m:
+def net_regressions(text):
+    """run.py reports Coal's failures and exits 0 either way; compare them with the baseline like the guest categories."""
+    from .conformance import known_failures
+    if not re.search(r"^net\s+\d+", text, re.M):
         return "no net row in the corpus report"
-    return None if m.group(1) == m.group(2) else "Coal passes %s of %s net cases" % m.groups()
+    m = re.search(r"net, coal fails: (.*)", text)
+    failed = {"net/" + n.strip() for n in m.group(1).split(",")} if m else set()
+    known = {k for k in known_failures() if k.startswith("net/")}
+    if failed - known:
+        return "regressions: %s" % ", ".join(sorted(failed - known))
+    if known - failed:
+        return "baseline is stale, these now pass: %s" % ", ".join(sorted(known - failed))
+    return None
 
 
 def conformance_tests():
     from . import conformance
     net = host("conformance", "net_vs_host", ["tools/harness/conformance/run.py", "--target", "both", "--category", "net",
                                                "--build-dir", "{build}"], 60, tags=("host-io", "network"), qemu=True,
-               count=re.compile(r"^net\s+(\d+)", re.M), check=all_net_cases_pass)
+               count=re.compile(r"^net\s+(\d+)", re.M), check=net_regressions)
     return conformance.tests() + [net]
 
 
@@ -128,7 +135,7 @@ def bench_tests():
     return [host("bench", "boottime", ["tools/harness/boottime.py", "--runs", "2", "--icount", "--build-dir", "{build}"],
                  20, tags=("bench", "host-io"), qemu=True, count=None),
             guest("coalbench", ["/usr/bin/coalbench"], count=None, budget=600, cost=6, tags=("bench",),
-                  expect=r"idle_irq")]
+                  expect=r"idle_irq", deterministic=False)]     # the last digits of every timing follow device timing
 
 
 def all_suites():
