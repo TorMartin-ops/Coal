@@ -25,6 +25,7 @@ int main(void) {
     R("ftruncate(read-only fd)", K(SYS_ftruncate, fd, 0));
     R("close", K(SYS_close, fd));
     R("ftruncate(bad fd)", K(SYS_ftruncate, 99, 0));
+    R("ftruncate(bad fd, negative length)", K(SYS_ftruncate, 99, -1));
     fd = R("creat(existing truncates)", K(SYS_creat, "t", 0644));
     R("write", K(SYS_write, fd, "abc", 3));
     R("close", K(SYS_close, fd));

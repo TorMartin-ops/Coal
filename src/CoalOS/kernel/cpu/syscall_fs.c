@@ -295,6 +295,7 @@ long sc_truncate(uintptr_t path, int64_t len) {
 }
 
 long sc_ftruncate(uint32_t fd, int64_t len) {
+    if (len < 0) return -EINVAL;                    /* checked before the descriptor, as Linux does */
     sys_file_t *sf = sys_file_get(fd);
 
     if (!sf) return -EBADF;
