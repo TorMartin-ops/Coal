@@ -5,6 +5,7 @@ import re
 import shutil
 import signal
 import socket
+import sys
 import subprocess
 import tempfile
 import collections
@@ -12,11 +13,19 @@ import threading
 import time
 import uuid
 
-from .agent import AgentClient
+from .agent import AgentClient, scaled
 from .errors import ToolError
 from .transport import parse_address
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.join(ROOT, "tools", "testkit"))
+try:
+    from testkit import slots  # noqa: E402  host-wide admission: no QEMU starts without a free slot
+except ImportError:            # the gateway shipped without the test kit
+    class slots:               # noqa: N801
+        @staticmethod
+        def acquire(label=""):
+            return type("NoSlot", (), {"release": staticmethod(lambda: None)})()
 SRC_DIR = os.path.join(ROOT, "src", "CoalOS")
 PROTO_VERSION = 1
 
@@ -51,6 +60,7 @@ class Machine:
     def __init__(self, attach=None, virtio=None):
         self.virtio = parse_virtio(virtio if virtio is not None else os.environ.get("COAL_VIRTIO"))
         self.proc = None
+        self.slot = None
         self.workdir = None
         self.agent = None
         self.attached = attach is not None
@@ -142,10 +152,13 @@ class Machine:
                 if not ok:
                     raise ToolError("kernel build failed:\n" + summarize_build(text))
             self._cleanup_workdir()
+            self._release_slot()
+            self.slot = slots.acquire("coal-mcp")                  # waits while other guests use the host
             self.workdir = tempfile.mkdtemp(prefix="coal-mcp-")      # mode 0700: QEMU monitor and COM2 sockets
             os.chmod(self.workdir, 0o700)
             com2, mon = self._p("com2.sock"), self._p("monitor.sock")
             cmd = [qemu, "-display", "none", "-m", str(memory_mb or default_memory_mb()), "-no-shutdown",
+                   "-pidfile", self._p("qemu.pid"),
                    "-serial", "file:" + self._p("com1.log"),
                    "-monitor", "unix:%s,server=on,wait=off" % mon,
                    "-nic", os.environ.get("COAL_NIC", "user,model=e1000")]
@@ -158,15 +171,20 @@ class Machine:
             if snapshot:
                 cmd.append("-snapshot")
             cmd += os.environ.get("COAL_QEMU_ARGS", "").split()
-            self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                                         preexec_fn=_die_with_parent)
+            try:
+                self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                             preexec_fn=_die_with_parent, start_new_session=True)
+            except OSError:
+                self._release_slot()
+                raise
             self.qemu_stderr = collections.deque(maxlen=20)
             self.stderr_thread = threading.Thread(target=_drain, args=(self.proc.stderr, self.qemu_stderr), daemon=True)
             self.stderr_thread.start()
             self.agent = AgentClient(parse_address(link))
             self.agent.explain = self.qemu_fate
             start = time.monotonic()
+            timeout = scaled(timeout)
             deadline = start + timeout
             while link.startswith("unix:") and not os.path.exists(com2) and time.monotonic() < deadline and self.running():
                 time.sleep(0.05)
@@ -190,6 +208,11 @@ class Machine:
         how = "killed by signal %d" % -code if code < 0 else "exited with code %d" % code
         tail = "\n".join(self.qemu_stderr)
         return "QEMU %s%s" % (how, "; last stderr lines:\n" + tail if tail else "; no stderr output")
+
+    def _release_slot(self):
+        if self.slot:
+            self.slot.release()
+            self.slot = None
 
     def _cleanup_workdir(self):
         if self.workdir:
@@ -215,6 +238,7 @@ class Machine:
                     self.proc.wait()
             self.proc = None
             self._cleanup_workdir()
+            self._release_slot()
             return "stopped" if was else "was not running"
 
     def reboot(self, timeout=60):

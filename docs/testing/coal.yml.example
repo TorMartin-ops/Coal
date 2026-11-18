@@ -1,0 +1,74 @@
+# Coal OS: build and run the deterministic test suites.
+#
+# The tcg job runs on any hosted runner. The kvm job needs a runner with /dev/kvm (a larger runner, or any
+# self-hosted one): set the repository variable COAL_KVM_RUNNER to its label to enable it. KVM runs are fast but
+# cannot be made repeatable, so they check that the guests pass, not that two runs are bit-identical.
+name: coal
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: coal-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  tcg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 cmake nasm gcc make mtools dosfstools \
+            xorriso grub-common grub-pc-bin
+      - name: Registry check
+        run: tools/testkit/coaltest --lint
+      - name: Deterministic suites, every test twice with the same seed
+        run: tools/testkit/coaltest --ci
+      - name: Keep the results and any repro bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coal-tcg-results
+          path: build/testkit-results
+          retention-days: 14
+      - name: Test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coal-tcg-junit
+          path: build/testkit-results/junit.xml
+
+  kvm:
+    if: ${{ vars.COAL_KVM_RUNNER != '' }}
+    runs-on: ${{ vars.COAL_KVM_RUNNER }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 cmake nasm gcc make mtools dosfstools \
+            xorriso grub-common grub-pc-bin
+      - name: Make /dev/kvm usable
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -w /dev/kvm
+      - name: Suites on KVM
+        run: tools/testkit/coaltest --ci --accel kvm
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coal-kvm-results
+          path: build/testkit-results
+          retention-days: 14

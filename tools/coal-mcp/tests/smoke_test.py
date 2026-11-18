@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""QEMU smoke test: builds Coal OS, boots it through coal-mcp and runs a few commands.
+"""coal-mcp end to end: builds Coal OS, boots it through the MCP server and drives it from the host.
 
-Usage: smoke_test.py [build-dir]    exits non-zero on the first failure.
+Run it with `tools/testkit/coaltest smoke` (admission control, load-scaled timeouts, failure bundles), or directly:
+smoke_test.py [build-dir]    exits non-zero on the first failure. The guest programs are tested by `coaltest guest`.
 """
 import functools
 import hashlib
@@ -64,25 +65,12 @@ def main():
         check(not err and "Coal" in text and "exit code: 0" in text, "run uname and a pipe", text)
         err, text = c.tool("coal_run", command="echo data > /tmp/f && cat /tmp/f && ls /bin")
         check("data" in text and "coalbox" in text, "write, read and list files", text)
-        err, text = c.tool("coal_run", command="/usr/bin/syscall_test", timeout_ms=60000)
-        check("0 failed" in text, "syscall_test", text)
-        # --- kernel: CPU exceptions in user mode kill only the process ---
-        err, text = c.tool("coal_run", command="/usr/bin/fault_test", timeout_ms=60000)
-        check("0 failed" in text, "fault_test: user-mode exceptions become signals", text)
-        err, text = c.tool("coal_run", command="echo still alive")
-        check("still alive" in text, "kernel survived the faults", text)
-        err, text = c.tool("coal_run", command="/usr/bin/fs_stress quick", timeout_ms=120000)
-        check("0 failed" in text, "fs_stress: file I/O round trip and unlink/rename of open files", text)
-        # --- end kernel ---
-        # --- kernel wave 6: SA_RESTART, 64 KiB pipes, open directories, select, socketpair, loopback,
-        #     #! scripts, statfs, links, FPU state ---
-        err, text = c.tool("coal_run", command="/usr/bin/kernel_test", timeout_ms=240000)
-        check("0 failed" in text and "exit code: 0" in text, "kernel_test: restarted calls, pipes, open directories, select, loopback, scripts, statfs, FPU", text)
+        # The user-space test programs (syscall_test, fault_test, fs_stress, kernel_test, sh_test, applet_test, the
+        # OOM test) run deterministically under `coaltest guest`; this test only covers the host side of the link.
         err, text = c.tool("coal_run", command="ping -c 2 127.0.0.1")
         check("2 received" in text, "ping 127.0.0.1 over the loopback interface", text)
         err, text = c.tool("coal_run", command="cat /proc/mounts")
         check("/ vfat" in text, "/proc/mounts lists the root file system", text)
-        # --- end kernel wave 6 ---
         err, text = c.tool("coal_run", command="dmesg")
         for _ in range(20):                 # DHCP needs about a second after boot
             if "lease:" in text or "static" in text:
@@ -134,10 +122,6 @@ def main():
         check(not err and hashlib.sha256(got).digest() == hashlib.sha256(blob).digest(),
               "3 MiB read back byte for byte (%d bytes)" % len(got), text)
         err, text = c.tool("coal_run", command="rm /tmp/blob.bin")
-        # --- sh and applets (scripts live in src/CoalOS/userspace/tests) ---
-        for script in ("sh_test.sh", "applet_test.sh"):
-            err, text = c.tool("coal_run", command="/bin/sh /usr/bin/" + script, timeout_ms=120000)
-            check("exit code: 0" in text and " 0 failed" in text, script, text[-1500:])
         err, text = c.tool("coal_snapshot", name="smoke")
         check(not err, "snapshot", text)
         err, text = c.tool("coal_run", command="rm /tmp/f && echo gone")
@@ -148,15 +132,6 @@ def main():
         check(not err and "data" in text, "restore brought the file back", text)
         err, text = c.tool("coal_sysinfo")
         check("/proc/uptime" in text, "sysinfo", text)
-        # --- kernel wave 6: out of memory on a 128 MB machine (the biggest process is killed, one log line) ---
-        c.tool("coal_shutdown")
-        err, text = c.tool("coal_boot", memory_mb=128)
-        check(not err and "agentd is ready" in text, "boot with 128 MB", text)
-        err, text = c.tool("coal_run", command="/usr/bin/kernel_test oom", timeout_ms=60000)
-        check("0 failed" in text and "exit code: 0" in text, "kernel_test oom: one of two memory hogs is killed, the other finishes", text)
-        err, text = c.tool("coal_run", command="dmesg | grep 'out of memory'")
-        check(text.count("killing pid") == 20, "the OOM killer logged one line per round (20 rounds)", text)
-        # --- end kernel wave 6 ---
     finally:
         c.tool("coal_shutdown")
         c.p.kill()

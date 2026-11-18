@@ -1,0 +1,40 @@
+# Corpus cases that fail on Coal today (tools/harness/conformance/cases), by category/name.
+# conformance/<category> fails if a case outside this list fails, and also when a listed case starts to pass,
+# so the list only ever shrinks. Missing applets (awk, sed, md5sum, gzip, tar, base64) account for most of it.
+files/chmod_exec_bit
+files/dd_zero
+files/dev_null_zero
+files/gzip_roundtrip
+files/hard_link
+files/symlink
+files/tar_roundtrip
+files/truncate_and_size
+pipes/big_pipe
+pipes/cat_many_files
+pipes/command_in_pipe_subst
+processes/uname_sysname
+processes/xargs_batches
+signals/ignored_term
+signals/trap_int_self
+signals/trap_term_handler_runs
+signals/trap_usr1
+text/awk_field
+text/awk_separator
+text/awk_sum
+text/base64_roundtrip
+text/grep_extended
+text/grep_recursive
+text/head_tail
+text/md5sum
+text/sed_delete
+text/sed_in_place
+text/sed_print_line
+text/sed_substitute
+text/sort_key
+text/tac_reverse_lines
+text/uniq_count
+text/wc_all
+net/http_binary_body
+net/http_large_body
+net/http_then_use
+net/udp_echo

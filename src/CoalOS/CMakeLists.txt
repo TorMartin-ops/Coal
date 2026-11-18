@@ -99,6 +99,7 @@ add_user_program(memtest userspace/tests/memtest.c)
 add_user_program(fault_test userspace/tests/fault_test.c)
 add_user_program(fs_stress userspace/tests/fs_stress.c)
 add_user_program(kernel_test userspace/tests/kernel_test.c)
+add_user_program(seed_test userspace/tests/seed_test.c)
 add_user_program(coalbench userspace/bench/coalbench.c)
 add_user_program(coalbench_null userspace/bench/null.c)
 
@@ -136,12 +137,13 @@ add_custom_command(
     COMMAND mcopy ${IMG} $<TARGET_FILE:fault_test> ::/usr/bin/fault_test
     COMMAND mcopy ${IMG} $<TARGET_FILE:fs_stress> ::/usr/bin/fs_stress
     COMMAND mcopy ${IMG} $<TARGET_FILE:kernel_test> ::/usr/bin/kernel_test
+    COMMAND mcopy ${IMG} $<TARGET_FILE:seed_test> ::/usr/bin/seed_test
     COMMAND mcopy ${IMG} $<TARGET_FILE:coalbench> ::/usr/bin/coalbench
     COMMAND mcopy ${IMG} $<TARGET_FILE:coalbench_null> ::/usr/bin/coalbench_null
     COMMAND mcopy ${IMG} ${CMAKE_CURRENT_SOURCE_DIR}/userspace/tests/sh_test.sh ::/usr/bin/sh_test.sh
     COMMAND mcopy ${IMG} ${CMAKE_CURRENT_SOURCE_DIR}/userspace/tests/applet_test.sh ::/usr/bin/applet_test.sh
     COMMAND mcopy ${IMG} ${ROOTFS_ETC} ::/etc/
-    DEPENDS hello snake shell coalbox init agentd libc_test syscall_test abi_test memtest fault_test fs_stress kernel_test coalbench coalbench_null ${ROOTFS_ETC}
+    DEPENDS hello snake shell coalbox init agentd libc_test syscall_test abi_test memtest fault_test fs_stress kernel_test seed_test coalbench coalbench_null ${ROOTFS_ETC}
     COMMENT "Creating FAT16 disk image"
     VERBATIM)
 

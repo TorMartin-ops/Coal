@@ -53,6 +53,21 @@ static void seed_from_cycle_counter(void) {
     g_seeded = true;
 }
 
+void random_seed(uint64_t seed) {
+    uintptr_t fl = local_irq_save();
+
+    for (int i = 0; i < 8; i++) {                           /* splitmix64 spreads the seed over the key */
+        seed += 0x9e3779b97f4a7c15ull;
+        uint64_t z = seed;
+        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+        z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+        g_key[i] = (uint32_t)((z ^ (z >> 31)) >> 16);
+    }
+    g_counter = 0;
+    g_seeded = true;
+    local_irq_restore(fl);
+}
+
 void random_add(const void *data, size_t len) {
     uintptr_t fl = local_irq_save();
     mix(data, len);

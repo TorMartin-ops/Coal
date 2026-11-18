@@ -7,6 +7,7 @@
 #include <kernel/core/log.h>
 #include <kernel/core/boot_info.h>
 #include <kernel/core/cmdline.h>
+#include <kernel/lib/random.h>
 #include <kernel/drivers/virtio/virtio.h>
 #include <kernel/cpu/percpu.h>
 #include <kernel/cpu/idt.h>
@@ -61,6 +62,14 @@ static void configure_keyboard_controller(void) {
     }
 }
 
+/* coal.seed=N makes /dev/urandom, getrandom and AT_RANDOM repeatable, for tests. */
+static void seed_random_from_cmdline(void) {
+    char word[24];
+    uint64_t seed;
+
+    if (cmdline_get("coal.seed", 0, word, sizeof(word)) && cmdline_number(word, NULL, &seed)) random_seed(seed);
+}
+
 void kernel_main_init(uint32_t magic, uintptr_t boot_info) {
     struct boot_memmap map;
 
@@ -72,6 +81,7 @@ void kernel_main_init(uint32_t magic, uintptr_t boot_info) {
 
     cpu_init_boot();
     cmdline_init(boot_info_cmdline(magic, boot_info));
+    seed_random_from_cmdline();
     boot_info_memmap(magic, boot_info, &map);
     memory_init(&map);
     idt_init();

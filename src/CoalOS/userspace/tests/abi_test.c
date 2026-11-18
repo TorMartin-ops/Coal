@@ -67,8 +67,9 @@ void abi_main(void) {
     check(sc3(NR_write, 1, (void *)0xffffffff80000000ul, 4) == -14, "write from kernel address is EFAULT");
     check(sc3(NR_write, 99, "x", 1) == -9, "write to bad fd is EBADF");
 
-    check(sc3(NR_ioctl, 1, 0x5401, tc) == 0, "TCGETS on the console (isatty)");
-    check(sc3(NR_ioctl, 1, 0x5413, tc) == 0 && (tc[0] & 0xffff) == 25, "TIOCGWINSZ rows");
+    long con = sc3(NR_open, "/dev/console", 2, 0);      /* stdout may be a serial line or a pipe */
+    check(sc3(NR_ioctl, con, 0x5401, tc) == 0, "TCGETS on the console (isatty)");
+    check(sc3(NR_ioctl, con, 0x5413, tc) == 0 && (tc[0] & 0xffff) == 25, "TIOCGWINSZ rows");
 
     long brk0 = sc3(NR_brk, 0, 0, 0);
     long brk1 = sc3(NR_brk, brk0 + 8192, 0, 0);

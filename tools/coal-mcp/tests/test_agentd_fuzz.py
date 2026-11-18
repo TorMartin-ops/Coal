@@ -188,7 +188,11 @@ class AgentdFuzz(unittest.TestCase):
                      b'{"op":"nonsense\xed\xa0\x80"}', b'{"op":"exec","cmd":"echo \xf8\x88\x80\x80\x80"}',
                      b'{"op":"fs.stat","path":"\x80\x80\x80"}', b'{"id":"\xff","op":"ping"}']:
             with self.subTest(case=case):
-                self.feed(case)
+                replies = self.feed(case)
+                if b'"op":"exec"' in case and not any("job_id" in r for r in replies):
+                    # exec answers when the command ends, which can be after the trailing ping's pong
+                    late = json.loads(self.read_frame().decode("utf-8"))
+                    self.assertIn("job_id", late)
 
     def test_unicode_escapes(self):
         for case in [b'{"op":"fs.stat","path":"\\u"}', b'{"op":"fs.stat","path":"\\u12"}', b'{"op":"fs.stat","path":"\\uZZZZ"}',
