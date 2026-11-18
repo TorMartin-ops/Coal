@@ -12,6 +12,9 @@
 #include <kernel/sync/spinlock.h>
 #include <kernel/lib/assert.h>
 #include <kernel/lib/string.h>
+#ifdef COAL_DEBUG_KERNEL
+#include <kernel/debug/ksan.h>
+#endif
 
 #define META_FREE  0x80u
 #define META_ALLOC 0x40u
@@ -87,6 +90,44 @@ void buddy_add_range(uintptr_t start, uintptr_t end) {
     }
 }
 
+#ifdef COAL_DEBUG_KERNEL
+/* Debug kernel: a freed block is filled with 0x6b and every page remembers it; the fill is checked when the page
+ * is handed out again, so a write through a stale pointer shows up. Pages never freed before carry no fill. */
+#define DBG_POISON 0x6b
+
+static void poison_pages(size_t idx, unsigned order) {
+    uintptr_t lo = g_base + ((uintptr_t)idx << PAGE_SHIFT), cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    cr3 &= ~(uintptr_t)(PAGE_SIZE - 1);
+    if (cr3 >= lo && cr3 < lo + (PAGE_SIZE << order))
+        ksan_report(KSAN_MEM, "freeing page %#lx, the page directory loaded in CR3", (unsigned long)lo);
+    memset(phys_to_virt(g_base + ((uintptr_t)idx << PAGE_SHIFT)), DBG_POISON, PAGE_SIZE << order);
+    for (size_t i = 0; i < ((size_t)1 << order); i++)
+        g_pages[idx + i].dbg = 1;
+}
+
+static void check_pages(size_t idx, unsigned order) {
+    for (size_t i = 0; i < ((size_t)1 << order); i++) {
+        struct page *pg = &g_pages[idx + i];
+        if (!pg->dbg)
+            continue;
+        pg->dbg = 0;
+        const uint8_t *p = phys_to_virt(g_base + ((uintptr_t)(idx + i) << PAGE_SHIFT));
+        size_t off = 0;
+        while (off < PAGE_SIZE && p[off] == DBG_POISON)
+            off++;
+        if (off < PAGE_SIZE)
+            ksan_report(KSAN_MEM, "freed page %#lx was written after it was freed (first byte at offset %lu, value %#x)",
+                        (unsigned long)(g_base + ((uintptr_t)(idx + i) << PAGE_SHIFT)), (unsigned long)off, p[off]);
+    }
+}
+
+int buddy_order_of(uintptr_t phys) {
+    struct page *pg = buddy_page(phys);
+    return pg && (pg->meta & META_ALLOC) && !(phys & (PAGE_SIZE - 1)) ? (int)(pg->meta & META_ORDER) : -1;
+}
+#endif
+
 /* Take a block of 2^order pages from the given zone; (size_t)-1 if it has none. */
 static size_t take(unsigned zone, unsigned order) {
     unsigned o = order;
@@ -114,6 +155,10 @@ static uintptr_t alloc(unsigned order, bool high_ok) {
     if (idx == (size_t)-1)
         idx = take(ZONE_LOW, order);
     spinlock_release_irqrestore(&g_lock, flags);
+#ifdef COAL_DEBUG_KERNEL
+    if (idx != (size_t)-1)
+        check_pages(idx, order);
+#endif
     return idx == (size_t)-1 ? 0 : g_base + ((uintptr_t)idx << PAGE_SHIFT);
 }
 
@@ -131,6 +176,9 @@ void buddy_free_pages(uintptr_t phys) {
         KERNEL_PANIC_HALT("buddy_free_pages: double free or not a block head");
 
     unsigned zone = zone_of(idx), order = pg->meta & META_ORDER;
+#ifdef COAL_DEBUG_KERNEL
+    poison_pages(idx, order);
+#endif
     pg->meta = 0;
     g_zone_free[zone] += (size_t)1 << order;
 

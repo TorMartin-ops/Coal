@@ -32,4 +32,10 @@ void *slab_alloc(slab_cache_t *cache);
 /** Return an object to the cache that allocated it. */
 void slab_free(void *obj);
 
+#ifdef COAL_DEBUG_KERNEL
+/** Debug kernel: like slab_alloc()/slab_free(), remembering the requested size and the callers (bt, n). */
+void *slab_alloc_req(slab_cache_t *cache, size_t req, const uintptr_t *bt, unsigned n);
+void slab_free_bt(void *obj, const uintptr_t *bt, unsigned n);
+#endif
+
 #endif /* SLAB_H */
