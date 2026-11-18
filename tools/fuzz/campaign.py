@@ -18,13 +18,16 @@ SLOT = "/tmp/coal-testkit/slots/0"
 
 
 def run_chunk(build, out, seconds, extra):
+    held = os.environ.get("COAL_TESTKIT_SLOT_HELD")       # a test kit slot is already ours
     with open(SLOT, "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not held:
+            fcntl.flock(lock, fcntl.LOCK_EX)
         try:
             p = subprocess.run([sys.executable, os.path.join(HERE, "fuzz.py"), "--build", build, "--out", out,
                                 "--seconds", str(seconds)] + extra, capture_output=True, text=True, timeout=seconds + 240)
         finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+            if not held:
+                fcntl.flock(lock, fcntl.LOCK_UN)
     return p
 
 
@@ -56,6 +59,7 @@ def main():
             stats = json.load(f)
     print(json.dumps({"chunks": chunks, "stats": stats,
                       "crashes": sorted(os.listdir(os.path.join(a.out, "crashes")))}, indent=1))
+    sys.exit(1 if any(c["returncode"] for c in chunks) else 0)
 
 
 if __name__ == "__main__":

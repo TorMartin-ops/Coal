@@ -1,0 +1,1 @@
+{"calls": [{"nr": 32, "name": "dup", "args": [[0, 10]]}, {"nr": 111, "name": "getpgrp", "args": []}, {"nr": 293, "name": "pipe2", "args": [[2, 4096], [0, 524288]]}, {"nr": 72, "name": "fcntl", "args": [[1, 0], [0, 1], [0, 1024]]}], "blobs": {}}

@@ -90,6 +90,11 @@ class Fuzzer:
             if name.endswith(".json"):
                 with open(os.path.join(d, name)) as f:
                     self.corpus.append(P.Prog.from_json(f.read()))
+        if not self.corpus and self.a.seed_corpus:
+            for name in sorted(os.listdir(self.a.seed_corpus)):
+                if name.endswith(".json"):
+                    with open(os.path.join(self.a.seed_corpus, name)) as f:
+                        self.corpus.append(P.Prog.from_json(f.read()))
         vp = os.path.join(self.out, "virgin.bin")
         if os.path.exists(vp):
             with open(vp, "rb") as f:
@@ -340,9 +345,20 @@ def main():
     ap.add_argument("--exec-timeout", type=float, default=6.0)
     ap.add_argument("--minimise-runs", type=int, default=80)
     ap.add_argument("--no-coverage", action="store_true")
-    f = Fuzzer(ap.parse_args())
+    ap.add_argument("--seed-corpus", help="directory of programs (JSON) that start an empty corpus")
+    ap.add_argument("--known", help="file of accepted crash signatures; any other finding makes the exit status 1")
+    args = ap.parse_args()
+    f = Fuzzer(args)
     try:
         f.run()
+        known = set()
+        if args.known:
+            with open(args.known) as kf:
+                known = {l.split()[0] for l in kf if l.strip() and not l.startswith("#")}
+        new = sorted(set(f.crashes) - known)
+        for sig in new:
+            print("UNKNOWN FINDING", sig)
+        sys.exit(1 if new else 0)
     except KeyboardInterrupt:
         f.save_state()
         f.vm.stop()
