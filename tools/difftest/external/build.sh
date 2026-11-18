@@ -29,7 +29,14 @@ build_ltp() {
     fi
     git -C "$src" cat-file -e "$LTP_REV^{commit}" 2>/dev/null || git -C "$src" fetch -q --depth 1 origin "$LTP_REV"
     git -C "$src" checkout -q "$LTP_REV"
+    # Coal has no file-backed shared mappings: the harness region becomes shared anonymous memory.
+    if grep -q 'MAP_SHARED, ipc_fd, 0' "$src/lib/tst_test.c"; then
+        sed -i 's/MAP_SHARED, ipc_fd, 0/MAP_SHARED | MAP_ANONYMOUS, -1, 0/' "$src/lib/tst_test.c"
+        rm -f "$src/lib/libltp.a"
+    fi
+    force=
     if [ ! -f "$src/lib/libltp.a" ]; then
+        force=-B    # tests must relink against the new library
         (cd "$src" && make autotools >/dev/null 2>&1 &&
          CC="musl-gcc -static" CFLAGS="$cflags" LDFLAGS=-static ./configure >/dev/null 2>&1 &&
          make -C lib -j"$jobs" >/dev/null 2>&1 && make -C libs -j"$jobs" >/dev/null 2>&1) || { echo "LTP library build failed" >&2; return 1; }
@@ -38,7 +45,7 @@ build_ltp() {
     for d in $(grep -v '^#' "$here/ltp-dirs.txt"); do
         dir=$src/testcases/kernel/syscalls/$d
         [ -d "$dir" ] || continue
-        make -C "$dir" -k -j"$jobs" >/dev/null 2>&1 || true
+        make -C "$dir" $force -k -j"$jobs" >/dev/null 2>&1 || true
         mkdir -p "$out/ltp/$d"
         for f in "$dir"/*; do
             [ -f "$f" ] && [ -x "$f" ] || continue

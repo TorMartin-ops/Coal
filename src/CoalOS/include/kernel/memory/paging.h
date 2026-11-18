@@ -47,6 +47,7 @@ typedef uint64_t pte_t;
 #define PAGE_HUGE       0x080ul     /* 2 MiB page (PDE only) */
 #define PAGE_GLOBAL     0x100ul
 #define PAGE_COW        0x200ul     /* software bit: private page shared after fork, copy on write */
+#define PAGE_SHARED     0x400ul     /* software bit: MAP_SHARED page, stays shared (writable) across fork */
 #define PAGE_NX         (1ul << 63)
 
 #define PTE_KERNEL_DATA_FLAGS (PAGE_PRESENT | PAGE_RW | PAGE_NX)

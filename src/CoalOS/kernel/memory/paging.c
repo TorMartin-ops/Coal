@@ -202,7 +202,7 @@ void paging_free_user_space(void *pd) {
     }
 }
 
-/* Copies the table `src` at `level` into `dst`; leaf frames are shared and made copy-on-write. */
+/* Copies the table `src` at `level` into `dst`; leaf frames are shared and made copy-on-write (PAGE_SHARED ones stay writable). */
 static bool clone_table(pte_t *dst, pte_t *src, unsigned level) {
     for (unsigned i = 0; i < PTES_PER_TABLE; i++) {
         if (!(i & 7) && empty8(&src[i])) {     /* dst is a zeroed frame: nothing to copy */
@@ -213,7 +213,7 @@ static bool clone_table(pte_t *dst, pte_t *src, unsigned level) {
         if (!(e & PAGE_PRESENT))
             continue;
         if (level == 0) {
-            if (e & PAGE_RW) {                  /* both sides copy on first write */
+            if ((e & PAGE_RW) && !(e & PAGE_SHARED)) {   /* both sides copy on first write */
                 e = (e & ~PAGE_RW) | PAGE_COW;
                 src[i] = e;
             }

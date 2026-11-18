@@ -22,7 +22,8 @@ static vma_struct_t *vma_alloc(void) {
 /* PROT_NONE mappings stay present but become supervisor-only, so user accesses fault. */
 static uint64_t prot_of(uint32_t vm_flags) {
     return PAGE_PRESENT | ((vm_flags & (VM_READ | VM_WRITE | VM_EXEC)) ? PAGE_USER : 0) |
-           ((vm_flags & VM_WRITE) ? PAGE_RW : 0) | ((vm_flags & VM_EXEC) ? 0 : PAGE_NX);
+           ((vm_flags & VM_WRITE) ? PAGE_RW : 0) | ((vm_flags & VM_EXEC) ? 0 : PAGE_NX) |
+           ((vm_flags & VM_SHARED) ? PAGE_SHARED : 0);
 }
 
 static bool user_range_ok(uintptr_t start, uintptr_t end) {
@@ -114,8 +115,34 @@ size_t mm_total_vm(mm_struct_t *mm) {
     return total;
 }
 
+/* Shared pages must exist before the fork so that both sides see the same frame. */
+static bool populate_shared(mm_struct_t *mm) {
+    for (struct rb_node *n = rb_tree_first(&mm->vma_tree); n; n = rb_node_next(n)) {
+        vma_struct_t *v = rb_entry(n, vma_struct_t, rb_node);
+        if (!(v->vm_flags & VM_SHARED))
+            continue;
+        for (uintptr_t a = v->vm_start; a < v->vm_end; a += PAGE_SIZE) {
+            pte_t *pte = paging_pte(mm->pgd_phys, a, true);
+            if (!pte)
+                return false;
+            if (*pte & PAGE_PRESENT)
+                continue;
+            uintptr_t frame = frame_alloc_user_zeroed();
+            if (!frame)
+                return false;
+            *pte = frame | v->page_prot;
+        }
+    }
+    return true;
+}
+
 mm_struct_t *dup_mm(mm_struct_t *parent) {
     uintptr_t flags = spinlock_acquire_irqsave(&parent->lock);
+
+    if (!populate_shared(parent)) {
+        spinlock_release_irqrestore(&parent->lock, flags);
+        return NULL;
+    }
 
     uintptr_t pgd = paging_clone_directory(parent->pgd_phys);
     mm_struct_t *child = pgd ? create_mm((void *)pgd) : NULL;
