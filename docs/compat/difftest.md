@@ -286,7 +286,7 @@ Most `stat`, `lstat`, `open`, `rename` and `unlink` divergences follow from the 
 3. `*at` syscalls with a directory fd (`openat`, `newfstatat`, `unlinkat`, `mkdirat`, `fchdir`, `faccessat`): 30+ divergences; needs an open file to remember its path.
 4. AF_UNIX `socket`/`bind`/`listen`/`accept`/`connect` (only `socketpair` works) and the remaining socket options.
 5. utimensat/utime (cheap, FAT stores times), alarm/setitimer/getitimer with SIGALRM, `ppoll`, `getrusage`, more clock ids, `mlock`/`msync`/`mremap`.
-6. Raise MAX_FD and implement RLIMIT_NOFILE/FSIZE (all slots beyond 3 are unimplemented).
+6. Raise MAX_FD and implement RLIMIT_NOFILE/FSIZE (only CPU, NPROC and AS are implemented).
 7. Shared file-backed `mmap` via the page cache; `epoll`, `eventfd`, `timerfd`, `signalfd`, `inotify`, `memfd_create`.
 8. Path-walk errno details: ENOTDIR vs ENOENT, trailing slashes, `rmdir .`, rename onto `.`/`..`, getdents64 on a file.
 9. Dynamic linking (`PT_INTERP`, shared objects), needed before most non-static programs run.
