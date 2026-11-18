@@ -15,11 +15,13 @@ class Baseline(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.saved = ds.BASELINES
         ds.BASELINES = self.dir
+        self.saved_ltp, ds.LTP_DIR = ds.LTP_DIR, os.path.join(self.dir, "no-ltp")      # no tree: the row count is not checked
         with open(os.path.join(self.dir, "b.txt"), "w") as f:
             f.write("# header\na\nb\n")
 
     def tearDown(self):
         ds.BASELINES = self.saved
+        ds.LTP_DIR = self.saved_ltp
 
     def test_same_set_passes(self):
         self.assertIsNone(ds._compare("b.txt", {"a", "b"}, "h"))
