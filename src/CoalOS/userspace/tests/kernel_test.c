@@ -922,6 +922,20 @@ static void test_exit_preempted(void) {
     CHECK(bad == 0);
 }
 
+/* poll() on an array that is not 4-byte aligned (the debug kernel reports a misaligned access) */
+static void test_poll_unaligned(void) {
+    int fds[2];
+    char buf[16];
+    CHECK(pipe(fds) == 0);
+    struct pollfd pf = { fds[1], POLLOUT, 0 };
+    memcpy(buf + 2, &pf, sizeof pf);
+    CHECK(poll((struct pollfd *)(buf + 2), 1, 0) == 1);
+    memcpy(&pf, buf + 2, sizeof pf);
+    CHECK(pf.revents == POLLOUT);
+    close(fds[0]);
+    close(fds[1]);
+}
+
 /* --- vDSO: the time page and the TF/signal corner cases --- */
 
 #define AT_SYSINFO_EHDR 33
@@ -1015,7 +1029,7 @@ int main(int argc, char **argv) {
         { "sigchld", test_sigchld, 0 }, { "rlimit", test_rlimit, 0 },
         { "fpu", test_fpu, 0 }, { "loopback", test_loopback, 0 }, { "stream", test_loopback_stream, 0 },
         { "smallwrites", test_tcp_small_writes, 0 },
-        { "exitrace", test_exit_preempted, 0 },
+        { "exitrace", test_exit_preempted, 0 }, { "pollalign", test_poll_unaligned, 0 },
         { "vdso", test_vdso, 0 },
         { "oom", test_oom, 1 },                     /* needs a small machine: run as "kernel_test oom" */
     };

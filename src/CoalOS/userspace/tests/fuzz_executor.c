@@ -141,6 +141,7 @@ static long now_ms(void) {
 }
 
 static void limits(void) {
+    close(link_fd);                     /* a program must not talk to the host link */
     long lim[2];
     lim[0] = lim[1] = 96l << 20;
     __sc(SYS_SETRLIMIT, 9 /* RLIMIT_AS */, (long)lim, 0, 0, 0);

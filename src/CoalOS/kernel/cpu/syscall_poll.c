@@ -77,7 +77,7 @@ long sc_poll(uintptr_t ufds, unsigned long nfds, int32_t timeout_ms) {
     long ready = poll_wait(poll_scan, &c, timeout_ms);
     if (ready < 0) return ready;
     for (uint32_t i = 0; i < c.nfds; i++)
-        if (copy_to_user(&((struct linux_pollfd *)ufds)[i].revents, &fds[i].revents, sizeof(int16_t)) != 0)
+        if (copy_to_user((char *)ufds + i * sizeof(fds[0]) + __builtin_offsetof(struct linux_pollfd, revents), &fds[i].revents, sizeof(int16_t)) != 0)
             return -EFAULT;
     return ready;
 }
