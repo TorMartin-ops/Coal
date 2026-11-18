@@ -1,8 +1,6 @@
 """--changed: which suites are worth running for the paths touched since a base."""
 import subprocess
 
-from . import suites
-
 
 def _git(repo, *args):
     p = subprocess.run(["git", "-C", repo] + list(args), capture_output=True, text=True)

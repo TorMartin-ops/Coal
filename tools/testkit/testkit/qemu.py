@@ -200,7 +200,7 @@ def run_guest(spec, kernel, disk, seed, mode="run", rrfile=None, shift=DEFAULT_S
     open(serial, "w").close()
     t0 = time.monotonic()
     deadline = t0 + (wall_s or max(120.0, spec.budget_s * 8.0)) * load.scale() * (1 if spec.accel == "tcg" else 0.5)
-    errlog = open(os.path.join(workdir, "qemu.stderr"), "w")
+    errlog = open(os.path.join(workdir, "qemu.stderr"), "w")  # noqa: SIM115  closed in the finally below
     proc = subprocess.Popen(prefix + [binary] + args, stdin=subprocess.DEVNULL, stdout=errlog, stderr=errlog,
                             env=env, start_new_session=True)
     with _live_lock:

@@ -13,7 +13,7 @@ import shutil
 import subprocess
 
 from . import qemu
-from .model import FAIL, NONDET, PASS
+from .model import PASS
 
 GDB_PORT = 1234
 

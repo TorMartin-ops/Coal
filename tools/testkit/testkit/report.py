@@ -5,8 +5,7 @@ import statistics
 import time
 from xml.sax.saxutils import escape, quoteattr
 
-from .model import BAD, PASS, SKIP
-
+from .model import BAD, SKIP
 
 _CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
 
@@ -51,7 +50,7 @@ def table(results):
         if r["verdict"] in BAD or r["verdict"] == SKIP:
             lines.append("    %s" % r["detail"])
             if r["diff"]:
-                lines += ["    " + l for l in r["diff"].splitlines()[:40]]
+                lines += ["    " + d for d in r["diff"].splitlines()[:40]]
             if r["bundle"]:
                 lines.append("    repro bundle: %s" % r["bundle"])
     counts = {}

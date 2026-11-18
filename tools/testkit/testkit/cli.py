@@ -2,7 +2,6 @@
 import argparse
 import concurrent.futures
 import fnmatch
-import json
 import os
 import subprocess
 import sys
@@ -10,8 +9,8 @@ import threading
 import time
 
 from . import build as buildmod
-from . import changed, load, qemu, repro, report, runner, slots, suites
-from .model import BAD, PASS, SKIP
+from . import changed, load, qemu, report, repro, runner, slots, suites
+from .model import BAD
 
 CI_TAGS_OFF = ("host-io", "network", "bench", "vsock")
 

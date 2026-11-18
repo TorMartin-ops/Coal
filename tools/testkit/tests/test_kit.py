@@ -4,17 +4,16 @@ import subprocess
 import sys
 import tempfile
 import threading
-import types
 import time
+import types
 import unittest
 import xml.dom.minidom
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from testkit import qemu, report, runner, slots, suites          # noqa: E402
-from testkit.model import NONDET, PASS, FAIL, Test               # noqa: E402
-
+from testkit import qemu, report, runner, slots, suites  # noqa: E402
+from testkit.model import FAIL, NONDET, PASS, Test  # noqa: E402
 
 FAKE_BUILD = types.SimpleNamespace(dir="/tmp", reset_disk=lambda: None)
 
@@ -111,6 +110,11 @@ class QemuArgs(unittest.TestCase):
 class Rules(unittest.TestCase):
     """Determinism rules, with host commands standing in for guests."""
 
+    @staticmethod
+    def read(path):
+        with open(path) as f:
+            return f.read()
+
     def ctx(self, repeat=3, seeds=(1,)):
         return runner.Context(suites.REPO, FAKE_BUILD, "/tmp", list(seeds), repeat)
 
@@ -132,7 +136,7 @@ class Rules(unittest.TestCase):
                 "sys.exit(1 if n==1 else 0)" % counter)
         r = runner.run_test(self.py(code), self.ctx())
         self.assertEqual(r.verdict, NONDET)
-        self.assertEqual(open(counter).read(), "3", "each run executes exactly once")
+        self.assertEqual(self.read(counter), "3", "each run executes exactly once")
         os.unlink(counter)
 
     def test_failure_is_not_retried(self):
@@ -140,7 +144,7 @@ class Rules(unittest.TestCase):
         code = "p=%r;open(p,'a').write('x');raise SystemExit(1)" % counter
         r = runner.run_test(self.py(code), self.ctx(repeat=1))
         self.assertEqual(r.verdict, FAIL)
-        self.assertEqual(open(counter).read(), "x")
+        self.assertEqual(self.read(counter), "x")
         os.unlink(counter)
 
     def test_seed_sensitive_needs_different_output_per_seed(self):
