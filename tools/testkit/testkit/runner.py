@@ -7,8 +7,9 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import load, qemu, slots
 from .model import BAD, FAIL, NONDET, PASS, SKIP, Result, Run
@@ -23,6 +24,29 @@ DEVICES = {
 HOST_VOLATILE = re.compile(r"\bin \d+\.\d+s\b|/tmp/\S+")
 
 
+class Lease:
+    """Holds one admission slot across consecutive guest runs, up to `hold_s` seconds, then lets others in.
+
+    Short guest runs would otherwise queue for a slot once each, and on a shared host the queue is the whole cost."""
+
+    def __init__(self, hold_s=45.0):
+        self.hold_s, self.slot, self.since = hold_s, None, 0.0
+
+    def get(self):
+        if self.slot is None:
+            self.slot, self.since = slots.acquire("coaltest"), time.monotonic()
+        return self.slot
+
+    def release(self):
+        if self.slot is not None:
+            self.slot.release()
+            self.slot = None
+
+    def tick(self):
+        if self.slot is not None and time.monotonic() - self.since > self.hold_s:
+            self.release()
+
+
 @dataclass
 class Context:
     repo: str
@@ -33,6 +57,19 @@ class Context:
     accel: str = "tcg"
     shift: int = qemu.DEFAULT_SHIFT
     repro: bool = True
+    local: threading.local = field(default_factory=threading.local)
+    leases: list = field(default_factory=list)
+
+    def lease(self):
+        """The calling thread's lease."""
+        if not hasattr(self.local, "lease"):
+            self.local.lease = Lease()
+            self.leases.append(self.local.lease)
+        return self.local.lease
+
+    def release_all(self):
+        for lease in self.leases:
+            lease.release()
 
 
 def missing(test):
@@ -76,7 +113,9 @@ def execute_guest(test, ctx, seed):
     spec = test.guest
     if ctx.accel != "tcg":
         spec = type(spec)(**{**spec.__dict__, "accel": ctx.accel})
-    res = qemu.run_guest(spec, ctx.build.kernel, ctx.build.disk, seed, shift=ctx.shift)
+    lease = ctx.lease()
+    res = qemu.run_guest(spec, ctx.build.kernel, ctx.build.disk, seed, shift=ctx.shift, slot=lease.get())
+    lease.tick()
     verdict, detail = res.verdict, res.detail
     if verdict == PASS:
         verdict, detail = _judge(test, True, res.serial)
@@ -99,6 +138,7 @@ def execute_host(test, ctx, seed):
                PYTHONDONTWRITEBYTECODE="1", COAL_TIMEOUT_SCALE="%.1f" % max(2.0, 2 * load.scale()))
     slot = None
     t0 = time.monotonic()
+    ctx.lease().release()                        # a host test, or what it starts, takes its own slot
     try:
         if test.qemu:
             slot = slots.acquire(test.id)

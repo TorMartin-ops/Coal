@@ -143,6 +143,7 @@ def main(argv=None):
     def one(t):
         r = runner.run_test(t, ctx)
         if runner.is_bad(r) and ctx.repro:
+            ctx.lease().release()
             try:
                 r.bundle = repro.make_bundle(t, ctx, r, os.path.join(out_dir, "repro"), started)
             except Exception as e:                      # a broken bundle must not hide the failure itself
@@ -157,6 +158,8 @@ def main(argv=None):
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
         return 130
+    finally:
+        ctx.release_all()
     wall = time.monotonic() - t_start
     print()
     print(report.table(results))
