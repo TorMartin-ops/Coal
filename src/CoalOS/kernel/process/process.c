@@ -394,6 +394,10 @@ int proc_info_get(uint32_t pid, proc_info_t *out) {
     if (!p || !p->pid) { local_irq_restore(flags); return -ESRCH; }
     out->pid = p->pid;
     out->ppid = p->ppid;
+    out->pgid = p->pgid;
+    out->sid = p->sid;
+    memcpy(out->uid, p->uid, sizeof(out->uid));
+    memcpy(out->gid, p->gid, sizeof(out->gid));
     out->state = p->task.state == TASK_ZOMBIE ? 'Z'
                : p->task.state == TASK_RUNNING || p->task.state == TASK_READY ? 'R' : 'S';
     memcpy(out->name, p->name, sizeof(out->name));

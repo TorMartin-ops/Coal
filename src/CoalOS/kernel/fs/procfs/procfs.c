@@ -22,7 +22,7 @@
 #define SNAPSHOT_MAX 640
 
 
-enum kind { K_ROOT, K_PIDDIR, K_MEMINFO, K_UPTIME, K_VERSION, K_MOUNTS, K_INTERRUPTS, K_KCMDLINE, K_STATUS, K_CMDLINE };
+enum kind { K_ROOT, K_PIDDIR, K_MEMINFO, K_UPTIME, K_VERSION, K_MOUNTS, K_INTERRUPTS, K_KCMDLINE, K_STATUS, K_CMDLINE, K_STAT, K_CPUINFO, K_PIDMAX };
 
 struct node {
     enum kind kind;
@@ -113,9 +113,22 @@ static size_t render(const struct node *n, char *out) {
             char hits[24];
             rlimit_hits_text(pi.rl_hits, hits, sizeof(hits));
             return (size_t)pf(out, SNAPSHOT_MAX,
-                              "Name:\t%s\nState:\t%c\nPid:\t%u\nPPid:\t%u\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nRlimitHits:\t%s\n",
-                              pi.name, pi.state, pi.pid, pi.ppid, hits);
+                              "Name:\t%s\nState:\t%c\nPid:\t%u\nPPid:\t%u\nUid:\t%u\t%u\t%u\t%u\nGid:\t%u\t%u\t%u\t%u\nRlimitHits:\t%s\n",
+                              pi.name, pi.state, pi.pid, pi.ppid, pi.uid[0], pi.uid[1], pi.uid[2], pi.uid[1],
+                              pi.gid[0], pi.gid[1], pi.gid[2], pi.gid[1], hits);
         }
+    case K_STAT:                                    /* fields 1-7 are real; the accounting fields are not tracked and read 0 */
+        if (proc_info_get(n->pid, &pi) < 0) return 0;
+        {
+            size_t len = (size_t)pf(out, SNAPSHOT_MAX, "%u (%s) %c %u %u %u 0", pi.pid, pi.name, pi.state, pi.ppid, pi.pgid, pi.sid);
+            for (int f = 8; f <= 52 && len + 2 < SNAPSHOT_MAX; f++) { out[len++] = ' '; out[len++] = '0'; }
+            out[len++] = '\n';
+            return len;
+        }
+    case K_CPUINFO:
+        return (size_t)pf(out, SNAPSHOT_MAX, "processor\t: 0\nvendor_id\t: Coal\nmodel name\t: Coal virtual CPU\n");
+    case K_PIDMAX:
+        return (size_t)pf(out, SNAPSHOT_MAX, "32768\n");
     case K_CMDLINE:
         if (proc_info_get(n->pid, &pi) < 0) return 0;
         memcpy(out, pi.cmdline, pi.cmdline_len);
@@ -141,10 +154,30 @@ static bool parse_pid(const char *s, size_t len, uint32_t *pid) {
     return true;
 }
 
+static int open_node(enum kind kind, uint32_t pid, int flags, vnode_t *v) {
+    if (flags & O_CREAT) return (flags & O_EXCL) ? -EEXIST : -EACCES;
+    if ((flags & O_ACCMODE) != O_RDONLY) return -EACCES;
+
+    struct node *n = kmalloc(sizeof(*n));
+    if (!n) return -ENOMEM;
+    memset(n, 0, sizeof(*n));
+    n->kind = kind;
+    n->pid = pid;
+    if (kind >= K_MEMINFO) {
+        n->text = kmalloc(SNAPSHOT_MAX);
+        if (!n->text) { kfree(n); return -ENOMEM; }
+        n->len = render(n, n->text);
+    }
+    v->data = n;
+    v->type = kind >= K_MEMINFO ? S_IFREG : S_IFDIR;
+    return 0;
+}
+
 static int procfs_open(void *fs, const char *path, int flags, mode_t mode, vnode_t *v) {
     const char *c[2] = { NULL, NULL };
     size_t cl[2] = { 0, 0 };
     int nc = 0;
+    if (!strcmp(path, "/sys/kernel/pid_max") || !strcmp(path, "sys/kernel/pid_max")) return open_node(K_PIDMAX, 0, flags, v);
     for (const char *p = path; *p;) {
         while (*p == '/') p++;
         if (!*p) break;
@@ -159,7 +192,8 @@ static int procfs_open(void *fs, const char *path, int flags, mode_t mode, vnode
     proc_info_t pi;
 
     if (nc > 0) {
-        if (nc == 1 && cl[0] == 7 && !strncmp(c[0], "meminfo", 7)) kind = K_MEMINFO;
+        if (nc == 1 && cl[0] == 7 && !strncmp(c[0], "cpuinfo", 7)) kind = K_CPUINFO;
+        else if (nc == 1 && cl[0] == 7 && !strncmp(c[0], "meminfo", 7)) kind = K_MEMINFO;
         else if (nc == 1 && cl[0] == 6 && !strncmp(c[0], "uptime", 6)) kind = K_UPTIME;
         else if (nc == 1 && cl[0] == 7 && !strncmp(c[0], "version", 7)) kind = K_VERSION;
         else if (nc == 1 && cl[0] == 6 && !strncmp(c[0], "mounts", 6)) kind = K_MOUNTS;
@@ -178,26 +212,12 @@ static int procfs_open(void *fs, const char *path, int flags, mode_t mode, vnode
             if (nc == 2) {
                 if (cl[1] == 6 && !strncmp(c[1], "status", 6)) kind = K_STATUS;
                 else if (cl[1] == 7 && !strncmp(c[1], "cmdline", 7)) kind = K_CMDLINE;
+                else if (cl[1] == 4 && !strncmp(c[1], "stat", 4)) kind = K_STAT;
                 else return -ENOENT;
             }
         }
     }
-    if (flags & O_CREAT) return (flags & O_EXCL) ? -EEXIST : -EACCES;
-    if ((flags & O_ACCMODE) != O_RDONLY) return -EACCES;
-
-    struct node *n = kmalloc(sizeof(*n));
-    if (!n) return -ENOMEM;
-    memset(n, 0, sizeof(*n));
-    n->kind = kind;
-    n->pid = pid;
-    if (kind >= K_MEMINFO) {
-        n->text = kmalloc(SNAPSHOT_MAX);
-        if (!n->text) { kfree(n); return -ENOMEM; }
-        n->len = render(n, n->text);
-    }
-    v->data = n;
-    v->type = kind >= K_MEMINFO ? S_IFREG : S_IFDIR;
-    return 0;
+    return open_node(kind, pid, flags, v);
 }
 
 static int procfs_close(vnode_t *v) {
@@ -217,7 +237,7 @@ static ssize_t procfs_read(vnode_t *v, off_t pos, void *buf, size_t len) {
 
 static int procfs_readdir(vnode_t *v, off_t *pos, struct vfs_dirent *out) {
     static const char *const root_names[] = { "meminfo", "uptime", "version", "mounts", "interrupts", "cmdline", "self" };
-    static const char *const pid_names[] = { "status", "cmdline" };
+    static const char *const pid_names[] = { "status", "cmdline", "stat" };
     struct node *n = v->data;
     uint32_t i = (uint32_t)*pos;
     out->type = DT_DIR;
@@ -226,7 +246,7 @@ static int procfs_readdir(vnode_t *v, off_t *pos, struct vfs_dirent *out) {
     if (i < 2) {
         strcpy(out->name, i == 0 ? "." : "..");
     } else if (n->kind == K_PIDDIR) {
-        if (i - 2 >= 2) return 0;
+        if (i - 2 >= 3) return 0;
         strcpy(out->name, pid_names[i - 2]);
         out->type = DT_REG;
         out->ino = 100 + i;

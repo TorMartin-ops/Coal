@@ -16,7 +16,8 @@
 
 typedef struct proc_info {
     uint32_t pid;
-    uint32_t ppid;
+    uint32_t ppid, pgid, sid;
+    uint32_t uid[3], gid[3];        /* real, effective, saved */
     char     state;                 /* Linux letter: R running, S sleeping, Z zombie */
     char     name[16];
     char     cmdline[128];          /* arguments separated by NUL bytes */
