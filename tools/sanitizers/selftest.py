@@ -64,7 +64,7 @@ def run_case(build_dir, op, arg, name, pattern, fatal, cmdline):
 
 def main():
     build_dir = sys.argv[1]
-    cmdline = " ".join(sys.argv[2:])
+    cmdline = " ".join(["coal.kfence=100"] + sys.argv[2:])
     only = {int(x) for x in os.environ.get("ONLY", "").split(",") if x}
     cases = [run_case(build_dir, *c, cmdline) for c in CASES if not only or c[0] in only]
     res = {"passed": all(c["ok"] for c in cases), "cases": cases}
