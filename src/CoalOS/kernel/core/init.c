@@ -33,6 +33,8 @@
 #include <kernel/fs/vfs/fs_errno.h>
 #include <kernel/lib/port_io.h>
 #include <kernel/lib/assert.h>
+#include <kernel/debug/ksan.h>
+#include <kernel/memory/kfence.h>
 
 #define INIT_PATH "/sbin/init"
 
@@ -64,6 +66,7 @@ static void configure_keyboard_controller(void) {
 void kernel_main_init(uint32_t magic, uintptr_t boot_info) {
     struct boot_memmap map;
 
+    ksan_early_init();
     serial_init(SERIAL_COM1);
     serial_init(SERIAL_COM2);
     terminal_init();
@@ -74,6 +77,10 @@ void kernel_main_init(uint32_t magic, uintptr_t boot_info) {
     cmdline_init(boot_info_cmdline(magic, boot_info));
     boot_info_memmap(magic, boot_info, &map);
     memory_init(&map);
+    ksan_init();
+#ifdef COAL_DEBUG_KERNEL
+    kfence_init();
+#endif
     idt_init();
     timer_early_init();
     clock_init();
