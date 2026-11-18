@@ -922,6 +922,32 @@ static void test_exit_preempted(void) {
     CHECK(bad == 0);
 }
 
+/* kill() walks the process list while another process frees zombies: the walk must not step onto a freed entry
+ * (the debug kernel reports the stale read) */
+static void test_kill_walk(void) {
+    pid_t reaper[3];
+    for (int r = 0; r < 3; r++) {
+        reaper[r] = fork();
+        if (reaper[r] == 0) {
+            for (int i = 0; i < 400; i++) {
+                pid_t k = fork();
+                if (k == 0) _exit(0);
+                waitpid(k, NULL, 0);
+            }
+            _exit(0);
+        }
+    }
+    long ok = 0;
+    int left = 3, bad = 0;
+    while (left) {
+        for (int i = 0; i < 50; i++) ok += kill(-30000, 0) < 0 && errno == ESRCH;
+        int st;
+        pid_t w = waitpid(-1, &st, WNOHANG);
+        if (w > 0) { left--; bad += !WIFEXITED(st) || WEXITSTATUS(st) != 0; }
+    }
+    CHECK(ok > 0 && bad == 0);
+}
+
 /* poll() on an array that is not 4-byte aligned (the debug kernel reports a misaligned access) */
 static void test_poll_unaligned(void) {
     int fds[2];
@@ -1029,7 +1055,7 @@ int main(int argc, char **argv) {
         { "sigchld", test_sigchld, 0 }, { "rlimit", test_rlimit, 0 },
         { "fpu", test_fpu, 0 }, { "loopback", test_loopback, 0 }, { "stream", test_loopback_stream, 0 },
         { "smallwrites", test_tcp_small_writes, 0 },
-        { "exitrace", test_exit_preempted, 0 }, { "pollalign", test_poll_unaligned, 0 },
+        { "exitrace", test_exit_preempted, 0 }, { "pollalign", test_poll_unaligned, 0 }, { "killwalk", test_kill_walk, 0 },
         { "vdso", test_vdso, 0 },
         { "oom", test_oom, 1 },                     /* needs a small machine: run as "kernel_test oom" */
     };

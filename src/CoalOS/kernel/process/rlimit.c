@@ -99,8 +99,10 @@ bool rlimit_fork_allowed(pcb_t *parent) {
     uint64_t limit = parent->rlim[RL_NPROC].cur;
     if (limit == RLIM_INFINITY) return true;
     uint32_t n = 0;
+    uintptr_t flags = local_irq_save();      /* the list changes under preemption */
     for (pcb_t *p = process_all(); p; p = p->all_next)
         if (p->pid) n++;
+    local_irq_restore(flags);
     if (n < limit) return true;
     parent->rl_hits |= RL_HIT(RL_NPROC);
     return false;
