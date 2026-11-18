@@ -395,7 +395,7 @@ DESC = {
 # Calls that give back a resource.
 RETURNS = {"open": "fd", "openat": "fd", "socket": "fd", "accept": "fd", "accept4": "fd", "dup": "fd", "dup2": "fd",
            "fcntl": "fd", "mmap": "addr", "brk": "addr", "getpid": "pid", "fork": "pid", "vfork": "pid", "clone": "pid",
-           "getppid": "pid", "gettid": "pid", "getpgrp": "pid", "setsid": "pid"}
+           "gettid": "pid", "getpgrp": "pid", "setsid": "pid"}
 # Calls that store descriptors in memory: name -> (argument index of the buffer, number of u32 descriptors)
 STORES_FDS = {"pipe": (0, 2), "pipe2": (0, 2), "socketpair": (3, 2)}
 
