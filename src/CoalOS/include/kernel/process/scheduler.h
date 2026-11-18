@@ -7,6 +7,7 @@
 #define SCHEDULER_H
 
 #include <kernel/core/types.h>
+#include <kernel/debug/lockdep.h>
 #include <kernel/lib/rbtree.h>
 #include <kernel/drivers/timer/timer.h>
 
@@ -43,6 +44,9 @@ typedef struct tcb {
     struct ktimer sleep_timer;
     struct tcb  *wait_next;     /* driver wait queue link (drivers/wait.h) */
     struct drv_waitq *wait_q;   /* the queue the task sits on, NULL when none */
+#ifdef COAL_DEBUG_KERNEL
+    struct lockdep_state ld;    /* lock checker state while the task is switched out */
+#endif
 } tcb_t;
 
 /** Creates the idle task. Call once, before any task is added. */

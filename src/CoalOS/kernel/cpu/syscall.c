@@ -5,9 +5,14 @@
 
 #include "syscall_internal.h"
 #include <kernel/cpu/gdt.h>
+#include <kernel/debug/lockdep.h>
 #include <kernel/cpu/msr.h>
 
 extern void syscall_entry(void);
+#ifdef COAL_DEBUG_KERNEL
+#define SYS_COAL_KSAN_TEST 0x1000                       /* Coal-only: provokes sanitizer reports (kernel/debug/ksan_test.c) */
+long sc_ksan_test(long op, long arg);
+#endif
 
 /* IF so that a blocked call cannot starve the timer, TF, DF, AC (SMAP), NT, RF, VM. */
 #define RFLAGS_SYSCALL_MASK 0x47700
@@ -149,9 +154,14 @@ static bool restartable(uint32_t nr) {
 void syscall_dispatch(isr_frame_t *r) {
     uint64_t nr = r->rax;
     syscall_fn_t fn = nr < NR_SYSCALLS ? syscall_table[nr] : NULL;
+#ifdef COAL_DEBUG_KERNEL
+    if (nr == SYS_COAL_KSAN_TEST)
+        fn = SC(sc_ksan_test);
+#endif
     long rc = fn ? fn(r->rdi, r->rsi, r->rdx, r->r10, r->r8, r->r9) : -ENOSYS;
 
     r->rax = rc;
+    lockdep_no_locks("system call exit");
 
     pcb_t *p = get_current_process();       /* the common case, no signal and no temporary mask, takes two loads */
     if (p->pending_signals) signal_return_to_user(r, rc == -EINTR && restartable(nr) ? (int)nr : SIGNAL_NO_RESTART);

@@ -1,7 +1,9 @@
 #include <kernel/sync/mutex.h>
 #include <kernel/sync/spinlock.h>
+#include <kernel/debug/lockdep.h>
 
 void mutex_lock(mutex_t *m) {
+    might_sleep();
     uintptr_t flags = local_irq_save();
     while (m->locked) drv_wait_uninterruptible(&m->waiters);
     m->locked = true;
