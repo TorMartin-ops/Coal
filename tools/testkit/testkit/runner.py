@@ -48,6 +48,17 @@ class Lease:
             self.release()
 
 
+def _default_signals():
+    """A test must not inherit ignored or blocked signals (nohup, background jobs) from whoever started the run."""
+    for n in range(1, signal.NSIG):
+        if n not in (signal.SIGKILL, signal.SIGSTOP):
+            try:
+                signal.signal(n, signal.SIG_DFL)
+            except (OSError, ValueError):
+                pass
+    signal.pthread_sigmask(signal.SIG_SETMASK, [])
+
+
 @dataclass
 class Context:
     repo: str
@@ -148,7 +159,7 @@ def execute_host(test, ctx, seed):
         t0 = time.monotonic()
         limit = max(300.0, test.cost_s * 10) * load.scale()
         proc = subprocess.Popen(cmd, cwd=ctx.repo, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, start_new_session=True)
+                                stderr=subprocess.STDOUT, start_new_session=True, preexec_fn=_default_signals)
         try:
             out, _ = proc.communicate(timeout=limit)
             verdict_rc = proc.returncode

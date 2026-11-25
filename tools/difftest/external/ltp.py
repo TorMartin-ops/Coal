@@ -17,6 +17,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))   # tools/difftest: machine.py
+from difftest import default_signals  # noqa: E402
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 GUEST = "/tmp/ltp"
 WORK = "/tmp/ltpwork"
@@ -54,7 +55,8 @@ def run_host(path, timeout):
     tmp = tempfile.mkdtemp(prefix="ltp-host-")
     try:
         p = subprocess.run(cmd, cwd=tmp, env=dict(os.environ, TMPDIR=tmp), stdin=subprocess.DEVNULL,
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout + 10)
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout + 10,
+                           preexec_fn=default_signals)
         out, rc = p.stdout.decode("utf-8", "replace"), p.returncode
     except subprocess.TimeoutExpired:
         return parse("", None, None, True)

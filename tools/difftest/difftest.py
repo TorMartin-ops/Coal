@@ -12,6 +12,7 @@ import difflib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -39,9 +40,21 @@ def build(names, out):
         subprocess.run(CC + ["-I" + CORPUS, "-o", exe, src], check=True)
 
 
+def default_signals():
+    """preexec_fn: a host run must not inherit ignored or blocked signals (nohup, background jobs) from the harness."""
+    for n in range(1, signal.NSIG):
+        if n not in (signal.SIGKILL, signal.SIGSTOP):
+            try:
+                signal.signal(n, signal.SIG_DFL)
+            except (OSError, ValueError):
+                pass
+    signal.pthread_sigmask(signal.SIG_SETMASK, [])
+
+
 def run_host(exe, timeout=30, args=()):
     try:
-        p = subprocess.run([exe, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, timeout=timeout)
+        p = subprocess.run([exe, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, timeout=timeout,
+                           preexec_fn=default_signals)
     except subprocess.TimeoutExpired as e:
         return {"exit_code": None, "signal": None, "stdout": (e.stdout or b"").decode("utf-8", "replace"), "timed_out": True}
     sig = -p.returncode if p.returncode < 0 else None
