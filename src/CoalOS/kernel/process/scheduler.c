@@ -454,6 +454,8 @@ void scheduler_timer_event(uint64_t now) {
 
         if (used_up && queued()) g_need_reschedule = true;
         else if (queued()) clockevent_request(now + slice_left_ns(cur));
+        /* The event that fired may have been the slice end: arm the next CPU limit again. */
+        if (cur->process->cpu_next != RLIMIT_CPU_NEVER) clockevent_request(now + rlimit_cpu_left_ns(cur->process));
     }
     if (g_need_reschedule) schedule();
 }
