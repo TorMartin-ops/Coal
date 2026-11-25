@@ -15,6 +15,10 @@
 #include <kernel/core/log.h>
 #include <kernel/lib/assert.h>
 #include <kernel/drivers/storage/block_device.h>
+#include <kernel/debug/lockdep.h>
+#ifdef COAL_DEBUG_KERNEL
+#include <kernel/debug/ksan.h>
+#endif
 
 #define IDT_FLAG_INTERRUPT_GATE 0x8E   // ring 0, present, 64-bit interrupt gate
 #define IDT_FLAG_USER_INT_GATE  0xEE   // int3 may be executed from ring 3
@@ -112,6 +116,12 @@ static void dump_frame(const isr_frame_t *f) {
             (unsigned long)f->rcx, (unsigned long)f->rdx);
     kprintf(" rsi=%016lx rdi=%016lx rbp=%016lx cr2=%016lx", (unsigned long)f->rsi, (unsigned long)f->rdi,
             (unsigned long)f->rbp, (unsigned long)read_cr2());
+#ifdef COAL_DEBUG_KERNEL
+    if (f->rsp >= KERNEL_STACK_VADDR_START && f->rsp < KERNEL_STACK_VADDR_END &&
+        (f->rsp - KERNEL_STACK_VADDR_START) % ((KSTACK_PAGES + 1) * PAGE_SIZE) < PAGE_SIZE + 128)
+        kprintf("kernel stack overflow: rsp %#lx is in or at the guard page of a task stack", (unsigned long)f->rsp);
+    ksan_backtrace_frame(f);
+#endif
 }
 
 // Kernel-mode fault that nothing expected.
@@ -143,7 +153,9 @@ void isr_common_handler(isr_frame_t *frame) {
 
     irq_counts[frame->int_no]++;
     if (entry->handler) {
+        lockdep_irq_enter();
         entry->handler(frame);          // hardware handlers send their own EOI
+        lockdep_irq_exit();
     } else if (frame->int_no >= IRQ0_VECTOR && frame->int_no < IRQ0_VECTOR + 16) {
         pic_send_eoi(frame->int_no);    // no driver for this IRQ: acknowledge and ignore
     } else if (frame->cs & 3) {

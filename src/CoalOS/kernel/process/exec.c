@@ -75,10 +75,12 @@ void exec_release_mm(pcb_t *p) {
     mm_struct_t *mm = p->mm;
 
     if (!mm) return;
-    write_cr3(g_kernel_page_directory_phys);
     oom_teardown_begin();                /* before p->mm goes: the OOM killer must not think the memory is back */
+    uintptr_t flags = local_irq_save();  /* a switch in between would load the old directory again */
     p->mm = NULL;
     p->page_directory_phys = NULL;
+    write_cr3(g_kernel_page_directory_phys);
+    local_irq_restore(flags);
     free_mm(mm);
     oom_teardown_end();
 }

@@ -1,0 +1,1 @@
+# signatures of findings that are understood and accepted; one per line

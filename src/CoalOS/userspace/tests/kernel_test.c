@@ -897,6 +897,78 @@ static void test_oom(void) {
     for (int i = 0; i < 20; i++) test_oom_round();
 }
 
+/* Many short processes that exit while the timer preempts them: an exiting process must never be switched back to
+ * with its freed page directory loaded (the debug kernel reports a freed directory that is still in CR3). */
+static void test_exit_preempted(void) {
+    int bad = 0;
+    for (int round = 0; round < 40; round++) {
+        pid_t kid[8];
+        for (int i = 0; i < 8; i++) {
+            kid[i] = fork();
+            if (kid[i] == 0) {
+                if (i & 1) {
+                    close(1);
+                    execv("/bin/sh", (char *const[]){"sh", "-c", "exit 0", NULL});
+                }
+                for (volatile int spin = 0; spin < 20000 * (i + 1); spin++) {}
+                _exit(i & 1 ? 127 : i);
+            }
+        }
+        for (int i = 0; i < 8; i++) {
+            int st = 0;
+            bad += waitpid(kid[i], &st, 0) != kid[i] || !WIFEXITED(st) || WEXITSTATUS(st) != (i & 1 ? 0 : i);
+        }
+    }
+    CHECK(bad == 0);
+}
+
+/* kill(), getpgid(), getpriority() and prlimit() look processes up while others free zombies: no step onto a freed entry
+ * (the debug kernel reports the stale read) */
+static void test_kill_walk(void) {
+    pid_t reaper[3];
+    unsigned long lim[2];
+    for (int r = 0; r < 3; r++) {
+        reaper[r] = fork();
+        if (reaper[r] == 0) {
+            for (int i = 0; i < 400; i++) {
+                pid_t k = fork();
+                if (k == 0) _exit(0);
+                waitpid(k, NULL, 0);
+            }
+            _exit(0);
+        }
+    }
+    long ok = 0;
+    int left = 3, bad = 0;
+    while (left) {
+        for (int i = 0; i < 50; i++) ok += kill(-30000, 0) < 0 && errno == ESRCH;
+        for (int i = 0; i < 50; i++) {      /* lookups by pid while the reapers free their children */
+            long pid = 2 + (i + ok) % 40;
+            __sc(SYS_GETPGID, pid, 0, 0, 0, 0);
+            __sc(SYS_GETPRIORITY, 0, pid, 0, 0, 0);
+            __sc(SYS_PRLIMIT64, pid, 7, 0, (long)lim, 0);
+        }
+        int st;
+        pid_t w = waitpid(-1, &st, WNOHANG);
+        if (w > 0) { left--; bad += !WIFEXITED(st) || WEXITSTATUS(st) != 0; }
+    }
+    CHECK(ok > 0 && bad == 0);
+}
+
+/* poll() on an array that is not 4-byte aligned (the debug kernel reports a misaligned access) */
+static void test_poll_unaligned(void) {
+    int fds[2];
+    char buf[16];
+    CHECK(pipe(fds) == 0);
+    struct pollfd pf = { fds[1], POLLOUT, 0 };
+    memcpy(buf + 2, &pf, sizeof pf);
+    CHECK(poll((struct pollfd *)(buf + 2), 1, 0) == 1);
+    memcpy(&pf, buf + 2, sizeof pf);
+    CHECK(pf.revents == POLLOUT);
+    close(fds[0]);
+    close(fds[1]);
+}
+
 /* --- vDSO: the time page and the TF/signal corner cases --- */
 
 #define AT_SYSINFO_EHDR 33
@@ -990,6 +1062,7 @@ int main(int argc, char **argv) {
         { "sigchld", test_sigchld, 0 }, { "rlimit", test_rlimit, 0 },
         { "fpu", test_fpu, 0 }, { "loopback", test_loopback, 0 }, { "stream", test_loopback_stream, 0 },
         { "smallwrites", test_tcp_small_writes, 0 },
+        { "exitrace", test_exit_preempted, 0 }, { "pollalign", test_poll_unaligned, 0 }, { "killwalk", test_kill_walk, 0 },
         { "vdso", test_vdso, 0 },
         { "oom", test_oom, 1 },                     /* needs a small machine: run as "kernel_test oom" */
     };

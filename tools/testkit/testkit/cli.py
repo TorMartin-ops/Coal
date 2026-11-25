@@ -63,6 +63,8 @@ def select(args, all_suites):
                     take = True
             if not take:
                 continue
+            if "nightly" in tags and not any(p in (t.id, t.name) for p in pats):
+                continue                  # nightly tests run only when named
             if ci and not args.select and tags & set(CI_TAGS_OFF):
                 continue
             if args.all and not args.select and "long" in tags and "long" not in args.tag:

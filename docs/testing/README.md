@@ -51,6 +51,8 @@ the old "build and boot once" entry point (it runs `coaltest hello`).
 | `smoke` | coal-mcp end to end (build, boot, commands, files, jobs, snapshots, network) | verdict only |
 | `conformance` | the shell corpus, one guest per category (`files pipes processes signals text`) against `tools/testkit/baselines/conformance_known_failures.txt`: a case outside the list that fails is a regression, a listed case that passes makes the list stale. The `net` category talks to servers on the host and stays host-driven | categories: verdict and output; `net`: verdict only |
 | `difftest` | `corpus` and `fuzz`: the syscall differential programs of `tools/difftest` run in one guest each and compared with the Linux host; known divergences in `baselines/difftest_*.txt`. `ltp`: the LTP syscalls subset through the gateway, tagged `long` (about an hour; not in `--all` or `--ci`, run it by name or `--tag long`) against `baselines/ltp_known_failures.txt` | corpus, fuzz: verdict and output; `ltp`: verdict only |
+| `debug` | the debug kernel (`build/debug`, `COAL_PROFILE=test`): every guest program with UBSan, heap and lock checks in panic mode, and the sanitizer selftest (see `sanitizers.md`). Not in `--ci` | verdict only |
+| `fuzz` | `seeded_5min`: fixed-seed 5 minute fuzz run from `tools/fuzz/corpus`, fails on a finding that is not in `tools/fuzz/known_crashes.txt`. `nightly`: 60 minute campaign, runs only when named (`coaltest fuzz/nightly`). See `fuzzing.md`. Not in `--ci` | verdict only |
 | `bench` | boot timeline, `coalbench` | verdict only |
 
 "Verdict only" suites are driven from the host over a socket (COM2 or the network). Which guest instruction a

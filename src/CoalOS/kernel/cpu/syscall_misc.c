@@ -4,6 +4,7 @@
  */
 
 #include "syscall_internal.h"
+#include <kernel/sync/spinlock.h>
 #include <kernel/cpu/percpu.h>
 #include <kernel/memory/buddy.h>
 #include <kernel/lib/random.h>
@@ -251,7 +252,9 @@ long sc_sysinfo(uintptr_t uinfo) {
     } si = { 0 };
     unsigned nproc = 0;
 
+    uintptr_t fl = local_irq_save();
     for (pcb_t *p = process_all(); p; p = p->all_next) nproc++;
+    local_irq_restore(fl);
     si.uptime = clock_monotonic_ns() / NSEC_PER_SEC;
     si.totalram = (buddy_total_pages(ZONE_LOW) + buddy_total_pages(ZONE_HIGH)) * PAGE_SIZE;
     si.freeram = (buddy_free_pages_count(ZONE_LOW) + buddy_free_pages_count(ZONE_HIGH)) * PAGE_SIZE;

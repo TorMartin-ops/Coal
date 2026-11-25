@@ -31,6 +31,8 @@
 #include <kernel/lib/assert.h>
 #include <kernel/memory/kmalloc.h>
 #include <kernel/memory/frame.h>
+#include <kernel/memory/paging.h>
+#include <kernel/debug/lockdep.h>
 
 #define IDLE_STACK_SIZE 4096
 #define NICE_0_WEIGHT   1024
@@ -245,6 +247,10 @@ static void unplace(tcb_t *t) {
 
 static void switch_to(tcb_t *prev, tcb_t *next) {
     static uint64_t *boot_context;           /* sink for the boot stack */
+#ifdef COAL_DEBUG_KERNEL
+    static struct lockdep_state boot_ld;
+    lockdep_switch(prev ? &prev->ld : &boot_ld, &next->ld);
+#endif
     pcb_t *np = next->process;
 
     cpu_set_current(next);
@@ -254,8 +260,9 @@ static void switch_to(tcb_t *prev, tcb_t *next) {
     }
     cpu_set_kernel_stack((uint64_t)np->kernel_stack_vaddr_top);
     fpu_task_switch(np);
-    if (np->page_directory_phys && read_cr3() != (uint64_t)np->page_directory_phys)
-        write_cr3((uint64_t)np->page_directory_phys);
+    uint64_t cr3 = np->page_directory_phys ? (uint64_t)np->page_directory_phys : g_kernel_page_directory_phys;
+    if (read_cr3() != cr3)               /* a task without an address space must not keep a dead one loaded */
+        write_cr3(cr3);
     simple_switch(prev ? &prev->context : &boot_context, next->context);
 }
 
@@ -269,6 +276,7 @@ static void start_running(tcb_t *next, uint64_t now) {
 }
 
 void schedule(void) {
+    lockdep_schedule();
     uintptr_t flags = local_irq_save();
     tcb_t *prev = g_current, *next;
     uint64_t now = clock_ns();

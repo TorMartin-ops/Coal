@@ -20,7 +20,8 @@ SH = "/bin/sh"
 
 # guest program name (as in add_user_program) -> why it is not a test of its own
 NOT_TESTS = {"coalbox": "applet multi-call binary", "init": "PID 1", "shell": "installed as /bin/sh", "snake": "game",
-             "agentd": "exercised by the gateway suites", "coalbench": "bench suite", "coalbench_null": "bench helper"}
+             "agentd": "exercised by the gateway suites", "coalbench": "bench suite", "coalbench_null": "bench helper",
+             "ksan_test": "debug kernel only: run by the debug suite", "fuzz_executor": "debug kernel only: the fuzzer's guest"}
 
 
 def oom_rounds(text):
@@ -139,6 +140,19 @@ def bench_tests():
                   expect=r"idle_irq", deterministic=False)]     # the last digits of every timing follow device timing
 
 
+def debug_tests():
+    k = "tools/sanitizers/kit.py"
+    t = ("host-io", "debug")
+    return [host("debug", "guests_panic_mode", [k, "guests"], 250, tags=t, qemu=True, count=None),
+            host("debug", "sanitizer_selftest", [k, "selftest"], 150, tags=t, qemu=True, count=None)]
+
+
+def fuzz_tests():
+    k = "tools/sanitizers/kit.py"
+    return [host("fuzz", "seeded_5min", [k, "fuzz", "300"], 400, tags=("host-io", "fuzz"), qemu=True, count=None),
+            host("fuzz", "nightly", [k, "nightly", "60"], 3700, tags=("host-io", "fuzz", "nightly"), count=None)]
+
+
 def all_suites():
     s = [Suite("unit", "host-only tests: codecs, HTTP, agentd on a pty, the conformance corpus on this host",
                ("unit", "host"), ("tools/coal-gateway", "tools/coal-mcp", "tools/harness", "tools/testkit"), unit_tests()),
@@ -161,6 +175,12 @@ def all_suites():
          Suite("difftest", "syscall differential corpus and file-operation fuzzer against Linux; LTP (long)", ("difftest",),
                ("tools/difftest", SRC + "/kernel", SRC + "/include", SRC + "/userspace/libc", "tools/testkit/baselines"),
                difftest_suites.tests()),
+         Suite("debug", "debug kernel (UBSan, heap hardening, lock checker; panic mode): every guest program and the sanitizer selftest",
+               ("debug", "host-io"), (SRC + "/kernel", SRC + "/include", SRC + "/CMakeLists.txt", "tools/sanitizers"),
+               debug_tests()),
+         Suite("fuzz", "coverage-guided system call fuzzer on the debug kernel: a fixed-seed 5 minute run from the committed corpus; "
+               "`fuzz/nightly` is a 60 minute campaign (run it by name)", ("fuzz", "host-io"),
+               ("tools/fuzz", SRC + "/kernel/cpu", SRC + "/userspace/tests/fuzz_executor.c"), fuzz_tests()),
          Suite("bench", "boot time and micro-benchmarks", ("bench",), ("tools/bench", "tools/harness/boottime.py"),
                bench_tests())]
     for suite in s:

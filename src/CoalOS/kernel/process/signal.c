@@ -7,6 +7,7 @@
  */
 #include <kernel/process/process.h>
 #include <kernel/process/signal.h>
+#include <kernel/sync/spinlock.h>
 #include <kernel/cpu/isr_frame.h>
 #include <kernel/cpu/linux_abi.h>
 #include <kernel/fs/vfs/fs_errno.h>
@@ -56,7 +57,8 @@ void signal_send(pcb_t *p, int sig) {
         scheduler_wake(&p->task);           /* a blocked call returns -EINTR */
 }
 
-int process_kill(int pid, int sig) {
+/* The process list changes under a timer preemption (a waiting parent frees a zombie), so the walk runs with IRQs off. */
+static int kill_locked(int pid, int sig) {
     pcb_t *me = get_current_process(), *p;
     int hits = 0;
 
@@ -80,4 +82,11 @@ int process_kill(int pid, int sig) {
         if (sig) signal_send(me, sig);
     }
     return hits ? 0 : -ESRCH;
+}
+
+int process_kill(int pid, int sig) {
+    uintptr_t flags = local_irq_save();
+    int r = kill_locked(pid, sig);
+    local_irq_restore(flags);
+    return r;
 }
