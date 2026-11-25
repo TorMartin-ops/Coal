@@ -11,7 +11,9 @@ MSR_GS_BASE equ 0xC0000101
 
 ; isr_frame_t: 15 general registers, int_no, err_code, then what the CPU pushed.
 F_R15       equ 0
+F_R11       equ 32
 F_RBP       equ 64
+F_RCX       equ 96
 F_RAX       equ 112
 F_INT_NO    equ 120
 F_ERR       equ 128

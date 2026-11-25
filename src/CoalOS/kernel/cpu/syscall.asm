@@ -54,6 +54,12 @@ syscall_entry:
     jnz     interrupt_return
     test    r11, EFLAGS_TF | EFLAGS_RF
     jnz     interrupt_return
+    ; sysret loads rcx = rip and r11 = rflags. A frame whose saved rcx or r11 differ (rt_sigreturn
+    ; restoring an interrupted context) must keep them, so it returns with iretq.
+    cmp     rcx, [rsp + F_RCX]
+    jne     interrupt_return
+    cmp     r11, [rsp + F_R11]
+    jne     interrupt_return
 
     POP_GPRS                    ; rcx and r11 are reloaded below
     add     rsp, 16

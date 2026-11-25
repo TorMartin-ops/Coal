@@ -131,7 +131,7 @@ def check_corpus(text):
             observed.add("%s: did not complete" % n)
             continue
         out, code = got[n]
-        guest = {"stdout": out + "\n", "exit_code": code, "signal": None, "timed_out": False}
+        guest = {"stdout": out, "exit_code": code, "signal": None, "timed_out": False}
         if code > 128:
             guest.update(exit_code=None, signal=code - 128)
         divs, _ = d.compare(host, guest)
