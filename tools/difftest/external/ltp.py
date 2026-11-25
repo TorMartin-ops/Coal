@@ -27,7 +27,7 @@ SUMMARY = {"pass": r"^passed\s+(\d+)", "fail": r"^failed\s+(\d+)", "brok": r"^br
 
 
 def parse(output, exit_code, signal, timed_out):
-    """Counts and a verdict (pass, fail, brok, conf, crash, timeout, none, flaky) from one run's output."""
+    """Counts and a verdict (pass, fail, brok, conf, crash, timeout, none) from one run's output."""
     counts = {k: len(re.findall(p, output)) for k, p in TOKENS.items()}
     if re.search(SUMMARY["pass"], output, re.M):
         counts = {k: int(re.search(p, output, re.M).group(1)) if re.search(p, output, re.M) else 0 for k, p in SUMMARY.items()}
@@ -46,8 +46,6 @@ def parse(output, exit_code, signal, timed_out):
     else:
         verdict = "none"
     first = next((l for l in output.splitlines() if re.search(r"TBROK|TFAIL|TCONF", l)), "")
-    if re.search(r"tst_test\.c:\d+: TBROK: waitpid\(\d{7,},", output):
-        verdict = "flaky"       # fork() returned a garbage pid in the parent (open kernel bug, about 1 run in 100); not the test's result
     return {"verdict": verdict, "exit": exit_code, "signal": signal or None, **counts, "first": first[:200]}
 
 
@@ -103,7 +101,7 @@ def summarize(tests):
     for t, e in tests.items():
         d = t.split("/")[0]
         c = e["coal"]
-        s = by_dir.setdefault(d, {"tests": 0, "pass": 0, "fail": 0, "brok": 0, "conf": 0, "crash": 0, "timeout": 0, "none": 0, "flaky": 0,
+        s = by_dir.setdefault(d, {"tests": 0, "pass": 0, "fail": 0, "brok": 0, "conf": 0, "crash": 0, "timeout": 0, "none": 0,
                                   "tpass": 0, "tfail": 0, "tbrok": 0, "tconf": 0})
         s["tests"] += 1
         s[c["verdict"]] += 1

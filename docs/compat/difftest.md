@@ -10,9 +10,7 @@ and compare the traces with the Linux host; both are deterministic (identical ou
 `--ci`. Known divergences are in `tools/testkit/baselines/difftest_known_divergences.txt` (corpus) and
 `difftest_fuzz_known.txt` (first divergence per seed); a new divergence or a listed one that no longer happens fails the
 test. `coaltest difftest/ltp` (tag `long`, about 25 minutes, not in `--all` or `--ci`) runs LTP through the gateway, one
-syscall directory per boot, against `ltp_known_failures.txt` in the same way. A test whose parent saw a garbage pid from
-`fork()` (`TBROK: waitpid(<7+ digit pid>) ECHILD` in the LTP library, about one run in a hundred, not reproducible in a
-fork stress loop) is reported as `flaky` and counts as neither new nor stale: it is an open kernel bug, not a result.
+syscall directory per boot, against `ltp_known_failures.txt` in the same way.
 
 ## How it works
 

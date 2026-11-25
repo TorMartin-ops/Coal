@@ -1,4 +1,0 @@
-# LTP tests whose verdict in Coal changes between runs on the same kernel (CPU-time limits, exit races): ignored by the baseline comparison.
-exit/exit02
-fcntl/fcntl29
-setrlimit/setrlimit06

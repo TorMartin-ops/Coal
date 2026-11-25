@@ -39,7 +39,6 @@ class Baseline(unittest.TestCase):
         self.assertIsNone(ds.check_ltp(text))
         self.assertIn("new", ds.check_ltp(text + "x/d  coal=fail  host=pass\n"))
         self.assertIn("stale", ds.check_ltp("x/a  coal=pass  host=pass\n"))
-        self.assertIsNone(ds.check_ltp("x/a  coal=flaky  host=pass\n"))       # garbage-pid flake: no verdict
 
 
 if __name__ == "__main__":
